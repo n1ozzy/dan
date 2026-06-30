@@ -1,0 +1,58 @@
+[daemon]
+name = "jarvisd"
+host = "127.0.0.1"
+port = 41741
+state = "BOOTING"
+
+[database]
+path = "~/.jarvis/jarvis.db"
+migrations = "manual"
+destroy_existing = false
+
+[brain]
+default_adapter = "mock"
+model = "mock"
+effort = "low"
+timeout_seconds = 60
+provider_sessions_are_memory = false
+
+[memory]
+enabled = true
+max_context_chars = 12000
+worker_candidates_require_promotion = true
+
+[voice]
+enabled = false
+broker_enabled = false
+default_engine = "mock"
+queue_persisted = true
+
+[audio]
+enabled = false
+preferred_input = "Mikrofon (MacBook Air)"
+output_policy = "system_default"
+bluetooth_microphone_policy = "warn"
+
+[panel]
+enabled = false
+api_base_url = "http://127.0.0.1:41741"
+width = 420
+height = 620
+
+[security]
+localhost_only = true
+approval_required_for_file_write = true
+approval_required_for_shell = true
+approval_required_for_network = true
+destructive_tools_enabled = false
+
+[runtime]
+root = "~/.jarvis"
+logs_dir = "~/.jarvis/logs"
+pid_file = "~/.jarvis/runtime/jarvisd.pid"
+legacy_detection = "report_only"
+
+[launchd]
+enabled = false
+label = "com.ozzy.jarvisd"
+install_automatically = false

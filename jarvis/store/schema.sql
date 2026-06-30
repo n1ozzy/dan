@@ -1,0 +1,3 @@
+-- Jarvis v4.1 schema placeholder.
+-- Prompt 01 intentionally does not implement real SQLite tables.
+-- Frozen table names are documented in docs/CONTRACTS.md.

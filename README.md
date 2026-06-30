@@ -1,2 +1,17 @@
-# jarvis
-AI voice assistant 
+# Jarvis v4.1 Runtime
+
+Jarvis is `jarvisd`: a local, single-user runtime where the daemon owns the
+truth.
+
+- `jarvisd` owns conversation, events, memory, approvals, jobs, voice queue and
+  runtime state.
+- The panel is a client. It renders daemon state and sends intents only.
+- Brain adapters are stateless. Provider sessions are not Jarvis memory.
+- Workers are silent. They can produce candidates, not committed facts or speech.
+- The broker is the sole speaker.
+- `/tmp` is not a source of truth.
+- Legacy DAN is reference-only. Concepts may be re-expressed; old runtime code
+  is not copied into this package.
+
+Prompt 01 creates scaffold and contracts only. It does not start the daemon,
+panel, broker, listener, workers, TTS, STT or provider integrations.

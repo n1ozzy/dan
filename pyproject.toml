@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jarvis-runtime"
+version = "4.1.0a0"
+description = "Jarvis v4.1 local runtime scaffold"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Ozzy" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+jarvisd = "jarvis.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["jarvis"]
