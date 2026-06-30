@@ -103,6 +103,13 @@ A brain adapter is a **stateless** function `BrainRequest → BrainResponse`:
 If the brain wants to *act*, it proposes a `ToolCall` — which is then subject to
 the registry and the approval gate. The brain never executes anything itself.
 
+> **Legacy evidence.** The old `cli_brain.run()` invoked
+> `claude -p --dangerously-skip-permissions` (full Bash/Edit/Write, no prompt),
+> and an attempted `--sandbox workspace-write` was *ignored* because
+> `trust_level="trusted"`. v4.1 therefore does **not** rely on any provider
+> sandbox flag for safety — the registry + approval gate is the only control.
+> See [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md) §9.
+
 ---
 
 ## 6. Worker boundary ([ADR-009](DECISIONS.md#adr-009))

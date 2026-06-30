@@ -226,6 +226,49 @@ choose devices themselves.
 
 ---
 
+## ADR-013 — Legacy DAN runtime is detected and reported, never auto-killed
+
+**Status:** Accepted
+
+**Context.** The 2026-06-30 diagnostic shows the legacy voice stack
+(`voice_broker.py`, `listen_ozzy.py`, `auto_jarvis.py`) running (started by
+hand), a `com.dan.voice-broker.plist` installed in `~/Library/LaunchAgents`, and
+live `/tmp/dan-*` state. Automatically killing processes, unloading agents or
+deleting `/tmp`/plists would seize the user's live audio setup and break the
+per-prompt human gate.
+
+**Decision.** The `RuntimeSupervisor` detects legacy labels, processes and
+`/tmp` artifacts and surfaces them as warnings + `RuntimeProcessObservation`s. It
+**never** kills, unloads or deletes. Cleanup helpers are diagnose-and-print only
+(Prompt 24) and are run manually by the human.
+
+**Consequences.** No surprise mic/speaker seizure; the human decides what to stop
+and when. See [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md) and
+[LAUNCH_SUPERVISION.md](LAUNCH_SUPERVISION.md).
+
+---
+
+## ADR-014 — `jarvisd` launchd artifacts avoid the `~/Documents` TCC trap
+
+**Status:** Accepted
+
+**Context.** The legacy `com.dan.voice-broker` agent thrashed with hundreds of
+`/bin/zsh: can't open input file: …/dan/tools/jarvis/start-voice-broker.sh`
+because launchd (under KeepAlive) could not read a script located under
+`~/Documents` (macOS TCC sandbox).
+
+**Decision.** The official `com.ozzy.jarvisd` agent, its scripts and its logs
+live **outside `~/Documents`** — under `~/.jarvis` (logs `~/.jarvis/logs`, pid
+`~/.jarvis/runtime`). The label is exactly `com.ozzy.jarvisd` (distinct from the
+legacy `com.ozzy.jarvis`). Install scripts print what they will do and are never
+auto-run.
+
+**Consequences.** No TCC thrash, stable log location, no one-letter label
+confusion. See [LAUNCH_SUPERVISION.md](LAUNCH_SUPERVISION.md) and
+[LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md) §2, §10.
+
+---
+
 ## Decision log
 
 | ADR | Title | Status |
@@ -242,6 +285,9 @@ choose devices themselves.
 | 010 | Tools require a registry plus an approval policy | Accepted |
 | 011 | Panel text and voice transcript use the same `TurnOrchestrator` | Accepted |
 | 012 | `AudioDeviceManager` owns input/output device state | Accepted |
+| 013 | Legacy DAN runtime is detected and reported, never auto-killed | Accepted |
+| 014 | `jarvisd` launchd artifacts avoid the `~/Documents` TCC trap | Accepted |
 
-> Migration-specific decisions discovered during the old-repo inventory
-> (Prompt 00B) will be appended below this line as additional ADRs.
+> ADR-013 and ADR-014 were added by the Prompt 00B inventory, grounded in
+> [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md). Further migration
+> decisions will be appended as additional ADRs.

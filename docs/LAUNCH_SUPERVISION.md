@@ -64,6 +64,25 @@ The supervisor watches for old `dan`-era labels and processes and raises
 If any are present, the observation's `legacy_labels` / `legacy_processes` /
 `warnings` are populated and shown to the human via the API and panel.
 
+### 3.1 Diagnostic evidence (snapshot 2026-06-30)
+
+A read-only diagnostic confirmed the supervisor's job is real (full detail in
+[LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md)):
+
+- **No DAN/Jarvis label was loaded** — `launchctl print` for `com.ozzy.jarvis`,
+  `com.ozzy.jarvisd`, `com.dan.voice-broker`, `com.dan.xtts-server` all returned
+  *"Could not find service"*. The future `com.ozzy.jarvisd` **does not exist yet**.
+- **A legacy agent is installed but unloaded:** only
+  `com.dan.voice-broker.plist` is present in `~/Library/LaunchAgents`.
+- **The legacy voice stack was running, started by hand:** `voice_broker.py`
+  (pid 89968), `listen_ozzy.py loop` (pid 3238), `auto_jarvis.py` (pid 92804).
+- **TCC thrash on the legacy agent:** `/tmp/dan-voice-broker.err` is full of
+  `/bin/zsh: can't open input file: …/start-voice-broker.sh` — launchd could not
+  read the script under `~/Documents` ([ADR-014](DECISIONS.md#adr-014)).
+
+So at takeover time the conflict is at the **process/device** level (legacy
+broker + listener own the speaker and mic), not yet at the label level.
+
 ---
 
 ## 4. The hard rule: detect, never kill
@@ -96,6 +115,9 @@ When implemented, the launchd lifecycle ships as:
 - **Do not run `install-launchd.sh`** as part of any automated step.
 - **Official label only:** `com.ozzy.jarvisd`.
 - **Logs go to `~/.jarvis/logs`.**
+- **Script + logs live outside `~/Documents`** (under `~/.jarvis`) to avoid the
+  macOS TCC trap that made the legacy `com.dan.voice-broker` agent thrash with
+  *"can't open input file"* ([ADR-014](DECISIONS.md#adr-014)).
 - **Uninstall unloads but never deletes the DB.**
 - The install script **prints exactly what it will do** before doing anything.
 

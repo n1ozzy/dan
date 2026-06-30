@@ -134,6 +134,23 @@ event-logged; there is never silent duplicate or overlapping playback.
   voice/STT components must consult the manager rather than choosing devices
   themselves ([ADR-012](DECISIONS.md#adr-012)).
 
+### Observed devices (diagnostic 2026-06-30)
+
+A read-only diagnostic (`system_profiler SPAudioDataType`) showed the policy
+matches reality and the bluetooth risk is concrete (detail in
+[LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md) §7):
+
+| Device | Transport | Role | Rate |
+|--------|-----------|------|------|
+| **Mikrofon (MacBook Air)** | Built-in | Default **Input** | 48000 |
+| **Głośniki (MacBook Air)** | Built-in | Default System Output | 48000 |
+| **Bose Revolve+ II SoundLink** | **Bluetooth** | Default **Output** (+ a 16 kHz BT **input**) | 44100 / 16000 |
+
+The preferred input (`Mikrofon (MacBook Air)`) is the current default input — the
+policy is consistent with the live machine. A Bluetooth device is the default
+*output* and also exposes a low-rate BT *microphone*; the `AudioDeviceManager`
+must not silently capture from it (warn/disable by default).
+
 ---
 
 ## 7. What is explicitly NOT done in this build
