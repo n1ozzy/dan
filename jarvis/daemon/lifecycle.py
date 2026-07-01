@@ -56,6 +56,9 @@ from jarvis.turns.orchestrator import TurnOrchestratorBusyError, TurnOrchestrato
 
 MAX_REQUEST_BODY_BYTES = 1_048_576
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+ALLOWED_CORS_ORIGINS = {"http://127.0.0.1:41800", "http://localhost:41800", "null"}
+CORS_ALLOW_METHODS = "GET, POST, PATCH, DELETE, OPTIONS"
+CORS_ALLOW_HEADERS = "Content-Type"
 
 
 class LifecycleHook(Protocol):
@@ -128,6 +131,32 @@ def _make_handler(app: DaemonApp) -> type[BaseHTTPRequestHandler]:
 
         def do_DELETE(self) -> None:
             _dispatch(self, app, "DELETE")
+
+        def do_OPTIONS(self) -> None:
+            if self.headers.get("Origin") is None:
+                self.send_error(501, "Unsupported method ('OPTIONS')")
+                return
+
+            self.send_response(204)
+            self._send_cors_headers()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def _allowed_cors_origin(self) -> str | None:
+            origin = self.headers.get("Origin")
+            if origin in ALLOWED_CORS_ORIGINS:
+                return origin
+            return None
+
+        def _send_cors_headers(self) -> None:
+            origin = self._allowed_cors_origin()
+            if origin is None:
+                return
+
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
+            self.send_header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
 
         def send_error(
             self,
@@ -440,6 +469,9 @@ def _write_json(handler: BaseHTTPRequestHandler, status: int, payload: dict[str,
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(body)))
+    send_cors_headers = getattr(handler, "_send_cors_headers", None)
+    if callable(send_cors_headers):
+        send_cors_headers()
     handler.end_headers()
     handler.wfile.write(body)
 

@@ -7,12 +7,35 @@ explicit user intents to existing localhost API routes.
 
 ## Open
 
+For browser development, serve the static cockpit from the fixed local
+development origin:
+
 ```bash
-open jarvis/panel/assets/index.html
+cd jarvis/panel/assets
+python3 -m http.server 41800
 ```
 
+Then open:
+
+```text
+http://127.0.0.1:41800
+```
+
+Opening `jarvis/panel/assets/index.html` directly is also supported for manual
+inspection. Browsers send that as `Origin: null`, which the local daemon accepts
+only for this static cockpit development path.
+
 The API base defaults to `http://127.0.0.1:41741`. Edit the Base field in the
-cockpit when a temporary daemon is bound to a different localhost port.
+cockpit when a temporary daemon is bound to a different localhost port. The API
+base must include the scheme:
+
+```text
+http://127.0.0.1:<daemon-port>
+```
+
+A bare value such as `127.0.0.1:<daemon-port>` is invalid in the browser. It is
+treated as a relative URL and will hit the static cockpit server instead of the
+Jarvis daemon.
 
 ## Start A Temporary Daemon
 
@@ -63,10 +86,22 @@ It only calls the existing approval execute endpoint after a user clicks the
 separate execute-approved button. Runtime conflicts are display-only. Memory
 disable is a soft disable through the existing memory API, not a hard delete.
 
+Local CORS is intentionally limited to cockpit development origins:
+`http://127.0.0.1:41800`, `http://localhost:41800`, and direct file opens that
+send `Origin: null`. It does not use wildcard CORS and it does not allow
+credentials.
+
+This is not auth or CSRF hardening. A future production or native panel still
+needs proper transport protection and request authorization.
+
 ## Troubleshooting
 
 - Daemon offline: verify the daemon is running and that the Base field matches
   the daemon host and port.
+- Browser dev CORS: serve the cockpit with `python3 -m http.server 41800` from
+  `jarvis/panel/assets`, then open `http://127.0.0.1:41800`.
+- Wrong API base shape: include `http://` in the Base field. Bare
+  `127.0.0.1:<port>` is a relative URL, not a daemon URL.
 - CORS or local file fetch errors: use the same localhost API base that the
   daemon exposes, and check the compact JSON error box in the affected section.
 - Wrong API base URL: edit the Base field and click Refresh.

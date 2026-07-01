@@ -117,6 +117,21 @@ def test_panel_cockpit_runbook_documents_boundaries() -> None:
     assert "display-only" in lowered
 
 
+def test_panel_cockpit_runbook_documents_local_cors_development() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    assert "python3 -m http.server 41800" in text
+    assert "http://127.0.0.1:41800" in text
+    assert "http://127.0.0.1:<daemon-port>" in text
+    assert "bare" in lowered
+    assert "relative url" in lowered
+    assert "origin: null" in lowered
+    assert "wildcard cors" in lowered
+    assert "credentials" in lowered
+    assert "not auth or csrf hardening" in lowered
+
+
 def test_schema_and_migrations_are_unchanged() -> None:
     assert_schema_and_migrations_unchanged(ROOT)
 
