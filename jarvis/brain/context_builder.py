@@ -71,6 +71,7 @@ class ContextBuilder:
         recent_messages = self._build_recent_turn_messages(
             normalized_conversation_id,
             recent_turn_limit,
+            exclude_turn_id=normalized_turn_id,
         )
         active_jobs = self._active_worker_jobs()
         job_message = self._build_job_message(active_jobs)
@@ -234,6 +235,8 @@ class ContextBuilder:
         self,
         conversation_id: str,
         recent_turn_limit: int,
+        *,
+        exclude_turn_id: str | None = None,
     ) -> list[BrainMessage]:
         if recent_turn_limit <= 0:
             return []
@@ -244,10 +247,11 @@ class ContextBuilder:
                 SELECT id, created_at, status, input_text, final_text
                 FROM turns
                 WHERE conversation_id = ?
+                  AND (? IS NULL OR id != ?)
                 ORDER BY created_at DESC, id DESC
                 LIMIT ?
                 """,
-                (conversation_id, int(recent_turn_limit)),
+                (conversation_id, exclude_turn_id, exclude_turn_id, int(recent_turn_limit)),
             ).fetchall()
         except sqlite3.Error as exc:
             raise ContextBuilderError(f"Could not read recent turns: {exc}") from exc

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from jarvis.brain.context_builder import ContextBuilder
+from jarvis.brain.manager import BrainManager
 from jarvis.config import JarvisConfig, load_config
 from jarvis.events.bus import EventBus
 from jarvis.events.models import Event, utc_now_iso
@@ -23,10 +26,19 @@ from jarvis.store.db import (
 )
 from jarvis.store.event_store import EventStore, create_event_store
 from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
+from jarvis.turns.orchestrator import TextTurnResult, TurnOrchestrator
 
 
 class DaemonAppError(Exception):
     """Raised when the daemon app cannot be created or used safely."""
+
+
+class DaemonAppNotStartedError(DaemonAppError):
+    """Raised when a request needs a started daemon app."""
+
+
+class DaemonAppBusyError(DaemonAppError):
+    """Raised when a serialized app operation is already running."""
 
 
 @dataclass
@@ -39,6 +51,9 @@ class DaemonApp:
     state_machine: RuntimeStateMachine | None
     runtime_supervisor: RuntimeSupervisor
     started: bool = False
+    brain_manager: BrainManager | None = None
+    context_builder: ContextBuilder | None = None
+    text_turn_lock: Any = field(default_factory=threading.Lock)
 
     def start(self) -> None:
         """Start app-level state without running the long-lived HTTP loop."""
@@ -130,12 +145,43 @@ class DaemonApp:
         finally:
             close_quietly(conn)
 
+    def handle_text_input(
+        self,
+        *,
+        text: str,
+        conversation_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> TextTurnResult:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+
+        if not self.text_turn_lock.acquire(blocking=False):
+            raise DaemonAppBusyError("Another text turn is already running.")
+
+        try:
+            orchestrator = self._create_turn_orchestrator()
+            return orchestrator.handle_text(
+                text=text,
+                conversation_id=conversation_id,
+                metadata=metadata,
+                source="api",
+            )
+        finally:
+            self.text_turn_lock.release()
+
     def close(self) -> None:
         close_quietly(self.conn)
         self.conn = None
         self.event_store = None
         self.state_machine = None
+        self.brain_manager = None
+        self.context_builder = None
         self.started = False
+
+    def _require_conn(self) -> sqlite3.Connection:
+        if self.conn is None:
+            raise DaemonAppError("Daemon app is not initialized with a database connection.")
+        return self.conn
 
     def _require_event_store(self) -> EventStore:
         if self.event_store is None:
@@ -146,6 +192,26 @@ class DaemonApp:
         if self.state_machine is None:
             raise DaemonAppError("Daemon app is not initialized with a state machine.")
         return self.state_machine
+
+    def _require_brain_manager(self) -> BrainManager:
+        if self.brain_manager is None:
+            raise DaemonAppError("Daemon app is not initialized with a brain manager.")
+        return self.brain_manager
+
+    def _require_context_builder(self) -> ContextBuilder:
+        if self.context_builder is None:
+            raise DaemonAppError("Daemon app is not initialized with a context builder.")
+        return self.context_builder
+
+    def _create_turn_orchestrator(self) -> TurnOrchestrator:
+        return TurnOrchestrator(
+            conn=self._require_conn(),
+            event_store=self._require_event_store(),
+            event_bus=self.event_bus,
+            state_machine=self._require_state_machine(),
+            brain_manager=self._require_brain_manager(),
+            context_builder=self._require_context_builder(),
+        )
 
     def _connect_existing(self) -> sqlite3.Connection:
         if not self.paths.db_path.is_file():
@@ -193,9 +259,13 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         )
 
     ensure_runtime_dirs(paths)
-    conn = initialize_database(paths.db_path)
+    initialized_conn = initialize_database(paths.db_path)
+    close_quietly(initialized_conn)
+    conn = _connect_daemon_db(paths.db_path)
     event_store = create_event_store(conn)
     state_machine = RuntimeStateMachine(event_store, event_bus=event_bus)
+    brain_manager = BrainManager.from_config(config)
+    context_builder = ContextBuilder(conn, config=config, event_store=event_store)
     return DaemonApp(
         config=config,
         paths=paths,
@@ -204,12 +274,26 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         event_bus=event_bus,
         state_machine=state_machine,
         runtime_supervisor=runtime_supervisor,
+        brain_manager=brain_manager,
+        context_builder=context_builder,
     )
+
+
+def _connect_daemon_db(path: Path) -> sqlite3.Connection:
+    """Open the daemon-owned connection for the threaded local HTTP server."""
+
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
 
 
 __all__ = [
     "DaemonApp",
+    "DaemonAppBusyError",
     "DaemonAppError",
+    "DaemonAppNotStartedError",
     "JarvisDaemon",
     "JarvisDaemonApp",
     "create_daemon_app",

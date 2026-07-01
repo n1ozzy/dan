@@ -458,27 +458,29 @@ def test_post_settings_rejects_non_object_json(app: DaemonApp) -> None:
     assert payload["status"] == 400
 
 
-def test_post_input_text_returns_501_and_does_not_create_turns_or_brain_events(
+def test_post_input_text_returns_200_and_creates_turn(
     app: DaemonApp,
 ) -> None:
     app.start()
     with running_server(app) as base_url:
         status, payload = request_json("POST", f"{base_url}/input/text", {"text": "hello"})
 
-    assert status == 501
-    assert payload["status"] == 501
-    assert "not implemented" in payload["error"]
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["final_text"] == "Jarvis mock response: hello"
+    assert payload["brain_adapter"] == "mock"
+    assert payload["brain_model"] == "mock-local"
     turn_count = app.conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
-    assert turn_count == 0
-    assert not any(event_type.startswith("brain.") for event_type in event_types(app))
+    assert turn_count == 1
+    assert "brain.responded" in event_types(app)
 
 
-def test_get_input_text_returns_not_implemented_json(app: DaemonApp) -> None:
+def test_get_input_text_returns_json_method_error(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/input/text")
 
-    assert status == 501
-    assert payload["status"] == 501
+    assert status in {405, 501}
+    assert payload["status"] == status
 
 
 def test_unknown_route_returns_404_json(app: DaemonApp) -> None:

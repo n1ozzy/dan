@@ -251,6 +251,40 @@ def test_recent_turns_are_included_chronologically(
     assert contents.index("Second input") < contents.index("Second final")
 
 
+def test_current_turn_is_excluded_from_recent_history(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    insert_turn(
+        conn,
+        turn_id="turn-previous",
+        created_at="2026-07-01T11:00:00+00:00",
+        input_text="Previous input",
+        final_text="Previous final",
+    )
+    insert_turn(
+        conn,
+        turn_id="turn-current",
+        created_at="2026-07-01T11:05:00+00:00",
+        input_text="Current input should not be history",
+        final_text=None,
+        status="received",
+    )
+    builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
+
+    request = builder.build_request(
+        turn_id="turn-current",
+        conversation_id="conversation-1",
+        input_text="Current input should not be history",
+    ).request
+
+    contents = "\n".join(message_contents(request))
+    assert "Previous input" in contents
+    assert "Previous final" in contents
+    assert "Current input should not be history" not in contents
+
+
 def test_only_requested_conversation_turns_are_included(
     conn: sqlite3.Connection,
     persona_path: Path,

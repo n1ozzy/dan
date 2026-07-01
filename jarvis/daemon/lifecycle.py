@@ -9,7 +9,11 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from jarvis.api.routes_events import get_events
 from jarvis.api.routes_health import get_health
-from jarvis.api.routes_input import text_input_not_implemented
+from jarvis.api.routes_input import (
+    TextInputValidationError,
+    get_text_input_method_error,
+    post_text_input,
+)
 from jarvis.api.routes_runtime import (
     get_runtime_legacy,
     get_runtime_processes,
@@ -17,8 +21,9 @@ from jarvis.api.routes_runtime import (
 )
 from jarvis.api.routes_settings import get_settings, update_settings
 from jarvis.api.routes_state import get_state
-from jarvis.daemon.app import DaemonApp, DaemonAppError
+from jarvis.daemon.app import DaemonApp, DaemonAppBusyError, DaemonAppError, DaemonAppNotStartedError
 from jarvis.store.event_store import EventStoreError
+from jarvis.turns.orchestrator import TurnOrchestratorError
 
 
 MAX_REQUEST_BODY_BYTES = 1_048_576
@@ -148,11 +153,24 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, update_settings(app, request_payload))
             return
 
-        if path == "/input/text" and method in {"GET", "POST"}:
-            _write_json(handler, 501, text_input_not_implemented())
+        if method == "GET" and path == "/input/text":
+            _write_json(handler, 405, get_text_input_method_error())
+            return
+
+        if method == "POST" and path == "/input/text":
+            request_payload = _read_json_body(handler)
+            _write_json(handler, 200, post_text_input(app, request_payload))
             return
 
         _write_json(handler, 404, {"error": "Not found", "status": 404})
+    except TextInputValidationError as exc:
+        _write_json(handler, 400, {"error": str(exc), "status": 400})
+    except DaemonAppNotStartedError as exc:
+        _write_json(handler, 503, {"error": str(exc), "status": 503})
+    except DaemonAppBusyError as exc:
+        _write_json(handler, 409, {"error": str(exc), "status": 409})
+    except TurnOrchestratorError:
+        _write_json(handler, 500, {"error": "Text turn failed.", "status": 500})
     except (ValueError, DaemonAppError, EventStoreError) as exc:
         _write_json(handler, 400, {"error": str(exc), "status": 400})
     except Exception:
