@@ -10,14 +10,16 @@ import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from http.client import HTTPConnection
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import pytest
 
 from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.daemon.lifecycle import DaemonServer, build_server
+from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
 from jarvis.daemon.state_machine import RuntimeState
 from jarvis.store.db import close_quietly
 
@@ -151,6 +153,55 @@ def request_json(
             return response.status, json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def request_raw(
+    method: str,
+    url: str,
+    payload: object | bytes | None = None,
+) -> tuple[int, str, str]:
+    data: bytes | None
+    headers = {"Accept": "application/json"}
+    if isinstance(payload, bytes):
+        data = payload
+        headers["Content-Type"] = "application/json"
+    elif payload is None:
+        data = None
+    else:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = Request(url, data=data, headers=headers, method=method)
+    try:
+        with urlopen(request, timeout=5) as response:
+            return (
+                response.status,
+                response.headers.get("Content-Type", ""),
+                response.read().decode("utf-8"),
+            )
+    except HTTPError as exc:
+        return exc.code, exc.headers.get("Content-Type", ""), exc.read().decode("utf-8")
+
+
+def request_declared_json_length(method: str, url: str, content_length: int) -> tuple[int, str, str]:
+    parsed = urlparse(url)
+    assert parsed.hostname is not None
+    assert parsed.port is not None
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    conn = HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    try:
+        conn.putrequest(method, path)
+        conn.putheader("Accept", "application/json")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", str(content_length))
+        conn.endheaders()
+        response = conn.getresponse()
+        return response.status, response.getheader("Content-Type", ""), response.read().decode("utf-8")
+    finally:
+        conn.close()
 
 
 def run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -317,6 +368,23 @@ def test_get_events_rejects_invalid_query_values_with_json_400(
     assert "error" in payload
 
 
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE", "OPTIONS"])
+def test_unsupported_methods_return_json_errors_not_html(
+    app: DaemonApp,
+    method: str,
+) -> None:
+    with running_server(app) as base_url:
+        status, content_type, body = request_raw(method, f"{base_url}/state")
+
+    assert status in {405, 501}
+    assert "application/json" in content_type
+    payload = json.loads(body)
+    assert payload["status"] == status
+    assert "error" in payload
+    assert "<html" not in body.lower()
+    assert "<!doctype" not in body.lower()
+
+
 def test_get_settings_returns_empty_settings_initially(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/settings")
@@ -354,11 +422,30 @@ def test_post_settings_upserts_multiple_keys(app: DaemonApp) -> None:
 
 def test_post_settings_rejects_malformed_json(app: DaemonApp) -> None:
     with running_server(app) as base_url:
-        status, payload = request_json("POST", f"{base_url}/settings", b"{not-json")
+        status, content_type, body = request_raw("POST", f"{base_url}/settings", b"{not-json")
 
     assert status == 400
+    assert "application/json" in content_type
+    assert "<html" not in body.lower()
+    payload = json.loads(body)
     assert payload["status"] == 400
     assert "JSON" in payload["error"]
+
+
+def test_post_settings_rejects_oversized_json_with_json_400(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, content_type, body = request_declared_json_length(
+            "POST",
+            f"{base_url}/settings",
+            MAX_REQUEST_BODY_BYTES + 1,
+        )
+
+    assert status == 400
+    assert "application/json" in content_type
+    assert "<html" not in body.lower()
+    payload = json.loads(body)
+    assert payload["status"] == 400
+    assert "too large" in payload["error"]
 
 
 def test_post_settings_rejects_non_object_json(app: DaemonApp) -> None:
@@ -394,9 +481,12 @@ def test_get_input_text_returns_not_implemented_json(app: DaemonApp) -> None:
 
 def test_unknown_route_returns_404_json(app: DaemonApp) -> None:
     with running_server(app) as base_url:
-        status, payload = request_json("GET", f"{base_url}/missing")
+        status, content_type, body = request_raw("GET", f"{base_url}/missing")
 
     assert status == 404
+    assert "application/json" in content_type
+    assert "<html" not in body.lower()
+    payload = json.loads(body)
     assert payload == {"error": "Not found", "status": 404}
 
 
@@ -452,6 +542,16 @@ def test_no_real_home_is_touched_by_temp_config(tmp_path: Path) -> None:
 
 
 def test_sqlite_schema_and_migrations_are_not_modified() -> None:
+    git_probe = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if git_probe.returncode != 0:
+        pytest.skip("schema/migration diff guard requires a git working tree")
+
     result = subprocess.run(
         ["git", "diff", "--name-only", "--", "jarvis/store/schema.sql", "jarvis/store/migrations.py"],
         cwd=ROOT,

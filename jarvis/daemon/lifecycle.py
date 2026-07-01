@@ -85,6 +85,15 @@ def _make_handler(app: DaemonApp) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             _dispatch(self, app, "POST")
 
+        def send_error(
+            self,
+            code: int,
+            message: str | None = None,
+            explain: str | None = None,
+        ) -> None:
+            error_message = message or self.responses.get(code, ("Error",))[0]
+            _write_json(self, code, {"error": error_message, "status": code})
+
         def log_message(self, format: str, *args: object) -> None:
             return None
 
