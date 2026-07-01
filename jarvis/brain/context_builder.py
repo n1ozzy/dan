@@ -128,7 +128,7 @@ class ContextBuilder:
             context_messages=messages,
             memory_blocks=brain_memory_blocks,
             settings=request_settings,
-            metadata={"context_snapshot": dict(snapshot)},
+            metadata={"context_snapshot": _stable_snapshot_for_request_metadata(snapshot)},
         )
         return ContextBuildResult(request=request, context_snapshot=snapshot)
 
@@ -368,6 +368,10 @@ def _estimate_context_chars(
     memory_chars = sum(len(str(block.title)) + len(str(block.body)) for block in memory_blocks)
     message_chars = sum(len(message.content) for message in messages)
     return len(input_text) + memory_chars + message_chars
+
+
+def _stable_snapshot_for_request_metadata(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in snapshot.items() if key != "created_at"}
 
 
 def _config_int(config: Any | None, path: tuple[str, str], default: int | None) -> int | None:

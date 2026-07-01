@@ -487,7 +487,7 @@ def test_tight_budget_preserves_persona_before_recent_turns(
     assert "Old turn that should be trimmed" not in contents
 
 
-def test_same_db_config_and_input_produce_same_stable_request_parts(
+def test_same_db_config_and_input_produce_same_brain_request_with_different_now_values(
     conn: sqlite3.Connection,
     persona_path: Path,
 ) -> None:
@@ -499,7 +499,13 @@ def test_same_db_config_and_input_produce_same_stable_request_parts(
         input_text="Stable input",
         final_text="Stable output",
     )
-    builder = ContextBuilder(conn, config=config(), persona_path=persona_path)
+    timestamps = iter(["2026-07-01T12:00:00+00:00", "2026-07-01T12:00:05+00:00"])
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        now=lambda: next(timestamps),
+    )
 
     first = builder.build_request(
         turn_id="turn-new",
@@ -513,6 +519,10 @@ def test_same_db_config_and_input_produce_same_stable_request_parts(
     )
 
     assert asdict(first.request) == asdict(second.request)
+    assert first.context_snapshot["created_at"] == "2026-07-01T12:00:00+00:00"
+    assert second.context_snapshot["created_at"] == "2026-07-01T12:00:05+00:00"
+    assert "created_at" not in first.request.metadata["context_snapshot"]
+    assert "created_at" not in second.request.metadata["context_snapshot"]
     first_snapshot = dict(first.context_snapshot)
     second_snapshot = dict(second.context_snapshot)
     first_snapshot.pop("created_at")
