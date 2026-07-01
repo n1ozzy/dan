@@ -15,3 +15,7 @@ truth.
 
 Prompt 01 creates scaffold and contracts only. It does not start the daemon,
 panel, broker, listener, workers, TTS, STT or provider integrations.
+
+## Development
+
+- Manual text runtime smoke: `docs/runbooks/TEXT_RUNTIME_SMOKE.md`
