@@ -15,6 +15,7 @@ REQUIRED_DOCS = (
     "docs/LAUNCH_SUPERVISION.md",
     "docs/SECURITY_MODEL.md",
     "docs/PANEL_CONTRACT.md",
+    "docs/MACOS_OPERATOR_CONTRACT.md",
     "docs/MIGRATION_INVENTORY.md",
     "docs/LEGACY_RUNTIME_FINDINGS.md",
     "docs/DECISIONS.md",
@@ -85,6 +86,27 @@ def test_review_handoff_contains_required_orientation() -> None:
     )
 
     missing = [snippet for snippet in required_snippets if snippet not in handoff]
+    assert missing == []
+
+
+def test_macos_operator_contract_contains_required_orientation() -> None:
+    contract = (ROOT / "docs/MACOS_OPERATOR_CONTRACT.md").read_text(encoding="utf-8")
+
+    required_snippets = (
+        "macOS Operator Contract",
+        "If the user can do an action through the Mac UI",
+        "The model does not directly operate the Mac",
+        "Accessibility API",
+        "ScreenCaptureKit",
+        "Vision OCR",
+        "passkey",
+        "SMS",
+        "live visual operator sessions",
+        "OperatorSession",
+        "Prompt 19D",
+    )
+
+    missing = [snippet for snippet in required_snippets if snippet not in contract]
     assert missing == []
 
 

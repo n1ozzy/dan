@@ -22,6 +22,10 @@ It is a long-lived process that holds conversation state, memory, an event
 history, a voice queue, a tool registry, an approval gate, and worker jobs, and
 exposes them over a local API.
 
+Jarvis is also intended to be a **local Mac operator**, not just a chat
+assistant. The ability to observe and act through controlled macOS capabilities
+is core product scope; see [MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.md).
+
 ---
 
 ## 2. Goals
@@ -47,6 +51,9 @@ exposes them over a local API.
 - **Auditable tools.** Every tool runs through a registry plus an approval
   policy. Rejected calls never execute; secrets never land unredacted in the
   event log. ([ADR-010](DECISIONS.md#adr-010))
+- **Local Mac operator.** Future macOS capabilities such as Accessibility,
+  screen capture, OCR, browser flow assistance, messages and calls are mediated
+  by `jarvisd`, not by a model acting directly.
 - **Workers advise, they do not act on the world.** A worker job produces a
   *memory candidate*, never a spoken sentence and never a committed memory fact.
   ([ADR-009](DECISIONS.md#adr-009))

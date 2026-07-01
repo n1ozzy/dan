@@ -24,6 +24,7 @@ panel, broker, listener, workers, TTS, STT or provider integrations.
 - Manual provider brain smoke: `docs/runbooks/PROVIDER_SMOKE.md`
 - Tool registry, approval gate and manual tools smoke:
   `docs/runbooks/TOOLS_AND_APPROVALS.md`
+- macOS operator contract: `docs/MACOS_OPERATOR_CONTRACT.md`
 - Memory API and CLI: `docs/runbooks/MEMORY_API.md`
 - Manual memory runtime smoke: `docs/runbooks/MEMORY_API.md#manual-smoke`
 - Static development cockpit: `docs/runbooks/PANEL_COCKPIT.md`

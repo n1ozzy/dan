@@ -148,7 +148,26 @@ A worker (Codex/Claude background job) is even more constrained than a brain:
 
 ---
 
-## 8. Invariants (FROZEN)
+## 8. macOS operator capability boundary
+
+macOS operator capabilities are high power. The model must not directly operate
+the Mac; `jarvisd` mediates all operator actions through `ToolRegistry`,
+`PermissionPolicy`, `ApprovalGate`, `EventStore`, and audited adapters. The
+architecture contract is in
+[MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.md).
+
+Credential and passkey flows require user presence. Jarvis may navigate to a
+login flow and trigger a system prompt, but Touch ID, device password, passkey
+confirmation, and Keychain unlock remain with the user and macOS. Secrets and
+credential material are not exposed to the model or persisted in events.
+
+External communication tools such as SMS, Messages, and phone initiation require
+policy and audit. The default posture is confirmation before sending or calling
+unless an explicit trusted-contact/direct-command policy narrows that risk.
+
+---
+
+## 9. Invariants (FROZEN)
 
 1. No tool runs without passing the registry + permission policy.
 2. Rejected/blocked tool calls never execute.
@@ -156,3 +175,4 @@ A worker (Codex/Claude background job) is even more constrained than a brain:
 4. Brains are stateless and mute; they can only *propose* actions.
 5. Workers are mute and cannot write memory facts directly.
 6. Destructive is blocked-by-default; network is approval-by-default.
+7. Models never operate macOS directly; `jarvisd` mediates operator capabilities.

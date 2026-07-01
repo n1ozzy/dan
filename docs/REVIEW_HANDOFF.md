@@ -6,8 +6,8 @@
 - It summarizes current state, completed milestones, manual smoke results,
   known risks, and recommended next prompts.
 - It is not an execution roadmap by itself.
-- It does not supersede `docs/CONTRACTS.md`, `docs/DECISIONS.md`, or
-  `docs/SECURITY_MODEL.md`.
+- It does not supersede `docs/CONTRACTS.md`, `docs/DECISIONS.md`,
+  `docs/SECURITY_MODEL.md`, or `docs/MACOS_OPERATOR_CONTRACT.md`.
 
 ## Source-of-truth warning
 
@@ -26,8 +26,8 @@ git rev-parse HEAD
 Current known commit:
 
 ```text
-6b0a6d53e26246c603b54045f13062cf2a922c5a
-fix: apply policy to model tool calls
+f4cb0fbe61cbd9e79361ff3e287325ccf25281be
+feat: mark turns awaiting approval
 ```
 
 Reviewers should verify the current `HEAD` before using this document. Treat
@@ -54,6 +54,8 @@ this section as orientation, not proof that the checkout is still at this commit
 - Prompt 19B: `PermissionPolicy` on model-originated tool-call path.
 - Prompt 19C: `awaiting_approval` turn status with
   `/state.pending_approval_count`; runtime remains in the canonical state set.
+- Prompt 20A: macOS operator contract added before Prompt 19D so continuation
+  design accounts for future one-shot tools and longer operator sessions.
 
 ## Manual smoke results known
 
@@ -97,6 +99,8 @@ this section as orientation, not proof that the checkout is still at this commit
 
 ## Recommended next prompt sequence
 
+- After 19C, the operator contract was added before 19D to ensure continuation
+  design accounts for future operator sessions.
 - Prompt 19D: feed approved tool result back to brain / turn continuation.
 - Then consider HookRouter foundation.
 - Only later workers/voice/native panel.
@@ -144,6 +148,7 @@ Inspect project contracts and runbooks:
 sed -n '1,240p' docs/CONTRACTS.md
 sed -n '1,240p' docs/DECISIONS.md
 sed -n '1,240p' docs/SECURITY_MODEL.md
+sed -n '1,260p' docs/MACOS_OPERATOR_CONTRACT.md
 sed -n '1,240p' docs/PANEL_CONTRACT.md
 ls docs/runbooks
 ```

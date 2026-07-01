@@ -389,6 +389,19 @@ not act on the world.
 
 ---
 
+## macOS operator layer pointer
+
+The macOS operator layer is architectural scope for Jarvis v4.1, but concrete
+operator APIs are not defined in this document yet. Future one-shot tools and
+longer `OperatorSession` flows must be mediated through `ToolRegistry`,
+`PermissionPolicy`, `ApprovalGate`, and `EventStore`. The model does not
+directly operate the Mac.
+
+See [MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.md) for the product and
+security contract before adding concrete operator contracts here.
+
+---
+
 ## 13. RuntimeProcessObservation
 
 What the supervisor sees about how Jarvis was launched and which legacy
