@@ -151,6 +151,7 @@ class DaemonApp:
         text: str,
         conversation_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
+        source: str = "api",
     ) -> TextTurnResult:
         if not self.started:
             raise DaemonAppNotStartedError("Daemon app is not started.")
@@ -164,7 +165,7 @@ class DaemonApp:
                 text=text,
                 conversation_id=conversation_id,
                 metadata=metadata,
-                source="api",
+                source=source,
             )
         finally:
             self.text_turn_lock.release()

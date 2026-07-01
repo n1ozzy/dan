@@ -11,6 +11,7 @@ from jarvis.turns.models import Turn
 
 
 ROUTE_GROUP = "input"
+ALLOWED_TEXT_INPUT_SOURCES = frozenset({"api", "cli", "panel", "text"})
 
 
 class TextInputValidationError(ValueError):
@@ -23,6 +24,7 @@ def post_text_input(app: DaemonApp, request_payload: Any) -> dict[str, object]:
         text=payload["text"],
         conversation_id=payload.get("conversation_id"),
         metadata=payload.get("metadata"),
+        source=payload["source"],
     )
     return {
         "ok": True,
@@ -59,6 +61,12 @@ def _validate_request_payload(request_payload: Any) -> dict[str, Any]:
         raise TextInputValidationError("text must be a non-empty string.")
 
     payload: dict[str, Any] = {"text": raw_text.strip()}
+
+    raw_source = request_payload.get("source", "api")
+    if not isinstance(raw_source, str) or raw_source not in ALLOWED_TEXT_INPUT_SOURCES:
+        allowed = ", ".join(sorted(ALLOWED_TEXT_INPUT_SOURCES))
+        raise TextInputValidationError(f"source must be one of: {allowed}.")
+    payload["source"] = raw_source
 
     if "conversation_id" in request_payload and request_payload["conversation_id"] is not None:
         conversation_id = request_payload["conversation_id"]

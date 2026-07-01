@@ -49,6 +49,15 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_commands = daemon_parser.add_subparsers(dest="daemon_command", required=True)
     daemon_commands.add_parser("run")
 
+    input_parser = subcommands.add_parser("input")
+    input_commands = input_parser.add_subparsers(dest="input_command", required=True)
+    input_text = input_commands.add_parser("text")
+    input_text.add_argument("message")
+    input_text.add_argument("--conversation-id")
+    input_text.add_argument("--metadata-json")
+    input_text.add_argument("--url", help="Base URL for a running jarvisd")
+    input_text.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
     health_parser = subcommands.add_parser("health")
     health_parser.add_argument("--url", help="Base URL for a running jarvisd")
 
@@ -103,6 +112,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "daemon" and args.daemon_command == "run":
         return _handle_daemon_run(_config_path_from_args(args))
+
+    if args.command == "input" and args.input_command == "text":
+        return _handle_input_text(args, _base_url(args, config))
 
     if args.command == "health":
         return _handle_remote_json(_base_url(args, config), "/health")
@@ -165,9 +177,57 @@ def _handle_daemon_run(config_path: str | None) -> int:
             app.close()
 
 
-def _handle_remote_json(base_url: str, path: str) -> int:
+def _handle_input_text(args: argparse.Namespace, base_url: str) -> int:
+    metadata = None
+    if args.metadata_json is not None:
+        try:
+            metadata = json.loads(args.metadata_json)
+        except json.JSONDecodeError as exc:
+            _print_json_error(
+                {
+                    "error": "invalid_metadata_json",
+                    "message": "--metadata-json must be a JSON object.",
+                    "detail": exc.msg,
+                }
+            )
+            return 2
+        if not isinstance(metadata, dict):
+            _print_json_error(
+                {
+                    "error": "invalid_metadata_json",
+                    "message": "--metadata-json must be a JSON object.",
+                }
+            )
+            return 2
+
+    payload: dict[str, Any] = {
+        "text": args.message,
+        "source": "cli",
+    }
+    if args.conversation_id is not None:
+        payload["conversation_id"] = args.conversation_id
+    if metadata is not None:
+        payload["metadata"] = metadata
+
+    return _handle_remote_json(
+        base_url,
+        "/input/text",
+        method="POST",
+        payload=payload,
+        timeout=args.timeout,
+    )
+
+
+def _handle_remote_json(
+    base_url: str,
+    path: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    timeout: float = 5.0,
+) -> int:
     try:
-        payload = _request_json(base_url, path)
+        response_payload = _request_json(base_url, path, method=method, payload=payload, timeout=timeout)
     except HTTPError as exc:
         try:
             body = json.loads(exc.read().decode("utf-8"))
@@ -176,17 +236,29 @@ def _handle_remote_json(base_url: str, path: str) -> int:
         _print_json(body)
         return 2
     except (URLError, TimeoutError, OSError) as exc:
-        print(f"Daemon unreachable: {exc}", file=sys.stderr)
+        _print_json_error({"error": "daemon_unreachable", "message": str(exc)})
         return 3
 
-    _print_json(payload)
+    _print_json(response_payload)
     return 0
 
 
-def _request_json(base_url: str, path: str) -> dict[str, Any]:
+def _request_json(
+    base_url: str,
+    path: str,
+    *,
+    method: str,
+    payload: dict[str, Any] | None,
+    timeout: float,
+) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}{path}"
-    request = Request(url, headers={"Accept": "application/json"}, method="GET")
-    with urlopen(request, timeout=5) as response:
+    headers = {"Accept": "application/json"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = Request(url, data=data, headers=headers, method=method)
+    with urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
@@ -240,6 +312,20 @@ def _db_status_payload(
 
 def _print_json(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _print_json_error(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), file=sys.stderr)
+
+
+def _positive_timeout(value: str) -> float:
+    try:
+        timeout = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("timeout must be a number") from exc
+    if timeout <= 0:
+        raise argparse.ArgumentTypeError("timeout must be greater than 0")
+    return timeout
 
 
 if __name__ == "__main__":

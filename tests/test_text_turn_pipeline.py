@@ -186,6 +186,71 @@ def test_post_input_text_with_mock_brain_returns_200_json(app: DaemonApp) -> Non
     assert "extra" not in payload["turn"]["metadata"]
 
 
+def test_post_input_text_with_cli_source_persists_source_and_emits_events(app: DaemonApp) -> None:
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/input/text",
+            {"text": "From CLI", "source": "cli"},
+        )
+
+    assert status == 200
+    assert payload["turn"]["source"] == "cli"
+    assert app.conn is not None
+    row = app.conn.execute("SELECT source FROM turns WHERE id = ?", (payload["turn_id"],)).fetchone()
+    assert row[0] == "cli"
+    types = event_types_for_turn(app, str(payload["turn_id"]))
+    assert_subsequence(
+        types,
+        [
+            "input.text.received",
+            "turn.started",
+            "turn.context.built",
+            "brain.requested",
+            "brain.responded",
+            "turn.finished",
+        ],
+    )
+    assert table_count(app.conn, "voice_queue") == 0
+    assert table_count(app.conn, "tool_runs") == 0
+    assert table_count(app.conn, "worker_jobs") == 0
+
+
+def test_post_input_text_without_source_defaults_to_api(app: DaemonApp) -> None:
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Default source"})
+
+    assert status == 200
+    assert payload["turn"]["source"] == "api"
+    assert app.conn is not None
+    row = app.conn.execute("SELECT source FROM turns WHERE id = ?", (payload["turn_id"],)).fetchone()
+    assert row[0] == "api"
+
+
+@pytest.mark.parametrize("source", ["voice", "worker", "", 123])
+def test_post_input_text_with_invalid_source_returns_400_and_creates_no_turn(
+    app: DaemonApp,
+    source: object,
+) -> None:
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/input/text",
+            {"text": "Bad source", "source": source},
+        )
+
+    assert status == 400
+    assert payload["status"] == 400
+    assert app.conn is not None
+    assert table_count(app.conn, "turns") == 0
+
+
 def test_one_input_creates_one_persisted_turn_and_final_text_survives_reload(
     app: DaemonApp,
 ) -> None:
