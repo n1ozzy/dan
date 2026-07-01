@@ -357,6 +357,61 @@ It does not prove:
 The smoke does not start workers, voice, audio, panel, provider subprocesses,
 or any launch supervision.
 
+## Manual Tool Continuation Smoke
+
+Run the approved tool continuation smoke harness manually:
+
+```bash
+scripts/smoke-tool-continuation.sh
+```
+
+To keep the temporary runtime and logs for inspection:
+
+```bash
+SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-tool-continuation.sh
+```
+
+The smoke starts a temporary `jarvisd` with a temporary config, database,
+runtime home, logs directory, runtime directory, and PID file. The brain is a
+deterministic fake local CLI brain script created inside the smoke directory
+and wired through the `claude_cli` adapter config. No real providers run: no
+Claude CLI, no Codex CLI, no external network. The first brain call emits an
+`approval_probe` tool-call block; the continuation call (its prompt contains
+`Continuation after approved tool execution`) emits a plain continuation
+answer.
+
+It proves the full 19D-mini loop end to end:
+
+- `POST /input/text` with the fake brain produces a model-originated
+  `approval_probe` request, one pending approval, and a persisted
+  `awaiting_approval` turn.
+- `/state.pending_approval_count` reports the pending approval.
+- Approve does not execute: after `POST /approvals/{id}/approve` there is
+  still no `tool_runs` row and the turn stays `awaiting_approval`.
+- `POST /approvals/{id}/execute` executes exactly once, records a finished
+  `tool_runs` row with the `approval_id`, and applies the one-shot
+  continuation: the original turn becomes `finished` and its `final_text` is
+  the continuation brain answer.
+- Turn metadata records `tool_result_continuation` with the approval ID, tool
+  name, `finished` status, and `continuation_eligible: true`.
+- Exactly two `brain.requested` events exist: the original turn plus the
+  continuation request.
+- A duplicate execute returns `409`, creates no duplicate `tool_runs` row, and
+  triggers no second continuation.
+- `worker_jobs` and `voice_queue` stay empty.
+- The temporary database and runtime home are used instead of real `~/.jarvis`.
+- The script stops only the child daemon PID it started.
+
+It does not prove:
+
+- rejected-approval behavior (covered by the tools approvals smoke)
+- continuation failure handling (covered by unit tests)
+- real provider tool calling
+- worker, voice, or operator surfaces
+
+The continuation smoke uses port `127.0.0.1:41772`; free it or edit the smoke
+port locally before running.
+
 ## Troubleshooting
 
 - Port already in use: free `127.0.0.1:41769` or edit the smoke port locally

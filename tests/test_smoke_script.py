@@ -15,6 +15,7 @@ SMOKE_SCRIPT = ROOT / "scripts" / "smoke-text-runtime.sh"
 CLAUDE_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-claude-cli-brain.sh"
 TOOLS_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-tools-approvals.sh"
 MEMORY_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-memory-runtime.sh"
+CONTINUATION_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-tool-continuation.sh"
 RUNBOOK = ROOT / "docs" / "runbooks" / "TEXT_RUNTIME_SMOKE.md"
 PROVIDER_RUNBOOK = ROOT / "docs" / "runbooks" / "PROVIDER_SMOKE.md"
 TOOLS_RUNBOOK = ROOT / "docs" / "runbooks" / "TOOLS_AND_APPROVALS.md"
@@ -81,6 +82,24 @@ REQUIRED_MEMORY_SMOKE_SNIPPETS = (
     "worker_jobs",
 )
 
+REQUIRED_CONTINUATION_SMOKE_SNIPPETS = (
+    "python -m jarvis.cli",
+    "daemon run",
+    "/input/text",
+    "awaiting_approval",
+    "/approvals",
+    "/execute",
+    "already executed",
+    "approval_probe",
+    "jarvis_tool_call",
+    "Continuation after approved tool execution",
+    "tool_result_continuation",
+    "pending_approval_count",
+    "brain.requested",
+    "voice_queue",
+    "worker_jobs",
+)
+
 FORBIDDEN_RUNTIME_SNIPPETS = (
     "/Users/n1_ozzy/Documents/dev/dan",
     "/tmp/dan",
@@ -127,6 +146,16 @@ def test_memory_smoke_script_is_executable() -> None:
     mode = MEMORY_SMOKE_SCRIPT.stat().st_mode
     assert mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     assert os.access(MEMORY_SMOKE_SCRIPT, os.X_OK)
+
+
+def test_continuation_smoke_script_exists() -> None:
+    assert CONTINUATION_SMOKE_SCRIPT.is_file()
+
+
+def test_continuation_smoke_script_is_executable() -> None:
+    mode = CONTINUATION_SMOKE_SCRIPT.stat().st_mode
+    assert mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    assert os.access(CONTINUATION_SMOKE_SCRIPT, os.X_OK)
 
 
 def test_smoke_script_passes_bash_syntax_check() -> None:
@@ -177,6 +206,18 @@ def test_memory_smoke_script_passes_bash_syntax_check() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_continuation_smoke_script_passes_bash_syntax_check() -> None:
+    result = subprocess.run(
+        ["bash", "-n", str(CONTINUATION_SMOKE_SCRIPT)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
     text = SMOKE_SCRIPT.read_text(encoding="utf-8")
 
@@ -200,6 +241,13 @@ def test_tools_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
 
 def test_memory_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
     text = MEMORY_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    offenders = [snippet for snippet in FORBIDDEN_SCRIPT_SNIPPETS if snippet in text]
+    assert offenders == []
+
+
+def test_continuation_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
+    text = CONTINUATION_SMOKE_SCRIPT.read_text(encoding="utf-8")
 
     offenders = [snippet for snippet in FORBIDDEN_SCRIPT_SNIPPETS if snippet in text]
     assert offenders == []
@@ -231,6 +279,27 @@ def test_memory_smoke_script_references_required_memory_flow() -> None:
 
     missing = [snippet for snippet in REQUIRED_MEMORY_SMOKE_SNIPPETS if snippet not in text]
     assert missing == []
+
+
+def test_continuation_smoke_script_references_required_continuation_flow() -> None:
+    text = CONTINUATION_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    missing = [snippet for snippet in REQUIRED_CONTINUATION_SMOKE_SNIPPETS if snippet not in text]
+    assert missing == []
+
+
+def test_continuation_smoke_script_uses_fake_local_cli_brain_only() -> None:
+    text = CONTINUATION_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    for snippet in (
+        'default_adapter = "claude_cli"',
+        'command = "$FAKE_BRAIN"',
+        'model = "fake-brain"',
+        "fake-brain.sh",
+    ):
+        assert snippet in text
+    assert 'command = "claude"' not in text
+    assert 'command = "codex"' not in text
 
 
 def test_tools_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> None:
@@ -273,6 +342,31 @@ def test_memory_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> N
     ):
         assert snippet in text
     assert "~/.jarvis" not in text
+
+
+def test_continuation_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> None:
+    text = CONTINUATION_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    for snippet in (
+        "mktemp",
+        "SMOKE_KEEP_ARTIFACTS",
+        "runtime.home",
+        "runtime.logs_dir",
+        "runtime.runtime_dir",
+        "runtime.pid_file",
+        "database.path",
+        "DAEMON_PID=",
+        "kill \"$DAEMON_PID\"",
+    ):
+        assert snippet in text
+    assert "~/.jarvis" not in text
+
+
+def test_pytest_only_syntax_checks_continuation_smoke_script() -> None:
+    text = Path(__file__).read_text(encoding="utf-8")
+    direct_exec = "subprocess.run([str(CONTINUATION_" + "SMOKE_SCRIPT)"
+
+    assert direct_exec not in text
 
 
 def test_pytest_only_syntax_checks_tools_smoke_script() -> None:
@@ -346,6 +440,19 @@ def test_tools_smoke_runbook_documents_manual_harness_scope() -> None:
         "no provider tool calling yet",
     ):
         assert phrase in lowered
+
+
+def test_tools_smoke_runbook_documents_continuation_smoke_scope() -> None:
+    text = TOOLS_RUNBOOK.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    assert "scripts/smoke-tool-continuation.sh" in text
+    assert "SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-tool-continuation.sh" in text
+    assert "fake local cli brain" in lowered
+    assert "no real providers" in lowered
+    assert "approve does not execute" in lowered
+    assert "duplicate execute" in lowered
+    assert "tool_result_continuation" in text
 
 
 def test_memory_smoke_runbook_documents_manual_harness_scope() -> None:
