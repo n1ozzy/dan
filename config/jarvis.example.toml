@@ -16,6 +16,20 @@ timeout_seconds = 60
 context_budget_chars = 24000
 provider_sessions_are_memory = false
 
+[brain.claude_cli]
+enabled = false
+command = "claude"
+args = ["-p"]
+model = ""
+timeout_seconds = 120
+
+[brain.codex_cli]
+enabled = false
+command = "codex"
+args = []
+model = ""
+timeout_seconds = 120
+
 [memory]
 enabled = true
 max_active_blocks = 50

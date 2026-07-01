@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from jarvis.brain.base import BrainAdapter, BrainRequest, BrainResponse
+from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
+from jarvis.brain.codex_cli_adapter import CodexCliAdapter
 from jarvis.brain.mock_adapter import MockBrainAdapter
 
 
@@ -35,8 +37,32 @@ class BrainManager:
         brain_config = getattr(config, "brain", None)
         default_adapter = getattr(brain_config, "default_adapter", "mock")
         default_model = getattr(brain_config, "default_model", "mock-local")
+        adapters: list[BrainAdapter] = [MockBrainAdapter(default_model=default_model)]
+
+        claude_config = getattr(brain_config, "claude_cli", None)
+        if _should_register_cli_adapter(claude_config, default_adapter, "claude_cli"):
+            adapters.append(
+                ClaudeCliAdapter(
+                    command=getattr(claude_config, "command", "claude"),
+                    args=getattr(claude_config, "args", ["-p"]),
+                    model=getattr(claude_config, "model", ""),
+                    timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
+                )
+            )
+
+        codex_config = getattr(brain_config, "codex_cli", None)
+        if _should_register_cli_adapter(codex_config, default_adapter, "codex_cli"):
+            adapters.append(
+                CodexCliAdapter(
+                    command=getattr(codex_config, "command", "codex"),
+                    args=getattr(codex_config, "args", []),
+                    model=getattr(codex_config, "model", ""),
+                    timeout_seconds=getattr(codex_config, "timeout_seconds", 120),
+                )
+            )
+
         return cls(
-            [MockBrainAdapter(default_model=default_model)],
+            adapters,
             default_adapter=default_adapter,
         )
 
@@ -61,3 +87,7 @@ class BrainManager:
     def generate(self, request: BrainRequest, adapter_name: str | None = None) -> BrainResponse:
         adapter = self.get_adapter(adapter_name)
         return adapter.generate(request)
+
+
+def _should_register_cli_adapter(config: object, default_adapter: str, adapter_name: str) -> bool:
+    return bool(getattr(config, "enabled", False)) or default_adapter == adapter_name

@@ -210,8 +210,6 @@ def test_brain_manager_from_config_uses_brain_defaults() -> None:
 
 def test_brain_modules_do_not_import_runtime_side_effect_dependencies() -> None:
     forbidden_fragments = (
-        "import subprocess",
-        "from subprocess",
         "import socket",
         "import urllib",
         "from urllib",
@@ -229,9 +227,8 @@ def test_brain_modules_do_not_import_runtime_side_effect_dependencies() -> None:
 def test_provider_placeholder_adapters_raise_brain_adapter_error() -> None:
     request = make_request("provider")
 
-    for adapter in (ClaudeCliAdapter(), CodexCliAdapter(), OpenAIAdapter()):
-        with pytest.raises(BrainAdapterError, match="not implemented yet"):
-            adapter.generate(request)
+    with pytest.raises(BrainAdapterError, match="not implemented yet"):
+        OpenAIAdapter().generate(request)
 
 
 def test_brain_tool_call_can_represent_requested_tool_without_execution() -> None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import asdict, dataclass, fields, is_dataclass
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -46,12 +46,27 @@ class DatabaseConfig:
 
 
 @dataclass(frozen=True)
+class BrainCliAdapterConfig:
+    enabled: bool = False
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    model: str = ""
+    timeout_seconds: int = 120
+
+
+@dataclass(frozen=True)
 class BrainConfig:
     default_adapter: str = "mock"
     default_model: str = "mock-local"
     timeout_seconds: int = 60
     context_budget_chars: int = 24000
     provider_sessions_are_memory: bool = False
+    claude_cli: BrainCliAdapterConfig = field(
+        default_factory=lambda: BrainCliAdapterConfig(command="claude", args=["-p"])
+    )
+    codex_cli: BrainCliAdapterConfig = field(
+        default_factory=lambda: BrainCliAdapterConfig(command="codex", args=[])
+    )
 
 
 @dataclass(frozen=True)
@@ -150,7 +165,7 @@ def load_config(path: str | Path | None = None) -> JarvisConfig:
         source_path=config_path,
         daemon=_build_section(DaemonConfig, raw["daemon"]),
         database=_build_section(DatabaseConfig, raw["database"]),
-        brain=_build_section(BrainConfig, raw["brain"]),
+        brain=_build_brain_config(raw["brain"]),
         memory=_build_section(MemoryConfig, raw["memory"]),
         voice=_build_section(VoiceConfig, raw["voice"]),
         audio=_build_section(AudioConfig, raw["audio"]),
@@ -215,6 +230,66 @@ def _build_section(section_type: type[T], raw: dict[str, Any]) -> T:
         return section_type(**selected)
     except TypeError as exc:
         raise ConfigError(f"Invalid config section {section_type.__name__}: {exc}") from exc
+
+
+def _build_brain_config(raw: dict[str, Any]) -> BrainConfig:
+    selected = {
+        key: value
+        for key, value in raw.items()
+        if key
+        in {
+            "default_adapter",
+            "default_model",
+            "timeout_seconds",
+            "context_budget_chars",
+            "provider_sessions_are_memory",
+        }
+    }
+    try:
+        return BrainConfig(
+            **selected,
+            claude_cli=_build_brain_cli_config(
+                "brain.claude_cli",
+                raw.get("claude_cli"),
+                default_command="claude",
+                default_args=["-p"],
+            ),
+            codex_cli=_build_brain_cli_config(
+                "brain.codex_cli",
+                raw.get("codex_cli"),
+                default_command="codex",
+                default_args=[],
+            ),
+        )
+    except TypeError as exc:
+        raise ConfigError(f"Invalid config section BrainConfig: {exc}") from exc
+
+
+def _build_brain_cli_config(
+    section_name: str,
+    raw: Any,
+    *,
+    default_command: str,
+    default_args: list[str],
+) -> BrainCliAdapterConfig:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"Config section must be a table: {section_name}")
+
+    allowed = {field.name for field in fields(BrainCliAdapterConfig)}
+    selected = {key: value for key, value in raw.items() if key in allowed}
+    if "command" not in selected:
+        selected["command"] = default_command
+    if "args" not in selected:
+        selected["args"] = list(default_args)
+    args = selected.get("args")
+    if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
+        raise ConfigError(f"{section_name}.args must be a list of strings")
+    try:
+        return BrainCliAdapterConfig(**selected)
+    except TypeError as exc:
+        raise ConfigError(f"Invalid config section {section_name}: {exc}") from exc
 
 
 def _jsonable(value: Any) -> Any:
