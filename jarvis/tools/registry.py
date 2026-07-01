@@ -12,7 +12,7 @@ from typing import Any
 from jarvis.events.models import utc_now_iso
 from jarvis.events.types import EventType
 from jarvis.store.event_store import EventStore
-from jarvis.tools.permissions import ToolDecision, ToolPermissionPolicy
+from jarvis.tools.permissions import ToolDecision, ToolPermissionPolicy, ToolPermissionResult
 
 
 class ToolRegistryError(Exception):
@@ -49,6 +49,16 @@ class ToolResult:
     output: dict[str, Any] | None = None
     error: str | None = None
     approval_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolPermissionEvaluation:
+    tool_name: str
+    risk: str
+    decision: str
+    reason: str
+    approval_required: bool = False
+    blocked: bool = False
 
 
 class Tool:
@@ -104,6 +114,20 @@ class ToolRegistry:
     def list_specs(self) -> list[ToolSpec]:
         return [_spec_from_tool(self._tools[name]) for name in sorted(self._tools)]
 
+    def evaluate_permission(
+        self,
+        request: ToolRequest,
+        *,
+        permission_policy: ToolPermissionPolicy,
+    ) -> ToolPermissionEvaluation:
+        tool = self.get(request.tool_name)
+        permission = permission_policy.decide(
+            tool.risk,
+            tool_name=tool.name,
+            payload=request.arguments,
+        )
+        return _permission_evaluation(tool.name, permission)
+
     def request_tool(
         self,
         request: ToolRequest,
@@ -112,11 +136,7 @@ class ToolRegistry:
         approval_gate: ApprovalGate | None = None,
     ) -> ToolResult:
         tool = self.get(request.tool_name)
-        permission = permission_policy.decide(
-            tool.risk,
-            tool_name=tool.name,
-            payload=request.arguments,
-        )
+        permission = self.evaluate_permission(request, permission_policy=permission_policy)
 
         if permission.decision == ToolDecision.BLOCKED:
             return ToolResult(
@@ -578,6 +598,20 @@ def _spec_from_tool(tool: Tool) -> ToolSpec:
     return ToolSpec(name=name, description=description, input_schema=dict(input_schema), risk=risk)
 
 
+def _permission_evaluation(
+    tool_name: str,
+    permission: ToolPermissionResult,
+) -> ToolPermissionEvaluation:
+    return ToolPermissionEvaluation(
+        tool_name=tool_name,
+        risk=permission.risk,
+        decision=permission.decision,
+        reason=permission.reason,
+        approval_required=permission.approval_required,
+        blocked=permission.blocked,
+    )
+
+
 def _required_text(value: Any, label: str) -> str:
     if not isinstance(value, str):
         raise ToolRegistryError(f"{label} must be a string.")
@@ -795,6 +829,7 @@ __all__ = [
     "EchoTool",
     "Tool",
     "ToolExecutionError",
+    "ToolPermissionEvaluation",
     "ToolRegistry",
     "ToolRegistryError",
     "ToolRequest",

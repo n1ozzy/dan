@@ -746,14 +746,14 @@ def test_unknown_model_tool_call_is_reported_without_execution_or_approval(
         {
             "id": "call-missing",
             "tool_name": "missing_tool",
-            "status": "failed",
+            "status": "unknown",
             "approval_required": False,
             "approval_id": None,
             "error": "Unknown tool: missing_tool",
         }
     ]
     assert payload["approvals"] == []
-    assert "missing_tool failed" in payload["final_text"]
+    assert "missing_tool unknown" in payload["final_text"]
     assert payload["turn"]["metadata"]["tool_call_capture"]["error_count"] == 1
     assert app.conn is not None
     assert table_count(app.conn, "approvals") == 0

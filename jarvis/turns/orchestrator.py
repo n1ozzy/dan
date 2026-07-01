@@ -17,7 +17,8 @@ from jarvis.events.bus import EventBus
 from jarvis.events.types import EventType
 from jarvis.store.event_store import EventStore
 from jarvis.store.repositories import RepositoryError, ensure_mapping, ensure_non_empty_text
-from jarvis.tools.registry import ApprovalGate, ToolRegistry, ToolRegistryError
+from jarvis.tools.permissions import ToolDecision, ToolPermissionPolicy
+from jarvis.tools.registry import ApprovalGate, ToolRegistry, ToolRegistryError, ToolRequest
 from jarvis.turns.models import Turn, TurnSource, TurnStatus
 from jarvis.turns.repository import ConversationRepository, TurnRepository
 
@@ -60,6 +61,7 @@ class TurnOrchestrator:
         context_builder: ContextBuilder,
         tool_registry: ToolRegistry | None = None,
         approval_gate: ApprovalGate | None = None,
+        tool_permission_policy: ToolPermissionPolicy | None = None,
         conversation_repository: ConversationRepository | None = None,
         turn_repository: TurnRepository | None = None,
         source: str = "turn_orchestrator",
@@ -72,6 +74,7 @@ class TurnOrchestrator:
         self._context_builder = context_builder
         self._tool_registry = tool_registry
         self._approval_gate = approval_gate
+        self._tool_permission_policy = tool_permission_policy
         self._conversations = conversation_repository or ConversationRepository(conn)
         self._turns = turn_repository or TurnRepository(conn)
         self._source = _required_text(source, "source")
@@ -245,7 +248,7 @@ class TurnOrchestrator:
                             [
                                 tool_call
                                 for tool_call in capture.tool_calls
-                                if tool_call["status"] == "failed"
+                                if tool_call["status"] != "approval_required"
                             ]
                         ),
                         "tool_calls": capture.tool_calls,
@@ -352,6 +355,7 @@ class TurnOrchestrator:
                     self._record_model_tool_call_failure(
                         call_id=call_id,
                         tool_name=tool_name,
+                        status="unavailable",
                         error="tool registry is unavailable",
                         turn_id=turn_id,
                         conversation_id=conversation_id,
@@ -360,28 +364,13 @@ class TurnOrchestrator:
                     )
                 )
                 continue
-            if self._approval_gate is None:
+            if self._tool_permission_policy is None:
                 result.tool_calls.append(
                     self._record_model_tool_call_failure(
                         call_id=call_id,
                         tool_name=tool_name,
-                        error="approval gate is unavailable",
-                        turn_id=turn_id,
-                        conversation_id=conversation_id,
-                        event_ids=event_ids,
-                        correlation_id=correlation_id,
-                    )
-                )
-                continue
-
-            try:
-                tool = self._tool_registry.get(tool_name)
-            except ToolRegistryError as exc:
-                result.tool_calls.append(
-                    self._record_model_tool_call_failure(
-                        call_id=call_id,
-                        tool_name=tool_name,
-                        error=str(exc),
+                        status="unavailable",
+                        error="tool permission policy is unavailable",
                         turn_id=turn_id,
                         conversation_id=conversation_id,
                         event_ids=event_ids,
@@ -396,7 +385,8 @@ class TurnOrchestrator:
                 result.tool_calls.append(
                     self._record_model_tool_call_failure(
                         call_id=call_id,
-                        tool_name=tool.name,
+                        tool_name=tool_name,
+                        status="failed",
                         error=str(exc),
                         turn_id=turn_id,
                         conversation_id=conversation_id,
@@ -407,12 +397,73 @@ class TurnOrchestrator:
                 continue
 
             request_id = str(uuid.uuid4())
-            approval = self._approval_gate.create_approval(
-                risk=tool.risk,
+            request = ToolRequest(
+                id=request_id,
+                tool_name=tool_name,
+                arguments=arguments,
                 requested_by="model",
-                action_type=f"tool:{tool.name}",
+                turn_id=turn_id,
+                metadata={
+                    "origin": "model",
+                    "tool_call_id": call_id,
+                },
+            )
+            try:
+                permission = self._tool_registry.evaluate_permission(
+                    request,
+                    permission_policy=self._tool_permission_policy,
+                )
+            except ToolRegistryError as exc:
+                result.tool_calls.append(
+                    self._record_model_tool_call_failure(
+                        call_id=call_id,
+                        tool_name=tool_name,
+                        status="unknown",
+                        error=str(exc),
+                        turn_id=turn_id,
+                        conversation_id=conversation_id,
+                        event_ids=event_ids,
+                        correlation_id=correlation_id,
+                    )
+                )
+                continue
+
+            if permission.decision == ToolDecision.BLOCKED:
+                result.tool_calls.append(
+                    self._record_model_tool_call_blocked(
+                        call_id=call_id,
+                        tool_name=permission.tool_name,
+                        risk=permission.risk,
+                        reason=permission.reason,
+                        turn_id=turn_id,
+                        conversation_id=conversation_id,
+                        event_ids=event_ids,
+                        correlation_id=correlation_id,
+                    )
+                )
+                continue
+
+            if self._approval_gate is None:
+                result.tool_calls.append(
+                    self._record_model_tool_call_failure(
+                        call_id=call_id,
+                        tool_name=permission.tool_name,
+                        status="unavailable",
+                        error="approval gate is unavailable",
+                        turn_id=turn_id,
+                        conversation_id=conversation_id,
+                        event_ids=event_ids,
+                        correlation_id=correlation_id,
+                    )
+                )
+                continue
+
+            approval = self._approval_gate.create_approval(
+                risk=permission.risk,
+                requested_by="model",
+                action_type=f"tool:{permission.tool_name}",
                 payload={
-                    "tool_name": tool.name,
+                    "tool_name": permission.tool_name,
                     "arguments": arguments,
                     "requested_by": "model",
                     "turn_id": turn_id,
@@ -426,13 +477,18 @@ class TurnOrchestrator:
                 correlation_id=correlation_id,
             )
             approval_id = str(approval["id"])
+            approval_reason = (
+                permission.reason
+                if permission.approval_required
+                else "model-originated safe tool calls require explicit approval"
+            )
             self._append_event(
                 EventType.TOOL_REQUESTED,
                 {
                     "run_id": request_id,
                     "tool_call_id": call_id,
-                    "tool_name": tool.name,
-                    "risk": tool.risk,
+                    "tool_name": permission.tool_name,
+                    "risk": permission.risk,
                     "turn_id": turn_id,
                     "approval_id": approval_id,
                     "origin": "model",
@@ -448,12 +504,12 @@ class TurnOrchestrator:
                 {
                     "run_id": request_id,
                     "tool_call_id": call_id,
-                    "tool_name": tool.name,
-                    "risk": tool.risk,
+                    "tool_name": permission.tool_name,
+                    "risk": permission.risk,
                     "turn_id": turn_id,
                     "approval_id": approval_id,
                     "origin": "model",
-                    "reason": "model-originated tool calls require explicit approval",
+                    "reason": approval_reason,
                 },
                 event_ids,
                 correlation_id=correlation_id,
@@ -462,7 +518,7 @@ class TurnOrchestrator:
             result.tool_calls.append(
                 {
                     "id": call_id,
-                    "tool_name": tool.name,
+                    "tool_name": permission.tool_name,
                     "status": "approval_required",
                     "approval_required": True,
                     "approval_id": approval_id,
@@ -473,7 +529,7 @@ class TurnOrchestrator:
                 {
                     "id": approval_id,
                     "tool_call_id": call_id,
-                    "tool_name": tool.name,
+                    "tool_name": permission.tool_name,
                     "status": str(approval["status"]),
                     "risk": str(approval["risk"]),
                 }
@@ -486,6 +542,7 @@ class TurnOrchestrator:
         *,
         call_id: str,
         tool_name: str,
+        status: str,
         error: str,
         turn_id: str,
         conversation_id: str,
@@ -495,7 +552,7 @@ class TurnOrchestrator:
         summary = {
             "id": call_id,
             "tool_name": tool_name,
-            "status": "failed",
+            "status": status,
             "approval_required": False,
             "approval_id": None,
             "error": error,
@@ -506,7 +563,7 @@ class TurnOrchestrator:
                 "tool_call_id": call_id,
                 "tool_name": tool_name,
                 "origin": "model",
-                "status": "failed",
+                "status": status,
                 "error": error,
             },
             event_ids,
@@ -522,6 +579,56 @@ class TurnOrchestrator:
                 "tool_call_id": call_id,
                 "tool_name": tool_name,
                 "error": error,
+            },
+            event_ids,
+            correlation_id=correlation_id,
+            turn_id=turn_id,
+        )
+        return summary
+
+    def _record_model_tool_call_blocked(
+        self,
+        *,
+        call_id: str,
+        tool_name: str,
+        risk: str,
+        reason: str,
+        turn_id: str,
+        conversation_id: str,
+        event_ids: list[int],
+        correlation_id: str,
+    ) -> dict[str, Any]:
+        summary = {
+            "id": call_id,
+            "tool_name": tool_name,
+            "status": "blocked",
+            "approval_required": False,
+            "approval_id": None,
+            "error": reason,
+        }
+        self._append_event(
+            EventType.TOOL_REJECTED,
+            {
+                "tool_call_id": call_id,
+                "tool_name": tool_name,
+                "risk": risk,
+                "origin": "model",
+                "status": "blocked",
+                "error": reason,
+            },
+            event_ids,
+            correlation_id=correlation_id,
+            turn_id=turn_id,
+        )
+        self._append_event(
+            EventType.ERROR_RAISED,
+            {
+                "turn_id": turn_id,
+                "conversation_id": conversation_id,
+                "kind": "tool",
+                "tool_call_id": call_id,
+                "tool_name": tool_name,
+                "error": reason,
             },
             event_ids,
             correlation_id=correlation_id,
@@ -813,8 +920,15 @@ def _final_text_with_tool_summary(response_text: str, tool_calls: list[dict[str,
     parts: list[str] = []
     for tool_call in tool_calls:
         tool_name = str(tool_call["tool_name"])
-        if tool_call["status"] == "approval_required":
+        status = str(tool_call["status"])
+        if status == "approval_required":
             parts.append(f"{tool_name} requires approval")
+        elif status == "blocked":
+            parts.append(f"{tool_name} blocked")
+        elif status == "unknown":
+            parts.append(f"{tool_name} unknown")
+        elif status == "unavailable":
+            parts.append(f"{tool_name} unavailable")
         else:
             parts.append(f"{tool_name} failed")
 

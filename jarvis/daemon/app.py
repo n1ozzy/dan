@@ -463,6 +463,7 @@ class DaemonApp:
             context_builder=self._require_context_builder(),
             tool_registry=self.tool_registry,
             approval_gate=self._require_approval_gate(),
+            tool_permission_policy=self.tool_permission_policy,
         )
 
     def _execute_approved_tool_locked(self, approval_id: str) -> dict[str, Any]:

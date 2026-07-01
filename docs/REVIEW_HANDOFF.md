@@ -26,8 +26,8 @@ git rev-parse HEAD
 Current known commit:
 
 ```text
-352f9491ff8af15c7b1aafaa4dad55d32a8a7b64
-docs: add reviewer handoff
+81be8efd9c25d448ce255c381cf63e82506c9468
+feat: emit approval decision events
 ```
 
 Reviewers should verify the current `HEAD` before using this document. Treat
@@ -51,6 +51,7 @@ this section as orientation, not proof that the checkout is still at this commit
 - Localhost-only CORS for cockpit.
 - Central EventStore secret redaction.
 - Prompt 19A: approval approve/reject decision events.
+- Prompt 19B: `PermissionPolicy` on model-originated tool-call path.
 
 ## Manual smoke results known
 
@@ -69,7 +70,8 @@ this section as orientation, not proof that the checkout is still at this commit
 - `jarvisd` owns truth.
 - The panel is client only.
 - Provider sessions are not memory.
-- Model-originated tool calls become approvals, not execution.
+- Model-originated tool calls are classified through `PermissionPolicy`; only
+  non-blocked registered calls become approvals, never execution.
 - Approval execute is explicit.
 - Runtime conflicts are report-only.
 - Voice/workers/launchd are not active.
@@ -81,8 +83,6 @@ this section as orientation, not proof that the checkout is still at this commit
   `WAITING_APPROVAL`.
 - H3: approval execution does not yet feed tool result back into brain/final
   answer.
-- H4: `PermissionPolicy` still needs to be applied on the model-originated
-  tool-call path.
 - H5: API auth/CSRF/Origin/Host hardening still needed before dangerous tools.
 - H6/M2/M3: file/shell safety needs `realpath`, fail-closed roots, and write
   restrictions before real file/shell tools.
@@ -97,7 +97,6 @@ this section as orientation, not proof that the checkout is still at this commit
 
 ## Recommended next prompt sequence
 
-- Prompt 19B: `PermissionPolicy` on model-originated tool-call path.
 - Prompt 19C: `WAITING_APPROVAL` / awaiting_approval status model.
 - Prompt 19D: feed approved tool result back to brain / turn continuation.
 - Then consider HookRouter foundation.

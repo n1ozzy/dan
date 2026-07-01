@@ -1,17 +1,18 @@
 # Tools and Approvals
 
-Prompt 19A keeps the Prompt 15 safety model, the Prompt 15A provider
-tool-call parser, and the explicit execute-approved endpoint. It adds auditable
-approval decision events only. It still does not add real shell execution, file
-writing, network access, workers, provider-side tool calling, automatic
+Prompt 19B keeps the Prompt 15 safety model, the Prompt 15A provider
+tool-call parser, the explicit execute-approved endpoint, and the Prompt 19A
+approval decision events. It applies `ToolPermissionPolicy` to
+model-originated tool-call capture. It still does not add real shell execution,
+file writing, network access, workers, provider-side tool calling, automatic
 execution of model-originated tool requests, turn continuation after approval,
 or `WAITING_APPROVAL`.
 
 ## ToolRegistry
 
 `ToolRegistry` is the only in-process registry for Jarvis tools. It stores tool
-metadata, exposes tool specs, checks each request with `ToolPermissionPolicy`,
-and runs a handler only when the permission decision is `allow`.
+metadata, exposes tool specs, classifies requests with `ToolPermissionPolicy`,
+and runs a handler only when the direct request permission decision is `allow`.
 
 Rejected, blocked, and approval-required requests do not execute their tool
 handler.
@@ -27,13 +28,15 @@ stdout:
 The parser accepts `name` as a required string plus optional `arguments`,
 `id`, and `risk` fields. Missing `arguments` becomes `{}`. Malformed JSON,
 missing names, and non-object arguments are recorded in adapter metadata and
-are not executed.
+are not executed. The parsed `risk` is provider-supplied metadata only and is
+ignored for enforcement.
 
 The text turn pipeline validates each model-originated request against the
-registry and records it as an approval request when possible. Model-originated
-requests do not call `ToolRegistry.request_tool`, do not run handlers directly
-from `BrainResponse`, and do not auto-execute even when the registered tool
-risk is `safe_read` or `safe_status`.
+registry, evaluates the registered tool risk through `ToolPermissionPolicy`,
+and records it as an approval request only when the policy does not block it.
+Model-originated requests do not call the handler directly from
+`BrainResponse`, and do not auto-execute even when the registered tool risk is
+`safe_read` or `safe_status`.
 
 The daemon default registry contains:
 
@@ -90,10 +93,18 @@ automatically, and approved tools are not replayed automatically by
 endpoint.
 An approved tool request does not execute automatically.
 
-For model-originated tool calls, approval is mandatory by policy. The approval
-payload stores the tool name, JSON-safe arguments, requesting origin, and turn
-ID. A human or explicit client must later approve and call
+For model-originated registered tool calls that are not blocked by policy,
+approval is mandatory in the MVP. The approval payload stores the registry tool
+name, JSON-safe arguments, requesting origin, and turn ID. The approval risk
+comes from the registry/policy decision, not from the model-provided `risk`. A
+human or explicit client must later approve and call
 `POST /approvals/{id}/execute`.
+
+Unknown tools, unavailable registry/policy/gate surfaces, and policy-blocked
+tools do not create normal pending approvals. They are reported in the
+turn-level tool-call summary and event timeline as `unknown`, `unavailable`, or
+`blocked`, and they cannot be executed later through the approved-execute
+endpoint because no executable approval exists.
 
 `approval.created` events from model-originated captures carry the current
 turn ID as both `turn_id` and `correlation_id`. Direct `POST /tools/request`
@@ -136,10 +147,16 @@ Jarvis captures those calls after `brain.responded` and before `turn.finished`.
 
 The capture policy is conservative:
 
-- every model-originated tool call requires approval;
-- safe tools such as `echo` do not auto-execute when requested by a model;
+- every registered, policy-allowed model-originated tool call requires approval
+  in the MVP, even when direct API policy would allow it;
+- safe tools such as `echo` therefore create a pending approval and do not
+  auto-execute when requested by a model;
+- the registered tool risk, not model-provided risk, drives enforcement;
 - unknown tools are reported in the turn metadata and event timeline, not
   executed;
+- policy-blocked tools such as `destructive` with
+  `destructive_tools_enabled=false` are reported as blocked and do not become
+  approvals;
 - non-JSON-safe arguments fail that tool request only, not the entire turn;
 - response JSON includes `tool_calls`, `approvals`, and the final text summary;
 - turn metadata includes a `tool_call_capture` summary;
@@ -147,7 +164,8 @@ The capture policy is conservative:
 
 This differs from direct human/API requests. `POST /tools/request` still uses
 the permission policy directly, so allowed safe tools may execute there. The
-model path only records intent and waits for approval plus explicit execution.
+model path classifies with the same policy, then only records intent and waits
+for approval plus explicit execution when the policy permits an approval.
 
 Prompt 15A enables explicit CLI stdout parsing into structured
 `BrainResponse.tool_calls`. Valid tool-call blocks are removed from visible
