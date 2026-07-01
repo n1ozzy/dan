@@ -120,8 +120,21 @@ state.changed → IDLE
   one or more approvable tools and Jarvis persisted pending approvals for a user
   decision. The runtime returns to `IDLE` and `/state.pending_approval_count`
   exposes pending work without globally blocking unrelated input.
-- **Approved tool result continuation is future work** — feeding an executed
-  tool result back into the brain/final answer remains Prompt 19D.
+- **Approve alone does not continue a turn** — `approve` records the decision
+  only. The boundary for tool execution and any continuation is explicit
+  `execute-approved`.
+- **One-shot approved tool continuation is supported** — after an approval tied
+  to an `awaiting_approval` turn is approved and explicitly executed
+  successfully, Jarvis builds a continuation `BrainRequest` from the original
+  user input, the original turn context snapshot when available, the approved
+  tool name/arguments, and the recorded tool result. The continuation answer
+  replaces the old approval-required final text and the original turn moves
+  from `awaiting_approval` to `finished`.
+- **Continuation failure is non-replaying** — the `ToolRun` stays recorded, the
+  tool is not executed again, `brain.failed` / `error.raised` are appended with
+  redacted continuation payloads, and the original turn remains
+  `awaiting_approval` with `tool_result_continuation.status=failed` metadata.
+  Duplicate execute still conflicts, so there is no automatic retry loop.
 
 ---
 
@@ -166,10 +179,19 @@ THINKING → (brain proposes ToolCall)
         → if permission requires approval:
               TOOLING + approval.requested
               → approval.granted | approval.rejected
-        → if approved:  TOOLING  →  tool.run.started → tool.run.finished
+        → if approved and explicitly executed:
+              TOOLING → tool.run.started → tool.run.finished
+              → if one-shot continuation eligible and original turn is awaiting_approval:
+                    brain.requested → brain.responded → turn.finished
         → if rejected/blocked: the call NEVER executes
         → back to THINKING / turn.finished
 ```
+
+The current MVP implements only continuation-eligible one-shot tool results.
+Future result classes such as `requires_user_presence`,
+`external_communication_pending`, `operator_session_started`,
+`live_visual_control_session`, and `worker_job_started` are reserved design
+space; they are not treated as ordinary one-shot continuation.
 
 ### 5.2 Worker job (Prompt 13)
 

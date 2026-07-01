@@ -75,7 +75,10 @@ The unit of "one input → full response". The pipeline's spine.
   `failed` | `cancelled`).
   `awaiting_approval` means the model requested one or more approvable tools and
   Jarvis persisted pending approvals. It does not execute those tools and does
-  not imply automatic continuation after approval.
+  not imply automatic continuation after approval. Approval plus explicit
+  execution of a successful continuation-eligible one-shot tool result may move
+  the same original turn from `awaiting_approval` to `finished` with an updated
+  final answer.
 - **Emitted events:** `turn.started` (frozen), `turn.finished` (frozen), and
   related `turn.*` lifecycle events in `events`. `turn.finished` closes the
   active processing phase; the persisted turn status distinguishes `finished`
@@ -323,6 +326,8 @@ A request to run a registered tool, gated by permission policy.
   - A rejected or blocked call **never executes** ([ADR-010](DECISIONS.md#adr-010)).
   - Destructive operations never run unless explicitly enabled.
   - Secrets never appear unredacted in event payloads.
+  - A recorded `ToolRun` is not replayed to satisfy continuation. Duplicate
+    execute conflicts instead of running the handler or brain continuation again.
 
 ---
 
@@ -350,10 +355,46 @@ A human (or policy) decision authorizing a gated action.
 - **Forbidden behavior:**
   - The gated action never runs before `approved`.
   - Destructive actions are never auto-approved.
+  - Approval alone never executes a tool and never continues a turn.
+
+## 12. One-shot Tool Result Continuation
+
+The MVP continuation contract for simple approved tools.
+
+- **Owner module:** `jarvis/turns` (`TurnOrchestrator`) coordinated from
+  `jarvis/daemon/app.py` after explicit approved execution.
+- **Persistence:** no new table. The existing `tool_runs` row records execution,
+  the original `turns` row stores the updated final answer or continuation
+  failure metadata, and the single append-only `events` stream records
+  `brain.requested`, `brain.responded`, `brain.failed`, `error.raised`, and
+  `turn.finished` as applicable. There is no second event timeline and no
+  `turn_steps` table.
+- **Required fields:** continuation metadata includes `approval_id`,
+  `tool_name`, `tool_run_id` when available, `previous_status`,
+  `continuation_eligible`, `result_class`, and
+  `user_approved_and_executed`.
+- **Allowed states:** applies only when the approval has a `turn_id`, explicit
+  execute-approved recorded a successful `ToolRun`, the original turn is still
+  `awaiting_approval`, and the tool result class is one-shot continuation
+  eligible. Success updates that same turn to `finished`; failure leaves it
+  `awaiting_approval` with `tool_result_continuation.status=failed`.
+- **Emitted events:** existing event types only. Continuation payloads are
+  redacted by `EventStore` before persistence.
+- **Forbidden behavior:**
+  - Approve alone does not execute and does not continue.
+  - Continuation never re-executes the tool.
+  - Duplicate execute never creates another `ToolRun` or continuation brain
+    call.
+  - Approvals without a turn ID and approvals tied to non-awaiting turns preserve
+    execute-approved behavior without forced continuation.
+  - Future result classes `requires_user_presence`,
+    `external_communication_pending`, `operator_session_started`,
+    `live_visual_control_session`, and `worker_job_started` are reserved design
+    space, not implementation commitments here.
 
 ---
 
-## 12. WorkerJob
+## 13. WorkerJob
 
 An async background job (e.g. a Codex/Claude worker). Workers advise; they do
 not act on the world.
@@ -404,7 +445,7 @@ security contract before adding concrete operator contracts here.
 
 ---
 
-## 13. RuntimeProcessObservation
+## 14. RuntimeProcessObservation
 
 What the supervisor sees about how Jarvis was launched and which legacy
 processes/labels exist. Observation only — never an action.

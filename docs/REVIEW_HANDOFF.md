@@ -26,8 +26,8 @@ git rev-parse HEAD
 Current known commit:
 
 ```text
-f4cb0fbe61cbd9e79361ff3e287325ccf25281be
-feat: mark turns awaiting approval
+8225520af661f0f3ad13d3423ea4249d4714287b
+docs: separate operator examples from commitments
 ```
 
 Reviewers should verify the current `HEAD` before using this document. Treat
@@ -54,11 +54,17 @@ this section as orientation, not proof that the checkout is still at this commit
 - Prompt 19B: `PermissionPolicy` on model-originated tool-call path.
 - Prompt 19C: `awaiting_approval` turn status with
   `/state.pending_approval_count`; runtime remains in the canonical state set.
-- Prompt 20A: macOS operator contract added before Prompt 19D so continuation
-  design accounts for future one-shot tools and longer operator sessions.
+- Prompt 20A: macOS operator contract added before Prompt 19D-mini so
+  continuation design accounts for future one-shot tools and longer operator
+  sessions.
 - Prompt 20A-FIX: operator examples separated from implementation commitments;
   concrete macOS capabilities require later scoped prompts, contracts, tests,
   and permission policy before implementation.
+- Prompt 19D-mini: approved, explicitly executed one-shot tool results continue
+  the original `awaiting_approval` turn through a continuation brain request.
+  The same turn is updated to `finished` on continuation success; continuation
+  failure leaves the tool run recorded and the turn `awaiting_approval` with
+  predictable `tool_result_continuation` error metadata.
 
 ## Manual smoke results known
 
@@ -86,8 +92,6 @@ this section as orientation, not proof that the checkout is still at this commit
 
 ## Known open risks / review priorities
 
-- H3: approval execution does not yet feed tool result back into brain/final
-  answer.
 - H5: API auth/CSRF/Origin/Host hardening still needed before dangerous tools.
 - H6/M2/M3: file/shell safety needs `realpath`, fail-closed roots, and write
   restrictions before real file/shell tools.
@@ -102,14 +106,11 @@ this section as orientation, not proof that the checkout is still at this commit
 
 ## Recommended next prompt sequence
 
-- Review the operator contract separation if needed, then proceed only if the
-  examples-vs-commitments boundary is accepted.
-- Prompt 19D: feed approved one-shot tool result back to brain / turn
-  continuation, while preserving room for future `OperatorSession` work.
-- After 19D, consider a scoped macOS capability inventory and permission model
-  before promoting concrete operator examples into implementation.
+- Prompt 20B: macOS capability inventory and permission model.
 - Then consider HookRouter foundation.
-- Only later workers/voice/native panel.
+- Future work list to keep separate from Prompt 20B: HookRouter, workers,
+  macOS Accessibility read-only/action, ScreenCaptureKit/Vision, SMS/browser/
+  passkey examples/classes, and voice.
 
 ## Reviewer checklist
 
@@ -126,6 +127,10 @@ Useful starting point:
 
 ```sh
 .venv/bin/python -m pytest \
+  tests/test_tool_result_continuation.py \
+  tests/test_awaiting_approval_status.py \
+  tests/test_model_tool_permission_policy.py \
+  tests/test_approval_events.py \
   tests/test_secret_redaction.py \
   tests/test_event_store.py \
   tests/test_api_cors.py \

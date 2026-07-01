@@ -511,12 +511,21 @@ class DaemonApp:
         )
         if result.status == "finished":
             tool_run = recorder.record_finished(tool_request.id, output=result.output or {})
-            return {
+            response = {
                 "ok": True,
                 "approval_id": normalized_approval_id,
                 "tool_run": tool_run,
                 "result": result.output or {},
             }
+            continuation = self._create_turn_orchestrator().continue_after_tool_result(
+                approval_id=normalized_approval_id,
+                tool_request=tool_request,
+                tool_result=result,
+                tool_run=tool_run,
+            )
+            if continuation is not None:
+                response["continuation"] = continuation.to_dict()
+            return response
 
         tool_run = recorder.record_failed(
             tool_request.id,

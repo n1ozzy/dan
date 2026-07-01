@@ -364,6 +364,21 @@ class TurnRepository:
             metadata_merge=_turn_mapping(metadata, "turn metadata"),
         )
 
+    def merge_metadata(
+        self,
+        turn_id: str,
+        metadata: Mapping[str, Any],
+    ) -> Turn:
+        existing = self.get(turn_id)
+        if existing is None:
+            raise TurnRepositoryError(f"Turn not found: {turn_id}")
+        return self._update_turn(
+            existing.id,
+            status=existing.status,
+            error=existing.error,
+            metadata_merge=_turn_mapping(metadata, "turn metadata"),
+        )
+
     def cancel(self, turn_id: str, *, reason: str | None = None) -> Turn:
         return self._update_turn(
             turn_id,

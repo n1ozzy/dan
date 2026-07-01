@@ -134,10 +134,15 @@ does not give the model direct control of the Mac.
 ## Relationship to approval loop
 
 Prompt 19A, Prompt 19B, and Prompt 19C created the foundation for approval
-decision events, `PermissionPolicy`, and `awaiting_approval` turns. Prompt 19D
-tool-result continuation should stay operator-aware without treating every
-example in this document as a committed tool or treating every future operator
-capability as one-shot.
+decision events, `PermissionPolicy`, and `awaiting_approval` turns. Prompt 19D-mini
+implements only current one-shot continuation-eligible tool results after
+explicit execute-approved. It is not the full `OperatorSession` model and does
+not treat every example in this document as a committed tool or every future
+operator capability as one-shot.
+
+Future user-presence, external communication, worker, and live visual session
+result classes stay separate from one-shot continuation until promoted by later
+scoped prompts.
 
 `ApprovalGate` is not meant to make Jarvis useless; it is meant to manage risk.
 Direct user commands may have different policy than model-originated autonomous
@@ -176,14 +181,12 @@ replaces glue with controlled macOS capabilities mediated by `jarvisd`.
 
 ## Near-term implementation guidance
 
-1. Prompt 19D may implement approved one-shot tool result continuation while
-   preserving room for future operator sessions.
-2. Before concrete macOS operator tools are implemented, add a scoped capability
+1. Before concrete macOS operator tools are implemented, add a scoped capability
    inventory and permission model.
-3. Promote specific capabilities only through later scoped prompts, contracts,
+2. Promote specific capabilities only through later scoped prompts, contracts,
    test plans, and permission policy. SMS, phone, passkey-assisted login,
    browser workflows, and live visual sessions remain examples until promoted.
-4. Voice/PTT/wake word work remains separate unless a later prompt explicitly
+3. Voice/PTT/wake word work remains separate unless a later prompt explicitly
    scopes it.
 
 ## Reviewer checklist

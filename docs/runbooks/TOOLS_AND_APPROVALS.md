@@ -1,13 +1,14 @@
 # Tools and Approvals
 
-Prompt 19C keeps the Prompt 15 safety model, the Prompt 15A provider
+Prompt 19D-mini keeps the Prompt 15 safety model, the Prompt 15A provider
 tool-call parser, the explicit execute-approved endpoint, and the Prompt 19A
 approval decision events. It applies `ToolPermissionPolicy` to
 model-originated tool-call capture and marks turns with pending model-created
-approvals as `awaiting_approval`. It still does not add real shell execution,
-file writing, network access, workers, provider-side tool calling, automatic
-execution of model-originated tool requests, turn continuation after approval,
-or a global `WAITING_APPROVAL` runtime state.
+approvals as `awaiting_approval`. It also continues the original turn after a
+successful explicit execution of a continuation-eligible one-shot tool result.
+It still does not add real shell execution, file writing, network access,
+workers, provider-side tool calling, automatic execution of model-originated
+tool requests, operator sessions, or a global `WAITING_APPROVAL` runtime state.
 
 ## ToolRegistry
 
@@ -93,6 +94,22 @@ automatically, and approved tools are not replayed automatically by
 `POST /approvals/{id}/approve`; a human or agent must call the explicit execute
 endpoint.
 An approved tool request does not execute automatically.
+
+For model-originated one-shot tool calls tied to an `awaiting_approval` turn,
+the complete lifecycle is:
+
+```text
+model tool request
+  -> awaiting_approval turn + pending approval
+  -> approve or reject
+  -> explicit execute-approved
+  -> ToolRun recorded exactly once
+  -> continuation BrainRequest
+  -> original turn final answer updated
+```
+
+Approve alone stops at the approval decision. `execute-approved` is the boundary
+where the handler may run and where one-shot continuation may begin.
 
 For model-originated registered tool calls that are not blocked by policy,
 approval is mandatory in the MVP. The approval payload stores the registry tool
@@ -183,8 +200,12 @@ are also removed from visible text and recorded in
 This is still not autonomous tool use. Model-originated tool calls become
 approval records only. Approved tools require a later explicit
 `POST /approvals/{id}/execute` call before any handler can run. A turn in
-`awaiting_approval` does not execute a tool, does not resume itself, and does
-not feed tool output back into the brain yet.
+`awaiting_approval` does not execute a tool and does not resume itself on
+approval. After explicit execute-approved, if the approval has a turn ID, the
+original turn is still `awaiting_approval`, the tool result is successful, and
+the result is continuation-eligible one-shot output, Jarvis builds a
+continuation brain request from the original user input plus the redacted tool
+name, arguments, and output.
 
 ## API Endpoints
 
@@ -214,10 +235,11 @@ Once a run exists for an approval, a second execute request returns `409` and
 does not invoke the handler again.
 
 Rejected approvals cannot execute. Approval decisions do not resume a waiting
-turn, feed approved tool output back into the brain, enqueue voice, or change
-runtime state to `WAITING_APPROVAL`. The daemon returns to `IDLE` after the turn
-and exposes pending approvals through `/state.pending_approval_count`; tool
-result continuation remains future Prompt 19D work.
+turn, enqueue voice, or change runtime state to `WAITING_APPROVAL`. The daemon
+returns to `IDLE` after the original model turn and exposes pending approvals
+through `/state.pending_approval_count`. Continuation happens only after
+explicit execute-approved and only for current one-shot continuation-eligible
+tool results.
 
 Successful execution returns:
 
@@ -226,9 +248,40 @@ Successful execution returns:
   "ok": true,
   "approval_id": "...",
   "tool_run": {},
-  "result": {}
+  "result": {},
+  "continuation": {
+    "applied": true,
+    "status": "finished",
+    "turn_id": "...",
+    "final_text": "..."
+  }
 }
 ```
+
+The `continuation` field is additive and appears only when continuation is
+attempted. Approvals with no `turn_id`, approvals tied to a non-awaiting turn,
+failed tool results, blocked tools, and reserved non-one-shot result classes
+preserve the existing execute-approved response shape without forcing
+continuation.
+
+If the continuation brain call fails, Jarvis leaves the `ToolRun` as recorded,
+does not retry or execute the tool again, appends `brain.failed` and
+`error.raised`, and leaves the original turn in `awaiting_approval` with
+`tool_result_continuation.status=failed`,
+`tool_result_continuation.retry_policy=no_automatic_retry`, and the redacted
+error metadata.
+
+The implemented one-shot class is `continuation_eligible`. Future result
+classes are reserved but not implemented here:
+
+- `requires_user_presence`
+- `external_communication_pending`
+- `operator_session_started`
+- `live_visual_control_session`
+- `worker_job_started`
+
+Those classes are not one-shot continuation. They require separate operator,
+communication, worker, or live-session designs before implementation.
 
 ## Intentional Non-Goals
 
@@ -245,6 +298,9 @@ Prompt 15 intentionally does not implement:
 - voice or audio integration
 - WebSocket or SSE tool streaming
 - launchd installation or control
+- general `OperatorSession` execution
+- live visual control sessions
+- user-presence, SMS, browser, phone, or passkey flows
 
 Providers may request tools through `BrainResponse.tool_calls`, but only the
 registry, approval gate, and explicit execute endpoint may lead to execution.
@@ -280,6 +336,8 @@ It proves:
   execution.
 - `POST /approvals/{id}/execute` executes an approved `approval_probe` exactly
   once and records a finished `tool_runs` row with the `approval_id`.
+- Model-originated one-shot approved execution may update the original
+  awaiting turn with a continuation answer.
 - A second execute for the same approval returns `409`.
 - A rejected approval cannot execute.
 - `GET /events` exposes tool and approval events.
