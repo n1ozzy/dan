@@ -15,7 +15,14 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from jarvis.brain import BrainAdapterError, BrainManager, BrainRequest, BrainResponse, MockBrainAdapter
+from jarvis.brain import (
+    BrainAdapterError,
+    BrainManager,
+    BrainRequest,
+    BrainResponse,
+    BrainToolCall,
+    MockBrainAdapter,
+)
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
 from jarvis.brain.context_builder import ContextBuilder, ContextBuilderError
 from jarvis.daemon.app import DaemonApp, create_daemon_app
@@ -168,6 +175,22 @@ class FailingBrainAdapter:
         raise BrainAdapterError("mock brain failure")
 
 
+class ToolCallingBrainAdapter:
+    name = "tool_calling"
+    default_model = "tool-calling-model"
+
+    def __init__(self, response: BrainResponse) -> None:
+        self.response = response
+        self.requests: list[BrainRequest] = []
+
+    def available_models(self) -> list[str]:
+        return [self.default_model]
+
+    def generate(self, request: BrainRequest) -> BrainResponse:
+        self.requests.append(request)
+        return self.response
+
+
 class FailingContextBuilder:
     def build_request(self, **kwargs: object) -> object:
         raise ContextBuilderError("mock context failure")
@@ -213,6 +236,8 @@ def test_post_input_text_with_mock_brain_returns_200_json(app: DaemonApp) -> Non
     assert payload["brain_adapter"] == "mock"
     assert payload["brain_model"] == "mock-local"
     assert payload["state"] == "IDLE"
+    assert payload["tool_calls"] == []
+    assert payload["approvals"] == []
     assert payload["turn"]["metadata"] == {"client": "test"}
     assert "extra" not in payload["turn"]["metadata"]
 
@@ -534,6 +559,203 @@ def test_no_voice_tool_or_worker_rows_are_created(app: DaemonApp) -> None:
     assert table_count(app.conn, "voice_queue") == 0
     assert table_count(app.conn, "tool_runs") == 0
     assert table_count(app.conn, "worker_jobs") == 0
+
+
+def test_model_originated_safe_echo_tool_call_creates_approval_without_execution(
+    app: DaemonApp,
+) -> None:
+    response = BrainResponse(
+        text="I need echo.",
+        model="tool-calling-model",
+        tool_calls=[
+            BrainToolCall(
+                id="call-echo",
+                name="echo",
+                arguments={"text": "hello"},
+            )
+        ],
+    )
+    app.brain_manager = BrainManager(
+        [ToolCallingBrainAdapter(response)],
+        default_adapter="tool_calling",
+    )
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Use echo"})
+
+    assert status == 200
+    assert payload["final_text"].startswith("I need echo.")
+    assert "Tool requests captured" in payload["final_text"]
+    assert "echo requires approval" in payload["final_text"]
+    assert payload["state"] == "IDLE"
+    assert len(payload["tool_calls"]) == 1
+    tool_call = payload["tool_calls"][0]
+    assert tool_call["id"] == "call-echo"
+    assert tool_call["tool_name"] == "echo"
+    assert tool_call["status"] == "approval_required"
+    assert tool_call["approval_required"] is True
+    assert isinstance(tool_call["approval_id"], str)
+    assert len(payload["approvals"]) == 1
+    assert payload["approvals"][0] == {
+        "id": tool_call["approval_id"],
+        "tool_call_id": "call-echo",
+        "tool_name": "echo",
+        "status": "pending",
+        "risk": "safe_read",
+    }
+    assert app.conn is not None
+    assert table_count(app.conn, "approvals") == 1
+    assert table_count(app.conn, "tool_runs") == 0
+    assert table_count(app.conn, "voice_queue") == 0
+    assert table_count(app.conn, "worker_jobs") == 0
+
+    approval = app.approval_gate.get_approval(str(tool_call["approval_id"]))  # type: ignore[union-attr]
+    assert approval is not None
+    assert approval["requested_by"] == "model"
+    assert approval["payload"]["tool_name"] == "echo"
+    assert approval["payload"]["arguments"] == {"text": "hello"}
+    assert approval["payload"]["turn_id"] == payload["turn_id"]
+    assert approval["metadata"]["origin"] == "model"
+    assert approval["metadata"]["tool_call_id"] == "call-echo"
+
+    capture = payload["turn"]["metadata"]["tool_call_capture"]
+    assert capture["origin"] == "model"
+    assert capture["total"] == 1
+    assert capture["approval_count"] == 1
+    assert capture["error_count"] == 0
+
+    event_types = event_types_for_turn(app, str(payload["turn_id"]))
+    assert "brain.responded" in event_types
+    assert "tool.requested" in event_types
+    assert "tool.approval.required" in event_types
+    assert event_types.index("brain.responded") < event_types.index("tool.requested")
+    assert event_types.index("tool.requested") < event_types.index("tool.approval.required")
+
+
+def test_model_originated_approval_probe_creates_approval_without_execution(
+    app: DaemonApp,
+) -> None:
+    response = BrainResponse(
+        text="Probe requested.",
+        model="tool-calling-model",
+        tool_calls=[
+            BrainToolCall(
+                id="call-probe",
+                name="approval_probe",
+                arguments={"purpose": "model"},
+            )
+        ],
+    )
+    app.brain_manager = BrainManager(
+        [ToolCallingBrainAdapter(response)],
+        default_adapter="tool_calling",
+    )
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Probe"})
+
+    assert status == 200
+    assert payload["tool_calls"][0]["tool_name"] == "approval_probe"
+    assert payload["tool_calls"][0]["status"] == "approval_required"
+    assert payload["approvals"][0]["tool_name"] == "approval_probe"
+    assert payload["approvals"][0]["status"] == "pending"
+    assert app.conn is not None
+    assert table_count(app.conn, "approvals") == 1
+    assert table_count(app.conn, "tool_runs") == 0
+    assert table_count(app.conn, "voice_queue") == 0
+    assert table_count(app.conn, "worker_jobs") == 0
+
+
+def test_unknown_model_tool_call_is_reported_without_execution_or_approval(
+    app: DaemonApp,
+) -> None:
+    response = BrainResponse(
+        text="Unknown tool please.",
+        model="tool-calling-model",
+        tool_calls=[BrainToolCall(id="call-missing", name="missing_tool", arguments={})],
+    )
+    app.brain_manager = BrainManager(
+        [ToolCallingBrainAdapter(response)],
+        default_adapter="tool_calling",
+    )
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Missing"})
+
+    assert status == 200
+    assert payload["state"] == "IDLE"
+    assert payload["tool_calls"] == [
+        {
+            "id": "call-missing",
+            "tool_name": "missing_tool",
+            "status": "failed",
+            "approval_required": False,
+            "approval_id": None,
+            "error": "Unknown tool: missing_tool",
+        }
+    ]
+    assert payload["approvals"] == []
+    assert "missing_tool failed" in payload["final_text"]
+    assert payload["turn"]["metadata"]["tool_call_capture"]["error_count"] == 1
+    assert app.conn is not None
+    assert table_count(app.conn, "approvals") == 0
+    assert table_count(app.conn, "tool_runs") == 0
+    assert table_count(app.conn, "voice_queue") == 0
+    assert table_count(app.conn, "worker_jobs") == 0
+    event_types = event_types_for_turn(app, str(payload["turn_id"]))
+    assert "tool.failed" in event_types
+    assert "error.raised" in event_types
+
+
+def test_model_tool_call_with_non_json_safe_arguments_is_reported_without_execution(
+    app: DaemonApp,
+) -> None:
+    response = BrainResponse(
+        text="Bad args.",
+        model="tool-calling-model",
+        tool_calls=[
+            BrainToolCall(
+                id="call-bad-args",
+                name="echo",
+                arguments={"bad": object()},
+            )
+        ],
+    )
+    app.brain_manager = BrainManager(
+        [ToolCallingBrainAdapter(response)],
+        default_adapter="tool_calling",
+    )
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Bad args"})
+
+    assert status == 200
+    assert payload["state"] == "IDLE"
+    assert payload["tool_calls"] == [
+        {
+            "id": "call-bad-args",
+            "tool_name": "echo",
+            "status": "failed",
+            "approval_required": False,
+            "approval_id": None,
+            "error": "tool arguments must be JSON serializable",
+        }
+    ]
+    assert payload["approvals"] == []
+    assert "echo failed" in payload["final_text"]
+    assert payload["turn"]["metadata"]["tool_call_capture"]["error_count"] == 1
+    assert app.conn is not None
+    assert table_count(app.conn, "approvals") == 0
+    assert table_count(app.conn, "tool_runs") == 0
+    assert table_count(app.conn, "voice_queue") == 0
+    assert table_count(app.conn, "worker_jobs") == 0
+    event_types = event_types_for_turn(app, str(payload["turn_id"]))
+    assert "tool.failed" in event_types
+    assert "error.raised" in event_types
 
 
 def test_brain_failure_marks_turn_failed_and_records_events(conn: sqlite3.Connection) -> None:

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+import json
+import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from jarvis.brain.base import BrainResponse
@@ -15,6 +17,7 @@ from jarvis.events.bus import EventBus
 from jarvis.events.types import EventType
 from jarvis.store.event_store import EventStore
 from jarvis.store.repositories import RepositoryError, ensure_mapping, ensure_non_empty_text
+from jarvis.tools.registry import ApprovalGate, ToolRegistry, ToolRegistryError
 from jarvis.turns.models import Turn, TurnSource, TurnStatus
 from jarvis.turns.repository import ConversationRepository, TurnRepository
 
@@ -41,6 +44,8 @@ class TextTurnResult:
     brain_model: str
     event_ids: list[int]
     turn: Turn
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    approvals: list[dict[str, Any]] = field(default_factory=list)
 
 
 class TurnOrchestrator:
@@ -53,6 +58,8 @@ class TurnOrchestrator:
         state_machine: RuntimeStateMachine,
         brain_manager: BrainManager,
         context_builder: ContextBuilder,
+        tool_registry: ToolRegistry | None = None,
+        approval_gate: ApprovalGate | None = None,
         conversation_repository: ConversationRepository | None = None,
         turn_repository: TurnRepository | None = None,
         source: str = "turn_orchestrator",
@@ -63,6 +70,8 @@ class TurnOrchestrator:
         self._state_machine = state_machine
         self._brain_manager = brain_manager
         self._context_builder = context_builder
+        self._tool_registry = tool_registry
+        self._approval_gate = approval_gate
         self._conversations = conversation_repository or ConversationRepository(conn)
         self._turns = turn_repository or TurnRepository(conn)
         self._source = _required_text(source, "source")
@@ -218,18 +227,47 @@ class TurnOrchestrator:
                 correlation_id=correlation_id,
                 turn_id=turn.id,
             )
+            capture = self._capture_model_tool_calls(
+                response=response,
+                turn_id=turn.id,
+                conversation_id=conversation.id,
+                event_ids=event_ids,
+                correlation_id=correlation_id,
+            )
+            final_text = _final_text_with_tool_summary(response.text, capture.tool_calls)
+            finish_metadata = (
+                {
+                    "tool_call_capture": {
+                        "origin": "model",
+                        "total": len(capture.tool_calls),
+                        "approval_count": len(capture.approvals),
+                        "error_count": len(
+                            [
+                                tool_call
+                                for tool_call in capture.tool_calls
+                                if tool_call["status"] == "failed"
+                            ]
+                        ),
+                        "tool_calls": capture.tool_calls,
+                        "approvals": capture.approvals,
+                    }
+                }
+                if capture.tool_calls
+                else None
+            )
             turn = self._turns.finish(
                 turn.id,
-                final_text=response.text,
+                final_text=final_text,
                 brain_adapter=adapter_name,
                 brain_model=response_model,
+                metadata=finish_metadata,
             )
             self._append_event(
                 EventType.TURN_FINISHED,
                 {
                     "turn_id": turn.id,
                     "conversation_id": conversation.id,
-                    "final_text_length": len(response.text),
+                    "final_text_length": len(final_text),
                     "brain_adapter": adapter_name,
                     "brain_model": response_model,
                 },
@@ -250,11 +288,13 @@ class TurnOrchestrator:
                 conversation_id=conversation.id,
                 turn_id=turn.id,
                 input_text=normalized_text,
-                final_text=response.text,
+                final_text=final_text,
                 brain_adapter=adapter_name,
                 brain_model=response_model,
                 event_ids=event_ids,
                 turn=turn,
+                tool_calls=capture.tool_calls,
+                approvals=capture.approvals,
             )
         except TurnOrchestratorError:
             raise
@@ -290,6 +330,202 @@ class TurnOrchestrator:
                 self._event_bus.publish(event)
             except Exception:
                 pass
+
+    def _capture_model_tool_calls(
+        self,
+        *,
+        response: BrainResponse,
+        turn_id: str,
+        conversation_id: str,
+        event_ids: list[int],
+        correlation_id: str,
+    ) -> "_ToolCaptureResult":
+        if not response.tool_calls:
+            return _ToolCaptureResult()
+
+        result = _ToolCaptureResult()
+        for index, tool_call in enumerate(response.tool_calls, start=1):
+            call_id = _tool_call_id(tool_call, index)
+            tool_name = _tool_call_name(tool_call)
+            if self._tool_registry is None:
+                result.tool_calls.append(
+                    self._record_model_tool_call_failure(
+                        call_id=call_id,
+                        tool_name=tool_name,
+                        error="tool registry is unavailable",
+                        turn_id=turn_id,
+                        conversation_id=conversation_id,
+                        event_ids=event_ids,
+                        correlation_id=correlation_id,
+                    )
+                )
+                continue
+            if self._approval_gate is None:
+                result.tool_calls.append(
+                    self._record_model_tool_call_failure(
+                        call_id=call_id,
+                        tool_name=tool_name,
+                        error="approval gate is unavailable",
+                        turn_id=turn_id,
+                        conversation_id=conversation_id,
+                        event_ids=event_ids,
+                        correlation_id=correlation_id,
+                    )
+                )
+                continue
+
+            try:
+                tool = self._tool_registry.get(tool_name)
+            except ToolRegistryError as exc:
+                result.tool_calls.append(
+                    self._record_model_tool_call_failure(
+                        call_id=call_id,
+                        tool_name=tool_name,
+                        error=str(exc),
+                        turn_id=turn_id,
+                        conversation_id=conversation_id,
+                        event_ids=event_ids,
+                        correlation_id=correlation_id,
+                    )
+                )
+                continue
+
+            try:
+                arguments = _json_safe_arguments(tool_call)
+            except TurnOrchestratorError as exc:
+                result.tool_calls.append(
+                    self._record_model_tool_call_failure(
+                        call_id=call_id,
+                        tool_name=tool.name,
+                        error=str(exc),
+                        turn_id=turn_id,
+                        conversation_id=conversation_id,
+                        event_ids=event_ids,
+                        correlation_id=correlation_id,
+                    )
+                )
+                continue
+
+            request_id = str(uuid.uuid4())
+            approval = self._approval_gate.create_approval(
+                risk=tool.risk,
+                requested_by="model",
+                action_type=f"tool:{tool.name}",
+                payload={
+                    "tool_name": tool.name,
+                    "arguments": arguments,
+                    "requested_by": "model",
+                    "turn_id": turn_id,
+                },
+                metadata={
+                    "origin": "model",
+                    "tool_call_id": call_id,
+                    "tool_request_id": request_id,
+                },
+            )
+            approval_id = str(approval["id"])
+            self._append_event(
+                EventType.TOOL_REQUESTED,
+                {
+                    "run_id": request_id,
+                    "tool_call_id": call_id,
+                    "tool_name": tool.name,
+                    "risk": tool.risk,
+                    "turn_id": turn_id,
+                    "approval_id": approval_id,
+                    "origin": "model",
+                    "status": "approval_required",
+                    "input": arguments,
+                },
+                event_ids,
+                correlation_id=correlation_id,
+                turn_id=turn_id,
+            )
+            self._append_event(
+                EventType.TOOL_APPROVAL_REQUIRED,
+                {
+                    "run_id": request_id,
+                    "tool_call_id": call_id,
+                    "tool_name": tool.name,
+                    "risk": tool.risk,
+                    "turn_id": turn_id,
+                    "approval_id": approval_id,
+                    "origin": "model",
+                    "reason": "model-originated tool calls require explicit approval",
+                },
+                event_ids,
+                correlation_id=correlation_id,
+                turn_id=turn_id,
+            )
+            result.tool_calls.append(
+                {
+                    "id": call_id,
+                    "tool_name": tool.name,
+                    "status": "approval_required",
+                    "approval_required": True,
+                    "approval_id": approval_id,
+                    "error": None,
+                }
+            )
+            result.approvals.append(
+                {
+                    "id": approval_id,
+                    "tool_call_id": call_id,
+                    "tool_name": tool.name,
+                    "status": str(approval["status"]),
+                    "risk": str(approval["risk"]),
+                }
+            )
+
+        return result
+
+    def _record_model_tool_call_failure(
+        self,
+        *,
+        call_id: str,
+        tool_name: str,
+        error: str,
+        turn_id: str,
+        conversation_id: str,
+        event_ids: list[int],
+        correlation_id: str,
+    ) -> dict[str, Any]:
+        summary = {
+            "id": call_id,
+            "tool_name": tool_name,
+            "status": "failed",
+            "approval_required": False,
+            "approval_id": None,
+            "error": error,
+        }
+        self._append_event(
+            EventType.TOOL_FAILED,
+            {
+                "tool_call_id": call_id,
+                "tool_name": tool_name,
+                "origin": "model",
+                "status": "failed",
+                "error": error,
+            },
+            event_ids,
+            correlation_id=correlation_id,
+            turn_id=turn_id,
+        )
+        self._append_event(
+            EventType.ERROR_RAISED,
+            {
+                "turn_id": turn_id,
+                "conversation_id": conversation_id,
+                "kind": "tool",
+                "tool_call_id": call_id,
+                "tool_name": tool_name,
+                "error": error,
+            },
+            event_ids,
+            correlation_id=correlation_id,
+            turn_id=turn_id,
+        )
+        return summary
 
     def _record_context_failure(
         self,
@@ -485,6 +721,12 @@ class TurnOrchestrator:
                 pass
 
 
+@dataclass
+class _ToolCaptureResult:
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    approvals: list[dict[str, Any]] = field(default_factory=list)
+
+
 def _required_text(value: str, label: str) -> str:
     try:
         return ensure_non_empty_text(value, label)
@@ -535,6 +777,50 @@ def _usage_payload(response: BrainResponse) -> dict[str, int | None]:
         "output_tokens": usage.output_tokens,
         "total_tokens": usage.total_tokens,
     }
+
+
+def _tool_call_id(tool_call: Any, index: int) -> str:
+    value = getattr(tool_call, "id", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return f"model-tool-call-{index}"
+
+
+def _tool_call_name(tool_call: Any) -> str:
+    value = getattr(tool_call, "name", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return "unknown"
+
+
+def _json_safe_arguments(tool_call: Any) -> dict[str, Any]:
+    arguments = getattr(tool_call, "arguments", {})
+    if not isinstance(arguments, Mapping):
+        raise TurnOrchestratorError("tool arguments must be a JSON object")
+    try:
+        json.dumps(arguments, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise TurnOrchestratorError("tool arguments must be JSON serializable") from exc
+    return dict(arguments)
+
+
+def _final_text_with_tool_summary(response_text: str, tool_calls: list[dict[str, Any]]) -> str:
+    if not tool_calls:
+        return response_text
+
+    parts: list[str] = []
+    for tool_call in tool_calls:
+        tool_name = str(tool_call["tool_name"])
+        if tool_call["status"] == "approval_required":
+            parts.append(f"{tool_name} requires approval")
+        else:
+            parts.append(f"{tool_name} failed")
+
+    summary = "Tool requests captured: " + "; ".join(parts) + "."
+    stripped_response = response_text.strip()
+    if stripped_response:
+        return f"{stripped_response}\n\n{summary}"
+    return summary
 
 
 def _error_message(error: Exception) -> str:

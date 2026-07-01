@@ -1,9 +1,9 @@
 # Tools and Approvals
 
-Prompt 14 keeps the Prompt 13 safety model and adds explicit execution for
-already-approved tool requests. It still does not add real shell execution, file
-writing, network access, workers, provider subprocesses, or provider tool
-calling.
+Prompt 15 keeps the Prompt 14 safety model and adds capture for
+model-requested tool calls. It still does not add real shell execution, file
+writing, network access, workers, provider subprocesses, provider tool calling,
+or automatic execution of model-originated tool requests.
 
 ## ToolRegistry
 
@@ -13,6 +13,13 @@ and runs a handler only when the permission decision is `allow`.
 
 Rejected, blocked, and approval-required requests do not execute their tool
 handler.
+
+Brain adapters may return `BrainResponse.tool_calls`. The text turn pipeline
+validates each model-originated request against the registry and records it as
+an approval request when possible. Model-originated requests do not call
+`ToolRegistry.request_tool`, do not run handlers directly from `BrainResponse`,
+and do not auto-execute even when the registered tool risk is `safe_read` or
+`safe_status`.
 
 The daemon default registry contains:
 
@@ -58,6 +65,11 @@ automatically, and approved tools are not replayed automatically by
 endpoint.
 An approved tool request does not execute automatically.
 
+For model-originated tool calls, approval is mandatory by policy. The approval
+payload stores the tool name, JSON-safe arguments, requesting origin, and turn
+ID. A human or explicit client must later approve and call
+`POST /approvals/{id}/execute`.
+
 Rejected, pending, missing, duplicate, and blocked approvals do not execute.
 `approval_probe` is still a harmless placeholder. After approval, explicit
 execution returns `{"ok": true, "message": "approval_probe executed safely"}`
@@ -76,6 +88,34 @@ The recorder does not decide permission. It stores audit records around tool
 requests that the app has already allowed to run. Explicit approved execution
 records `requested`, `started`, and final `finished` or `failed` states with
 the `approval_id` on the `tool_runs` row.
+
+Prompt 15 model-originated capture records approval and tool events, but does
+not create a finished `tool_runs` row before explicit execution. This keeps
+model intent separate from actual execution.
+
+## Model-Originated Tool Requests
+
+`POST /input/text` may receive a `BrainResponse` containing `tool_calls`.
+Jarvis captures those calls after `brain.responded` and before `turn.finished`.
+
+The capture policy is conservative:
+
+- every model-originated tool call requires approval;
+- safe tools such as `echo` do not auto-execute when requested by a model;
+- unknown tools are reported in the turn metadata and event timeline, not
+  executed;
+- non-JSON-safe arguments fail that tool request only, not the entire turn;
+- response JSON includes `tool_calls`, `approvals`, and the final text summary;
+- turn metadata includes a `tool_call_capture` summary;
+- `voice_queue` and `worker_jobs` are untouched.
+
+This differs from direct human/API requests. `POST /tools/request` still uses
+the permission policy directly, so allowed safe tools may execute there. The
+model path only records intent and waits for approval plus explicit execution.
+
+Prompt 15 uses structured `BrainResponse.tool_calls` only. Parsing provider CLI
+stdout blocks such as `<jarvis_tool_call>{...}</jarvis_tool_call>` is future
+work and should stay covered by adapter tests before it is enabled.
 
 ## API Endpoints
 
@@ -117,7 +157,7 @@ Successful execution returns:
 
 ## Intentional Non-Goals
 
-Prompt 13 intentionally does not implement:
+Prompt 15 intentionally does not implement:
 
 - shell execution
 - file writing
@@ -131,8 +171,9 @@ Prompt 13 intentionally does not implement:
 - WebSocket or SSE tool streaming
 - launchd installation or control
 
-Providers may request tools later, but only the registry and approval gate may
-allow tool execution. Blocked and rejected tools never execute.
+Providers may request tools through `BrainResponse.tool_calls`, but only the
+registry, approval gate, and explicit execute endpoint may lead to execution.
+Blocked, rejected, unknown, invalid, and merely captured tools never execute.
 
 ## Manual Smoke
 

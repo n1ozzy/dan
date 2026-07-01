@@ -368,6 +368,8 @@ class DaemonApp:
             state_machine=self._require_state_machine(),
             brain_manager=self._require_brain_manager(),
             context_builder=self._require_context_builder(),
+            tool_registry=self.tool_registry,
+            approval_gate=self._require_approval_gate(),
         )
 
     def _execute_approved_tool_locked(self, approval_id: str) -> dict[str, Any]:
