@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
 
 from jarvis.brain import BrainAdapterError, BrainManager, BrainRequest, BrainResponse, MockBrainAdapter
+from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
 from jarvis.brain.context_builder import ContextBuilder, ContextBuilderError
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import build_server
@@ -118,6 +121,13 @@ def final_runtime_state(conn: sqlite3.Connection) -> str | None:
     return str(state_changes[-1].payload["new_state"])
 
 
+def event_payload_for_turn(conn: sqlite3.Connection, turn_id: str, event_type: str) -> dict[str, object]:
+    events = create_event_store(conn).list_by_turn_id(turn_id, limit=100)
+    matches = [event.payload for event in events if event.type == event_type]
+    assert len(matches) == 1
+    return matches[0]
+
+
 def assert_subsequence(actual: list[str], expected: list[str]) -> None:
     cursor = 0
     for value in actual:
@@ -161,6 +171,27 @@ class FailingBrainAdapter:
 class FailingContextBuilder:
     def build_request(self, **kwargs: object) -> object:
         raise ContextBuilderError("mock context failure")
+
+
+class RecordingCliRunner:
+    def __init__(self, stdout: str = "provider reply\n") -> None:
+        self.stdout = stdout
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(
+        self,
+        command: list[str],
+        input_text: str,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append(
+            {
+                "command": list(command),
+                "input_text": input_text,
+                "timeout": timeout,
+            }
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=self.stdout, stderr="")
 
 
 def test_post_input_text_with_mock_brain_returns_200_json(app: DaemonApp) -> None:
@@ -432,6 +463,64 @@ def test_brain_request_is_assembled_from_jarvis_owned_context(conn: sqlite3.Conn
     assert turn.context_snapshot["recent_turn_count"] == 1
     assert result.brain_adapter == "mock"
     assert result.brain_model == "mock-local"
+
+
+def test_mock_default_brain_model_metadata_stays_mock_local(conn: sqlite3.Connection) -> None:
+    result = make_orchestrator(conn).handle_text(text="Mock metadata")
+
+    requested = event_payload_for_turn(conn, result.turn_id, "brain.requested")
+    responded = event_payload_for_turn(conn, result.turn_id, "brain.responded")
+    finished = event_payload_for_turn(conn, result.turn_id, "turn.finished")
+
+    assert requested["adapter"] == "mock"
+    assert requested["model"] == "mock-local"
+    assert responded["model"] == requested["model"]
+    assert finished["brain_model"] == responded["model"]
+    assert result.brain_model == "mock-local"
+
+
+def test_fake_claude_cli_turn_uses_selected_adapter_model_metadata(
+    conn: sqlite3.Connection,
+) -> None:
+    runner = RecordingCliRunner(stdout="claude final\n")
+    manager = BrainManager(
+        [
+            MockBrainAdapter(),
+            ClaudeCliAdapter(command="fake-claude", args=["-p"], runner=runner),
+        ],
+        default_adapter="claude_cli",
+    )
+
+    context_builder = ContextBuilder(
+        conn,
+        config=SimpleNamespace(
+            brain=SimpleNamespace(
+                default_adapter="claude_cli",
+                default_model="mock-local",
+                context_budget_chars=24000,
+            ),
+            memory=SimpleNamespace(max_active_blocks=50, max_context_chars=12000),
+        ),
+    )
+
+    result = make_orchestrator(
+        conn,
+        brain_manager=manager,
+        context_builder=context_builder,
+    ).handle_text(text="Provider metadata")
+
+    requested = event_payload_for_turn(conn, result.turn_id, "brain.requested")
+    responded = event_payload_for_turn(conn, result.turn_id, "brain.responded")
+    finished = event_payload_for_turn(conn, result.turn_id, "turn.finished")
+
+    assert len(runner.calls) == 1
+    assert runner.calls[0]["command"] == ["fake-claude", "-p"]
+    assert runner.calls[0]["timeout"] == 120.0
+    assert requested["adapter"] == "claude_cli"
+    assert requested["model"] == "claude-cli"
+    assert responded["model"] == requested["model"]
+    assert finished["brain_model"] == responded["model"]
+    assert result.brain_model == "claude-cli"
 
 
 def test_no_voice_tool_or_worker_rows_are_created(app: DaemonApp) -> None:

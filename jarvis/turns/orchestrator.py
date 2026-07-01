@@ -166,7 +166,7 @@ class TurnOrchestrator:
 
             adapter = self._brain_manager.get_adapter()
             adapter_name = str(adapter.name)
-            request_model = _model_from_request(context_result.request, adapter.default_model)
+            request_model = _model_from_adapter(adapter, context_result.request)
             self._append_event(
                 EventType.BRAIN_REQUESTED,
                 {
@@ -504,6 +504,13 @@ def _turn_source(value: str) -> str:
         return TurnSource(value).value
     except ValueError as exc:
         raise TurnOrchestratorError(f"Invalid turn source: {value}") from exc
+
+
+def _model_from_adapter(adapter: Any, request: Any) -> str:
+    value = getattr(adapter, "default_model", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return _model_from_request(request, "unknown")
 
 
 def _model_from_request(request: Any, default_model: str) -> str:

@@ -312,6 +312,14 @@ def test_cli_adapter_raw_metadata_marks_stateless() -> None:
     assert response.raw_metadata["stateless"] is True
 
 
+def test_cli_adapters_default_to_provider_model_names() -> None:
+    claude_response = ClaudeCliAdapter(runner=FakeRunner()).generate(make_request())
+    codex_response = CodexCliAdapter(runner=FakeRunner()).generate(make_request())
+
+    assert claude_response.model == "claude-cli"
+    assert codex_response.model == "codex-cli"
+
+
 def test_non_zero_exit_raises_brain_adapter_error() -> None:
     runner = FakeRunner(returncode=2, stderr="provider failed")
 

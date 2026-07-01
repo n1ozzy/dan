@@ -69,13 +69,12 @@ First verify the text runtime baseline still works with mock:
 scripts/smoke-text-runtime.sh
 ```
 
-For a provider smoke, use a temporary config modeled on the smoke runbook, set
-`runtime.home`, `runtime.logs_dir`, `runtime.runtime_dir`, `runtime.pid_file`,
-and `database.path` to temporary paths, then enable exactly one CLI adapter in
-that temp config. Send one text input with:
+For a provider smoke, use [PROVIDER_SMOKE.md](PROVIDER_SMOKE.md). The smoke
+uses a temporary config, DB, runtime, and logs; it does not touch real
+`~/.jarvis`. Send one text input with a long client timeout:
 
 ```bash
-python -m jarvis.cli --config "$CONFIG" input text "Kim jesteś?" --url "$BASE_URL"
+python -m jarvis.cli --config "$CONFIG" input text "Kim jesteś?" --url "$BASE_URL" --timeout 180
 ```
 
 Stop only the daemon process you started for that smoke.
@@ -89,6 +88,9 @@ Stop only the daemon process you started for that smoke.
 - Empty output: the CLI returned success but no stdout; check CLI args and
   provider authentication.
 - Non-zero exit: stderr is redacted before it is included in `BrainAdapterError`.
+- HTTP client timeout while the provider CLI is still running: retry the client
+  call with `--timeout 180` and inspect the daemon log before assuming the
+  provider failed.
 
 This runbook covers text-only brain adapters. It does not enable tools, workers,
 voice, launchd, WebSocket, SSE, or provider SDK network adapters.
