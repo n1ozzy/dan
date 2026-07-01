@@ -23,6 +23,14 @@ class TurnOrchestratorError(Exception):
     """Raised when a text turn cannot be completed."""
 
 
+class TurnOrchestratorBusyError(TurnOrchestratorError):
+    """Raised when a text turn cannot start because the runtime is not IDLE.
+
+    Subclasses ``TurnOrchestratorError`` so existing callers keep working while
+    the HTTP layer can map this precondition to 409 instead of 500.
+    """
+
+
 @dataclass(frozen=True)
 class TextTurnResult:
     conversation_id: str
@@ -77,7 +85,7 @@ class TurnOrchestrator:
         normalized_source = _turn_source(source)
 
         if self._state_machine.state is not RuntimeState.IDLE:
-            raise TurnOrchestratorError(
+            raise TurnOrchestratorBusyError(
                 f"Cannot start text turn while runtime state is {self._state_machine.state.value}."
             )
 
@@ -527,4 +535,9 @@ def _error_message(error: Exception) -> str:
     return message or error.__class__.__name__
 
 
-__all__ = ["TextTurnResult", "TurnOrchestrator", "TurnOrchestratorError"]
+__all__ = [
+    "TextTurnResult",
+    "TurnOrchestrator",
+    "TurnOrchestratorBusyError",
+    "TurnOrchestratorError",
+]

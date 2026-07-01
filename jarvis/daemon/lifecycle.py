@@ -23,7 +23,7 @@ from jarvis.api.routes_settings import get_settings, update_settings
 from jarvis.api.routes_state import get_state
 from jarvis.daemon.app import DaemonApp, DaemonAppBusyError, DaemonAppError, DaemonAppNotStartedError
 from jarvis.store.event_store import EventStoreError
-from jarvis.turns.orchestrator import TurnOrchestratorError
+from jarvis.turns.orchestrator import TurnOrchestratorBusyError, TurnOrchestratorError
 
 
 MAX_REQUEST_BODY_BYTES = 1_048_576
@@ -168,6 +168,8 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
     except DaemonAppNotStartedError as exc:
         _write_json(handler, 503, {"error": str(exc), "status": 503})
     except DaemonAppBusyError as exc:
+        _write_json(handler, 409, {"error": str(exc), "status": 409})
+    except TurnOrchestratorBusyError as exc:
         _write_json(handler, 409, {"error": str(exc), "status": 409})
     except TurnOrchestratorError:
         _write_json(handler, 500, {"error": "Text turn failed.", "status": 500})

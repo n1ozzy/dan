@@ -21,7 +21,11 @@ from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.events.bus import EventBus
 from jarvis.store.db import close_quietly, initialize_database
 from jarvis.store.event_store import create_event_store
-from jarvis.turns.orchestrator import TurnOrchestrator, TurnOrchestratorError
+from jarvis.turns.orchestrator import (
+    TurnOrchestrator,
+    TurnOrchestratorBusyError,
+    TurnOrchestratorError,
+)
 from jarvis.turns.repository import ConversationRepository, TurnRepository
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import write_config
@@ -104,6 +108,14 @@ def state_transitions_for_turn(app: DaemonApp, turn_id: str) -> list[tuple[str, 
         for event in events
         if event.type == "state.changed"
     ]
+
+
+def final_runtime_state(conn: sqlite3.Connection) -> str | None:
+    events = create_event_store(conn).list_after(0, limit=200)
+    state_changes = [event for event in events if event.type == "state.changed"]
+    if not state_changes:
+        return None
+    return str(state_changes[-1].payload["new_state"])
 
 
 def assert_subsequence(actual: list[str], expected: list[str]) -> None:
@@ -384,6 +396,7 @@ def test_brain_failure_marks_turn_failed_and_records_events(conn: sqlite3.Connec
     assert "brain.failed" in event_types
     assert "turn.failed" in event_types
     assert "error.raised" in event_types
+    assert final_runtime_state(conn) == "IDLE"
 
 
 def test_context_build_failure_marks_turn_failed_and_records_error(conn: sqlite3.Connection) -> None:
@@ -398,6 +411,83 @@ def test_context_build_failure_marks_turn_failed_and_records_error(conn: sqlite3
     event_types = [event.type for event in create_event_store(conn).list_after(0, limit=100)]
     assert "turn.failed" in event_types
     assert "error.raised" in event_types
+    assert final_runtime_state(conn) == "IDLE"
+
+
+def test_non_idle_runtime_returns_409_and_creates_no_turn(app: DaemonApp) -> None:
+    app.start()
+    assert app.state_machine is not None
+    # Move the runtime out of IDLE without holding the text-turn lock, so the 409
+    # is produced by the orchestrator precondition rather than the DaemonApp lock.
+    app.state_machine.transition(RuntimeState.THINKING, reason="test busy runtime")
+
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Busy runtime"})
+
+    assert status == 409
+    assert payload["status"] == 409
+    assert app.conn is not None
+    assert table_count(app.conn, "turns") == 0
+
+
+def test_handle_text_on_non_idle_runtime_raises_busy_error_without_turn(
+    conn: sqlite3.Connection,
+) -> None:
+    event_store = create_event_store(conn)
+    state_machine = RuntimeStateMachine(event_store, initial_state=RuntimeState.THINKING)
+    orchestrator = TurnOrchestrator(
+        conn=conn,
+        event_store=event_store,
+        event_bus=None,
+        state_machine=state_machine,
+        brain_manager=BrainManager([MockBrainAdapter()]),
+        context_builder=ContextBuilder(conn),
+    )
+
+    with pytest.raises(TurnOrchestratorBusyError):
+        orchestrator.handle_text(text="Busy")
+
+    # Busy stays a TurnOrchestratorError subclass so existing callers keep working.
+    assert issubclass(TurnOrchestratorBusyError, TurnOrchestratorError)
+    assert table_count(conn, "turns") == 0
+
+
+def test_text_turn_lock_released_after_failure(app: DaemonApp) -> None:
+    app.start()
+    app.brain_manager = BrainManager([FailingBrainAdapter()], default_adapter="failing")
+
+    with pytest.raises(TurnOrchestratorError, match="brain"):
+        app.handle_text_input(text="Fail then release")
+
+    # The lock must be free again and the runtime must not be stranded in THINKING.
+    assert app.text_turn_lock.acquire(blocking=False)
+    app.text_turn_lock.release()
+    assert app.state_machine is not None
+    assert app.state_machine.state is RuntimeState.IDLE
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"text": "hi", "metadata": "not-an-object"},
+        {"text": "hi", "metadata": ["nope"]},
+        {"text": "hi", "conversation_id": 123},
+        {"text": "hi", "conversation_id": "   "},
+    ],
+)
+def test_invalid_metadata_or_conversation_id_returns_400_and_creates_no_turn(
+    app: DaemonApp,
+    payload: object,
+) -> None:
+    app.start()
+
+    with running_server(app) as base_url:
+        status, response = request_json("POST", f"{base_url}/input/text", payload)
+
+    assert status == 400
+    assert response["status"] == 400
+    assert app.conn is not None
+    assert table_count(app.conn, "turns") == 0
 
 
 def test_get_input_text_returns_json_405_or_501(app: DaemonApp) -> None:
