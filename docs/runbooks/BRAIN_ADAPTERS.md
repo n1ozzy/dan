@@ -36,7 +36,8 @@ timeout_seconds = 120
 ```
 
 The adapter sends the formatted Jarvis request to the command on stdin and uses
-stdout as the final response text.
+stdout as the final response text after removing any valid Jarvis tool-call
+blocks.
 
 ## Enable Codex CLI
 
@@ -60,6 +61,42 @@ timeout_seconds = 120
 
 Keep CLI args minimal. Do not add file-write, shell-execution, unrestricted
 tool-use, repo-editing, or permission-bypass flags.
+
+## Explicit Tool Request Blocks
+
+Claude CLI and Codex CLI adapters parse explicit tool requests from stdout
+using this block syntax:
+
+```text
+<jarvis_tool_call>{"name":"tool_name","arguments":{...}}</jarvis_tool_call>
+```
+
+Accepted JSON fields are:
+
+- `name`: required string.
+- `arguments`: optional object, defaults to `{}`.
+- `id`: optional string.
+- `risk`: optional string, defaults to `safe_read`; the registry still owns
+  the effective approval risk during capture.
+
+Valid blocks become `BrainResponse.tool_calls` and are removed from the visible
+response text. If the visible text would be empty, the adapter returns
+`Jarvis requested tool approval.` as deterministic text. Adapter metadata
+includes `parsed_tool_call_count`.
+
+Malformed blocks, missing `name`, and non-object `arguments` are not fatal.
+They are removed from visible text, recorded in
+`raw_metadata["tool_call_parse_errors"]`, and never executed.
+
+Tool requests are not executed automatically. The text turn pipeline records
+model-originated requests as approvals when possible. A human or explicit
+client must approve and then call `POST /approvals/{id}/execute`; approval
+alone does not run the tool.
+
+The provider prompt tells models not to claim a requested tool has already run,
+not to request dangerous shell/file/network/system mutation, and not to expose
+hidden chain-of-thought. This parser is only an approval-capture path, not
+autonomous tool use.
 
 ## Smoke Testing
 

@@ -548,6 +548,44 @@ def test_fake_claude_cli_turn_uses_selected_adapter_model_metadata(
     assert result.brain_model == "claude-cli"
 
 
+def test_fake_claude_cli_tool_call_block_creates_approval_without_execution(
+    app: DaemonApp,
+) -> None:
+    runner = RecordingCliRunner(
+        stdout=(
+            'Need approval.\n'
+            '<jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"integration"}}</jarvis_tool_call>\n'
+            'Waiting.'
+        )
+    )
+    app.brain_manager = BrainManager(
+        [
+            MockBrainAdapter(),
+            ClaudeCliAdapter(command="fake-claude", args=["-p"], runner=runner),
+        ],
+        default_adapter="claude_cli",
+    )
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Probe via CLI"})
+
+    assert status == 200
+    assert len(runner.calls) == 1
+    assert payload["final_text"].startswith("Need approval.\nWaiting.")
+    assert "approval_probe requires approval" in payload["final_text"]
+    assert len(payload["tool_calls"]) == 1
+    assert payload["tool_calls"][0]["tool_name"] == "approval_probe"
+    assert payload["tool_calls"][0]["status"] == "approval_required"
+    assert payload["approvals"][0]["tool_name"] == "approval_probe"
+    assert payload["approvals"][0]["status"] == "pending"
+    assert app.conn is not None
+    assert table_count(app.conn, "approvals") == 1
+    assert table_count(app.conn, "tool_runs") == 0
+    assert table_count(app.conn, "voice_queue") == 0
+    assert table_count(app.conn, "worker_jobs") == 0
+
+
 def test_no_voice_tool_or_worker_rows_are_created(app: DaemonApp) -> None:
     app.start()
 

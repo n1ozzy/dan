@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from jarvis.brain.base import BrainAdapterError, BrainRequest, BrainResponse
+from jarvis.brain.tool_call_parser import parse_tool_call_blocks
 from jarvis.logging import redact_secrets
 
 
@@ -25,6 +26,10 @@ def format_cli_prompt(request: BrainRequest) -> str:
         "- Do not expose hidden chain-of-thought; provide the final answer only.",
         "- Provider sessions are not Jarvis memory.",
         "- Tools are not executable in this call; tool requests remain pending approval.",
+        '- If you need a tool, request it using exactly: <jarvis_tool_call>{"name":"tool_name","arguments":{...}}</jarvis_tool_call>',
+        "- Tool requests are not executed automatically. Human approval is required.",
+        "- Do not claim a requested tool has already been executed.",
+        "- Do not include dangerous shell, file, network, or system mutation requests.",
         "",
         f"Conversation: {request.conversation_id}",
         f"Turn: {request.turn_id}",
@@ -107,14 +112,21 @@ def generate_cli_response(
     if not stdout:
         raise BrainAdapterError(f"{adapter_name} returned empty stdout")
 
+    parsed = parse_tool_call_blocks(stdout)
+    raw_metadata: dict[str, Any] = {
+        "adapter": adapter_name,
+        "command_name": command_name,
+        "stateless": True,
+        "parsed_tool_call_count": len(parsed.tool_calls),
+    }
+    if parsed.parse_errors:
+        raw_metadata["tool_call_parse_errors"] = list(parsed.parse_errors)
+
     return BrainResponse(
-        text=stdout,
+        text=parsed.text,
+        tool_calls=parsed.tool_calls,
         model=default_model,
-        raw_metadata={
-            "adapter": adapter_name,
-            "command_name": command_name,
-            "stateless": True,
-        },
+        raw_metadata=raw_metadata,
     )
 
 

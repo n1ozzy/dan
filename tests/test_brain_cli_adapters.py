@@ -18,6 +18,7 @@ from jarvis.brain import (
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter, format_cli_prompt
 from jarvis.brain.codex_cli_adapter import CodexCliAdapter
 from jarvis.brain.manager import BrainManager
+from jarvis.brain.tool_call_parser import parse_tool_call_blocks
 from jarvis.config import load_config
 from tests.git_guards import assert_schema_and_migrations_unchanged
 
@@ -231,6 +232,84 @@ def write_config(tmp_path: Path, **kwargs: object) -> Path:
     return path
 
 
+def test_parser_extracts_one_valid_tool_call_block() -> None:
+    parsed = parse_tool_call_blocks(
+        '<jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"demo"}}</jarvis_tool_call>'
+    )
+
+    assert parsed.text == "Jarvis requested tool approval."
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].name == "approval_probe"
+    assert parsed.tool_calls[0].arguments == {"reason": "demo"}
+    assert parsed.tool_calls[0].risk == "safe_read"
+    assert parsed.parse_errors == []
+
+
+def test_parser_extracts_multiple_valid_tool_call_blocks() -> None:
+    parsed = parse_tool_call_blocks(
+        "\n".join(
+            [
+                '<jarvis_tool_call>{"name":"echo","arguments":{"text":"one"}}</jarvis_tool_call>',
+                '<jarvis_tool_call>{"id":"call-2","name":"approval_probe","arguments":{"reason":"two"},"risk":"shell_read"}</jarvis_tool_call>',
+            ]
+        )
+    )
+
+    assert [call.name for call in parsed.tool_calls] == ["echo", "approval_probe"]
+    assert [call.arguments for call in parsed.tool_calls] == [
+        {"text": "one"},
+        {"reason": "two"},
+    ]
+    assert parsed.tool_calls[1].id == "call-2"
+    assert parsed.tool_calls[1].risk == "shell_read"
+    assert parsed.text == "Jarvis requested tool approval."
+
+
+def test_parser_removes_valid_block_from_visible_response_text() -> None:
+    parsed = parse_tool_call_blocks(
+        'Before.\n<jarvis_tool_call>{"name":"approval_probe","arguments":{}}</jarvis_tool_call>\nAfter.'
+    )
+
+    assert parsed.text == "Before.\nAfter."
+    assert len(parsed.tool_calls) == 1
+
+
+def test_parser_uses_fallback_text_when_output_only_contains_tool_call() -> None:
+    parsed = parse_tool_call_blocks(
+        '   <jarvis_tool_call>{"name":"approval_probe","arguments":{}}</jarvis_tool_call>   '
+    )
+
+    assert parsed.text == "Jarvis requested tool approval."
+
+
+def test_parser_missing_name_produces_parse_error_without_tool_call() -> None:
+    parsed = parse_tool_call_blocks(
+        '<jarvis_tool_call>{"arguments":{"reason":"missing"}}</jarvis_tool_call>'
+    )
+
+    assert parsed.tool_calls == []
+    assert parsed.text == "Jarvis requested tool approval."
+    assert any("name must be a non-empty string" in error for error in parsed.parse_errors)
+
+
+def test_parser_non_object_arguments_produces_parse_error_without_tool_call() -> None:
+    parsed = parse_tool_call_blocks(
+        '<jarvis_tool_call>{"name":"approval_probe","arguments":["not","object"]}</jarvis_tool_call>'
+    )
+
+    assert parsed.tool_calls == []
+    assert any("arguments must be a JSON object" in error for error in parsed.parse_errors)
+
+
+def test_parser_malformed_json_produces_parse_error_without_tool_call() -> None:
+    parsed = parse_tool_call_blocks(
+        '<jarvis_tool_call>{"name":"approval_probe","arguments":</jarvis_tool_call>'
+    )
+
+    assert parsed.tool_calls == []
+    assert any("invalid JSON" in error for error in parsed.parse_errors)
+
+
 def test_prompt_formatter_includes_persona_system_messages() -> None:
     prompt = format_cli_prompt(make_request())
 
@@ -276,6 +355,20 @@ def test_prompt_formatter_does_not_grant_tool_execution() -> None:
     assert "permission granted" not in prompt.lower()
 
 
+def test_prompt_formatter_documents_tool_call_block_syntax() -> None:
+    prompt = format_cli_prompt(make_request())
+
+    assert '<jarvis_tool_call>{"name":"tool_name","arguments":{...}}</jarvis_tool_call>' in prompt
+
+
+def test_prompt_formatter_says_tool_requests_require_approval_without_execution() -> None:
+    prompt = format_cli_prompt(make_request())
+
+    assert "Tool requests are not executed automatically" in prompt
+    assert "Human approval is required" in prompt
+    assert "Do not claim a requested tool has already been executed" in prompt
+
+
 def test_claude_cli_adapter_uses_injected_fake_runner() -> None:
     runner = FakeRunner(stdout="claude says hi\n")
     adapter = ClaudeCliAdapter(command="fake-claude", args=["-p"], runner=runner)
@@ -302,6 +395,66 @@ def test_successful_fake_runner_stdout_becomes_brain_response_text() -> None:
     response = ClaudeCliAdapter(runner=FakeRunner(stdout="final answer\n")).generate(make_request())
 
     assert response.text == "final answer"
+
+
+def test_claude_cli_adapter_parses_tool_call_blocks_from_fake_runner_stdout() -> None:
+    runner = FakeRunner(
+        stdout=(
+            'I need approval.\n'
+            '<jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"adapter"}}</jarvis_tool_call>\n'
+            'Waiting.'
+        )
+    )
+
+    response = ClaudeCliAdapter(command="fake-claude", runner=runner).generate(make_request())
+
+    assert response.text == "I need approval.\nWaiting."
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "approval_probe"
+    assert response.tool_calls[0].arguments == {"reason": "adapter"}
+
+
+def test_codex_cli_adapter_parses_tool_call_blocks_from_fake_runner_stdout() -> None:
+    runner = FakeRunner(
+        stdout=(
+            'Codex wants a probe.\n'
+            '<jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"codex"}}</jarvis_tool_call>'
+        )
+    )
+
+    response = CodexCliAdapter(command="fake-codex", runner=runner).generate(make_request())
+
+    assert response.text == "Codex wants a probe."
+    assert len(response.tool_calls) == 1
+    assert response.tool_calls[0].name == "approval_probe"
+    assert response.tool_calls[0].arguments == {"reason": "codex"}
+
+
+def test_cli_adapter_raw_metadata_includes_parsed_tool_call_count() -> None:
+    response = ClaudeCliAdapter(
+        command="fake-claude",
+        runner=FakeRunner(
+            stdout='<jarvis_tool_call>{"name":"approval_probe","arguments":{}}</jarvis_tool_call>'
+        ),
+    ).generate(make_request())
+
+    assert response.raw_metadata["parsed_tool_call_count"] == 1
+
+
+def test_cli_adapter_raw_metadata_includes_parse_errors_for_malformed_blocks() -> None:
+    response = ClaudeCliAdapter(
+        command="fake-claude",
+        runner=FakeRunner(
+            stdout='Visible.\n<jarvis_tool_call>{"name":"approval_probe","arguments":</jarvis_tool_call>'
+        ),
+    ).generate(make_request())
+
+    assert response.text == "Visible."
+    assert response.tool_calls == []
+    assert response.raw_metadata["parsed_tool_call_count"] == 0
+    assert any(
+        "invalid JSON" in error for error in response.raw_metadata["tool_call_parse_errors"]
+    )
 
 
 def test_cli_adapter_raw_metadata_marks_stateless() -> None:

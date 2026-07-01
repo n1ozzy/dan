@@ -1,9 +1,9 @@
 # Tools and Approvals
 
-Prompt 15 keeps the Prompt 14 safety model and adds capture for
-model-requested tool calls. It still does not add real shell execution, file
-writing, network access, workers, provider subprocesses, provider tool calling,
-or automatic execution of model-originated tool requests.
+Prompt 15A keeps the Prompt 15 safety model and adds explicit parsing for
+provider CLI tool-call blocks. It still does not add real shell execution, file
+writing, network access, workers, provider-side tool calling, or automatic
+execution of model-originated tool requests.
 
 ## ToolRegistry
 
@@ -14,12 +14,24 @@ and runs a handler only when the permission decision is `allow`.
 Rejected, blocked, and approval-required requests do not execute their tool
 handler.
 
-Brain adapters may return `BrainResponse.tool_calls`. The text turn pipeline
-validates each model-originated request against the registry and records it as
-an approval request when possible. Model-originated requests do not call
-`ToolRegistry.request_tool`, do not run handlers directly from `BrainResponse`,
-and do not auto-execute even when the registered tool risk is `safe_read` or
-`safe_status`.
+Brain adapters may return `BrainResponse.tool_calls`. Claude CLI and Codex CLI
+adapters can populate those calls by parsing explicit blocks from provider
+stdout:
+
+```text
+<jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"demo"}}</jarvis_tool_call>
+```
+
+The parser accepts `name` as a required string plus optional `arguments`,
+`id`, and `risk` fields. Missing `arguments` becomes `{}`. Malformed JSON,
+missing names, and non-object arguments are recorded in adapter metadata and
+are not executed.
+
+The text turn pipeline validates each model-originated request against the
+registry and records it as an approval request when possible. Model-originated
+requests do not call `ToolRegistry.request_tool`, do not run handlers directly
+from `BrainResponse`, and do not auto-execute even when the registered tool
+risk is `safe_read` or `safe_status`.
 
 The daemon default registry contains:
 
@@ -113,9 +125,16 @@ This differs from direct human/API requests. `POST /tools/request` still uses
 the permission policy directly, so allowed safe tools may execute there. The
 model path only records intent and waits for approval plus explicit execution.
 
-Prompt 15 uses structured `BrainResponse.tool_calls` only. Parsing provider CLI
-stdout blocks such as `<jarvis_tool_call>{...}</jarvis_tool_call>` is future
-work and should stay covered by adapter tests before it is enabled.
+Prompt 15A enables explicit CLI stdout parsing into structured
+`BrainResponse.tool_calls`. Valid tool-call blocks are removed from visible
+response text. If a response contains only tool-call blocks, Jarvis uses the
+deterministic visible text `Jarvis requested tool approval.` Malformed blocks
+are also removed from visible text and recorded in
+`raw_metadata["tool_call_parse_errors"]`.
+
+This is still not autonomous tool use. Model-originated tool calls become
+approval records only. Approved tools require a later explicit
+`POST /approvals/{id}/execute` call before any handler can run.
 
 ## API Endpoints
 
