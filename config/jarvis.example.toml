@@ -2,7 +2,7 @@
 name = "jarvisd"
 host = "127.0.0.1"
 port = 41741
-state = "BOOTING"
+log_level = "INFO"
 
 [database]
 path = "~/.jarvis/jarvis.db"
@@ -11,27 +11,33 @@ destroy_existing = false
 
 [brain]
 default_adapter = "mock"
-model = "mock"
-effort = "low"
+default_model = "mock-local"
 timeout_seconds = 60
+context_budget_chars = 24000
 provider_sessions_are_memory = false
 
 [memory]
 enabled = true
+max_active_blocks = 50
 max_context_chars = 12000
 worker_candidates_require_promotion = true
 
 [voice]
 enabled = false
+speak_responses = false
 broker_enabled = false
-default_engine = "mock"
+default_tts = "mock"
+default_stt = "mock"
+ptt_mode = "hold"
 queue_persisted = true
 
 [audio]
 enabled = false
+input_policy = "pin_builtin_mic"
 preferred_input = "Mikrofon (MacBook Air)"
-output_policy = "system_default"
-bluetooth_microphone_policy = "warn"
+output_policy = "follow_system_default"
+allow_bluetooth_microphone = false
+always_listen_enabled = false
 
 [panel]
 enabled = false
@@ -41,14 +47,15 @@ height = 620
 
 [security]
 localhost_only = true
-approval_required_for_file_write = true
-approval_required_for_shell = true
-approval_required_for_network = true
+require_approval_for_shell = true
+require_approval_for_file_write = true
+require_approval_for_network = true
 destructive_tools_enabled = false
 
 [runtime]
-root = "~/.jarvis"
+home = "~/.jarvis"
 logs_dir = "~/.jarvis/logs"
+runtime_dir = "~/.jarvis/runtime"
 pid_file = "~/.jarvis/runtime/jarvisd.pid"
 legacy_detection = "report_only"
 
