@@ -13,8 +13,10 @@ from tests.git_guards import assert_schema_and_migrations_unchanged
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE_SCRIPT = ROOT / "scripts" / "smoke-text-runtime.sh"
 CLAUDE_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-claude-cli-brain.sh"
+TOOLS_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-tools-approvals.sh"
 RUNBOOK = ROOT / "docs" / "runbooks" / "TEXT_RUNTIME_SMOKE.md"
 PROVIDER_RUNBOOK = ROOT / "docs" / "runbooks" / "PROVIDER_SMOKE.md"
+TOOLS_RUNBOOK = ROOT / "docs" / "runbooks" / "TOOLS_AND_APPROVALS.md"
 README = ROOT / "README.md"
 
 FORBIDDEN_SCRIPT_SNIPPETS = (
@@ -48,6 +50,18 @@ REQUIRED_CLAUDE_SMOKE_SNIPPETS = (
     "turn.finished",
 )
 
+REQUIRED_TOOLS_SMOKE_SNIPPETS = (
+    "python -m jarvis.cli",
+    "daemon run",
+    "/tools",
+    "/tools/request",
+    "/approvals",
+    "events after",
+    "approval_probe",
+    "voice_queue",
+    "worker_jobs",
+)
+
 FORBIDDEN_RUNTIME_SNIPPETS = (
     "/Users/n1_ozzy/Documents/dev/dan",
     "/tmp/dan",
@@ -76,6 +90,16 @@ def test_claude_smoke_script_is_executable() -> None:
     assert os.access(CLAUDE_SMOKE_SCRIPT, os.X_OK)
 
 
+def test_tools_smoke_script_exists() -> None:
+    assert TOOLS_SMOKE_SCRIPT.is_file()
+
+
+def test_tools_smoke_script_is_executable() -> None:
+    mode = TOOLS_SMOKE_SCRIPT.stat().st_mode
+    assert mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    assert os.access(TOOLS_SMOKE_SCRIPT, os.X_OK)
+
+
 def test_smoke_script_passes_bash_syntax_check() -> None:
     result = subprocess.run(
         ["bash", "-n", str(SMOKE_SCRIPT)],
@@ -100,6 +124,18 @@ def test_claude_smoke_script_passes_bash_syntax_check() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_tools_smoke_script_passes_bash_syntax_check() -> None:
+    result = subprocess.run(
+        ["bash", "-n", str(TOOLS_SMOKE_SCRIPT)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
     text = SMOKE_SCRIPT.read_text(encoding="utf-8")
 
@@ -109,6 +145,13 @@ def test_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
 
 def test_claude_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
     text = CLAUDE_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    offenders = [snippet for snippet in FORBIDDEN_SCRIPT_SNIPPETS if snippet in text]
+    assert offenders == []
+
+
+def test_tools_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
+    text = TOOLS_SMOKE_SCRIPT.read_text(encoding="utf-8")
 
     offenders = [snippet for snippet in FORBIDDEN_SCRIPT_SNIPPETS if snippet in text]
     assert offenders == []
@@ -128,12 +171,48 @@ def test_claude_smoke_script_references_required_provider_flow() -> None:
     assert missing == []
 
 
+def test_tools_smoke_script_references_required_tools_flow() -> None:
+    text = TOOLS_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    missing = [snippet for snippet in REQUIRED_TOOLS_SMOKE_SNIPPETS if snippet not in text]
+    assert missing == []
+
+
+def test_tools_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> None:
+    text = TOOLS_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    for snippet in (
+        "mktemp",
+        "SMOKE_KEEP_ARTIFACTS",
+        "runtime.home",
+        "runtime.logs_dir",
+        "runtime.runtime_dir",
+        "runtime.pid_file",
+        "database.path",
+        "DAEMON_PID=",
+        "kill \"$DAEMON_PID\"",
+    ):
+        assert snippet in text
+    assert "~/.jarvis" not in text
+
+
+def test_pytest_only_syntax_checks_tools_smoke_script() -> None:
+    text = Path(__file__).read_text(encoding="utf-8")
+    direct_exec = "subprocess.run([str(TOOLS_" + "SMOKE_SCRIPT)"
+
+    assert direct_exec not in text
+
+
 def test_smoke_runbook_exists() -> None:
     assert RUNBOOK.is_file()
 
 
 def test_provider_smoke_runbook_exists() -> None:
     assert PROVIDER_RUNBOOK.is_file()
+
+
+def test_tools_smoke_runbook_exists() -> None:
+    assert TOOLS_RUNBOOK.is_file()
 
 
 def test_smoke_runbook_documents_temp_database_and_runtime() -> None:
@@ -159,6 +238,24 @@ def test_provider_smoke_runbook_documents_safe_claude_cli_smoke() -> None:
     assert "--dangerously-skip-permissions" in text
 
 
+def test_tools_smoke_runbook_documents_manual_harness_scope() -> None:
+    text = TOOLS_RUNBOOK.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    assert "scripts/smoke-tools-approvals.sh" in text
+    assert "SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-tools-approvals.sh" in text
+    assert "approval_probe" in text
+    assert "does not replay" in lowered
+    for phrase in (
+        "no real shell execution",
+        "no file writing",
+        "no network tools",
+        "no worker replay",
+        "no provider tool calling yet",
+    ):
+        assert phrase in lowered
+
+
 def test_smoke_runbook_documents_excluded_runtime_surfaces() -> None:
     text = RUNBOOK.read_text(encoding="utf-8").lower()
 
@@ -177,6 +274,7 @@ def test_readme_points_to_smoke_runbook() -> None:
 
     assert "docs/runbooks/TEXT_RUNTIME_SMOKE.md" in text
     assert "docs/runbooks/PROVIDER_SMOKE.md" in text
+    assert "docs/runbooks/TOOLS_AND_APPROVALS.md" in text
 
 
 def test_schema_and_migrations_are_unchanged() -> None:

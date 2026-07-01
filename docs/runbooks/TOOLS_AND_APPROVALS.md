@@ -13,10 +13,13 @@ and runs a handler only when the permission decision is `allow`.
 Rejected, blocked, and approval-required requests do not execute their tool
 handler.
 
-The default registry contains only:
+The daemon default registry contains:
 
 - `echo`, risk `safe_read`: returns the request arguments.
 - `system_status`, risk `safe_status`: returns a static placeholder message.
+- `approval_probe`, risk `shell_read`: approval-required demo tool used by the
+  manual smoke harness. It is not a shell tool, does not read files, does not
+  write files, does not inspect processes, and does not use network access.
 
 ## Permission Categories
 
@@ -50,6 +53,9 @@ Obvious secrets are redacted from event payloads.
 
 Approving a request does not execute the tool in Prompt 13. Execution after
 approval is intentionally left for a later prompt.
+
+Approving or rejecting `approval_probe` does not replay execution either. It
+only proves that approval records and decision endpoints work.
 
 ## ToolRunRecorder
 
@@ -95,3 +101,59 @@ Prompt 13 intentionally does not implement:
 
 Providers may request tools later, but only the registry and approval gate may
 allow tool execution. Blocked and rejected tools never execute.
+
+## Manual Smoke
+
+Run the tools and approvals smoke harness manually:
+
+```bash
+scripts/smoke-tools-approvals.sh
+```
+
+To keep the temporary runtime and logs for inspection:
+
+```bash
+SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-tools-approvals.sh
+```
+
+The smoke starts a temporary `jarvisd` with a temporary config, database,
+runtime home, logs directory, runtime directory, and PID file. It uses the mock
+brain adapter, disables voice, disables launch supervision, disables destructive
+tools, and makes localhost HTTP requests only.
+
+It proves:
+
+- `GET /tools` returns `echo`, `system_status`, and `approval_probe`.
+- `POST /tools/request` executes `echo` and records a finished tool run.
+- `POST /tools/request` for `approval_probe` creates a pending approval and
+  does not execute the handler.
+- `GET /approvals` shows the pending approval.
+- Approve and reject endpoints update approval status without replaying
+  execution.
+- `GET /events` exposes tool and approval events.
+- `worker_jobs` and `voice_queue` stay empty.
+- The temporary database and runtime home are used instead of real `~/.jarvis`.
+- The script stops only the child daemon PID it started.
+
+It does not prove:
+
+- no real shell execution
+- no file writing
+- no network tools
+- no worker replay
+- no provider tool calling yet
+- no approval replay implementation
+
+The smoke does not start workers, voice, audio, panel, provider subprocesses,
+or any launch supervision.
+
+## Troubleshooting
+
+- Port already in use: free `127.0.0.1:41769` or edit the smoke port locally
+  before running.
+- Permission denied: run `chmod +x scripts/smoke-tools-approvals.sh`.
+- Missing `.venv`: the script uses `.venv/bin/python` when present and falls
+  back to `python3` or `python`.
+- Daemon health timeout: rerun with
+  `SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-tools-approvals.sh` and inspect
+  `daemon.stdout.log` and `daemon.stderr.log` in the printed smoke directory.

@@ -522,6 +522,8 @@ def test_get_tools_returns_default_tools(app: DaemonApp) -> None:
     tools = {tool["name"]: tool for tool in payload["tools"]}
     assert tools["echo"]["risk"] == "safe_read"
     assert tools["system_status"]["risk"] == "safe_status"
+    assert tools["approval_probe"]["risk"] == "shell_read"
+    assert "Approval-required demo tool" in tools["approval_probe"]["description"]
 
 
 def test_post_tools_request_echo_executes_and_records_run(app: DaemonApp) -> None:
@@ -583,6 +585,41 @@ def test_post_tools_request_approval_required_creates_approval_without_execution
     assert fake.calls == []
     assert table_count(app, "approvals") == 1
     assert table_count(app, "tool_runs") == 0
+    assert table_count(app, "voice_queue") == 0
+    assert table_count(app, "worker_jobs") == 0
+
+
+def test_post_tools_request_default_approval_probe_creates_approval_without_replay(
+    app: DaemonApp,
+) -> None:
+    app.start()
+
+    with running_server(app) as base_url:
+        request_status, requested = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {
+                "tool_name": "approval_probe",
+                "arguments": {"purpose": "smoke"},
+                "requested_by": "api",
+            },
+        )
+        approve_status, approved = request_json(
+            "POST",
+            f"{base_url}/approvals/{requested['approval_id']}/approve",
+            {"reason": "manual smoke approval endpoint check"},
+        )
+
+    assert request_status == 200
+    assert requested["status"] == "approval_required"
+    assert isinstance(requested["approval_id"], str)
+    assert requested["output"] is None
+    assert approve_status == 200
+    assert approved["approval"]["status"] == "approved"
+    assert table_count(app, "approvals") == 1
+    assert table_count(app, "tool_runs") == 0
+    assert table_count(app, "voice_queue") == 0
+    assert table_count(app, "worker_jobs") == 0
 
 
 def test_post_tools_request_blocked_tool_does_not_execute(app: DaemonApp) -> None:
@@ -602,6 +639,8 @@ def test_post_tools_request_blocked_tool_does_not_execute(app: DaemonApp) -> Non
     assert fake.calls == []
     assert table_count(app, "approvals") == 0
     assert table_count(app, "tool_runs") == 0
+    assert table_count(app, "voice_queue") == 0
+    assert table_count(app, "worker_jobs") == 0
 
 
 def test_get_approvals_lists_pending(app: DaemonApp) -> None:

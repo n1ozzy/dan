@@ -15,6 +15,7 @@ from jarvis.tools.file_tool import FileReadPlaceholderTool, FileWritePlaceholder
 from jarvis.tools.permissions import ToolDecision, ToolPermissionPolicy
 from jarvis.tools.registry import (
     ApprovalGate,
+    ApprovalProbeTool,
     Tool,
     ToolRegistry,
     ToolRegistryError,
@@ -170,6 +171,20 @@ def test_registry_lists_tool_specs() -> None:
     assert specs[0].input_schema == {"type": "object"}
 
 
+def test_approval_probe_is_approval_required_and_harmless_if_called() -> None:
+    probe = ApprovalProbeTool()
+    decision = ToolPermissionPolicy().decide(probe.risk, tool_name=probe.name, payload={})
+
+    assert probe.name == "approval_probe"
+    assert probe.risk == "shell_read"
+    assert decision.decision == ToolDecision.APPROVAL_REQUIRED
+    assert decision.approval_required is True
+    assert probe.run({}) == {
+        "ok": False,
+        "message": "approval_probe is an approval-only demo tool; replay is not implemented.",
+    }
+
+
 def test_allowed_tool_executes() -> None:
     tool = RecordingTool()
     registry = ToolRegistry()
@@ -200,6 +215,29 @@ def test_approval_required_tool_does_not_execute(conn: sqlite3.Connection) -> No
     assert result.approval_id is not None
     assert tool.calls == []
     assert table_count(conn, "approvals") == 1
+    assert table_count(conn, "worker_jobs") == 0
+    assert table_count(conn, "voice_queue") == 0
+
+
+def test_approval_probe_request_creates_approval_without_tool_run_or_runtime_side_effects(
+    conn: sqlite3.Connection,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(ApprovalProbeTool())
+
+    result = registry.request_tool(
+        ToolRequest(id="run-probe", tool_name="approval_probe", arguments={}, requested_by="tests"),
+        permission_policy=ToolPermissionPolicy(),
+        approval_gate=ApprovalGate(conn),
+    )
+
+    assert result.status == "approval_required"
+    assert result.approval_id is not None
+    assert result.output is None
+    assert table_count(conn, "approvals") == 1
+    assert table_count(conn, "tool_runs") == 0
+    assert table_count(conn, "worker_jobs") == 0
+    assert table_count(conn, "voice_queue") == 0
 
 
 def test_blocked_tool_does_not_execute() -> None:

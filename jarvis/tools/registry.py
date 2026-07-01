@@ -71,6 +71,19 @@ class EchoTool(Tool):
         return {"arguments": _json_safe(dict(arguments))}
 
 
+class ApprovalProbeTool(Tool):
+    name = "approval_probe"
+    description = "Approval-required demo tool that never runs unless a future approval replay flow exists."
+    risk = "shell_read"
+    input_schema = {"type": "object"}
+
+    def run(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        return {
+            "ok": False,
+            "message": "approval_probe is an approval-only demo tool; replay is not implemented.",
+        }
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
@@ -625,6 +638,7 @@ def _redact(value: Any) -> Any:
 
 __all__ = [
     "ApprovalGate",
+    "ApprovalProbeTool",
     "EchoTool",
     "Tool",
     "ToolExecutionError",

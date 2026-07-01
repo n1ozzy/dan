@@ -36,6 +36,7 @@ from jarvis.tools import (
     ToolSpec,
     create_default_tool_registry,
 )
+from jarvis.tools.registry import ApprovalProbeTool
 from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.turns.orchestrator import TextTurnResult, TurnOrchestrator
 from jarvis.turns.models import Turn
@@ -386,6 +387,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     event_bus = EventBus()
     runtime_supervisor = RuntimeSupervisor(home=paths.home)
     tool_registry = create_default_tool_registry()
+    tool_registry.register(ApprovalProbeTool())
     tool_permission_policy = ToolPermissionPolicy(
         destructive_tools_enabled=config.security.destructive_tools_enabled,
         approved_roots=[str(paths.home)],
