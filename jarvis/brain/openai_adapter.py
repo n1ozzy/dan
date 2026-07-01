@@ -1,10 +1,16 @@
-"""OpenAI brain adapter placeholder."""
+"""Unavailable OpenAI brain adapter placeholder."""
 
 from __future__ import annotations
 
-from jarvis.brain.base import BrainRequest, BrainResponse
+from jarvis.brain.base import BrainAdapterError, BrainRequest, BrainResponse
 
 
 class OpenAIAdapter:
-    def respond(self, request: BrainRequest) -> BrainResponse:
-        raise NotImplementedError("OpenAI provider integration is not implemented yet")
+    name = "openai"
+    default_model = "openai-unavailable"
+
+    def available_models(self) -> list[str]:
+        return []
+
+    def generate(self, request: BrainRequest) -> BrainResponse:
+        raise BrainAdapterError("OpenAI adapter is not implemented yet")
