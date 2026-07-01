@@ -101,7 +101,10 @@ class ToolPermissionPolicy:
         payload: Mapping[str, Any] | None,
     ) -> ToolPermissionResult:
         if not self.approved_roots:
-            return _allow("file_read", f"{tool_name} file_read allowed by placeholder root policy.")
+            return _blocked(
+                "file_read",
+                f"{tool_name} file_read is blocked because no approved roots are configured.",
+            )
 
         path_value = payload.get("path") if isinstance(payload, Mapping) else None
         if not isinstance(path_value, str) or not path_value.strip():
@@ -146,7 +149,7 @@ def _blocked(risk: str, reason: str) -> ToolPermissionResult:
 
 
 def _normalize_root(path: str) -> str:
-    return os.path.abspath(os.path.expanduser(path))
+    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
 
 
 def _is_within_root(candidate: str, approved_root: str) -> bool:

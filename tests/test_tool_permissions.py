@@ -117,6 +117,72 @@ def test_file_read_blocks_outside_approved_roots(tmp_path: Path) -> None:
     assert result.blocked is True
 
 
+def test_file_read_blocks_when_no_approved_roots_configured(tmp_path: Path) -> None:
+    policy = ToolPermissionPolicy()
+
+    result = policy.decide("file_read", tool_name="file.read", payload={"path": str(tmp_path / "notes.txt")})
+
+    assert result.decision == ToolDecision.BLOCKED
+    assert result.blocked is True
+
+
+def test_file_read_blocks_symlink_escaping_approved_root(tmp_path: Path) -> None:
+    approved_root = tmp_path / "allowed"
+    approved_root.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    secret_file = outside_dir / "secret.txt"
+    secret_file.write_text("secret")
+    escape_link = approved_root / "escape"
+    escape_link.symlink_to(outside_dir)
+    policy = ToolPermissionPolicy(approved_roots=[str(approved_root)])
+
+    result = policy.decide(
+        "file_read",
+        tool_name="file.read",
+        payload={"path": str(escape_link / "secret.txt")},
+    )
+
+    assert result.decision == ToolDecision.BLOCKED
+    assert result.blocked is True
+
+
+def test_file_read_allows_symlink_resolving_inside_approved_root(tmp_path: Path) -> None:
+    approved_root = tmp_path / "allowed"
+    approved_root.mkdir()
+    real_dir = approved_root / "real"
+    real_dir.mkdir()
+    (real_dir / "notes.txt").write_text("notes")
+    inner_link = approved_root / "alias"
+    inner_link.symlink_to(real_dir)
+    policy = ToolPermissionPolicy(approved_roots=[str(approved_root)])
+
+    result = policy.decide(
+        "file_read",
+        tool_name="file.read",
+        payload={"path": str(inner_link / "notes.txt")},
+    )
+
+    assert result.decision == ToolDecision.ALLOW
+
+
+def test_file_read_allows_when_approved_root_itself_is_symlink(tmp_path: Path) -> None:
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    (real_root / "notes.txt").write_text("notes")
+    root_link = tmp_path / "root-link"
+    root_link.symlink_to(real_root)
+    policy = ToolPermissionPolicy(approved_roots=[str(root_link)])
+
+    result = policy.decide(
+        "file_read",
+        tool_name="file.read",
+        payload={"path": str(real_root / "notes.txt")},
+    )
+
+    assert result.decision == ToolDecision.ALLOW
+
+
 @pytest.mark.parametrize("risk", ["file_write", "shell_read", "shell_write", "network"])
 def test_approval_required_risks_require_approval(risk: str) -> None:
     result = ToolPermissionPolicy().decide(risk, tool_name="risky", payload={})
