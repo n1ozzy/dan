@@ -56,6 +56,8 @@ REQUIRED_TOOLS_SMOKE_SNIPPETS = (
     "/tools",
     "/tools/request",
     "/approvals",
+    "/execute",
+    "already executed",
     "events after",
     "approval_probe",
     "voice_queue",
@@ -245,7 +247,9 @@ def test_tools_smoke_runbook_documents_manual_harness_scope() -> None:
     assert "scripts/smoke-tools-approvals.sh" in text
     assert "SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-tools-approvals.sh" in text
     assert "approval_probe" in text
-    assert "does not replay" in lowered
+    assert "explicit execute endpoint" in lowered
+    assert "does not execute automatically" in lowered
+    assert "duplicate execution prevention" in lowered
     for phrase in (
         "no real shell execution",
         "no file writing",

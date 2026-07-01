@@ -73,14 +73,14 @@ class EchoTool(Tool):
 
 class ApprovalProbeTool(Tool):
     name = "approval_probe"
-    description = "Approval-required demo tool that never runs unless a future approval replay flow exists."
+    description = "Approval-required demo tool that only runs after explicit approved execution."
     risk = "shell_read"
     input_schema = {"type": "object"}
 
     def run(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         return {
-            "ok": False,
-            "message": "approval_probe is an approval-only demo tool; replay is not implemented.",
+            "ok": True,
+            "message": "approval_probe executed safely",
         }
 
 
@@ -136,6 +136,7 @@ class ToolRegistry:
                     payload={
                         "tool_name": tool.name,
                         "arguments": request.arguments,
+                        "requested_by": request.requested_by,
                         "turn_id": request.turn_id,
                     },
                     metadata={
@@ -152,6 +153,10 @@ class ToolRegistry:
                 approval_id=approval_id,
             )
 
+        return self.execute_tool(request)
+
+    def execute_tool(self, request: ToolRequest, *, approval_id: str | None = None) -> ToolResult:
+        tool = self.get(request.tool_name)
         try:
             output = tool.run(dict(request.arguments))
             if not isinstance(output, Mapping):
@@ -161,6 +166,7 @@ class ToolRegistry:
                 tool_name=tool.name,
                 status="finished",
                 output=dict(output),
+                approval_id=approval_id,
             )
         except Exception as exc:
             return ToolResult(
@@ -168,6 +174,7 @@ class ToolRegistry:
                 tool_name=tool.name,
                 status="failed",
                 error=str(exc),
+                approval_id=approval_id,
             )
 
 
@@ -396,8 +403,11 @@ class ToolRunRecorder:
             EventType.TOOL_FINISHED,
             {
                 "run_id": run_id,
+                "tool_run_id": run_id,
                 "tool_name": run["tool_name"],
                 "risk": run["risk"],
+                "approval_id": run["approval_id"],
+                "status": "finished",
                 "output": safe_output,
             },
             turn_id=run["turn_id"],
@@ -405,6 +415,38 @@ class ToolRunRecorder:
         record = self.get(run_id)
         if record is None:
             raise ToolRegistryError(f"Tool run disappeared after finish: {run_id}")
+        return record
+
+    def record_started(self, run_id: str) -> dict[str, Any]:
+        run = self.get(run_id)
+        if run is None:
+            raise ToolRegistryError(f"Unknown tool run: {run_id}")
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE tool_runs
+                SET status = 'started'
+                WHERE id = ?
+                """,
+                (run_id,),
+            )
+
+        self._append_event(
+            EventType.TOOL_STARTED,
+            {
+                "run_id": run_id,
+                "tool_run_id": run_id,
+                "tool_name": run["tool_name"],
+                "risk": run["risk"],
+                "turn_id": run["turn_id"],
+                "approval_id": run["approval_id"],
+                "status": "started",
+            },
+            turn_id=run["turn_id"],
+        )
+        record = self.get(run_id)
+        if record is None:
+            raise ToolRegistryError(f"Tool run disappeared after start: {run_id}")
         return record
 
     def record_failed(self, run_id: str, error: str) -> dict[str, Any]:
@@ -427,8 +469,11 @@ class ToolRunRecorder:
             EventType.TOOL_FAILED,
             {
                 "run_id": run_id,
+                "tool_run_id": run_id,
                 "tool_name": run["tool_name"],
                 "risk": run["risk"],
+                "approval_id": run["approval_id"],
+                "status": "failed",
                 "error": normalized_error,
             },
             turn_id=run["turn_id"],
@@ -437,6 +482,22 @@ class ToolRunRecorder:
         if record is None:
             raise ToolRegistryError(f"Tool run disappeared after failure: {run_id}")
         return record
+
+    def get_by_approval_id(self, approval_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            """
+            SELECT id, created_at, finished_at, turn_id, tool_name, status, risk,
+                   input_json, output_json, error, approval_id
+            FROM tool_runs
+            WHERE approval_id = ?
+            ORDER BY created_at ASC, rowid ASC
+            LIMIT 1
+            """,
+            (_required_text(approval_id, "approval_id"),),
+        ).fetchone()
+        if row is None:
+            return None
+        return _tool_run_from_row(row)
 
     def get(self, run_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(

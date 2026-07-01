@@ -180,8 +180,8 @@ def test_approval_probe_is_approval_required_and_harmless_if_called() -> None:
     assert decision.decision == ToolDecision.APPROVAL_REQUIRED
     assert decision.approval_required is True
     assert probe.run({}) == {
-        "ok": False,
-        "message": "approval_probe is an approval-only demo tool; replay is not implemented.",
+        "ok": True,
+        "message": "approval_probe executed safely",
     }
 
 
@@ -378,6 +378,43 @@ def test_tool_run_recorder_records_requested_finished_failed(
         EventType.TOOL_REQUESTED,
         EventType.TOOL_FAILED,
     ]
+
+
+def test_tool_run_recorder_records_started_event_with_approval_payload(
+    conn: sqlite3.Connection,
+    event_store: EventStore,
+) -> None:
+    approval = ApprovalGate(conn).create_approval(
+        risk="shell_read",
+        requested_by="tests",
+        action_type="tool:approval",
+        payload={"tool_name": "approval", "arguments": {"command": "status"}, "requested_by": "tests"},
+    )
+    recorder = ToolRunRecorder(conn, event_store=event_store, now=lambda: "2026-07-01T12:00:00Z")
+    recorder.record_requested(
+        run_id="run-approved",
+        tool_name="approval",
+        risk="shell_read",
+        input={"command": "status"},
+        turn_id="turn-approval",
+        approval_id=str(approval["id"]),
+    )
+
+    started = recorder.record_started("run-approved")
+
+    assert started["status"] == "started"
+    assert recorder.get_by_approval_id(str(approval["id"]))["id"] == "run-approved"
+    event = event_store.list_after(0, limit=10)[-1]
+    assert event.type == EventType.TOOL_STARTED
+    assert event.payload == {
+        "tool_name": "approval",
+        "approval_id": str(approval["id"]),
+        "turn_id": "turn-approval",
+        "risk": "shell_read",
+        "run_id": "run-approved",
+        "tool_run_id": "run-approved",
+        "status": "started",
+    }
 
 
 def test_placeholder_tools_do_not_mutate_shell_file_or_system_state(tmp_path: Path) -> None:

@@ -233,6 +233,16 @@ def table_count(app: DaemonApp, table: str) -> int:
     return int(app.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
 
+def tool_run_count_for_approval(app: DaemonApp, approval_id: object) -> int:
+    assert app.conn is not None
+    return int(
+        app.conn.execute(
+            "SELECT COUNT(*) FROM tool_runs WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()[0]
+    )
+
+
 class ApiFakeTool(Tool):
     description = "fake API smoke tool"
     input_schema = {"type": "object"}
@@ -617,6 +627,196 @@ def test_post_tools_request_default_approval_probe_creates_approval_without_repl
     assert approve_status == 200
     assert approved["approval"]["status"] == "approved"
     assert table_count(app, "approvals") == 1
+    assert table_count(app, "tool_runs") == 0
+    assert table_count(app, "voice_queue") == 0
+    assert table_count(app, "worker_jobs") == 0
+
+
+def test_post_approval_execute_requires_started_app(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/approvals/missing/execute")
+
+    assert status == 503
+    assert payload["status"] == 503
+
+
+def test_post_approval_execute_runs_approved_tool_once_and_records_events(
+    app: DaemonApp,
+) -> None:
+    fake = ApiFakeTool(name="execute_approved", risk="shell_read")
+    app.tool_registry.register(fake)
+    app.start()
+
+    with running_server(app) as base_url:
+        request_status, requested = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {
+                "tool_name": "execute_approved",
+                "arguments": {"command": "status"},
+                "requested_by": "api",
+                "turn_id": "turn-execute",
+            },
+        )
+        approve_status, approved = request_json(
+            "POST",
+            f"{base_url}/approvals/{requested['approval_id']}/approve",
+            {"reason": "ok"},
+        )
+        execute_status, executed = request_json(
+            "POST",
+            f"{base_url}/approvals/{requested['approval_id']}/execute",
+        )
+
+    assert request_status == 200
+    assert approve_status == 200
+    assert approved["approval"]["status"] == "approved"
+    assert execute_status == 200
+    assert executed["ok"] is True
+    assert executed["approval_id"] == requested["approval_id"]
+    assert executed["result"] == {"received": {"command": "status"}}
+    assert executed["tool_run"]["approval_id"] == requested["approval_id"]
+    assert executed["tool_run"]["status"] == "finished"
+    assert executed["tool_run"]["turn_id"] == "turn-execute"
+    assert fake.calls == [{"command": "status"}]
+    assert tool_run_count_for_approval(app, requested["approval_id"]) == 1
+    assert table_count(app, "voice_queue") == 0
+    assert table_count(app, "worker_jobs") == 0
+    assert "tool.started" in event_types(app)
+    assert "tool.finished" in event_types(app)
+
+
+def test_post_approval_execute_approval_probe_returns_harmless_result(app: DaemonApp) -> None:
+    app.start()
+
+    with running_server(app) as base_url:
+        _, requested = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {
+                "tool_name": "approval_probe",
+                "arguments": {"purpose": "smoke"},
+                "requested_by": "api",
+            },
+        )
+        request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/approve")
+        status, payload = request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/execute")
+
+    assert status == 200
+    assert payload["ok"] is True
+    assert payload["result"] == {
+        "ok": True,
+        "message": "approval_probe executed safely",
+    }
+    assert tool_run_count_for_approval(app, requested["approval_id"]) == 1
+    assert table_count(app, "voice_queue") == 0
+    assert table_count(app, "worker_jobs") == 0
+
+
+def test_post_approval_execute_pending_rejected_and_missing_approvals_do_not_execute(
+    app: DaemonApp,
+) -> None:
+    fake = ApiFakeTool(name="execute_guarded", risk="shell_read")
+    app.tool_registry.register(fake)
+    app.start()
+
+    with running_server(app) as base_url:
+        _, pending = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {"tool_name": "execute_guarded", "arguments": {"n": 1}, "requested_by": "api"},
+        )
+        _, rejectable = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {"tool_name": "execute_guarded", "arguments": {"n": 2}, "requested_by": "api"},
+        )
+        request_json("POST", f"{base_url}/approvals/{rejectable['approval_id']}/reject")
+        pending_status, pending_payload = request_json(
+            "POST",
+            f"{base_url}/approvals/{pending['approval_id']}/execute",
+        )
+        rejected_status, rejected_payload = request_json(
+            "POST",
+            f"{base_url}/approvals/{rejectable['approval_id']}/execute",
+        )
+        missing_status, missing_payload = request_json("POST", f"{base_url}/approvals/missing/execute")
+
+    assert pending_status == 409
+    assert "not approved" in pending_payload["error"]
+    assert rejected_status == 409
+    assert "not approved" in rejected_payload["error"]
+    assert missing_status == 404
+    assert missing_payload["status"] == 404
+    assert fake.calls == []
+    assert table_count(app, "tool_runs") == 0
+
+
+def test_post_approval_execute_unknown_tool_payload_does_not_record_run(app: DaemonApp) -> None:
+    app.start()
+    assert app.approval_gate is not None
+    approval = app.approval_gate.create_approval(
+        risk="shell_read",
+        requested_by="api",
+        action_type="tool:missing",
+        payload={"tool_name": "missing", "arguments": {}, "requested_by": "api"},
+    )
+    app.approve(str(approval["id"]))
+
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/approvals/{approval['id']}/execute")
+
+    assert status == 404
+    assert payload["status"] == 404
+    assert table_count(app, "tool_runs") == 0
+
+
+def test_post_approval_execute_duplicate_returns_409_without_second_run(
+    app: DaemonApp,
+) -> None:
+    fake = ApiFakeTool(name="execute_once", risk="shell_read")
+    app.tool_registry.register(fake)
+    app.start()
+
+    with running_server(app) as base_url:
+        _, requested = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {"tool_name": "execute_once", "arguments": {"n": 1}, "requested_by": "api"},
+        )
+        request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/approve")
+        first_status, first = request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/execute")
+        second_status, second = request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/execute")
+
+    assert first_status == 200
+    assert first["ok"] is True
+    assert second_status == 409
+    assert "already executed" in second["error"]
+    assert fake.calls == [{"n": 1}]
+    assert tool_run_count_for_approval(app, requested["approval_id"]) == 1
+
+
+def test_post_approval_execute_blocks_destructive_when_disabled(app: DaemonApp) -> None:
+    fake = ApiFakeTool(name="destructive_execute", risk="destructive")
+    app.tool_registry.register(fake)
+    app.start()
+    assert app.approval_gate is not None
+    approval = app.approval_gate.create_approval(
+        risk="destructive",
+        requested_by="api",
+        action_type="tool:destructive_execute",
+        payload={"tool_name": "destructive_execute", "arguments": {}, "requested_by": "api"},
+    )
+    app.approve(str(approval["id"]))
+
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/approvals/{approval['id']}/execute")
+
+    assert status == 200
+    assert payload["ok"] is False
+    assert payload["status"] == "blocked"
+    assert "destructive tools are disabled" in payload["error"]
+    assert fake.calls == []
     assert table_count(app, "tool_runs") == 0
     assert table_count(app, "voice_queue") == 0
     assert table_count(app, "worker_jobs") == 0

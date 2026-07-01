@@ -37,6 +37,15 @@ def reject_approval(
     return {"approval": app.reject(approval_id, reason=reason)}
 
 
+def execute_approval(
+    app: DaemonApp,
+    approval_id: str,
+    request_payload: Any | None = None,
+) -> dict[str, object]:
+    _reject_unexpected_payload(request_payload)
+    return app.execute_approved_tool(approval_id)
+
+
 def _optional_reason(request_payload: Any | None) -> str | None:
     if request_payload is None:
         return None
@@ -50,6 +59,15 @@ def _optional_reason(request_payload: Any | None) -> str | None:
     return raw_reason.strip() or None
 
 
+def _reject_unexpected_payload(request_payload: Any | None) -> None:
+    if request_payload is None:
+        return
+    if not isinstance(request_payload, Mapping):
+        raise ApprovalRequestValidationError("Request JSON must be an object.")
+    if request_payload:
+        raise ApprovalRequestValidationError("execute request body must be empty.")
+
+
 def register_routes(app: object) -> None:
     return None
 
@@ -58,6 +76,7 @@ __all__ = [
     "ApprovalRequestValidationError",
     "ROUTE_GROUP",
     "approve_approval",
+    "execute_approval",
     "get_approvals",
     "register_routes",
     "reject_approval",

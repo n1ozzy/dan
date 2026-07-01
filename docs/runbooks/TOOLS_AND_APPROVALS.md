@@ -1,8 +1,9 @@
 # Tools and Approvals
 
-Prompt 13 adds the safety model for future Jarvis tools. It does not add real
-shell execution, file writing, network access, workers, provider subprocesses,
-or approval replay.
+Prompt 14 keeps the Prompt 13 safety model and adds explicit execution for
+already-approved tool requests. It still does not add real shell execution, file
+writing, network access, workers, provider subprocesses, or provider tool
+calling.
 
 ## ToolRegistry
 
@@ -51,11 +52,16 @@ When an `EventStore` is available, it appends concise JSON-safe events:
 
 Obvious secrets are redacted from event payloads.
 
-Approving a request does not execute the tool in Prompt 13. Execution after
-approval is intentionally left for a later prompt.
+Approving a request does not execute the tool. Approval does not execute
+automatically, and approved tools are not replayed automatically by
+`POST /approvals/{id}/approve`; a human or agent must call the explicit execute
+endpoint.
+An approved tool request does not execute automatically.
 
-Approving or rejecting `approval_probe` does not replay execution either. It
-only proves that approval records and decision endpoints work.
+Rejected, pending, missing, duplicate, and blocked approvals do not execute.
+`approval_probe` is still a harmless placeholder. After approval, explicit
+execution returns `{"ok": true, "message": "approval_probe executed safely"}`
+without shell, file, network, process, worker, voice, or provider side effects.
 
 ## ToolRunRecorder
 
@@ -66,8 +72,10 @@ finished, and failed tool runs and may append:
 - `tool.finished`
 - `tool.failed`
 
-The recorder does not execute tools. It only stores audit records around safe
-tool requests that the registry is already allowed to run.
+The recorder does not decide permission. It stores audit records around tool
+requests that the app has already allowed to run. Explicit approved execution
+records `requested`, `started`, and final `finished` or `failed` states with
+the `approval_id` on the `tool_runs` row.
 
 ## API Endpoints
 
@@ -78,10 +86,34 @@ The daemon exposes:
 - `GET /approvals`
 - `POST /approvals/{id}/approve`
 - `POST /approvals/{id}/reject`
+- `POST /approvals/{id}/execute`
 
-These endpoints require `app.started`; otherwise they return `503`. Approve and
-reject endpoints update approval status only. They do not replay or execute the
-approved tool.
+These endpoints require `app.started`; otherwise they return `503`.
+
+Approve and reject endpoints update approval status only. They do not execute
+automatically and do not replay approved tools.
+
+The explicit execute endpoint runs only an approval whose status is `approved`.
+Missing approvals return `404`. Pending, rejected, expired, non-approved, or
+already-executed approvals return `409`. Unknown tools referenced by an approval
+payload return `404`. If the tool is blocked by policy, such as a destructive
+tool while `destructive_tools_enabled=false`, the endpoint returns a compact
+blocked JSON response and does not create a `tool_runs` row.
+
+Duplicate execution prevention is based on existing `tool_runs.approval_id`.
+Once a run exists for an approval, a second execute request returns `409` and
+does not invoke the handler again.
+
+Successful execution returns:
+
+```json
+{
+  "ok": true,
+  "approval_id": "...",
+  "tool_run": {},
+  "result": {}
+}
+```
 
 ## Intentional Non-Goals
 
@@ -93,7 +125,7 @@ Prompt 13 intentionally does not implement:
 - network tools
 - system mutation
 - process inspection
-- replay execution after approval
+- automatic replay execution after approval
 - worker integration
 - voice or audio integration
 - WebSocket or SSE tool streaming
@@ -128,8 +160,12 @@ It proves:
 - `POST /tools/request` for `approval_probe` creates a pending approval and
   does not execute the handler.
 - `GET /approvals` shows the pending approval.
-- Approve and reject endpoints update approval status without replaying
+- Approve and reject endpoints update approval status without automatic
   execution.
+- `POST /approvals/{id}/execute` executes an approved `approval_probe` exactly
+  once and records a finished `tool_runs` row with the `approval_id`.
+- A second execute for the same approval returns `409`.
+- A rejected approval cannot execute.
 - `GET /events` exposes tool and approval events.
 - `worker_jobs` and `voice_queue` stay empty.
 - The temporary database and runtime home are used instead of real `~/.jarvis`.
@@ -142,7 +178,7 @@ It does not prove:
 - no network tools
 - no worker replay
 - no provider tool calling yet
-- no approval replay implementation
+- no automatic approval replay
 
 The smoke does not start workers, voice, audio, panel, provider subprocesses,
 or any launch supervision.

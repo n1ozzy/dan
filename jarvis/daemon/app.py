@@ -28,6 +28,7 @@ from jarvis.store.db import (
 from jarvis.store.event_store import EventStore, create_event_store
 from jarvis.tools import (
     ApprovalGate,
+    ToolDecision,
     ToolPermissionPolicy,
     ToolRegistry,
     ToolRequest,
@@ -51,6 +52,14 @@ class DaemonAppNotStartedError(DaemonAppError):
     """Raised when a request needs a started daemon app."""
 
 
+class DaemonAppNotFoundError(DaemonAppError):
+    """Raised when a requested daemon resource does not exist."""
+
+
+class DaemonAppConflictError(DaemonAppError):
+    """Raised when a request conflicts with current durable state."""
+
+
 class DaemonAppBusyError(DaemonAppError):
     """Raised when a serialized app operation is already running."""
 
@@ -72,6 +81,7 @@ class DaemonApp:
     brain_manager: BrainManager | None = None
     context_builder: ContextBuilder | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
+    tool_execution_lock: Any = field(default_factory=threading.Lock)
 
     def start(self) -> None:
         """Start app-level state without running the long-lived HTTP loop."""
@@ -272,6 +282,13 @@ class DaemonApp:
             raise DaemonAppNotStartedError("Daemon app is not started.")
         return self._require_approval_gate().decide(approval_id, "rejected", reason=reason)
 
+    def execute_approved_tool(self, approval_id: str) -> dict[str, Any]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+
+        with self.tool_execution_lock:
+            return self._execute_approved_tool_locked(approval_id)
+
     def handle_text_input(
         self,
         *,
@@ -352,6 +369,72 @@ class DaemonApp:
             brain_manager=self._require_brain_manager(),
             context_builder=self._require_context_builder(),
         )
+
+    def _execute_approved_tool_locked(self, approval_id: str) -> dict[str, Any]:
+        normalized_approval_id = _required_text(approval_id, "approval_id")
+        gate = self._require_approval_gate()
+        recorder = self._require_tool_run_recorder()
+        approval = gate.get_approval(normalized_approval_id)
+        if approval is None:
+            raise DaemonAppNotFoundError(f"Unknown approval: {normalized_approval_id}")
+        if approval["status"] != "approved":
+            raise DaemonAppConflictError(f"Approval is not approved: {normalized_approval_id}")
+
+        existing_run = recorder.get_by_approval_id(normalized_approval_id)
+        if existing_run is not None:
+            raise DaemonAppConflictError(f"Approval already executed: {normalized_approval_id}")
+
+        tool_request = _tool_request_from_approval(approval)
+        tool = self.tool_registry.get(tool_request.tool_name)
+        permission = self.tool_permission_policy.decide(
+            tool.risk,
+            tool_name=tool.name,
+            payload=tool_request.arguments,
+        )
+        if permission.decision == ToolDecision.BLOCKED:
+            return {
+                "ok": False,
+                "approval_id": normalized_approval_id,
+                "status": "blocked",
+                "error": permission.reason,
+            }
+
+        recorder.record_requested(
+            run_id=tool_request.id,
+            tool_name=tool.name,
+            risk=tool.risk,
+            input=tool_request.arguments,
+            turn_id=tool_request.turn_id,
+            approval_id=normalized_approval_id,
+        )
+        recorder.record_started(tool_request.id)
+        result = self.tool_registry.execute_tool(
+            tool_request,
+            approval_id=normalized_approval_id,
+        )
+        if result.status == "finished":
+            tool_run = recorder.record_finished(tool_request.id, output=result.output or {})
+            return {
+                "ok": True,
+                "approval_id": normalized_approval_id,
+                "tool_run": tool_run,
+                "result": result.output or {},
+            }
+
+        tool_run = recorder.record_failed(
+            tool_request.id,
+            error=result.error or "Tool execution failed.",
+        )
+        return {
+            "ok": False,
+            "approval_id": normalized_approval_id,
+            "tool_run": tool_run,
+            "result": {
+                "status": "failed",
+                "error": result.error or "Tool execution failed.",
+            },
+            "error": result.error or "Tool execution failed.",
+        }
 
     def _connect_existing(self) -> sqlite3.Connection:
         if not self.paths.db_path.is_file():
@@ -445,10 +528,57 @@ def _connect_daemon_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _tool_request_from_approval(approval: Mapping[str, Any]) -> ToolRequest:
+    payload = approval.get("payload")
+    if not isinstance(payload, Mapping):
+        raise DaemonAppError("Approval payload must be a JSON object.")
+
+    raw_tool_name = payload.get("tool_name")
+    if not isinstance(raw_tool_name, str) or not raw_tool_name.strip():
+        raise DaemonAppError("Approval payload tool_name must be a non-empty string.")
+
+    raw_arguments = payload.get("arguments")
+    if not isinstance(raw_arguments, Mapping):
+        raise DaemonAppError("Approval payload arguments must be a JSON object.")
+
+    raw_requested_by = payload.get("requested_by")
+    if not isinstance(raw_requested_by, str) or not raw_requested_by.strip():
+        raise DaemonAppError("Approval payload requested_by must be a non-empty string.")
+
+    raw_turn_id = payload.get("turn_id")
+    turn_id: str | None
+    if raw_turn_id is None:
+        turn_id = None
+    elif isinstance(raw_turn_id, str) and raw_turn_id.strip():
+        turn_id = raw_turn_id.strip()
+    else:
+        raise DaemonAppError("Approval payload turn_id must be null or a non-empty string.")
+
+    return ToolRequest(
+        id=str(uuid.uuid4()),
+        tool_name=raw_tool_name.strip(),
+        arguments=dict(raw_arguments),
+        requested_by=raw_requested_by.strip(),
+        turn_id=turn_id,
+        metadata={"approval_id": str(approval["id"])},
+    )
+
+
+def _required_text(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise DaemonAppError(f"{label} must be a string.")
+    normalized = value.strip()
+    if not normalized:
+        raise DaemonAppError(f"{label} must be a non-empty string.")
+    return normalized
+
+
 __all__ = [
     "DaemonApp",
     "DaemonAppBusyError",
+    "DaemonAppConflictError",
     "DaemonAppError",
+    "DaemonAppNotFoundError",
     "DaemonAppNotStartedError",
     "JarvisDaemon",
     "JarvisDaemonApp",

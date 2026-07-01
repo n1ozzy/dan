@@ -154,17 +154,31 @@ def raw_request_json(method: str, path: str, payload: dict | None = None, timeou
         return json.loads(response.read().decode("utf-8"))
 
 
-def request_json(method: str, path: str, payload: dict | None = None) -> dict:
+def request_json_status(method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
+    data = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = Request(f"{base_url}{path}", data=data, headers=headers, method=method)
     try:
-        return raw_request_json(method, path, payload)
+        with urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         try:
             body = json.loads(exc.read().decode("utf-8"))
         except Exception:
             body = {"error": str(exc)}
-        fail(f"{method} {path} returned HTTP {exc.code}: {body}")
+        return exc.code, body
     except (TimeoutError, URLError, OSError) as exc:
         fail(f"{method} {path} failed: {exc}")
+
+
+def request_json(method: str, path: str, payload: dict | None = None) -> dict:
+    status, body = request_json_status(method, path, payload)
+    if status >= 400:
+        fail(f"{method} {path} returned HTTP {status}: {body}")
+    return body
 
 
 deadline = time.time() + 15
@@ -234,6 +248,32 @@ approved_payload = request_json(
 if approved_payload.get("approval", {}).get("status") != "approved":
     fail(f"approve endpoint did not approve: {approved_payload}")
 
+with sqlite3.connect(db_path) as conn:
+    probe_runs_before_execute = conn.execute(
+        "SELECT COUNT(*) FROM tool_runs WHERE approval_id = ?",
+        (approval_id,),
+    ).fetchone()[0]
+if probe_runs_before_execute != 0:
+    fail(f"approve endpoint unexpectedly executed approval_probe: {probe_runs_before_execute}")
+
+execute_payload = request_json("POST", f"/approvals/{approval_id}/execute")
+if execute_payload.get("ok") is not True:
+    fail(f"execute endpoint did not return ok true: {execute_payload}")
+if execute_payload.get("approval_id") != approval_id:
+    fail(f"execute endpoint returned wrong approval_id: {execute_payload}")
+execute_result = execute_payload.get("result") or {}
+if execute_result.get("ok") is not True:
+    fail(f"approval_probe execute result was not harmless ok true: {execute_payload}")
+execute_run = execute_payload.get("tool_run") or {}
+if execute_run.get("approval_id") != approval_id or execute_run.get("status") != "finished":
+    fail(f"execute endpoint did not return finished tool_run for approval: {execute_payload}")
+
+duplicate_status, duplicate_payload = request_json_status("POST", f"/approvals/{approval_id}/execute")
+if duplicate_status != 409:
+    fail(f"duplicate execute did not return 409: status={duplicate_status} body={duplicate_payload}")
+if "already executed" not in str(duplicate_payload.get("error", "")):
+    fail(f"duplicate execute did not report duplicate prevention: {duplicate_payload}")
+
 reject_request = request_json(
     "POST",
     "/tools/request",
@@ -253,6 +293,15 @@ rejected_payload = request_json(
 )
 if rejected_payload.get("approval", {}).get("status") != "rejected":
     fail(f"reject endpoint did not reject: {rejected_payload}")
+rejected_execute_status, rejected_execute_payload = request_json_status(
+    "POST",
+    f"/approvals/{reject_id}/execute",
+)
+if rejected_execute_status != 409:
+    fail(
+        "rejected approval execute did not return 409: "
+        f"status={rejected_execute_status} body={rejected_execute_payload}"
+    )
 
 # events after-style check via GET /events?after_id=0.
 events_payload = request_json("GET", "/events?after_id=0&limit=100")
@@ -260,6 +309,7 @@ events = events_payload.get("events", [])
 event_types = {event.get("type") for event in events}
 required_events = {
     "tool.requested",
+    "tool.started",
     "tool.finished",
     "approval.created",
     "approval.approved",
@@ -275,14 +325,26 @@ with sqlite3.connect(db_path) as conn:
     probe_runs = conn.execute(
         "SELECT COUNT(*) FROM tool_runs WHERE tool_name = 'approval_probe'"
     ).fetchone()[0]
+    probe_approval_runs = conn.execute(
+        "SELECT COUNT(*) FROM tool_runs WHERE approval_id = ?",
+        (approval_id,),
+    ).fetchone()[0]
+    rejected_runs = conn.execute(
+        "SELECT COUNT(*) FROM tool_runs WHERE approval_id = ?",
+        (reject_id,),
+    ).fetchone()[0]
     echo_runs = conn.execute("SELECT COUNT(*) FROM tool_runs WHERE tool_name = 'echo'").fetchone()[0]
 
 if worker_jobs != 0:
     fail(f"worker_jobs touched unexpectedly: {worker_jobs}")
 if voice_queue != 0:
     fail(f"voice_queue touched unexpectedly: {voice_queue}")
-if probe_runs != 0:
-    fail(f"approval_probe executed or recorded as run unexpectedly: {probe_runs}")
+if probe_runs != 1:
+    fail(f"approval_probe tool run count unexpected: {probe_runs}")
+if probe_approval_runs != 1:
+    fail(f"approval_probe approval tool_run count unexpected: {probe_approval_runs}")
+if rejected_runs != 0:
+    fail(f"rejected approval executed unexpectedly: {rejected_runs}")
 if echo_runs != 1:
     fail(f"echo tool run count unexpected: {echo_runs}")
 
@@ -291,6 +353,9 @@ print(f"smoke directory: {smoke_dir}")
 print(f"daemon pid: {daemon_pid}")
 print(f"echo tool run id/status: {echo_payload.get('id')}/{echo_payload.get('status')}")
 print(f"approval id: {approval_id}")
+print(f"approval execute run id/status: {execute_run.get('id')}/{execute_run.get('status')}")
+print(f"duplicate execute status: {duplicate_status}")
+print(f"rejected execute status: {rejected_execute_status}")
 print(f"event count: {len(events)}")
 print("worker_jobs: 0")
 print("voice_queue: 0")

@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from jarvis.api.routes_approvals import (
     ApprovalRequestValidationError,
     approve_approval,
+    execute_approval,
     get_approvals,
     reject_approval,
 )
@@ -29,7 +30,14 @@ from jarvis.api.routes_runtime import (
 from jarvis.api.routes_settings import get_settings, update_settings
 from jarvis.api.routes_state import get_state
 from jarvis.api.routes_tools import ToolRequestValidationError, get_tools, post_tool_request
-from jarvis.daemon.app import DaemonApp, DaemonAppBusyError, DaemonAppError, DaemonAppNotStartedError
+from jarvis.daemon.app import (
+    DaemonApp,
+    DaemonAppBusyError,
+    DaemonAppConflictError,
+    DaemonAppError,
+    DaemonAppNotFoundError,
+    DaemonAppNotStartedError,
+)
 from jarvis.store.event_store import EventStoreError
 from jarvis.tools.registry import ToolRegistryError
 from jarvis.turns.models import ConversationRepositoryError, TurnRepositoryError
@@ -210,6 +218,9 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             if action == "reject":
                 _write_json(handler, 200, reject_approval(app, approval_id, request_payload))
                 return
+            if action == "execute":
+                _write_json(handler, 200, execute_approval(app, approval_id, request_payload))
+                return
 
         if method == "POST" and path == "/settings":
             request_payload = _read_json_body(handler)
@@ -234,12 +245,16 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         _write_json(handler, 503, {"error": str(exc), "status": 503})
     except DaemonAppBusyError as exc:
         _write_json(handler, 409, {"error": str(exc), "status": 409})
+    except DaemonAppConflictError as exc:
+        _write_json(handler, 409, {"error": str(exc), "status": 409})
+    except DaemonAppNotFoundError as exc:
+        _write_json(handler, 404, {"error": str(exc), "status": 404})
     except TurnOrchestratorBusyError as exc:
         _write_json(handler, 409, {"error": str(exc), "status": 409})
     except TurnOrchestratorError:
         _write_json(handler, 500, {"error": "Text turn failed.", "status": 500})
     except ToolRegistryError as exc:
-        status = 404 if str(exc).startswith("Unknown tool:") else 400
+        status = 404 if str(exc).startswith(("Unknown tool:", "Unknown approval:")) else 400
         _write_json(handler, status, {"error": str(exc), "status": status})
     except (
         ValueError,
@@ -288,7 +303,7 @@ def _approval_action(path: str) -> tuple[str, str] | None:
     if len(parts) != 3 or parts[0] != "approvals":
         return None
     approval_id, action = parts[1], parts[2]
-    if action not in {"approve", "reject"}:
+    if action not in {"approve", "reject", "execute"}:
         return None
     if not approval_id:
         return None
