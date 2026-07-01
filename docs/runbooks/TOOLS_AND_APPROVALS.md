@@ -1,9 +1,11 @@
 # Tools and Approvals
 
-Prompt 15A keeps the Prompt 15 safety model and adds explicit parsing for
-provider CLI tool-call blocks. It still does not add real shell execution, file
-writing, network access, workers, provider-side tool calling, or automatic
-execution of model-originated tool requests.
+Prompt 19A keeps the Prompt 15 safety model, the Prompt 15A provider
+tool-call parser, and the explicit execute-approved endpoint. It adds auditable
+approval decision events only. It still does not add real shell execution, file
+writing, network access, workers, provider-side tool calling, automatic
+execution of model-originated tool requests, turn continuation after approval,
+or `WAITING_APPROVAL`.
 
 ## ToolRegistry
 
@@ -60,8 +62,13 @@ Unknown risk values are blocked.
 ## ApprovalGate
 
 `ApprovalGate` uses the existing `approvals` table. It creates pending approval
-records, lists pending approvals, and updates pending approvals to `approved` or
-`rejected`.
+records, lists pending approvals, and updates pending approvals through this
+lifecycle:
+
+```text
+pending -> approved -> explicit execute
+pending -> rejected
+```
 
 When an `EventStore` is available, it appends concise JSON-safe events:
 
@@ -69,7 +76,13 @@ When an `EventStore` is available, it appends concise JSON-safe events:
 - `approval.approved`
 - `approval.rejected`
 
-Obvious secrets are redacted from event payloads.
+Approve and reject decisions emit `approval.approved` or `approval.rejected`
+exactly once after the pending approval row is successfully updated. The
+decision event payload includes the approval ID, tool name, requested risk,
+final approval status, decision, decided timestamp when available, rejection
+reason when provided, and turn/correlation IDs when the approval request has
+them. Obvious secrets are redacted from event payloads by `EventStore` before
+persistence.
 
 Approving a request does not execute the tool. Approval does not execute
 automatically, and approved tools are not replayed automatically by
@@ -89,6 +102,11 @@ a direct request includes `turn_id`, the approval-created event uses it for
 both fields.
 
 Rejected, pending, missing, duplicate, and blocked approvals do not execute.
+Duplicate approve/reject attempts are rejected as non-pending decisions and do
+not append another approval decision event. Approving an already rejected
+approval, or rejecting an already approved approval, also fails without adding a
+new decision event.
+
 `approval_probe` is still a harmless placeholder. After approval, explicit
 execution returns `{"ok": true, "message": "approval_probe executed safely"}`
 without shell, file, network, process, worker, voice, or provider side effects.
@@ -168,6 +186,10 @@ blocked JSON response and does not create a `tool_runs` row.
 Duplicate execution prevention is based on existing `tool_runs.approval_id`.
 Once a run exists for an approval, a second execute request returns `409` and
 does not invoke the handler again.
+
+Rejected approvals cannot execute. Approval decisions do not resume a waiting
+turn, feed approved tool output back into the brain, enqueue voice, or change
+runtime state to `WAITING_APPROVAL`; those remain future approval-loop prompts.
 
 Successful execution returns:
 

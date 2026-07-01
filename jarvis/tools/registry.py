@@ -282,7 +282,7 @@ class ApprovalGate:
 
         decided_at = self._now()
         with self._conn:
-            self._conn.execute(
+            cursor = self._conn.execute(
                 """
                 UPDATE approvals
                 SET status = ?, decided_at = ?, decision_reason = ?
@@ -290,25 +290,29 @@ class ApprovalGate:
                 """,
                 (normalized_decision, decided_at, reason, approval_id),
             )
+            if cursor.rowcount != 1:
+                raise ToolRegistryError(f"Approval is not pending: {approval_id}")
 
+        decided = self.get_approval(approval_id)
+        if decided is None:
+            raise ToolRegistryError(f"Approval disappeared after decision: {approval_id}")
         event_type = (
             EventType.APPROVAL_APPROVED
             if normalized_decision == "approved"
             else EventType.APPROVAL_REJECTED
         )
+        event_turn_id, event_correlation_id = _approval_event_context(decided)
         self._append_event(
             event_type,
-            {
-                "approval_id": approval_id,
-                "risk": approval["risk"],
-                "requested_by": approval["requested_by"],
-                "action_type": approval["action_type"],
-                "decision_reason": reason,
-            },
+            _approval_decision_event_payload(
+                decided,
+                normalized_decision,
+                turn_id=event_turn_id,
+                correlation_id=event_correlation_id,
+            ),
+            turn_id=event_turn_id,
+            correlation_id=event_correlation_id,
         )
-        decided = self.get_approval(approval_id)
-        if decided is None:
-            raise ToolRegistryError(f"Approval disappeared after decision: {approval_id}")
         return decided
 
     def list_pending(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -660,6 +664,67 @@ def _tool_run_from_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
         "error": data["error"],
         "approval_id": data["approval_id"],
     }
+
+
+def _approval_decision_event_payload(
+    approval: Mapping[str, Any],
+    decision: str,
+    *,
+    turn_id: str | None,
+    correlation_id: str | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "approval_id": approval["id"],
+        "tool_name": _approval_tool_name(approval),
+        "requested_risk": approval["risk"],
+        "status": approval["status"],
+        "decision": decision,
+    }
+    decided_at = approval.get("decided_at")
+    if decided_at is not None:
+        payload["decided_at"] = decided_at
+    if decision == "rejected" and approval.get("decision_reason") is not None:
+        payload["reason"] = approval["decision_reason"]
+    if turn_id is not None:
+        payload["turn_id"] = turn_id
+    if correlation_id is not None:
+        payload["correlation_id"] = correlation_id
+    return payload
+
+
+def _approval_tool_name(approval: Mapping[str, Any]) -> str:
+    approval_payload = approval.get("payload")
+    if isinstance(approval_payload, Mapping):
+        raw_tool_name = approval_payload.get("tool_name")
+        if isinstance(raw_tool_name, str) and raw_tool_name.strip():
+            return raw_tool_name.strip()
+
+    action_type = str(approval.get("action_type", "")).strip()
+    if action_type.startswith("tool:") and action_type.removeprefix("tool:").strip():
+        return action_type.removeprefix("tool:").strip()
+    return action_type
+
+
+def _approval_event_context(approval: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    approval_payload = approval.get("payload")
+    payload = approval_payload if isinstance(approval_payload, Mapping) else {}
+    approval_metadata = approval.get("metadata")
+    metadata = approval_metadata if isinstance(approval_metadata, Mapping) else {}
+
+    turn_id = _first_optional_text(payload.get("turn_id"), metadata.get("turn_id"))
+    correlation_id = _first_optional_text(
+        payload.get("correlation_id"),
+        metadata.get("correlation_id"),
+        turn_id,
+    )
+    return turn_id, correlation_id
+
+
+def _first_optional_text(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _row_dict(row: sqlite3.Row | tuple[Any, ...], columns: list[str]) -> dict[str, Any]:

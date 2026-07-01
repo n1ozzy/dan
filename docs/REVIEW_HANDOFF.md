@@ -26,8 +26,8 @@ git rev-parse HEAD
 Current known commit:
 
 ```text
-27012061a9d802b7252f40f9f3bf2045f6060eed
-fix: centrally redact event secrets
+352f9491ff8af15c7b1aafaa4dad55d32a8a7b64
+docs: add reviewer handoff
 ```
 
 Reviewers should verify the current `HEAD` before using this document. Treat
@@ -50,6 +50,7 @@ this section as orientation, not proof that the checkout is still at this commit
 - Static cockpit.
 - Localhost-only CORS for cockpit.
 - Central EventStore secret redaction.
+- Prompt 19A: approval approve/reject decision events.
 
 ## Manual smoke results known
 
@@ -96,7 +97,6 @@ this section as orientation, not proof that the checkout is still at this commit
 
 ## Recommended next prompt sequence
 
-- Prompt 19A: approval approved/rejected event semantics.
 - Prompt 19B: `PermissionPolicy` on model-originated tool-call path.
 - Prompt 19C: `WAITING_APPROVAL` / awaiting_approval status model.
 - Prompt 19D: feed approved tool result back to brain / turn continuation.
