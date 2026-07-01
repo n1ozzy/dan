@@ -3,19 +3,109 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Jarvis Panel</title>
+    <title>Jarvis Cockpit</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="panel-shell" aria-label="Jarvis panel placeholder">
-      <header>
-        <span class="status-dot" aria-hidden="true"></span>
-        <h1>Jarvis</h1>
+    <main class="panel-shell" aria-label="Jarvis cockpit">
+      <header class="topbar">
+        <div class="brand-line">
+          <span id="onlineDot" class="status-dot" aria-hidden="true"></span>
+          <div>
+            <h1>Jarvis</h1>
+            <p id="onlineLabel" class="muted">offline</p>
+          </div>
+        </div>
+        <div class="state-line">
+          <span id="stateLabel" class="state-pill">unknown</span>
+          <button id="refreshAllButton" type="button">Refresh</button>
+        </div>
       </header>
-      <section>
-        <p>Panel placeholder. jarvisd client wiring is not implemented yet.</p>
+
+      <section class="card api-card" aria-labelledby="apiHeading">
+        <h2 id="apiHeading">API</h2>
+        <label class="inline-field">
+          <span>Base</span>
+          <input id="apiBaseInput" type="url" inputmode="url" autocomplete="off" />
+        </label>
+      </section>
+
+      <section class="card" aria-labelledby="healthHeading">
+        <div class="section-head">
+          <h2 id="healthHeading">Health</h2>
+        </div>
+        <dl id="healthStateList" class="kv-list"></dl>
+        <pre id="healthError" class="error-box" hidden></pre>
+      </section>
+
+      <section class="card" aria-labelledby="inputHeading">
+        <div class="section-head">
+          <h2 id="inputHeading">Input</h2>
+        </div>
+        <form id="textForm" class="stack">
+          <textarea id="textInput" rows="2" placeholder="Send text to jarvisd"></textarea>
+          <button id="sendButton" type="submit">Send</button>
+        </form>
+        <pre id="inputResponse" class="result-box"></pre>
+        <pre id="inputError" class="error-box" hidden></pre>
+      </section>
+
+      <section class="card" aria-labelledby="historyHeading">
+        <div class="section-head">
+          <h2 id="historyHeading">History</h2>
+          <button id="refreshHistoryButton" type="button">Refresh</button>
+        </div>
+        <div id="conversationList" class="list" role="listbox" aria-label="Conversations"></div>
+        <div id="turnList" class="list compact-list" aria-label="Turns"></div>
+        <pre id="historyError" class="error-box" hidden></pre>
+      </section>
+
+      <section class="card" aria-labelledby="memoryHeading">
+        <div class="section-head">
+          <h2 id="memoryHeading">Memory</h2>
+          <button id="refreshMemoryButton" type="button">Refresh</button>
+        </div>
+        <form id="memoryForm" class="memory-form">
+          <input id="memoryKind" type="text" value="fact" aria-label="Memory kind" />
+          <input id="memoryTitle" type="text" placeholder="Title" aria-label="Memory title" />
+          <input id="memoryPriority" type="number" value="0" aria-label="Memory priority" />
+          <textarea id="memoryBody" rows="2" placeholder="Body" aria-label="Memory body"></textarea>
+          <button id="createMemoryButton" type="submit">Create</button>
+        </form>
+        <div id="memoryList" class="list"></div>
+        <pre id="memoryError" class="error-box" hidden></pre>
+      </section>
+
+      <section class="card" aria-labelledby="toolsHeading">
+        <div class="section-head">
+          <h2 id="toolsHeading">Tools</h2>
+          <button id="refreshToolsButton" type="button">Refresh</button>
+        </div>
+        <div id="toolList" class="list compact-list"></div>
+        <div id="approvalList" class="list"></div>
+        <pre id="toolsError" class="error-box" hidden></pre>
+      </section>
+
+      <section class="card" aria-labelledby="eventsHeading">
+        <div class="section-head">
+          <h2 id="eventsHeading">Events</h2>
+          <button id="refreshEventsButton" type="button">Refresh</button>
+        </div>
+        <div id="eventList" class="list compact-list"></div>
+        <pre id="eventsError" class="error-box" hidden></pre>
+      </section>
+
+      <section class="card" aria-labelledby="runtimeHeading">
+        <div class="section-head">
+          <h2 id="runtimeHeading">Runtime</h2>
+          <button id="refreshRuntimeButton" type="button">Refresh</button>
+        </div>
+        <dl id="runtimeList" class="kv-list"></dl>
+        <div id="runtimeObservationList" class="list compact-list"></div>
+        <pre id="runtimeError" class="error-box" hidden></pre>
       </section>
     </main>
+
     <script src="./app.js"></script>
   </body>
 </html>
