@@ -336,6 +336,28 @@ def test_finish_stores_final_text_brain_fields_and_status_finished(
     assert turn.metadata == {"finish_reason": "stop"}
 
 
+def test_await_approval_stores_final_text_brain_fields_and_status(
+    conn: sqlite3.Connection,
+) -> None:
+    create_conversation(conn)
+    create_turn(conn, turn_id="turn-awaiting-approval")
+
+    turn = TurnRepository(conn).await_approval(
+        "turn-awaiting-approval",
+        final_text="Tool requires approval",
+        brain_adapter="mock",
+        brain_model="mock-local",
+        metadata={"approval_count": 1},
+    )
+
+    assert turn.status == "awaiting_approval"
+    assert turn.final_text == "Tool requires approval"
+    assert turn.brain_adapter == "mock"
+    assert turn.brain_model == "mock-local"
+    assert turn.error is None
+    assert turn.metadata == {"approval_count": 1}
+
+
 def test_fail_stores_error_and_status_failed(conn: sqlite3.Connection) -> None:
     create_conversation(conn)
     create_turn(conn, turn_id="turn-fail")
@@ -519,6 +541,7 @@ def test_turn_contract_enums_have_prompt_10_values() -> None:
         "context_built",
         "brain_requested",
         "brain_responded",
+        "awaiting_approval",
         "finished",
         "failed",
         "cancelled",

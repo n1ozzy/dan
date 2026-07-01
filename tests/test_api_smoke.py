@@ -320,6 +320,7 @@ def test_snapshot_state_returns_required_keys(app: DaemonApp) -> None:
         "voice_enabled",
         "brain_adapter",
         "launchd_label",
+        "pending_approval_count",
     }
 
     snapshot = app.snapshot_state()
@@ -330,6 +331,7 @@ def test_snapshot_state_returns_required_keys(app: DaemonApp) -> None:
     assert snapshot["started"] is True
     assert snapshot["state"] == "IDLE"
     assert snapshot["latest_event_id"] == 2
+    assert snapshot["pending_approval_count"] == 0
 
 
 def test_app_stop_transitions_to_stopping_and_appends_daemon_stopped(app: DaemonApp) -> None:

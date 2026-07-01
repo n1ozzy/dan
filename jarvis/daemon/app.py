@@ -126,6 +126,7 @@ class DaemonApp:
             "voice_enabled": self.config.voice.enabled,
             "brain_adapter": self.config.brain.default_adapter,
             "launchd_label": self.config.launchd.label,
+            "pending_approval_count": self._pending_approval_count(),
         }
 
     def allowed_state_targets(self) -> list[str]:
@@ -546,6 +547,27 @@ class DaemonApp:
             row = conn.execute("SELECT MAX(id) FROM events").fetchone()
             latest_event_id = 0 if row is None or row[0] is None else int(row[0])
             return schema_version, latest_event_id
+        finally:
+            close_quietly(conn)
+
+    def _pending_approval_count(self) -> int:
+        if self.conn is not None:
+            try:
+                row = self.conn.execute(
+                    "SELECT COUNT(*) FROM approvals WHERE status = 'pending'"
+                ).fetchone()
+                return 0 if row is None else int(row[0])
+            except sqlite3.Error:
+                return 0
+
+        if not self.paths.db_path.is_file():
+            return 0
+        conn = connect_db(self.paths.db_path)
+        try:
+            row = conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'").fetchone()
+            return 0 if row is None else int(row[0])
+        except sqlite3.Error:
+            return 0
         finally:
             close_quietly(conn)
 

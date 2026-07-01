@@ -70,11 +70,16 @@ The unit of "one input → full response". The pipeline's spine.
   - `created_at`, `updated_at`.
   - `response_text` — set when the brain responds (nullable until then).
   - `correlation_id` — ties together every event of this turn.
-- **Allowed statuses:** `pending` → `running` → (`finished` | `failed` |
-  `interrupted`).
+- **Allowed statuses:** `received` → `started` → `context_built` →
+  `brain_requested` → `brain_responded` → (`awaiting_approval` | `finished` |
+  `failed` | `cancelled`).
+  `awaiting_approval` means the model requested one or more approvable tools and
+  Jarvis persisted pending approvals. It does not execute those tools and does
+  not imply automatic continuation after approval.
 - **Emitted events:** `turn.started` (frozen), `turn.finished` (frozen), and
-  related `turn.*` lifecycle events in `events`. A failed turn finishes with a
-  failure payload; it still emits `turn.finished`.
+  related `turn.*` lifecycle events in `events`. `turn.finished` closes the
+  active processing phase; the persisted turn status distinguishes `finished`
+  from `awaiting_approval`.
 - **Forbidden behavior:**
   - No component other than the orchestrator creates or mutates turns.
   - Brain adapters and workers never write turns.
@@ -337,9 +342,11 @@ A human (or policy) decision authorizing a gated action.
 - **Allowed statuses:** `pending` → (`approved` | `rejected` | `expired`).
   While a turn waits on one, the runtime remains in the canonical state set; if
   the daemon is actively waiting as part of tool execution, it uses `TOOLING`.
-  `WAITING_APPROVAL` is not a v4.1 runtime state.
-- **Emitted events:** approval lifecycle **(family)** — e.g.
-  `approval.requested` / `approval.granted` / `approval.rejected`.
+  `WAITING_APPROVAL` is not a v4.1 runtime state. `/state` exposes
+  `pending_approval_count` so pending approvals are visible while the daemon can
+  still accept unrelated input.
+- **Emitted events:** approval lifecycle **(family)** — `approval.created`,
+  `approval.approved`, and `approval.rejected`.
 - **Forbidden behavior:**
   - The gated action never runs before `approved`.
   - Destructive actions are never auto-approved.

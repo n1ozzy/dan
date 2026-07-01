@@ -238,12 +238,13 @@ class TurnOrchestrator:
                 correlation_id=correlation_id,
             )
             final_text = _final_text_with_tool_summary(response.text, capture.tool_calls)
+            pending_approval_count = len(capture.approvals)
             finish_metadata = (
                 {
                     "tool_call_capture": {
                         "origin": "model",
                         "total": len(capture.tool_calls),
-                        "approval_count": len(capture.approvals),
+                        "approval_count": pending_approval_count,
                         "error_count": len(
                             [
                                 tool_call
@@ -258,13 +259,22 @@ class TurnOrchestrator:
                 if capture.tool_calls
                 else None
             )
-            turn = self._turns.finish(
-                turn.id,
-                final_text=final_text,
-                brain_adapter=adapter_name,
-                brain_model=response_model,
-                metadata=finish_metadata,
-            )
+            if pending_approval_count:
+                turn = self._turns.await_approval(
+                    turn.id,
+                    final_text=final_text,
+                    brain_adapter=adapter_name,
+                    brain_model=response_model,
+                    metadata=finish_metadata,
+                )
+            else:
+                turn = self._turns.finish(
+                    turn.id,
+                    final_text=final_text,
+                    brain_adapter=adapter_name,
+                    brain_model=response_model,
+                    metadata=finish_metadata,
+                )
             self._append_event(
                 EventType.TURN_FINISHED,
                 {
@@ -273,6 +283,8 @@ class TurnOrchestrator:
                     "final_text_length": len(final_text),
                     "brain_adapter": adapter_name,
                     "brain_model": response_model,
+                    "turn_status": turn.status,
+                    "pending_approval_count": pending_approval_count,
                 },
                 event_ids,
                 correlation_id=correlation_id,
@@ -281,7 +293,11 @@ class TurnOrchestrator:
             event_ids.append(
                 self._state_machine.transition(
                     RuntimeState.IDLE,
-                    reason="text turn finished",
+                    reason=(
+                        "text turn awaiting approval"
+                        if pending_approval_count
+                        else "text turn finished"
+                    ),
                     correlation_id=correlation_id,
                     turn_id=turn.id,
                 ).event_id

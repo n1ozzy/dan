@@ -1,12 +1,13 @@
 # Tools and Approvals
 
-Prompt 19B keeps the Prompt 15 safety model, the Prompt 15A provider
+Prompt 19C keeps the Prompt 15 safety model, the Prompt 15A provider
 tool-call parser, the explicit execute-approved endpoint, and the Prompt 19A
 approval decision events. It applies `ToolPermissionPolicy` to
-model-originated tool-call capture. It still does not add real shell execution,
+model-originated tool-call capture and marks turns with pending model-created
+approvals as `awaiting_approval`. It still does not add real shell execution,
 file writing, network access, workers, provider-side tool calling, automatic
 execution of model-originated tool requests, turn continuation after approval,
-or `WAITING_APPROVAL`.
+or a global `WAITING_APPROVAL` runtime state.
 
 ## ToolRegistry
 
@@ -143,7 +144,8 @@ model intent separate from actual execution.
 ## Model-Originated Tool Requests
 
 `POST /input/text` may receive a `BrainResponse` containing `tool_calls`.
-Jarvis captures those calls after `brain.responded` and before `turn.finished`.
+Jarvis captures those calls after `brain.responded` and before the active turn
+processing closes.
 
 The capture policy is conservative:
 
@@ -160,6 +162,10 @@ The capture policy is conservative:
 - non-JSON-safe arguments fail that tool request only, not the entire turn;
 - response JSON includes `tool_calls`, `approvals`, and the final text summary;
 - turn metadata includes a `tool_call_capture` summary;
+- if at least one pending approval is created, the persisted turn status is
+  `awaiting_approval`;
+- if all model-originated tool calls are unknown, unavailable, blocked, or
+  malformed, no pending approval is created and the turn remains `finished`;
 - `voice_queue` and `worker_jobs` are untouched.
 
 This differs from direct human/API requests. `POST /tools/request` still uses
@@ -176,7 +182,9 @@ are also removed from visible text and recorded in
 
 This is still not autonomous tool use. Model-originated tool calls become
 approval records only. Approved tools require a later explicit
-`POST /approvals/{id}/execute` call before any handler can run.
+`POST /approvals/{id}/execute` call before any handler can run. A turn in
+`awaiting_approval` does not execute a tool, does not resume itself, and does
+not feed tool output back into the brain yet.
 
 ## API Endpoints
 
@@ -207,7 +215,9 @@ does not invoke the handler again.
 
 Rejected approvals cannot execute. Approval decisions do not resume a waiting
 turn, feed approved tool output back into the brain, enqueue voice, or change
-runtime state to `WAITING_APPROVAL`; those remain future approval-loop prompts.
+runtime state to `WAITING_APPROVAL`. The daemon returns to `IDLE` after the turn
+and exposes pending approvals through `/state.pending_approval_count`; tool
+result continuation remains future Prompt 19D work.
 
 Successful execution returns:
 

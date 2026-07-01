@@ -77,9 +77,10 @@ Global transitions: any non-`STOPPING` state may transition to `ERROR` or
 state in the payload. The state machine is the only writer of the current state.
 
 > Note: states are runtime *activity* status. A `Turn` also has its own
-> `status` (`pending`/`running`/`finished`/`failed`/`interrupted`) — the two are
-> related but distinct (the daemon can be `SPEAKING` while a turn is already
-> `finished`, for example).
+> `status` (`received`/`started`/`context_built`/`brain_requested`/
+> `brain_responded`/`awaiting_approval`/`finished`/`failed`/`cancelled`) — the
+> two are related but distinct (the daemon can be `IDLE` while a turn is
+> `awaiting_approval`, for example).
 
 ---
 
@@ -102,7 +103,7 @@ brain.responded   OR   brain.failed
       ▼
 [persist response on Turn]
       ▼
-turn.finished           (Turn: status=finished | failed)
+turn.finished           (Turn: status=finished | awaiting_approval | failed)
       ▼
 state.changed → IDLE
 ```
@@ -115,6 +116,12 @@ state.changed → IDLE
   `response_text`).
 - **The mock brain is the default in tests** — no real provider is required to
   exercise the pipeline.
+- **`awaiting_approval` does not execute a tool** — it means the model requested
+  one or more approvable tools and Jarvis persisted pending approvals for a user
+  decision. The runtime returns to `IDLE` and `/state.pending_approval_count`
+  exposes pending work without globally blocking unrelated input.
+- **Approved tool result continuation is future work** — feeding an executed
+  tool result back into the brain/final answer remains Prompt 19D.
 
 ---
 

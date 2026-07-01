@@ -330,6 +330,25 @@ class TurnRepository:
             metadata_merge=_turn_mapping(metadata, "turn metadata"),
         )
 
+    def await_approval(
+        self,
+        turn_id: str,
+        *,
+        final_text: str,
+        brain_adapter: str | None = None,
+        brain_model: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> Turn:
+        normalized_final_text = ensure_non_empty_text(final_text, "final_text")
+        return self._update_turn(
+            turn_id,
+            status=TurnStatus.AWAITING_APPROVAL.value,
+            final_text=normalized_final_text,
+            brain_adapter=_optional_non_empty(brain_adapter, "brain adapter"),
+            brain_model=_optional_non_empty(brain_model, "brain model"),
+            metadata_merge=_turn_mapping(metadata, "turn metadata"),
+        )
+
     def fail(
         self,
         turn_id: str,

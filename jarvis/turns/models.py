@@ -34,6 +34,7 @@ class TurnStatus(StrEnum):
     CONTEXT_BUILT = "context_built"
     BRAIN_REQUESTED = "brain_requested"
     BRAIN_RESPONDED = "brain_responded"
+    AWAITING_APPROVAL = "awaiting_approval"
     FINISHED = "finished"
     FAILED = "failed"
     CANCELLED = "cancelled"

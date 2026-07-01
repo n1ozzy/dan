@@ -26,8 +26,8 @@ git rev-parse HEAD
 Current known commit:
 
 ```text
-81be8efd9c25d448ce255c381cf63e82506c9468
-feat: emit approval decision events
+6b0a6d53e26246c603b54045f13062cf2a922c5a
+fix: apply policy to model tool calls
 ```
 
 Reviewers should verify the current `HEAD` before using this document. Treat
@@ -52,6 +52,8 @@ this section as orientation, not proof that the checkout is still at this commit
 - Central EventStore secret redaction.
 - Prompt 19A: approval approve/reject decision events.
 - Prompt 19B: `PermissionPolicy` on model-originated tool-call path.
+- Prompt 19C: `awaiting_approval` turn status with
+  `/state.pending_approval_count`; runtime remains in the canonical state set.
 
 ## Manual smoke results known
 
@@ -79,8 +81,6 @@ this section as orientation, not proof that the checkout is still at this commit
 
 ## Known open risks / review priorities
 
-- H2: turn status/runtime state does not yet model awaiting approval /
-  `WAITING_APPROVAL`.
 - H3: approval execution does not yet feed tool result back into brain/final
   answer.
 - H5: API auth/CSRF/Origin/Host hardening still needed before dangerous tools.
@@ -97,7 +97,6 @@ this section as orientation, not proof that the checkout is still at this commit
 
 ## Recommended next prompt sequence
 
-- Prompt 19C: `WAITING_APPROVAL` / awaiting_approval status model.
 - Prompt 19D: feed approved tool result back to brain / turn continuation.
 - Then consider HookRouter foundation.
 - Only later workers/voice/native panel.

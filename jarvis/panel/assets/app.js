@@ -119,6 +119,7 @@ async function refreshHealthAndState() {
       ["state", merged.state],
       ["started", merged.started],
       ["schema_version", merged.schema_version],
+      ["pending_approval_count", merged.pending_approval_count],
       ["brain_adapter", merged.brain_adapter],
       ["voice_enabled", merged.voice_enabled],
     ]);
