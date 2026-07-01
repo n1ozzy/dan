@@ -13,6 +13,7 @@ from jarvis.events.models import (
     event_to_row_payload,
     utc_now_iso,
 )
+from jarvis.security.redaction import redact_secrets
 
 
 MAX_EVENT_QUERY_LIMIT = 1000
@@ -166,7 +167,8 @@ def _normalize_required_text(value: str, label: str) -> str:
 
 def _event_payload_json(payload: Mapping[str, Any]) -> str:
     try:
-        return event_to_row_payload(payload)
+        redacted_payload = redact_secrets(payload)
+        return event_to_row_payload(redacted_payload)
     except EventValidationError as exc:
         raise EventStoreError(str(exc)) from exc
 

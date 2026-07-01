@@ -84,8 +84,15 @@ clear.
 
 - A **policy helper redacts secrets in event payloads before write**
   ([ADR-010](DECISIONS.md#adr-010)).
+- `EventStore.append` is the final persistence guard: every event payload is
+  passed through the central redactor immediately before JSON serialization, so
+  the SQLite `events.payload_json` row and `/events` API payloads cannot expose
+  raw secrets even if a caller forgot to redact earlier.
 - `ToolCall.args` and `ToolCall.result` are **redacted** wherever they appear in
   events.
+- Callers may still redact earlier for display, approval rows, tool run rows or
+  logs, but earlier redaction is defense-in-depth rather than the event-store
+  guarantee.
 - API keys / tokens live outside the DB (environment / config), never in
   `events`.
 
