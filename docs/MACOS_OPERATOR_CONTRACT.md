@@ -3,9 +3,9 @@
 ## Purpose
 
 This document defines Jarvis as a local macOS operator. The operator layer is
-core product scope, not an optional later gimmick: Jarvis is meant to act on the
-user's Mac through controlled local capabilities, not merely describe what the
-user should click.
+core product direction, not an optional later gimmick: Jarvis is meant to act on
+the user's Mac through controlled local capabilities, not merely describe what
+the user should click.
 
 This is an architectural contract only. It does not implement Accessibility,
 screen capture, OCR, browser control, SMS, phone, passkey, voice, or live visual
@@ -16,31 +16,51 @@ operator capabilities yet.
 If the user can do an action through the Mac UI, Jarvis may be designed to do it
 on the user's behalf through controlled runtime capabilities.
 
-The model does not directly operate the Mac. `jarvisd` operates the Mac through
+The model never operates the Mac directly. `jarvisd` operates the Mac through
 `ToolRegistry`, `PermissionPolicy`, `ApprovalGate`, `EventStore`, and audited
 adapters. Models may propose operator actions; the daemon decides whether and
 how those actions are allowed, approved, executed, recorded, or refused.
 
-## What Jarvis should eventually be able to do
+## Examples vs commitments
 
-- Observe the active app and window.
-- Inspect the focused element.
-- Read selected or focused text.
-- Click UI elements.
-- Set focus.
-- Type or paste text.
-- Press hotkeys.
-- Drag or move the mouse.
-- Open URLs and control browser flows.
-- Assist passkey login flows with user presence.
-- Send SMS/messages on user command.
-- Initiate calls on user command.
-- Read the screen or terminal through ScreenCaptureKit and Vision OCR.
-- Operate Terminal/iTerm workflows.
-- Run live visual operator sessions, for example simple online games or web
-  tasks.
-- Monitor repo changes through FSEvents later.
-- Notify the user through UserNotifications later.
+Examples such as online games, SMS, phone calls, passkey-assisted login, and
+browser workflows illustrate operator capability classes. They are not automatically implementation commitments.
+
+A concrete capability becomes committed only when it is promoted by a later scoped prompt, contract, test plan, and permission model. This contract defines
+the shape of possible operator work, not a promise to implement every example
+immediately.
+
+## Operator-class capability areas and examples
+
+Operator-class capabilities may include, after explicit promotion and design:
+
+- Accessibility API capability areas: observe the active app/window, inspect the
+  focused element, read selected or focused text, click UI elements, set focus,
+  type or paste text, press hotkeys, and drag or move the mouse.
+- ScreenCaptureKit and Vision OCR capability areas: read visible terminal,
+  browser, panel, or screen state under explicit scope controls.
+- Browser operation examples: open URLs, fill forms, navigate website workflows,
+  or coordinate with a passkey/user-presence flow.
+- Credential/user-presence examples: trigger a passkey prompt or Keychain
+  unlock while the user remains responsible for Touch ID, device password, or
+  another system confirmation.
+- External communication examples: compose or send messages, SMS, email, posts,
+  or call-initiation requests after a separate communication policy exists.
+- Terminal/iTerm examples: observe terminal state, paste prepared commands, or
+  operate an approved terminal workflow.
+- Live visual control examples: complete a visual website task or manipulate a
+  web canvas through an `OperatorSession` loop.
+- File/repo observation examples: monitor approved repo/worktree roots through
+  FSEvents.
+- Notification examples: use UserNotifications for approval, worker, or
+  operator-session status.
+- Secret reference examples: use Keychain for credential references without
+  exposing secret values to models or event logs.
+
+Accessibility API, ScreenCaptureKit, and Vision OCR are core macOS capability
+areas for the operator direction. Specific tools built on them still require
+separate design prompts, contracts, test plans, and permission policy before
+implementation.
 
 ## macOS capability mapping
 
@@ -52,7 +72,7 @@ how those actions are allowed, approved, executed, recorded, or refused.
 | Speech input | Speech/SpeechAnalyzer | Separate listener loops with drift-prone state | Medium: microphone privacy and accidental capture | Explicit listening lease; no always-on capture by default | Future |
 | Audio capture/playback | AVFoundation/Core Audio | Multiple player/capture paths outside the daemon | Medium: mic/speaker control and privacy | Broker/device policy only; voice runtime separately approved | Future |
 | Credentials and secrets | Keychain | Secrets in env/logs/state files | High: credential exposure | User presence and explicit approval; never expose secret values to models | Future |
-| Messages, SMS, calls, shortcuts | Messages/Shortcuts/App Intents | Ad-hoc AppleScript-style control | High: external communication and billing/social risk | Confirmation before send/call unless trusted policy explicitly allows | Future |
+| External communication examples | Messages/Shortcuts/App Intents | Ad-hoc AppleScript-style control | High: external communication and billing/social risk | Confirmation before send/call unless trusted policy explicitly allows | Example class; not committed until promoted |
 | User notifications | UserNotifications | Terminal noise and background log watching | Low/medium: attention and privacy | Allow for status; approval for sensitive content previews | Future |
 | File/repo change observation | FSEvents | Polling watchers and loose file flags | Low/medium: filesystem metadata exposure | Allow inside approved repo roots | Future |
 | Local language/model helpers | NaturalLanguage/Core ML/MLX | Provider-only inference for local tasks | Medium: local model outputs may affect actions | Same policy as the action they prepare or trigger | Future |
@@ -65,15 +85,17 @@ how those actions are allowed, approved, executed, recorded, or refused.
 | observe/read-only | Active app/window, focused element, selected text, narrow screen read, repo status | Allow only in approved scopes; broad screen capture requires approval. |
 | prepare/compose | Draft message, prepare command, fill form text without submitting | Allow when side-effect-free; submitting remains separately gated. |
 | reversible UI action | Focus a field, switch tab, click non-submitting UI, paste draft text | Approval required unless direct user command and trusted surface policy allow it. |
-| external communication | Send SMS, send Message, send email, post form, initiate call | Confirmation required by default; event log records recipient/action metadata without secrets. |
-| credential/user-presence action | Trigger passkey prompt, unlock Keychain item, continue login after Touch ID | User presence required; Jarvis never owns or extracts credentials. |
+| external communication | Send SMS, send Message, send email, post form, initiate call | Example class; requires separate communication policy, contact resolution, audit model, and confirmation rules before implementation. |
+| credential/user-presence action | Trigger passkey prompt, unlock Keychain item, continue login after Touch ID | Example class; user presence required, and Jarvis never owns or extracts credentials. |
 | destructive/high-risk action | Delete files, overwrite data, submit payment, change account settings | Blocked or explicit approval only; no default auto-approval. |
 | live visual control session | Browser task loop, simple online game, multi-step UI workflow | Starts only with explicit approval, produces events, exposes stop controls, and has timeout/interrupt conditions. |
 
 ## Passkey / user presence model
 
-Jarvis should not extract, store, or own passkeys. Jarvis can navigate to a
-login page, select fields, trigger the passkey flow, and continue after the user
+Passkey-assisted login is an example of a credential/user-presence flow, not an
+automatic implementation commitment. Jarvis must never extract, serialize, own,
+store, or bypass passkeys. A promoted future capability may navigate to a login
+page, select fields, trigger the passkey flow, and continue after the user
 confirms through Touch ID, device password, or another system user-presence
 confirmation.
 
@@ -81,27 +103,30 @@ The user-presence confirmation remains with the user and macOS. `EventStore`
 records the flow, target app/site, and decision metadata without secrets,
 passkey material, passwords, or raw credential payloads.
 
-## SMS and phone model
+## External communication examples
 
-SMS sending is a target capability. Message composition should be auditable:
-Jarvis records what it intended to send, to which contact identifier class, and
-under which user command or approval, while avoiding private secret payloads in
+SMS, Messages, email, posting, and phone call initiation are external communication examples, not committed immediate roadmap items. If any of these
+examples are promoted later, message composition should be auditable: Jarvis
+records what it intended to send, to which contact identifier class, and under
+which user command or approval, while avoiding private secret payloads in
 events.
 
-The default policy can require confirmation before sending unless user config
-allows trusted contacts, narrow direct commands, or other explicitly accepted
-shortcuts. Calling is also a target capability. Full autonomous phone
-conversation is later and higher risk than initiating a call or sending SMS.
+A promoted communication capability requires separate communication policy,
+contact resolution, audit model, and confirmation rules before implementation.
+The default policy can require confirmation before sending or calling unless
+later user config allows trusted contacts, narrow direct commands, or other
+explicitly accepted shortcuts. Autonomous phone conversation would be a separate,
+higher-risk capability than call initiation or sending a prepared message.
 
 ## Live visual operator sessions
 
-Some tasks are not one-shot tools. Playing online pool/billiards, completing a
-multi-step web form, or steering an interactive browser task requires screen
-capture, visual state recognition, mouse/keyboard control, loop timing, stop
-conditions, and interruption.
+Some tasks are not one-shot tools. Online pool/billiards, multi-step web forms,
+web canvas manipulation, and interactive browser tasks are examples of live
+visual control sessions, not promised features. Any concrete live visual session
+requires separate feasibility and design work before implementation.
 
-Such sessions should be modeled as `OperatorSession`, not ordinary one-step
-tool execution. An operator session has a start event, step/progress events,
+The architectural shape is `OperatorSession`, not ordinary one-step tool
+execution. An operator session has a start event, step/progress events,
 stop/cancel events, policy state, user-visible stop controls, timeout limits,
 and a final outcome. The session loop still uses registered capabilities; it
 does not give the model direct control of the Mac.
@@ -110,8 +135,9 @@ does not give the model direct control of the Mac.
 
 Prompt 19A, Prompt 19B, and Prompt 19C created the foundation for approval
 decision events, `PermissionPolicy`, and `awaiting_approval` turns. Prompt 19D
-tool-result continuation must account for both future one-shot tools and longer
-operator sessions.
+tool-result continuation should stay operator-aware without treating every
+example in this document as a committed tool or treating every future operator
+capability as one-shot.
 
 `ApprovalGate` is not meant to make Jarvis useless; it is meant to manage risk.
 Direct user commands may have different policy than model-originated autonomous
@@ -148,19 +174,17 @@ replaces glue with controlled macOS capabilities mediated by `jarvisd`.
 - No voice runtime yet.
 - This document defines the contract before implementation.
 
-## Near-term implementation sequence
+## Near-term implementation guidance
 
-1. Prompt 19D: tool-result continuation MVP, aware of future operator sessions.
-2. Prompt 20B: macOS capability inventory and permission model.
-3. Prompt 21A: Accessibility read-only adapter.
-4. Prompt 21B: Accessibility action adapter with approvals.
-5. Prompt 21C: ScreenCaptureKit + Vision OCR bridge.
-6. Prompt 21D: Terminal/iTerm operator profile.
-7. Prompt 22A: Messages/SMS tool.
-8. Prompt 22B: Browser/passkey-assisted flow.
-9. Prompt 23+: live visual operator sessions.
-10. Voice/PTT/wake word after operator fundamentals or in parallel only if
-    isolated.
+1. Prompt 19D may implement approved one-shot tool result continuation while
+   preserving room for future operator sessions.
+2. Before concrete macOS operator tools are implemented, add a scoped capability
+   inventory and permission model.
+3. Promote specific capabilities only through later scoped prompts, contracts,
+   test plans, and permission policy. SMS, phone, passkey-assisted login,
+   browser workflows, and live visual sessions remain examples until promoted.
+4. Voice/PTT/wake word work remains separate unless a later prompt explicitly
+   scopes it.
 
 ## Reviewer checklist
 

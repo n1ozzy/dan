@@ -156,14 +156,17 @@ the Mac; `jarvisd` mediates all operator actions through `ToolRegistry`,
 architecture contract is in
 [MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.md).
 
-Credential and passkey flows require user presence. Jarvis may navigate to a
-login flow and trigger a system prompt, but Touch ID, device password, passkey
-confirmation, and Keychain unlock remain with the user and macOS. Secrets and
-credential material are not exposed to the model or persisted in events.
+Credential and passkey flows require user presence if a later scoped prompt
+promotes them into implementation. Jarvis may navigate to a login flow and
+trigger a system prompt, but Touch ID, device password, passkey confirmation,
+and Keychain unlock remain with the user and macOS. Secrets and credential
+material are not exposed to the model or persisted in events.
 
-External communication tools such as SMS, Messages, and phone initiation require
-policy and audit. The default posture is confirmation before sending or calling
-unless an explicit trusted-contact/direct-command policy narrows that risk.
+External communication examples such as SMS, Messages, and phone initiation
+require a separate communication policy, contact resolution, audit model, and
+confirmation rules before implementation. The default posture is confirmation
+before sending or calling unless an explicit trusted-contact/direct-command
+policy narrows that risk.
 
 ---
 

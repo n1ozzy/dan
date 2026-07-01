@@ -94,15 +94,17 @@ def test_macos_operator_contract_contains_required_orientation() -> None:
 
     required_snippets = (
         "macOS Operator Contract",
+        "Examples vs commitments",
+        "not automatically implementation commitments",
+        "promoted by a later scoped prompt",
+        "local macOS operator",
         "If the user can do an action through the Mac UI",
-        "The model does not directly operate the Mac",
+        "model never operates the Mac directly",
         "Accessibility API",
         "ScreenCaptureKit",
         "Vision OCR",
-        "passkey",
-        "SMS",
-        "live visual operator sessions",
         "OperatorSession",
+        "external communication examples",
         "Prompt 19D",
     )
 

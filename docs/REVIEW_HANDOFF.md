@@ -56,6 +56,9 @@ this section as orientation, not proof that the checkout is still at this commit
   `/state.pending_approval_count`; runtime remains in the canonical state set.
 - Prompt 20A: macOS operator contract added before Prompt 19D so continuation
   design accounts for future one-shot tools and longer operator sessions.
+- Prompt 20A-FIX: operator examples separated from implementation commitments;
+  concrete macOS capabilities require later scoped prompts, contracts, tests,
+  and permission policy before implementation.
 
 ## Manual smoke results known
 
@@ -99,9 +102,12 @@ this section as orientation, not proof that the checkout is still at this commit
 
 ## Recommended next prompt sequence
 
-- After 19C, the operator contract was added before 19D to ensure continuation
-  design accounts for future operator sessions.
-- Prompt 19D: feed approved tool result back to brain / turn continuation.
+- Review the operator contract separation if needed, then proceed only if the
+  examples-vs-commitments boundary is accepted.
+- Prompt 19D: feed approved one-shot tool result back to brain / turn
+  continuation, while preserving room for future `OperatorSession` work.
+- After 19D, consider a scoped macOS capability inventory and permission model
+  before promoting concrete operator examples into implementation.
 - Then consider HookRouter foundation.
 - Only later workers/voice/native panel.
 

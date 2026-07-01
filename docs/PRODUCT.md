@@ -51,9 +51,11 @@ is core product scope; see [MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.
 - **Auditable tools.** Every tool runs through a registry plus an approval
   policy. Rejected calls never execute; secrets never land unredacted in the
   event log. ([ADR-010](DECISIONS.md#adr-010))
-- **Local Mac operator.** Future macOS capabilities such as Accessibility,
-  screen capture, OCR, browser flow assistance, messages and calls are mediated
-  by `jarvisd`, not by a model acting directly.
+- **Local Mac operator.** macOS operator capability classes such as
+  Accessibility, screen capture, OCR, browser flow assistance, external
+  communication, and credential/user-presence flows are mediated by `jarvisd`,
+  not by a model acting directly. Specific tools inside those classes require
+  later scoped contracts, tests, and permission policy.
 - **Workers advise, they do not act on the world.** A worker job produces a
   *memory candidate*, never a spoken sentence and never a committed memory fact.
   ([ADR-009](DECISIONS.md#adr-009))
