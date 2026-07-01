@@ -292,6 +292,33 @@ second event system: state is read from `worker_jobs`; history is replayed from
 
 ---
 
+## ADR-016 — Runtime state names are canonical and finite
+
+**Status:** Accepted
+
+**Context.** Prompt 05 implemented the canonical `RuntimeStateMachine`. Earlier
+planning docs still named transient concepts as runtime states and mentioned a
+separate turn-step timeline.
+
+**Decision.**
+
+- RuntimeState persisted values are exactly: `BOOTING`, `IDLE`, `LISTENING`,
+  `TRANSCRIBING`, `THINKING`, `TOOLING`, `SPEAKING`, `INTERRUPTED`, `ERROR`,
+  `STOPPING`.
+- `WAITING_APPROVAL` and `WORKING` are not runtime states in v4.1.
+- Approval waiting is represented by approvals/tool events and, when
+  applicable, `TOOLING`.
+- Worker activity is represented by `worker_jobs` plus `worker.job.*` events,
+  not runtime state expansion.
+- Turn history is represented by `turn.*` events and `turns` state, not a
+  `turn_steps` table.
+
+**Consequences.** Daemon/API code must expose only the canonical `RuntimeState`
+set. The panel must render only the canonical `RuntimeState` set. Future
+runtime states require a new ADR and tests.
+
+---
+
 ## Decision log
 
 | ADR | Title | Status |
@@ -311,6 +338,7 @@ second event system: state is read from `worker_jobs`; history is replayed from
 | 013 | Legacy DAN runtime is detected and reported, never auto-killed | Accepted |
 | 014 | `jarvisd` launchd artifacts avoid the `~/Documents` TCC trap | Accepted |
 | 015 | Worker job lifecycle uses worker_jobs for state and events for history | Accepted |
+| 016 | Runtime state names are canonical and finite | Accepted |
 
 > ADR-013 and ADR-014 were added by the Prompt 00B inventory, grounded in
 > [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md). Further migration

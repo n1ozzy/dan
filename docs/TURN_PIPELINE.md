@@ -36,14 +36,42 @@ states:
 | `IDLE` | Ready, nothing in flight. |
 | `LISTENING` | A `ListeningLease` is active; capturing audio. |
 | `TRANSCRIBING` | Captured audio is being turned into text. |
-| `THINKING` | A turn is open; building context / awaiting the brain. |
-| `TOOLING` | A tool call is executing (post-approval). |
-| `WAITING_APPROVAL` | A turn is blocked on a pending `Approval`. |
-| `WORKING` | A worker job is running on the turn's behalf. |
+| `THINKING` | A turn is open; building context / awaiting the brain/model. |
+| `TOOLING` | Tool and approval execution periods inside a turn. |
 | `SPEAKING` | The voice broker is playing a `VoiceRequest`. |
 | `INTERRUPTED` | Barge-in / cancellation interrupted the current activity. |
 | `ERROR` | An unrecoverable error for the current activity. |
 | `STOPPING` | Graceful shutdown in progress. |
+
+The canonical persisted `RuntimeState` values are exactly:
+`BOOTING`, `IDLE`, `LISTENING`, `TRANSCRIBING`, `THINKING`, `TOOLING`,
+`SPEAKING`, `INTERRUPTED`, `ERROR`, `STOPPING`.
+
+`WAITING_APPROVAL` and `WORKING` are not v4.1 runtime states. Approval waiting
+is represented by `approvals` / `approval.*` / tool events and, when the
+runtime is actively waiting as part of a turn, `TOOLING`. Worker job lifecycle
+is represented by `worker_jobs` state plus `worker.job.*` events, not runtime
+state expansion.
+
+Allowed normal transitions:
+
+- `BOOTING` → `IDLE`
+- `IDLE` → `LISTENING`
+- `LISTENING` → `TRANSCRIBING`
+- `TRANSCRIBING` → `THINKING`
+- `IDLE` → `THINKING`
+- `THINKING` → `TOOLING`
+- `TOOLING` → `THINKING`
+- `THINKING` → `SPEAKING`
+- `THINKING` → `IDLE`
+- `SPEAKING` → `IDLE`
+- `SPEAKING` → `INTERRUPTED`
+- `INTERRUPTED` → `LISTENING`
+- `INTERRUPTED` → `THINKING`
+- `ERROR` → `IDLE`
+
+Global transitions: any non-`STOPPING` state may transition to `ERROR` or
+`STOPPING`. `STOPPING` is terminal. Same-state transitions are invalid.
 
 **Every transition emits `state.changed`** (frozen) with the previous and next
 state in the payload. The state machine is the only writer of the current state.
@@ -118,8 +146,10 @@ acknowledgement) **does not** open a turn — it is dropped by policy before
 
 ## 5. Branches: tools, approvals, workers
 
-These extend a turn without changing its identity. They are *steps* of the turn
-(recorded in `turn_steps`) and move the daemon through the matching states.
+These extend a turn without changing its identity. Turn state lives in `turns`;
+turn lifecycle history is represented by `turn.*` events in the single
+EventStore stream. There is no `turn_steps` table in v4.1 unless a future ADR
+supersedes ADR-016.
 
 ### 5.1 Tool call (Prompt 12)
 
@@ -127,7 +157,7 @@ These extend a turn without changing its identity. They are *steps* of the turn
 THINKING → (brain proposes ToolCall)
         → tool.proposed
         → if permission requires approval:
-              WAITING_APPROVAL  +  approval.requested
+              TOOLING + approval.requested
               → approval.granted | approval.rejected
         → if approved:  TOOLING  →  tool.run.started → tool.run.finished
         → if rejected/blocked: the call NEVER executes
@@ -138,7 +168,8 @@ THINKING → (brain proposes ToolCall)
 
 ```
 THINKING → (turn dispatches a WorkerJob)
-        → WORKING  +  job.queued → job.started → job.finished
+        → worker_jobs row + worker.job.created → worker.job.started
+        → worker.job.finished | worker.job.failed | worker.job.cancelled
         → worker result becomes a MEMORY CANDIDATE (never a fact, never speech)
         → back to THINKING / turn.finished
 ```

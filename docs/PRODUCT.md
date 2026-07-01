@@ -144,7 +144,7 @@ components if ever needed. It is never a source of truth.
 | Brain | `jarvis/brain` | Stateless adapters, context builder, manager |
 | Memory | `jarvis/memory` | Memory blocks, policies, context selection |
 | Tools | `jarvis/tools` | Registry, permissions, approval gate, tools |
-| Workers | `jarvis/workers` | Job broker, worker adapters, job events |
+| Workers | `jarvis/workers` | Job broker, worker adapters, `worker_jobs` state and `worker.job.*` events |
 | Audio | `jarvis/audio` | Device manager + policy |
 | Voice | `jarvis/voice` | Listening leases, voice queue, TTS broker, STT/VAD/anti-echo |
 | Panel | `jarvis/panel` | macOS menu-bar client (thin) |
@@ -160,7 +160,7 @@ update:
 
 1. The contract names and their owning modules (see [CONTRACTS.md](CONTRACTS.md)).
 2. The runtime state set (see [TURN_PIPELINE.md](TURN_PIPELINE.md)).
-3. The twelve architectural decisions (see [DECISIONS.md](DECISIONS.md)).
+3. The architectural decisions (see [DECISIONS.md](DECISIONS.md)).
 
 Everything else (exact field types, additional events, internal helpers) is
 implementation detail to be filled in by later prompts, but it must not

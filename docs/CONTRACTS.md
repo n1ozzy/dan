@@ -33,10 +33,14 @@ owns them. The frozen events are:
 All persistence is SQLite in `~/.jarvis/jarvis.db` ([ADR-004](DECISIONS.md#adr-004)).
 The frozen table set is:
 
-`schema_version`, `events`, `conversations`, `turns`, `turn_steps`,
-`memory_blocks`, `settings`, `voice_queue`, `listening_leases`,
-`audio_device_snapshots`, `worker_jobs`, `tool_runs`, `approvals`,
-`runtime_process_observations`.
+`schema_version`, `events`, `conversations`, `turns`, `memory_blocks`,
+`settings`, `voice_queue`, `listening_leases`, `audio_device_snapshots`,
+`worker_jobs`, `tool_runs`, `approvals`, `runtime_process_observations`.
+
+There is no `turn_steps` table in v4.1. Turn state lives in `turns`; turn
+lifecycle history is represented by `turn.*` events in `events`. Do not add a
+separate turn timeline table unless a future ADR explicitly supersedes
+[ADR-016](DECISIONS.md#adr-016).
 
 Worker job state and history are intentionally separate:
 
@@ -52,8 +56,10 @@ Worker job state and history are intentionally separate:
 The unit of "one input → full response". The pipeline's spine.
 
 - **Owner module:** `jarvis/turns` (`TurnOrchestrator` + turn repository).
-- **Persistence:** `turns` (one row per turn); per-step detail in `turn_steps`.
-  **Required** — a turn must survive a daemon/DB reload.
+- **Persistence:** `turns` stores current turn state. Turn lifecycle history is
+  recorded in the general append-only `events` table via `turn.*` event types.
+  There is no `turn_steps` table in v4.1. **Required** — a turn must survive a
+  daemon/DB reload.
 - **Required fields:**
   - `id` — stable identifier.
   - `conversation_id` — the owning `Conversation`.
@@ -63,12 +69,12 @@ The unit of "one input → full response". The pipeline's spine.
   - `status` — see states below.
   - `created_at`, `updated_at`.
   - `response_text` — set when the brain responds (nullable until then).
-  - `correlation_id` — ties together every event/step of this turn.
+  - `correlation_id` — ties together every event of this turn.
 - **Allowed statuses:** `pending` → `running` → (`finished` | `failed` |
   `interrupted`).
-- **Emitted events:** `turn.started` (frozen), `turn.finished` (frozen),
-  and per-step records in `turn_steps`. A failed turn finishes with a failure
-  payload; it still emits `turn.finished`.
+- **Emitted events:** `turn.started` (frozen), `turn.finished` (frozen), and
+  related `turn.*` lifecycle events in `events`. A failed turn finishes with a
+  failure payload; it still emits `turn.finished`.
 - **Forbidden behavior:**
   - No component other than the orchestrator creates or mutates turns.
   - Brain adapters and workers never write turns.
@@ -136,7 +142,7 @@ provider — assembles all context.
   `manager` dispatches it).
 - **Persistence:** **Derived / not persisted as its own row.** It is built from
   DB + config on demand; its occurrence is recorded via the `brain.requested`
-  event and `turn_steps`. Building it from the same DB state must be
+  event. Building it from the same DB state must be
   deterministic.
 - **Required fields:**
   - `conversation_id`, `turn_id`, `correlation_id`.
@@ -162,8 +168,7 @@ The result returned by a brain adapter.
 
 - **Owner module:** `jarvis/brain` (adapters produce it; manager normalizes it).
 - **Persistence:** **Derived / not persisted as its own row.** Its content lands
-  on the `Turn` (`response_text`) and in `events` (`brain.responded`) /
-  `turn_steps`.
+  on the `Turn` (`response_text`) and in `events` (`brain.responded`).
 - **Required fields:**
   - `text` — the response body (may stream in deltas; final text is canonical).
   - `model` — which model produced it.
@@ -330,7 +335,9 @@ A human (or policy) decision authorizing a gated action.
   - `created_at`, `decided_at`.
   - `reason` — nullable; rationale for the decision.
 - **Allowed statuses:** `pending` → (`approved` | `rejected` | `expired`).
-  While a turn waits on one, the daemon is in `WAITING_APPROVAL`.
+  While a turn waits on one, the runtime remains in the canonical state set; if
+  the daemon is actively waiting as part of tool execution, it uses `TOOLING`.
+  `WAITING_APPROVAL` is not a v4.1 runtime state.
 - **Emitted events:** approval lifecycle **(family)** — e.g.
   `approval.requested` / `approval.granted` / `approval.rejected`.
 - **Forbidden behavior:**

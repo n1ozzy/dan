@@ -62,7 +62,7 @@ ToolCall (proposed)
       ▼
 permission requires approval?
       ▼ yes
-Approval (pending)  +  daemon state WAITING_APPROVAL  +  approval.requested
+Approval (pending)  +  daemon state TOOLING  +  approval.requested
       ▼
 approval.granted ──► TOOLING ──► tool_run recorded
 approval.rejected ─► ToolCall rejected ──► NEVER executes
@@ -71,6 +71,9 @@ approval.rejected ─► ToolCall rejected ──► NEVER executes
 - The gated action **never runs before `approved`**.
 - Destructive actions are **never auto-approved**.
 - Decisions are persisted (`approvals`) and event-logged (`approval.*`).
+- `WAITING_APPROVAL` is not a v4.1 runtime state; approval waiting is modeled by
+  `approvals`, approval/tool events and, when the runtime is actively waiting as
+  part of a turn, `TOOLING`.
 
 ---
 
