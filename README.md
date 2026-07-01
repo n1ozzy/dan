@@ -3,8 +3,8 @@
 Jarvis is `jarvisd`: a local, single-user runtime where the daemon owns the
 truth.
 
-- `jarvisd` owns conversation, events, memory, approvals, jobs, voice queue and
-  runtime state.
+- `jarvisd` owns conversation, events, memory, approvals, worker jobs, voice
+  queue and runtime state.
 - The panel is a client. It renders daemon state and sends intents only.
 - Brain adapters are stateless. Provider sessions are not Jarvis memory.
 - Workers are silent. They can produce candidates, not committed facts or speech.

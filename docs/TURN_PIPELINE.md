@@ -170,7 +170,7 @@ SPEAKING → (real barge-in detected, under policy)
 | `memory.updated` | ✅ | a `MemoryBlock` changes |
 | `tool.*` | family | tool proposed/run lifecycle |
 | `approval.*` | family | approval requested/decided |
-| `job.*` | family | worker job lifecycle |
+| `worker.job.*` | family | worker job lifecycle in the general `events` table |
 | `voice.speak.*` | family | voice queue/playback lifecycle |
 | `voice.listening.*` | family | listening lease lifecycle |
 | `audio.device.changed` | family | device selection change |

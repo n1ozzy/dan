@@ -27,7 +27,9 @@ exposes them over a local API.
 ## 2. Goals
 
 - **One source of truth.** Conversation, memory, events, voice queue, leases,
-  approvals and jobs live in a single SQLite database owned by `jarvisd`.
+  approvals and worker jobs live in a single SQLite database owned by `jarvisd`;
+  worker job state lives in `worker_jobs`, while lifecycle history lives in
+  `events` as `worker.job.*`.
   ([ADR-001](DECISIONS.md#adr-001), [ADR-004](DECISIONS.md#adr-004))
 - **Thin panel.** The macOS menu-bar panel renders daemon state and sends
   intents. It never computes or stores canonical state. If `jarvisd` is down,

@@ -1,4 +1,4 @@
-"""Event contracts and bus placeholders."""
+"""Event contracts and in-process bus exports."""
 
 from __future__ import annotations
 

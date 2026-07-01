@@ -269,6 +269,29 @@ confusion. See [LAUNCH_SUPERVISION.md](LAUNCH_SUPERVISION.md) and
 
 ---
 
+## ADR-015 — Worker job lifecycle uses worker_jobs for state and events for history
+
+**Status:** Accepted
+
+**Context.** Prompt 03 established `worker_jobs` as the canonical table for
+worker job state. Prompt 04 established EventStore as the single append-only
+event history mechanism.
+
+**Decision.**
+
+- `worker_jobs` is the canonical worker job state table.
+- `worker.job.*` entries in the general `events` table are the canonical worker
+  job lifecycle history.
+- There is no `job_events` table in v4.1.
+- Future job history requirements extend EventStore, not a parallel event
+  table, unless a later ADR supersedes this.
+
+**Consequences.** Job state and job history remain separate without creating a
+second event system: state is read from `worker_jobs`; history is replayed from
+`events`.
+
+---
+
 ## Decision log
 
 | ADR | Title | Status |
@@ -287,6 +310,7 @@ confusion. See [LAUNCH_SUPERVISION.md](LAUNCH_SUPERVISION.md) and
 | 012 | `AudioDeviceManager` owns input/output device state | Accepted |
 | 013 | Legacy DAN runtime is detected and reported, never auto-killed | Accepted |
 | 014 | `jarvisd` launchd artifacts avoid the `~/Documents` TCC trap | Accepted |
+| 015 | Worker job lifecycle uses worker_jobs for state and events for history | Accepted |
 
 > ADR-013 and ADR-014 were added by the Prompt 00B inventory, grounded in
 > [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md). Further migration

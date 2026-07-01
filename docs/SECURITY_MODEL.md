@@ -120,7 +120,8 @@ A worker (Codex/Claude background job) is even more constrained than a brain:
   authority ([ADR-005](DECISIONS.md#adr-005)).
 - A worker **never writes a memory fact directly** — its result is a **memory
   candidate** that a human or policy must promote.
-- Worker activity is fully visible in the event stream (`job.*`).
+- Worker activity is fully visible in the EventStore stream (`worker.job.*`
+  entries in the general `events` table).
 
 ---
 

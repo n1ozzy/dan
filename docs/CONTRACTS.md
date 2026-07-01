@@ -35,8 +35,15 @@ The frozen table set is:
 
 `schema_version`, `events`, `conversations`, `turns`, `turn_steps`,
 `memory_blocks`, `settings`, `voice_queue`, `listening_leases`,
-`audio_device_snapshots`, `jobs`, `job_events`, `tool_runs`, `approvals`,
+`audio_device_snapshots`, `worker_jobs`, `tool_runs`, `approvals`,
 `runtime_process_observations`.
+
+Worker job state and history are intentionally separate:
+
+- State: `worker_jobs`.
+- History: `events`, using `worker.job.*` event types.
+- There is no `job_events` table in v4.1. Do not add one unless a future ADR
+  explicitly supersedes [ADR-015](DECISIONS.md#adr-015).
 
 ---
 
@@ -338,25 +345,33 @@ An async background job (e.g. a Codex/Claude worker). Workers advise; they do
 not act on the world.
 
 - **Owner module:** `jarvis/workers` (`broker` + worker adapters).
-- **Persistence:** `jobs` (state) + `job_events` (timeline). **Required.**
+- **Persistence:** `worker_jobs` stores current job state. Worker lifecycle
+  history is recorded in the general append-only `events` table via
+  `worker.job.*` event types. There is no `job_events` table. **Required.**
 - **Required fields:**
   - `id`.
-  - `kind` — e.g. `codex` | `claude` (extensible).
-  - `spec` / `payload` — what to do.
+  - `type`.
+  - `worker_kind` — e.g. `codex` | `claude` (extensible).
+  - `prompt` — what to do.
   - `status` — see below.
-  - `result_ref` — nullable; points to a **memory candidate**, not a fact.
-  - `correlation_id`.
-  - `created_at`, `updated_at`.
+  - `requested_by`.
+  - `result_summary` — nullable; may point toward a **memory candidate**, not a fact.
+  - `artifact_refs_json`.
+  - `created_at`, `started_at`, `finished_at`.
+  - `metadata_json`.
 - **Allowed statuses:** `queued` → `running` → (`succeeded` | `failed` |
   `cancelled`).
-- **Emitted events:** job lifecycle **(family)**, visible in the event stream —
-  e.g. `job.queued` / `job.started` / `job.finished` / `job.failed`
-  (recorded in `job_events`).
+- **Emitted events:** worker job lifecycle **(family)**, visible in the single
+  EventStore stream — e.g. `worker.job.created`, `worker.job.started`,
+  `worker.job.progress`, `worker.job.finished`, `worker.job.failed`,
+  `worker.job.cancelled` (recorded in `events`).
 - **Forbidden behavior:**
   - A worker **never speaks** (no `VoiceRequest` on its own authority)
     ([ADR-005](DECISIONS.md#adr-005)).
   - A worker **never writes a memory fact directly** — its result is a
     candidate ([ADR-009](DECISIONS.md#adr-009)).
+  - Do not add a parallel job-history table; future job history requirements
+    extend EventStore unless a later ADR supersedes ADR-015.
 
 ---
 
