@@ -18,6 +18,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+from tests.git_guards import assert_schema_and_migrations_unchanged
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
 from jarvis.daemon.state_machine import RuntimeState
@@ -661,26 +662,7 @@ def test_no_real_home_is_touched_by_temp_config(tmp_path: Path) -> None:
 
 
 def test_sqlite_schema_and_migrations_are_not_modified() -> None:
-    git_probe = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if git_probe.returncode != 0:
-        pytest.skip("schema/migration diff guard requires a git working tree")
-
-    result = subprocess.run(
-        ["git", "diff", "--name-only", "--", "jarvis/store/schema.sql", "jarvis/store/migrations.py"],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert result.stdout.strip() == ""
+    assert_schema_and_migrations_unchanged(ROOT)
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:

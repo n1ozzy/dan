@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
-import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tests.git_guards import assert_schema_and_migrations_unchanged
 from jarvis.daemon.state_machine import (
     RuntimeState,
     RuntimeStateMachine,
@@ -320,16 +320,7 @@ def test_can_transition_uses_the_same_policy_as_transition(store: EventStore) ->
 
 
 def test_sqlite_schema_and_migrations_are_not_modified() -> None:
-    result = subprocess.run(
-        ["git", "diff", "--name-only", "--", "jarvis/store/schema.sql", "jarvis/store/migrations.py"],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert result.stdout.strip() == ""
+    assert_schema_and_migrations_unchanged(ROOT)
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
