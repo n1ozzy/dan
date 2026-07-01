@@ -1,4 +1,4 @@
-"""Minimal argparse CLI for Jarvis v4.1 configuration inspection."""
+"""Minimal argparse CLI for Jarvis v4.1 local runtime inspection."""
 
 from __future__ import annotations
 
@@ -6,8 +6,13 @@ import argparse
 import json
 import sys
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from jarvis.config import ConfigError, JarvisConfig, load_config
+from jarvis.daemon.app import DaemonAppError, create_daemon_app
+from jarvis.daemon.lifecycle import DaemonServerError, serve_forever
 from jarvis.paths import RuntimePaths, resolve_runtime_paths
 from jarvis.store.db import (
     DatabaseError,
@@ -40,6 +45,23 @@ def build_parser() -> argparse.ArgumentParser:
     db_init = db_commands.add_parser("init")
     db_init.add_argument("--config", dest="db_config", help="Path to a Jarvis TOML config file")
 
+    daemon_parser = subcommands.add_parser("daemon")
+    daemon_commands = daemon_parser.add_subparsers(dest="daemon_command", required=True)
+    daemon_commands.add_parser("run")
+
+    health_parser = subcommands.add_parser("health")
+    health_parser.add_argument("--url", help="Base URL for a running jarvisd")
+
+    state_parser = subcommands.add_parser("state")
+    state_parser.add_argument("--url", help="Base URL for a running jarvisd")
+
+    events_parser = subcommands.add_parser("events")
+    events_commands = events_parser.add_subparsers(dest="events_command", required=True)
+    events_after = events_commands.add_parser("after")
+    events_after.add_argument("--id", dest="after_id", type=int, default=0)
+    events_after.add_argument("--limit", type=int, default=100)
+    events_after.add_argument("--url", help="Base URL for a running jarvisd")
+
     subcommands.add_parser("doctor")
     return parser
 
@@ -70,6 +92,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "db":
         return _handle_db_command(args.db_command, paths)
 
+    if args.command == "daemon" and args.daemon_command == "run":
+        return _handle_daemon_run(_config_path_from_args(args))
+
+    if args.command == "health":
+        return _handle_remote_json(_base_url(args, config), "/health")
+
+    if args.command == "state":
+        return _handle_remote_json(_base_url(args, config), "/state")
+
+    if args.command == "events" and args.events_command == "after":
+        query = urlencode({"after_id": args.after_id, "limit": args.limit})
+        return _handle_remote_json(_base_url(args, config), f"/events?{query}")
+
     parser.error("unknown command")
     return 2
 
@@ -97,6 +132,57 @@ def _handle_db_command(command: str, paths: RuntimePaths) -> int:
 
     print(f"unknown db command: {command}", file=sys.stderr)
     return 2
+
+
+def _handle_daemon_run(config_path: str | None) -> int:
+    app = None
+    try:
+        app = create_daemon_app(config_path, initialize=True)
+        app.start()
+        serve_forever(app, app.config.daemon.host, app.config.daemon.port)
+        return 0
+    except KeyboardInterrupt:
+        if app is not None:
+            app.stop(reason="keyboard interrupt")
+        return 0
+    except (ConfigError, DatabaseError, DaemonAppError, DaemonServerError) as exc:
+        print(f"DaemonError: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        if app is not None:
+            app.close()
+
+
+def _handle_remote_json(base_url: str, path: str) -> int:
+    try:
+        payload = _request_json(base_url, path)
+    except HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {"error": str(exc), "status": exc.code}
+        _print_json(body)
+        return 2
+    except (URLError, TimeoutError, OSError) as exc:
+        print(f"Daemon unreachable: {exc}", file=sys.stderr)
+        return 3
+
+    _print_json(payload)
+    return 0
+
+
+def _request_json(base_url: str, path: str) -> dict[str, Any]:
+    url = f"{base_url.rstrip('/')}{path}"
+    request = Request(url, headers={"Accept": "application/json"}, method="GET")
+    with urlopen(request, timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _base_url(args: argparse.Namespace, config: JarvisConfig) -> str:
+    override = getattr(args, "url", None)
+    if override:
+        return override
+    return f"http://{config.daemon.host}:{config.daemon.port}"
 
 
 def _doctor_payload(config: JarvisConfig, paths: RuntimePaths) -> dict[str, Any]:
