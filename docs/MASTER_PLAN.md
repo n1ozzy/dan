@@ -144,25 +144,27 @@ Nowe względem obu planów (pivot operatorowy): FAZY B–D poniżej.
 
 ### 4a. Rejestr oczekiwań z legacy DAN (audyt 2026-07-02)
 
-Rzeczy, które stary DAN **miał działające** i których Ozzy będzie zasadnie
-oczekiwał od Jarvisa — z werdyktem, żeby znowu nie zginęły po cichu:
+Dekret Ozzy'ego (§7.6): z DAN-a nie przenosimy kodu, logiki ani architektury.
+Ten rejestr to wyłącznie: **wymagania** (co ma działać, bo działało i Ozzy
+tego oczekuje) oraz **fakty o narzędziach trzecich** (właściwości MLX/sox/
+whispera odkryte empirycznie — dotyczą narzędzi, które i tak wybraliśmy,
+nie designu DAN-a). Implementacja zawsze clean-room pod kontrakty v4.1.
 
-| Funkcja z DAN | Werdykt | Gdzie |
+| Pozycja | Charakter | Werdykt |
 |---|---|---|
-| Streaming TTS zdanie-po-zdaniu + fillers (first-sound ~2 s zamiast 8–10 s) | **KEEP — FAZA G** | wymaga streamingu w brain adapterach — projekt kontraktu w G0 |
-| Anti-echo token-coverage (`spoken-recent` ring 30 s, coverage ≥0.6, short≥0.99) | **KEEP — G4** | koncept 1:1 z `listen_ozzy.py:_spoken_tokens()` / `voice_broker.py`, transport przez DB nie /tmp |
-| PTT: flaga + globalny hotkey (Ctrl+Shift, NSEvent) | **KEEP — G2** | ListeningLease już ma source `global_hotkey` w kontrakcie |
-| Sox order: gain PRZED silence, highpass 80 Hz na końcu (fix 2026-06-24) | **KEEP — G4** | przenieść dokładny order z `dan_core/voice_chat.py:record()` |
-| Filtry halucynacji whispera (blacklist 53, powtórniki, no-speech 0.6) | **KEEP — G4** | z `listen_ozzy.py:is_garbage()` |
-| Chunking per-silnik (`split_sentences`, max_chunk 50/150) | **KEEP — G3** | z `voice_broker.py` |
-| MLX worker-thread pattern (model+stream per wątek) | **KEEP — G5** | krytyczne dla Chatterbox; z `ChatterboxEngine` |
-| Prefetch N+1 podczas grania N | **KEEP — G3** | z brokera |
-| Persona gangus (4 poziomy) + Jarvis-mentor; persona = data, nie stan | **KEEP — E5** | port do `config/persona/` zgodnie z PRODUCT.md; DANusia = osobna persona-config, opcjonalna |
-| Voice-clone (Chatterbox MLX) + Supertonic ONNX + ElevenLabs | **KEEP — G5 (opcjonalne per silnik)** | TTS broker = pluggable engines; patrz decyzja §7.3 |
-| Multi-provider brain (groq, qwen, local Bielik, chain) | **DEFER — po MVP-voice** | adapter interface już to umożliwia; nie teraz |
-| Work modes normal/auto/plan | **ZASTĄPIONE** | przez source-sensitive policy (FAZA B) + ApprovalGate — lepszy model tego samego |
-| `--dangerously-skip-permissions` ("pełne ręce") | **KILL** | świadomie zastąpione registry+policy+approvals; to była największa dziura DAN-a |
-| Stan w /tmp, direct afplay, panel z własnym stanem, hardcoded paths | **KILL** | grzechy główne — ADR-y 001/002/005/008 istnieją dokładnie po to |
+| First-sound ≤ ~2 s przy odpowiedzi głosowej (streaming zdaniami + fillers) | wymaganie | **KEEP — G0/G3** (projekt kontraktu streamingu w G0) |
+| Nasłuch nie ucina użytkownika w pół zdania; echo własnego TTS nie staje się turnem | wymaganie | **KEEP — G4** (mechanizm zaprojektujemy w G0/G4 od zera; stan przez DB, nie /tmp) |
+| PTT: przycisk + globalny hotkey; domyślnie cisza, zero always-on | wymaganie | **KEEP — G2** (ListeningLease ma już source `global_hotkey`) |
+| sox: gain PRZED silence, inaczej VAD ucina słabe słowa; highpass 80 Hz na buczenie | fakt o narzędziu (sox) | **KEEP — G4** |
+| Whisper halucynuje na ciszy/szumie — potrzebne filtry śmieci i próg no-speech | fakt o narzędziu (whisper) | **KEEP — G4** (filtry napiszemy własne) |
+| MLX trzyma model+stream per wątek — synteza/inferencja MLX musi żyć w dedykowanym wątku | fakt o narzędziu (MLX) | **KEEP — G5** (dotyczy też STT MLX w G4) |
+| TTS chunkowany per-silnik + przygotowywanie następnego chunka podczas grania | wymaganie (płynność) | **KEEP — G3** (własny design w brokerze) |
+| Persona gangus (poziomy ostrości) + Jarvis-mentor; persona = data, nie stan | wymaganie | **KEEP — E4** (treść person od Ozzy'ego na nowo, nie kopiowana z persona.py) |
+| Głos docelowy: voice-clone; do tego czasu dostępne głosy dozwolonych silników | wymaganie | **KEEP — G3/G5** (zestaw silników: decyzja §7.3) |
+| Multi-provider brain (groq, qwen, local Bielik, chain) | wymaganie (przyszłe) | **DEFER — po MVP-voice** |
+| Work modes normal/auto/plan | zastąpione | source-sensitive policy (FAZA B) + ApprovalGate — lepszy model tego samego |
+| `--dangerously-skip-permissions` ("pełne ręce") | grzech | **KILL** — zastąpione registry+policy+approvals |
+| Stan w /tmp, direct afplay, panel z własnym stanem, hardcoded paths, kod DAN-a w ogóle | grzech | **KILL** — ADR-y 001/002/005/008 + dekret §7.6 |
 
 Uwaga operacyjna: legacy DAN **nadal działa** na tym Macu (voice_broker.py,
 auto_jarvis.py, listen_ozzy.py loop + com.dan.voice-broker.plist w LaunchAgents,
@@ -237,10 +239,11 @@ Gate D (GATE): każdy etap osobno + review; D2 wymaga działającego C1 (auth).
 - **E2** — WorkerBroker + pierwszy worker (mock, potem codex/claude);
   worker nie mówi, nie pisze pamięci, wynik = memory candidate.
 - **E3** — settings UI w cockpicie.
-- **E4** — persona port: styl DAN-gangus (4 poziomy) + Jarvis-mentor jako
+- **E4** — persona: styl gangus (poziomy ostrości) + Jarvis-mentor jako
   `config/persona/` data zgodnie z PRODUCT.md (persona nie ma stanu, nie
-  decyduje o toolach, nie omija approvals). Config-only — może wejść wcześniej
-  bez szkody, jeśli będzie okazja.
+  decyduje o toolach, nie omija approvals). Treść pisana od nowa z Ozzym,
+  nie kopiowana z persona.py (dekret §7.6). Config-only — może wejść
+  wcześniej bez szkody, jeśli będzie okazja.
 
 ### FAZA F — Stabilizacja
 
@@ -260,13 +263,17 @@ Warunek wejścia: legacy DAN wygaszony ręcznie przez Ozzy'ego (§4a, uwaga oper
 - **G1** — AudioDeviceManager + polityka (pin builtin mic, output follows system,
   BT mic warning) — kontrakty z CONTRACTS.md, bez projektowania od nowa.
 - **G2** — ListeningLease + PTT API (flaga + globalny hotkey) + mock recorder.
-- **G3** — VoiceQueue + TTS broker: pluggable engines (decyzja §7.3), chunking
-  per-silnik + prefetch N+1 (koncepty z DAN §4a); broker = jedyny speaker;
-  direct afplay = violation. Pierwszy silnik: natywny macOS (say/AVSpeech).
-- **G4** — STT (mlx-whisper, sox gain-przed-silence, filtry halucynacji)
-  + anti-echo token-coverage + barge-in; transcript przez ten sam TurnOrchestrator.
-- **G5** — silniki dodatkowe (opcjonalnie, każdy osobny etap): Supertonic ONNX,
-  Chatterbox MLX voice-clone (worker-thread pattern z §4a), ElevenLabs API.
+- **G3** — VoiceQueue + TTS broker: pluggable engines (zestaw z decyzji §7.3:
+  Supertonic + Chatterbox; zakaz edgeTTS/piper/XTTS), chunking per-silnik +
+  przygotowanie następnego chunka podczas grania (wymaganie §4a); broker =
+  jedyny speaker; direct afplay = violation. Pierwszy realny silnik: Supertonic;
+  w testach mock engine.
+- **G4** — STT: MLX whisper (dekret §7.4) + nagrywanie (fakty o sox z §4a)
+  + własne filtry śmieci + anti-echo + barge-in; transcript przez ten sam
+  TurnOrchestrator. Implementacja clean-room.
+- **G5** — Chatterbox MLX voice-clone (inferencja w dedykowanym wątku — fakt
+  o MLX z §4a); docelowo własny głos Jarvisa. ElevenLabs tylko jeśli Ozzy
+  zadekretuje.
 
 Gate G (GATE): voice safety review (odpowiednik Gate 6 z PRO).
 
@@ -312,8 +319,19 @@ Kryteria voice (PRO §16 pkt 8–11) przechodzą do milestone'u MVP-voice po FAZ
    o lagi i gubione klatki stanu.
 2. **MenuBar: zostaje na końcu (H1).** Statyczny cockpit robi robotę przez cały
    fundament; native panel to wykończeniówka, nie infrastruktura.
-3. **TTS: broker z pluggable engines, start natywnie.** Pierwszy silnik =
-   natywny macOS (najmniej ruchomych części do smoke), ale interfejs silnika
-   projektowany od razu pod wymienność — bo docelowy głos Jarvisa to
-   voice-clone (Chatterbox MLX, G5), a Supertonic/ElevenLabs to fallbacki.
-   Powrót do XTTS: NIE (MIGRATION_INVENTORY: discard — wolny, kwadratowy koszt).
+3. **TTS: broker z pluggable engines — zestaw silników zadekretowany przez
+   Ozzy'ego (2026-07-02):** Supertonic (szybki/średnia jakość) + Chatterbox
+   (voice-clone) + docelowo własny głos. **Zakazane: edgeTTS, piper, XTTS.**
+   Do czasu własnego głosu: dostępne głosy z dozwolonych silników. W testach
+   wyłącznie mock engine. Silnik natywny macOS nie jest celem — najwyżej
+   awaryjny fallback, jeśli Ozzy zdecyduje.
+4. **STT: MLX whisper.** Zadekretowane przez Ozzy'ego. Fallbacki nie są celem.
+5. **Wybór narzędzi = decyzja Ozzy'ego.** Fable 5 rekomenduje i uzasadnia,
+   Ozzy dekretuje. Żadne narzędzie nie wchodzi do projektu bez tej ścieżki.
+6. **Legacy DAN: zero kodu, zero logiki, zero architektury** (dekret Ozzy'ego:
+   "nie używamy kodu ani działania i logiki z DANA — bo jest zjebana").
+   DAN pozostaje wyłącznie: (a) listą wymagań użytkownika (co ma działać),
+   (b) muzeum przestróg (czego nie robić), (c) źródłem **faktów empirycznych
+   o narzędziach trzecich**, które i tak wybraliśmy (właściwości MLX, sox,
+   whispera — patrz §4a, kolumna "charakter"). Wszystko implementujemy
+   clean-room pod kontrakty v4.1.
