@@ -21,3 +21,4 @@ panel, broker, listener, workers, TTS, STT or provider integrations.
 - Brain adapter setup: `docs/runbooks/BRAIN_ADAPTERS.md`
 - Manual text runtime smoke: `docs/runbooks/TEXT_RUNTIME_SMOKE.md`
 - Manual provider brain smoke: `docs/runbooks/PROVIDER_SMOKE.md`
+- Tool registry and approval gate: `docs/runbooks/TOOLS_AND_APPROVALS.md`

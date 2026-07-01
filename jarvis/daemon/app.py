@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,16 @@ from jarvis.store.db import (
     initialize_database,
 )
 from jarvis.store.event_store import EventStore, create_event_store
+from jarvis.tools import (
+    ApprovalGate,
+    ToolPermissionPolicy,
+    ToolRegistry,
+    ToolRequest,
+    ToolResult,
+    ToolRunRecorder,
+    ToolSpec,
+    create_default_tool_registry,
+)
 from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.turns.orchestrator import TextTurnResult, TurnOrchestrator
 from jarvis.turns.models import Turn
@@ -52,6 +63,10 @@ class DaemonApp:
     event_bus: EventBus
     state_machine: RuntimeStateMachine | None
     runtime_supervisor: RuntimeSupervisor
+    tool_registry: ToolRegistry
+    tool_permission_policy: ToolPermissionPolicy
+    approval_gate: ApprovalGate | None
+    tool_run_recorder: ToolRunRecorder | None
     started: bool = False
     brain_manager: BrainManager | None = None
     context_builder: ContextBuilder | None = None
@@ -183,6 +198,79 @@ class DaemonApp:
         finally:
             close_quietly(conn)
 
+    def list_tool_specs(self) -> list[ToolSpec]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        return self.tool_registry.list_specs()
+
+    def request_tool(
+        self,
+        *,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        requested_by: str,
+        turn_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> ToolResult:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+
+        request = ToolRequest(
+            id=str(uuid.uuid4()),
+            tool_name=tool_name,
+            arguments=dict(arguments),
+            requested_by=requested_by,
+            turn_id=turn_id,
+            metadata=dict(metadata or {}),
+        )
+        tool = self.tool_registry.get(tool_name)
+        permission = self.tool_permission_policy.decide(
+            tool.risk,
+            tool_name=tool.name,
+            payload=request.arguments,
+        )
+
+        if permission.decision == "allow":
+            recorder = self._require_tool_run_recorder()
+            recorder.record_requested(
+                run_id=request.id,
+                tool_name=tool.name,
+                risk=tool.risk,
+                input=request.arguments,
+                turn_id=turn_id,
+            )
+            result = self.tool_registry.request_tool(
+                request,
+                permission_policy=self.tool_permission_policy,
+                approval_gate=self.approval_gate,
+            )
+            if result.status == "finished":
+                recorder.record_finished(request.id, output=result.output or {})
+            elif result.status == "failed":
+                recorder.record_failed(request.id, error=result.error or "Tool execution failed.")
+            return result
+
+        return self.tool_registry.request_tool(
+            request,
+            permission_policy=self.tool_permission_policy,
+            approval_gate=self.approval_gate,
+        )
+
+    def list_pending_approvals(self, limit: int = 50) -> list[dict[str, Any]]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        return self._require_approval_gate().list_pending(limit=limit)
+
+    def approve(self, approval_id: str, *, reason: str | None = None) -> dict[str, Any]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        return self._require_approval_gate().decide(approval_id, "approved", reason=reason)
+
+    def reject(self, approval_id: str, *, reason: str | None = None) -> dict[str, Any]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        return self._require_approval_gate().decide(approval_id, "rejected", reason=reason)
+
     def handle_text_input(
         self,
         *,
@@ -215,6 +303,8 @@ class DaemonApp:
         self.state_machine = None
         self.brain_manager = None
         self.context_builder = None
+        self.approval_gate = None
+        self.tool_run_recorder = None
         self.started = False
 
     def _require_conn(self) -> sqlite3.Connection:
@@ -241,6 +331,16 @@ class DaemonApp:
         if self.context_builder is None:
             raise DaemonAppError("Daemon app is not initialized with a context builder.")
         return self.context_builder
+
+    def _require_approval_gate(self) -> ApprovalGate:
+        if self.approval_gate is None:
+            raise DaemonAppError("Daemon app is not initialized with an approval gate.")
+        return self.approval_gate
+
+    def _require_tool_run_recorder(self) -> ToolRunRecorder:
+        if self.tool_run_recorder is None:
+            raise DaemonAppError("Daemon app is not initialized with a tool run recorder.")
+        return self.tool_run_recorder
 
     def _create_turn_orchestrator(self) -> TurnOrchestrator:
         return TurnOrchestrator(
@@ -285,6 +385,11 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     paths = resolve_runtime_paths(config)
     event_bus = EventBus()
     runtime_supervisor = RuntimeSupervisor(home=paths.home)
+    tool_registry = create_default_tool_registry()
+    tool_permission_policy = ToolPermissionPolicy(
+        destructive_tools_enabled=config.security.destructive_tools_enabled,
+        approved_roots=[str(paths.home)],
+    )
 
     if not initialize:
         return DaemonApp(
@@ -295,6 +400,10 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
             event_bus=event_bus,
             state_machine=None,
             runtime_supervisor=runtime_supervisor,
+            tool_registry=tool_registry,
+            tool_permission_policy=tool_permission_policy,
+            approval_gate=None,
+            tool_run_recorder=None,
         )
 
     ensure_runtime_dirs(paths)
@@ -305,6 +414,8 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     state_machine = RuntimeStateMachine(event_store, event_bus=event_bus)
     brain_manager = BrainManager.from_config(config)
     context_builder = ContextBuilder(conn, config=config, event_store=event_store)
+    approval_gate = ApprovalGate(conn, event_store=event_store)
+    tool_run_recorder = ToolRunRecorder(conn, event_store=event_store)
     return DaemonApp(
         config=config,
         paths=paths,
@@ -313,6 +424,10 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         event_bus=event_bus,
         state_machine=state_machine,
         runtime_supervisor=runtime_supervisor,
+        tool_registry=tool_registry,
+        tool_permission_policy=tool_permission_policy,
+        approval_gate=approval_gate,
+        tool_run_recorder=tool_run_recorder,
         brain_manager=brain_manager,
         context_builder=context_builder,
     )

@@ -24,6 +24,7 @@ from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_
 from jarvis.daemon.state_machine import RuntimeState
 from jarvis.runtime.supervisor import RuntimeSupervisor
 from jarvis.store.db import close_quietly
+from jarvis.tools.registry import Tool
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -225,6 +226,26 @@ def run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.Complet
 def event_types(app: DaemonApp) -> list[str]:
     assert app.event_store is not None
     return [event.type for event in app.event_store.list_after(0, limit=100)]
+
+
+def table_count(app: DaemonApp, table: str) -> int:
+    assert app.conn is not None
+    return int(app.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+class ApiFakeTool(Tool):
+    description = "fake API smoke tool"
+    input_schema = {"type": "object"}
+
+    def __init__(self, *, name: str, risk: str):
+        self.name = name
+        self.risk = risk
+        self.calls: list[dict[str, object]] = []
+
+    def run(self, arguments: dict[str, object]) -> dict[str, object]:
+        payload = dict(arguments)
+        self.calls.append(payload)
+        return {"received": payload}
 
 
 def test_create_daemon_app_with_temp_config_initializes_temp_db_only(config_path: Path) -> None:
@@ -481,6 +502,175 @@ def test_get_input_text_returns_json_method_error(app: DaemonApp) -> None:
 
     assert status in {405, 501}
     assert payload["status"] == status
+
+
+def test_get_tools_requires_started_app(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/tools")
+
+    assert status == 503
+    assert payload["status"] == 503
+
+
+def test_get_tools_returns_default_tools(app: DaemonApp) -> None:
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/tools")
+
+    assert status == 200
+    tools = {tool["name"]: tool for tool in payload["tools"]}
+    assert tools["echo"]["risk"] == "safe_read"
+    assert tools["system_status"]["risk"] == "safe_status"
+
+
+def test_post_tools_request_echo_executes_and_records_run(app: DaemonApp) -> None:
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {"tool_name": "echo", "arguments": {"text": "hello"}, "requested_by": "api"},
+        )
+
+    assert status == 200
+    assert payload["status"] == "finished"
+    assert payload["output"] == {"arguments": {"text": "hello"}}
+    assert table_count(app, "tool_runs") == 1
+    assert table_count(app, "voice_queue") == 0
+    assert table_count(app, "worker_jobs") == 0
+    assert "tool.requested" in event_types(app)
+    assert "tool.finished" in event_types(app)
+
+
+def test_post_tools_request_unknown_tool_returns_404_json(app: DaemonApp) -> None:
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {"tool_name": "missing", "arguments": {}, "requested_by": "api"},
+        )
+
+    assert status == 404
+    assert payload["status"] == 404
+    assert table_count(app, "tool_runs") == 0
+
+
+def test_post_tools_request_approval_required_creates_approval_without_execution(
+    app: DaemonApp,
+) -> None:
+    fake = ApiFakeTool(name="needs_approval", risk="shell_read")
+    app.tool_registry.register(fake)
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {
+                "tool_name": "needs_approval",
+                "arguments": {"command": "status"},
+                "requested_by": "api",
+            },
+        )
+
+    assert status == 200
+    assert payload["status"] == "approval_required"
+    assert isinstance(payload["approval_id"], str)
+    assert fake.calls == []
+    assert table_count(app, "approvals") == 1
+    assert table_count(app, "tool_runs") == 0
+
+
+def test_post_tools_request_blocked_tool_does_not_execute(app: DaemonApp) -> None:
+    fake = ApiFakeTool(name="blocked_api", risk="destructive")
+    app.tool_registry.register(fake)
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {"tool_name": "blocked_api", "arguments": {}, "requested_by": "api"},
+        )
+
+    assert status == 200
+    assert payload["status"] == "blocked"
+    assert fake.calls == []
+    assert table_count(app, "approvals") == 0
+    assert table_count(app, "tool_runs") == 0
+
+
+def test_get_approvals_lists_pending(app: DaemonApp) -> None:
+    fake = ApiFakeTool(name="approval_listed", risk="file_write")
+    app.tool_registry.register(fake)
+    app.start()
+
+    with running_server(app) as base_url:
+        request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {
+                "tool_name": "approval_listed",
+                "arguments": {"path": "x"},
+                "requested_by": "api",
+            },
+        )
+        status, payload = request_json("GET", f"{base_url}/approvals")
+
+    assert status == 200
+    assert len(payload["approvals"]) == 1
+    assert payload["approvals"][0]["status"] == "pending"
+    assert payload["approvals"][0]["risk"] == "file_write"
+
+
+def test_approve_and_reject_endpoints_update_pending_approval_status(
+    app: DaemonApp,
+) -> None:
+    fake = ApiFakeTool(name="approval_decision", risk="network")
+    app.tool_registry.register(fake)
+    app.start()
+
+    with running_server(app) as base_url:
+        first_status, first = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {"tool_name": "approval_decision", "arguments": {}, "requested_by": "api"},
+        )
+        second_status, second = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {"tool_name": "approval_decision", "arguments": {}, "requested_by": "api"},
+        )
+        approve_status, approved = request_json(
+            "POST",
+            f"{base_url}/approvals/{first['approval_id']}/approve",
+            {"reason": "ok"},
+        )
+        reject_status, rejected = request_json(
+            "POST",
+            f"{base_url}/approvals/{second['approval_id']}/reject",
+            {"reason": "no"},
+        )
+
+    assert first_status == 200
+    assert second_status == 200
+    assert approve_status == 200
+    assert reject_status == 200
+    assert approved["approval"]["status"] == "approved"
+    assert rejected["approval"]["status"] == "rejected"
+    assert fake.calls == []
+
+
+def test_approval_endpoints_require_started_app(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/approvals")
+
+    assert status == 503
+    assert payload["status"] == 503
 
 
 def test_unknown_route_returns_404_json(app: DaemonApp) -> None:

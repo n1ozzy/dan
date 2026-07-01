@@ -7,6 +7,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlencode, urlparse
 
+from jarvis.api.routes_approvals import (
+    ApprovalRequestValidationError,
+    approve_approval,
+    get_approvals,
+    reject_approval,
+)
 from jarvis.api.routes_events import get_events
 from jarvis.api.routes_health import get_health
 from jarvis.api.routes_history import get_conversations, get_turns
@@ -22,8 +28,10 @@ from jarvis.api.routes_runtime import (
 )
 from jarvis.api.routes_settings import get_settings, update_settings
 from jarvis.api.routes_state import get_state
+from jarvis.api.routes_tools import ToolRequestValidationError, get_tools, post_tool_request
 from jarvis.daemon.app import DaemonApp, DaemonAppBusyError, DaemonAppError, DaemonAppNotStartedError
 from jarvis.store.event_store import EventStoreError
+from jarvis.tools.registry import ToolRegistryError
 from jarvis.turns.models import ConversationRepositoryError, TurnRepositoryError
 from jarvis.turns.orchestrator import TurnOrchestratorBusyError, TurnOrchestratorError
 
@@ -178,6 +186,31 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, get_runtime_legacy(app))
             return
 
+        if method == "GET" and path == "/tools":
+            _write_json(handler, 200, get_tools(app))
+            return
+
+        if method == "POST" and path == "/tools/request":
+            request_payload = _read_json_body(handler)
+            _write_json(handler, 200, post_tool_request(app, request_payload))
+            return
+
+        if method == "GET" and path == "/approvals":
+            limit = _query_int(query, "limit", default=50)
+            _write_json(handler, 200, get_approvals(app, limit=limit))
+            return
+
+        approval_action = _approval_action(path)
+        if method == "POST" and approval_action is not None:
+            approval_id, action = approval_action
+            request_payload = _read_optional_json_body(handler)
+            if action == "approve":
+                _write_json(handler, 200, approve_approval(app, approval_id, request_payload))
+                return
+            if action == "reject":
+                _write_json(handler, 200, reject_approval(app, approval_id, request_payload))
+                return
+
         if method == "POST" and path == "/settings":
             request_payload = _read_json_body(handler)
             if not isinstance(request_payload, dict):
@@ -195,7 +228,7 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             return
 
         _write_json(handler, 404, {"error": "Not found", "status": 404})
-    except TextInputValidationError as exc:
+    except (ApprovalRequestValidationError, TextInputValidationError, ToolRequestValidationError) as exc:
         _write_json(handler, 400, {"error": str(exc), "status": 400})
     except DaemonAppNotStartedError as exc:
         _write_json(handler, 503, {"error": str(exc), "status": 503})
@@ -205,6 +238,9 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         _write_json(handler, 409, {"error": str(exc), "status": 409})
     except TurnOrchestratorError:
         _write_json(handler, 500, {"error": "Text turn failed.", "status": 500})
+    except ToolRegistryError as exc:
+        status = 404 if str(exc).startswith("Unknown tool:") else 400
+        _write_json(handler, status, {"error": str(exc), "status": status})
     except (
         ValueError,
         DaemonAppError,
@@ -247,6 +283,18 @@ def _query_required_text(query: dict[str, list[str]], key: str) -> str:
     return value
 
 
+def _approval_action(path: str) -> tuple[str, str] | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) != 3 or parts[0] != "approvals":
+        return None
+    approval_id, action = parts[1], parts[2]
+    if action not in {"approve", "reject"}:
+        return None
+    if not approval_id:
+        return None
+    return approval_id, action
+
+
 def _read_json_body(handler: BaseHTTPRequestHandler) -> Any:
     length_header = handler.headers.get("Content-Length")
     if length_header is None:
@@ -255,6 +303,26 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> Any:
         length = int(length_header)
     except ValueError as exc:
         raise ValueError("Content-Length must be an integer.") from exc
+    if length > MAX_REQUEST_BODY_BYTES:
+        raise ValueError("Request body is too large.")
+
+    body = handler.rfile.read(length)
+    try:
+        return json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Malformed JSON: {exc.msg}") from exc
+
+
+def _read_optional_json_body(handler: BaseHTTPRequestHandler) -> Any | None:
+    length_header = handler.headers.get("Content-Length")
+    if length_header is None:
+        return None
+    try:
+        length = int(length_header)
+    except ValueError as exc:
+        raise ValueError("Content-Length must be an integer.") from exc
+    if length == 0:
+        return None
     if length > MAX_REQUEST_BODY_BYTES:
         raise ValueError("Request body is too large.")
 
