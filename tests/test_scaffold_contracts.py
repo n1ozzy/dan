@@ -18,6 +18,7 @@ REQUIRED_DOCS = (
     "docs/MIGRATION_INVENTORY.md",
     "docs/LEGACY_RUNTIME_FINDINGS.md",
     "docs/DECISIONS.md",
+    "docs/REVIEW_HANDOFF.md",
 )
 
 REQUIRED_DIRS = (
@@ -69,6 +70,21 @@ FORBIDDEN_RUNTIME_SNIPPETS = (
 
 def test_required_docs_exist() -> None:
     missing = [path for path in REQUIRED_DOCS if not (ROOT / path).is_file()]
+    assert missing == []
+
+
+def test_review_handoff_contains_required_orientation() -> None:
+    handoff = (ROOT / "docs/REVIEW_HANDOFF.md").read_text(encoding="utf-8")
+
+    required_snippets = (
+        "Jarvis v4.1 Reviewer Handoff",
+        "JARVIS-V3-EXECUTION-ROADMAP.md is historical only",
+        "/Users/n1_ozzy/Documents/dev/dan is read-only legacy reference only",
+        "EventStore now redacts secrets before persistence",
+        "Prompt 19A",
+    )
+
+    missing = [snippet for snippet in required_snippets if snippet not in handoff]
     assert missing == []
 
 
