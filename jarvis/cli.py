@@ -58,6 +58,26 @@ def build_parser() -> argparse.ArgumentParser:
     input_text.add_argument("--url", help="Base URL for a running jarvisd")
     input_text.add_argument("--timeout", type=_positive_timeout, default=5.0)
 
+    conversations_parser = subcommands.add_parser("conversations")
+    conversations_commands = conversations_parser.add_subparsers(
+        dest="conversations_command",
+        required=True,
+    )
+    conversations_list = conversations_commands.add_parser("list")
+    conversations_list.add_argument("--limit", type=int)
+    conversations_list.add_argument("--include-archived", action="store_true")
+    conversations_list.add_argument("--url", help="Base URL for a running jarvisd")
+    conversations_list.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    turns_parser = subcommands.add_parser("turns")
+    turns_commands = turns_parser.add_subparsers(dest="turns_command", required=True)
+    turns_list = turns_commands.add_parser("list")
+    turns_list.add_argument("--conversation-id", required=True)
+    turns_list.add_argument("--limit", type=int)
+    turns_list.add_argument("--newest-first", action="store_true")
+    turns_list.add_argument("--url", help="Base URL for a running jarvisd")
+    turns_list.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
     health_parser = subcommands.add_parser("health")
     health_parser.add_argument("--url", help="Base URL for a running jarvisd")
 
@@ -115,6 +135,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "input" and args.input_command == "text":
         return _handle_input_text(args, _base_url(args, config))
+
+    if args.command == "conversations" and args.conversations_command == "list":
+        return _handle_conversations_list(args, _base_url(args, config))
+
+    if args.command == "turns" and args.turns_command == "list":
+        return _handle_turns_list(args, _base_url(args, config))
 
     if args.command == "health":
         return _handle_remote_json(_base_url(args, config), "/health")
@@ -216,6 +242,34 @@ def _handle_input_text(args: argparse.Namespace, base_url: str) -> int:
         payload=payload,
         timeout=args.timeout,
     )
+
+
+def _handle_conversations_list(args: argparse.Namespace, base_url: str) -> int:
+    query: dict[str, object] = {}
+    if args.limit is not None:
+        query["limit"] = args.limit
+    if args.include_archived:
+        query["include_archived"] = "true"
+
+    path = _path_with_query("/conversations", query)
+    return _handle_remote_json(base_url, path, timeout=args.timeout)
+
+
+def _handle_turns_list(args: argparse.Namespace, base_url: str) -> int:
+    query: dict[str, object] = {"conversation_id": args.conversation_id}
+    if args.limit is not None:
+        query["limit"] = args.limit
+    if args.newest_first:
+        query["newest_first"] = "true"
+
+    path = _path_with_query("/turns", query)
+    return _handle_remote_json(base_url, path, timeout=args.timeout)
+
+
+def _path_with_query(path: str, query: dict[str, object]) -> str:
+    if not query:
+        return path
+    return f"{path}?{urlencode(query)}"
 
 
 def _handle_remote_json(

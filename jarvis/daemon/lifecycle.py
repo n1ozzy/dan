@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from jarvis.api.routes_events import get_events
 from jarvis.api.routes_health import get_health
+from jarvis.api.routes_history import get_conversations, get_turns
 from jarvis.api.routes_input import (
     TextInputValidationError,
     get_text_input_method_error,
@@ -23,6 +24,7 @@ from jarvis.api.routes_settings import get_settings, update_settings
 from jarvis.api.routes_state import get_state
 from jarvis.daemon.app import DaemonApp, DaemonAppBusyError, DaemonAppError, DaemonAppNotStartedError
 from jarvis.store.event_store import EventStoreError
+from jarvis.turns.models import ConversationRepositoryError, TurnRepositoryError
 from jarvis.turns.orchestrator import TurnOrchestratorBusyError, TurnOrchestratorError
 
 
@@ -130,6 +132,36 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, get_events(app, after_id=after_id, limit=limit))
             return
 
+        if method == "GET" and path == "/conversations":
+            limit = _query_int(query, "limit", default=50)
+            include_archived = _query_bool(query, "include_archived", default=False)
+            _write_json(
+                handler,
+                200,
+                get_conversations(
+                    app,
+                    limit=limit,
+                    include_archived=include_archived,
+                ),
+            )
+            return
+
+        if method == "GET" and path == "/turns":
+            conversation_id = _query_required_text(query, "conversation_id")
+            limit = _query_int(query, "limit", default=50)
+            newest_first = _query_bool(query, "newest_first", default=False)
+            _write_json(
+                handler,
+                200,
+                get_turns(
+                    app,
+                    conversation_id=conversation_id,
+                    limit=limit,
+                    newest_first=newest_first,
+                ),
+            )
+            return
+
         if method == "GET" and path == "/settings":
             _write_json(handler, 200, get_settings(app))
             return
@@ -173,7 +205,13 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         _write_json(handler, 409, {"error": str(exc), "status": 409})
     except TurnOrchestratorError:
         _write_json(handler, 500, {"error": "Text turn failed.", "status": 500})
-    except (ValueError, DaemonAppError, EventStoreError) as exc:
+    except (
+        ValueError,
+        DaemonAppError,
+        EventStoreError,
+        ConversationRepositoryError,
+        TurnRepositoryError,
+    ) as exc:
         _write_json(handler, 400, {"error": str(exc), "status": 400})
     except Exception:
         _write_json(handler, 500, {"error": "Internal server error", "status": 500})
@@ -187,6 +225,26 @@ def _query_int(query: dict[str, list[str]], key: str, *, default: int) -> int:
         return int(raw_value)
     except ValueError as exc:
         raise ValueError(f"{key} must be an integer.") from exc
+
+
+def _query_bool(query: dict[str, list[str]], key: str, *, default: bool) -> bool:
+    if key not in query:
+        return default
+    raw_value = query[key][0].strip().lower()
+    if raw_value in {"true", "1", "yes"}:
+        return True
+    if raw_value in {"false", "0", "no"}:
+        return False
+    raise ValueError(f"{key} must be true/false, 1/0, or yes/no.")
+
+
+def _query_required_text(query: dict[str, list[str]], key: str) -> str:
+    if key not in query:
+        raise ValueError(f"{key} is required.")
+    value = query[key][0].strip()
+    if not value:
+        raise ValueError(f"{key} must be a non-empty string.")
+    return value
 
 
 def _read_json_body(handler: BaseHTTPRequestHandler) -> Any:

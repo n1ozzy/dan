@@ -380,6 +380,21 @@ def test_list_for_conversation_returns_chronological_by_default(conn: sqlite3.Co
     assert [turn.id for turn in turns] == ["turn-1", "turn-2", "turn-3"]
 
 
+def test_list_for_conversation_preserves_insert_order_for_same_second_turns(
+    conn: sqlite3.Connection,
+) -> None:
+    create_conversation(conn)
+    repo = TurnRepository(conn, now=fixed_now("2026-07-01T12:00:00+00:00"))
+    repo.create("conversation-1", source="text", turn_id="turn-b", input_text="First")
+    repo.create("conversation-1", source="text", turn_id="turn-a", input_text="Second")
+
+    turns = repo.list_for_conversation("conversation-1")
+    newest_first = repo.list_for_conversation("conversation-1", newest_first=True)
+
+    assert [turn.input_text for turn in turns] == ["First", "Second"]
+    assert [turn.input_text for turn in newest_first] == ["Second", "First"]
+
+
 def test_list_for_conversation_newest_first_returns_newest_first(conn: sqlite3.Connection) -> None:
     create_conversation(conn)
     repo = TurnRepository(

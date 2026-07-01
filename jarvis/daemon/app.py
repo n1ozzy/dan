@@ -27,6 +27,8 @@ from jarvis.store.db import (
 from jarvis.store.event_store import EventStore, create_event_store
 from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.turns.orchestrator import TextTurnResult, TurnOrchestrator
+from jarvis.turns.models import Turn
+from jarvis.turns.repository import ConversationRepository, TurnRepository
 
 
 class DaemonAppError(Exception):
@@ -106,6 +108,42 @@ class DaemonApp:
         conn = self._connect_existing()
         try:
             return create_event_store(conn).list_after(after_id, limit=limit)
+        finally:
+            close_quietly(conn)
+
+    def list_conversations(
+        self,
+        limit: int = 50,
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+
+        conn = self._connect_existing()
+        try:
+            return ConversationRepository(conn).list_recent_with_stats(
+                limit=limit,
+                include_archived=include_archived,
+            )
+        finally:
+            close_quietly(conn)
+
+    def list_turns(
+        self,
+        conversation_id: str,
+        limit: int = 50,
+        newest_first: bool = False,
+    ) -> list[Turn]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+
+        conn = self._connect_existing()
+        try:
+            return TurnRepository(conn).list_for_conversation(
+                conversation_id,
+                limit=limit,
+                newest_first=newest_first,
+            )
         finally:
             close_quietly(conn)
 

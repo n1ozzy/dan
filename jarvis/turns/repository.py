@@ -110,6 +110,39 @@ class ConversationRepository:
             (selected_limit,),
         )
 
+    def list_recent_with_stats(
+        self,
+        limit: int = 50,
+        *,
+        include_archived: bool = False,
+    ) -> list[dict[str, Any]]:
+        selected_limit = _limit(limit, default=50, error_type=ConversationRepositoryError)
+        where_clause = "" if include_archived else "WHERE c.status != ?"
+        params: tuple[Any, ...]
+        if include_archived:
+            params = (selected_limit,)
+        else:
+            params = (ConversationStatus.ARCHIVED.value, selected_limit)
+
+        try:
+            rows = self._conn.execute(
+                f"""
+                SELECT c.id, c.created_at, c.updated_at, c.title, c.status, c.metadata_json,
+                       COUNT(t.id) AS turn_count, MAX(t.created_at) AS latest_turn_at
+                FROM conversations c
+                LEFT JOIN turns t ON t.conversation_id = c.id
+                {where_clause}
+                GROUP BY c.id, c.created_at, c.updated_at, c.title, c.status, c.metadata_json
+                ORDER BY c.updated_at DESC, c.created_at DESC, c.id ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise ConversationRepositoryError(f"Could not read conversations: {exc}") from exc
+
+        return [_conversation_summary_from_stats_row(row) for row in rows]
+
     def update(
         self,
         conversation_id: str,
@@ -336,7 +369,7 @@ class TurnRepository:
                    context_snapshot_json, error, metadata_json
             FROM turns
             WHERE conversation_id = ?
-            ORDER BY created_at {direction}, id {direction}
+            ORDER BY created_at {direction}, rowid {direction}
             LIMIT ?
             """,
             (normalized_conversation_id, selected_limit),
@@ -352,7 +385,7 @@ class TurnRepository:
                    context_snapshot_json, error, metadata_json
             FROM turns
             WHERE conversation_id = ?
-            ORDER BY created_at DESC, id DESC
+            ORDER BY created_at DESC, rowid DESC
             LIMIT ?
             """,
             (normalized_conversation_id, selected_limit),
@@ -448,6 +481,20 @@ def _conversation_from_row(row: sqlite3.Row | tuple[Any, ...]) -> Conversation:
         status=_conversation_status(str(row[4])),
         metadata=_conversation_json_object(str(row[5]), "conversation metadata"),
     )
+
+
+def _conversation_summary_from_stats_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
+    conversation = _conversation_from_row(row)
+    return {
+        "id": conversation.id,
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
+        "title": conversation.title,
+        "status": conversation.status,
+        "metadata": conversation.metadata,
+        "turn_count": int(row[6]),
+        "latest_turn_at": None if row[7] is None else str(row[7]),
+    }
 
 
 def _turn_from_row(row: sqlite3.Row | tuple[Any, ...]) -> Turn:
