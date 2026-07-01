@@ -14,9 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 SMOKE_SCRIPT = ROOT / "scripts" / "smoke-text-runtime.sh"
 CLAUDE_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-claude-cli-brain.sh"
 TOOLS_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-tools-approvals.sh"
+MEMORY_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-memory-runtime.sh"
 RUNBOOK = ROOT / "docs" / "runbooks" / "TEXT_RUNTIME_SMOKE.md"
 PROVIDER_RUNBOOK = ROOT / "docs" / "runbooks" / "PROVIDER_SMOKE.md"
 TOOLS_RUNBOOK = ROOT / "docs" / "runbooks" / "TOOLS_AND_APPROVALS.md"
+MEMORY_RUNBOOK = ROOT / "docs" / "runbooks" / "MEMORY_API.md"
 README = ROOT / "README.md"
 
 FORBIDDEN_SCRIPT_SNIPPETS = (
@@ -64,6 +66,21 @@ REQUIRED_TOOLS_SMOKE_SNIPPETS = (
     "worker_jobs",
 )
 
+REQUIRED_MEMORY_SMOKE_SNIPPETS = (
+    "python -m jarvis.cli",
+    "daemon run",
+    "memory create",
+    "memory list",
+    "memory disable",
+    "input text",
+    "events after",
+    "memory.updated",
+    "context_snapshot",
+    "memory_block_count",
+    "voice_queue",
+    "worker_jobs",
+)
+
 FORBIDDEN_RUNTIME_SNIPPETS = (
     "/Users/n1_ozzy/Documents/dev/dan",
     "/tmp/dan",
@@ -102,6 +119,16 @@ def test_tools_smoke_script_is_executable() -> None:
     assert os.access(TOOLS_SMOKE_SCRIPT, os.X_OK)
 
 
+def test_memory_smoke_script_exists() -> None:
+    assert MEMORY_SMOKE_SCRIPT.is_file()
+
+
+def test_memory_smoke_script_is_executable() -> None:
+    mode = MEMORY_SMOKE_SCRIPT.stat().st_mode
+    assert mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    assert os.access(MEMORY_SMOKE_SCRIPT, os.X_OK)
+
+
 def test_smoke_script_passes_bash_syntax_check() -> None:
     result = subprocess.run(
         ["bash", "-n", str(SMOKE_SCRIPT)],
@@ -138,6 +165,18 @@ def test_tools_smoke_script_passes_bash_syntax_check() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_memory_smoke_script_passes_bash_syntax_check() -> None:
+    result = subprocess.run(
+        ["bash", "-n", str(MEMORY_SMOKE_SCRIPT)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
     text = SMOKE_SCRIPT.read_text(encoding="utf-8")
 
@@ -154,6 +193,13 @@ def test_claude_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None
 
 def test_tools_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
     text = TOOLS_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    offenders = [snippet for snippet in FORBIDDEN_SCRIPT_SNIPPETS if snippet in text]
+    assert offenders == []
+
+
+def test_memory_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
+    text = MEMORY_SMOKE_SCRIPT.read_text(encoding="utf-8")
 
     offenders = [snippet for snippet in FORBIDDEN_SCRIPT_SNIPPETS if snippet in text]
     assert offenders == []
@@ -180,6 +226,13 @@ def test_tools_smoke_script_references_required_tools_flow() -> None:
     assert missing == []
 
 
+def test_memory_smoke_script_references_required_memory_flow() -> None:
+    text = MEMORY_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    missing = [snippet for snippet in REQUIRED_MEMORY_SMOKE_SNIPPETS if snippet not in text]
+    assert missing == []
+
+
 def test_tools_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> None:
     text = TOOLS_SMOKE_SCRIPT.read_text(encoding="utf-8")
 
@@ -198,9 +251,40 @@ def test_tools_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> No
     assert "~/.jarvis" not in text
 
 
+def test_memory_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> None:
+    text = MEMORY_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    for snippet in (
+        "mktemp",
+        "SMOKE_KEEP_ARTIFACTS",
+        "runtime.home",
+        "runtime.logs_dir",
+        "runtime.runtime_dir",
+        "runtime.pid_file",
+        "database.path",
+        "DAEMON_PID=",
+        "kill \"$DAEMON_PID\"",
+        'default_adapter = "claude_cli"',
+        'command = "claude"',
+        'args = ["-p"]',
+        'model = "claude-cli"',
+        "voice.enabled = false",
+        "launchd.enabled = false",
+    ):
+        assert snippet in text
+    assert "~/.jarvis" not in text
+
+
 def test_pytest_only_syntax_checks_tools_smoke_script() -> None:
     text = Path(__file__).read_text(encoding="utf-8")
     direct_exec = "subprocess.run([str(TOOLS_" + "SMOKE_SCRIPT)"
+
+    assert direct_exec not in text
+
+
+def test_pytest_only_syntax_checks_memory_smoke_script() -> None:
+    text = Path(__file__).read_text(encoding="utf-8")
+    direct_exec = "subprocess.run([str(MEMORY_" + "SMOKE_SCRIPT)"
 
     assert direct_exec not in text
 
@@ -215,6 +299,10 @@ def test_provider_smoke_runbook_exists() -> None:
 
 def test_tools_smoke_runbook_exists() -> None:
     assert TOOLS_RUNBOOK.is_file()
+
+
+def test_memory_smoke_runbook_exists() -> None:
+    assert MEMORY_RUNBOOK.is_file()
 
 
 def test_smoke_runbook_documents_temp_database_and_runtime() -> None:
@@ -260,6 +348,29 @@ def test_tools_smoke_runbook_documents_manual_harness_scope() -> None:
         assert phrase in lowered
 
 
+def test_memory_smoke_runbook_documents_manual_harness_scope() -> None:
+    text = MEMORY_RUNBOOK.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    assert "scripts/smoke-memory-runtime.sh" in text
+    assert "SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-memory-runtime.sh" in text
+    assert "manual smoke" in lowered
+    assert "real `~/.jarvis`" in lowered
+    assert "does not use launchd" in lowered
+    assert "does not use voice" in lowered
+    assert "does not use workers" in lowered
+    assert "does not use tools" in lowered
+    assert "does not use the panel" in lowered
+
+
+def test_memory_smoke_runbook_explains_disable_history_caveat() -> None:
+    text = MEMORY_RUNBOOK.read_text(encoding="utf-8").lower()
+
+    assert "recent conversation history" in text
+    assert "memory_block_count = 0" in text
+    assert "contextbuilder" in text
+
+
 def test_smoke_runbook_documents_excluded_runtime_surfaces() -> None:
     text = RUNBOOK.read_text(encoding="utf-8").lower()
 
@@ -279,6 +390,7 @@ def test_readme_points_to_smoke_runbook() -> None:
     assert "docs/runbooks/TEXT_RUNTIME_SMOKE.md" in text
     assert "docs/runbooks/PROVIDER_SMOKE.md" in text
     assert "docs/runbooks/TOOLS_AND_APPROVALS.md" in text
+    assert "docs/runbooks/MEMORY_API.md" in text
 
 
 def test_schema_and_migrations_are_unchanged() -> None:

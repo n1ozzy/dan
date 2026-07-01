@@ -24,3 +24,4 @@ panel, broker, listener, workers, TTS, STT or provider integrations.
 - Tool registry, approval gate and manual tools smoke:
   `docs/runbooks/TOOLS_AND_APPROVALS.md`
 - Memory API and CLI: `docs/runbooks/MEMORY_API.md`
+- Manual memory runtime smoke: `docs/runbooks/MEMORY_API.md#manual-smoke`
