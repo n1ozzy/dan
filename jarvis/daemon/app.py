@@ -14,6 +14,7 @@ from jarvis.events.bus import EventBus
 from jarvis.events.models import Event, utc_now_iso
 from jarvis.events.types import EventType
 from jarvis.paths import RuntimePaths, ensure_runtime_dirs, resolve_runtime_paths
+from jarvis.runtime.supervisor import RuntimeSupervisor
 from jarvis.store.db import (
     close_quietly,
     connect_db,
@@ -36,6 +37,7 @@ class DaemonApp:
     event_store: EventStore | None
     event_bus: EventBus
     state_machine: RuntimeStateMachine | None
+    runtime_supervisor: RuntimeSupervisor
     started: bool = False
 
     def start(self) -> None:
@@ -177,6 +179,7 @@ def create_daemon_app(
 def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = True) -> DaemonApp:
     paths = resolve_runtime_paths(config)
     event_bus = EventBus()
+    runtime_supervisor = RuntimeSupervisor(home=paths.home)
 
     if not initialize:
         return DaemonApp(
@@ -186,6 +189,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
             event_store=None,
             event_bus=event_bus,
             state_machine=None,
+            runtime_supervisor=runtime_supervisor,
         )
 
     ensure_runtime_dirs(paths)
@@ -199,6 +203,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         event_store=event_store,
         event_bus=event_bus,
         state_machine=state_machine,
+        runtime_supervisor=runtime_supervisor,
     )
 
 

@@ -10,6 +10,11 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from jarvis.api.routes_events import get_events
 from jarvis.api.routes_health import get_health
 from jarvis.api.routes_input import text_input_not_implemented
+from jarvis.api.routes_runtime import (
+    get_runtime_legacy,
+    get_runtime_processes,
+    get_runtime_startup,
+)
 from jarvis.api.routes_settings import get_settings, update_settings
 from jarvis.api.routes_state import get_state
 from jarvis.daemon.app import DaemonApp, DaemonAppError
@@ -122,6 +127,18 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
 
         if method == "GET" and path == "/settings":
             _write_json(handler, 200, get_settings(app))
+            return
+
+        if method == "GET" and path == "/runtime/processes":
+            _write_json(handler, 200, get_runtime_processes(app))
+            return
+
+        if method == "GET" and path == "/runtime/startup":
+            _write_json(handler, 200, get_runtime_startup(app))
+            return
+
+        if method == "GET" and path == "/runtime/legacy":
+            _write_json(handler, 200, get_runtime_legacy(app))
             return
 
         if method == "POST" and path == "/settings":

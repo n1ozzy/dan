@@ -21,6 +21,7 @@ import pytest
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
 from jarvis.daemon.state_machine import RuntimeState
+from jarvis.runtime.supervisor import RuntimeSupervisor
 from jarvis.store.db import close_quietly
 
 
@@ -490,6 +491,98 @@ def test_unknown_route_returns_404_json(app: DaemonApp) -> None:
     assert payload == {"error": "Not found", "status": 404}
 
 
+def test_get_runtime_processes_returns_report_only_observations(
+    app: DaemonApp,
+    tmp_path: Path,
+) -> None:
+    app.runtime_supervisor = RuntimeSupervisor(
+        home=tmp_path / "home",
+        temp_dir=tmp_path / "temp",
+        process_provider=lambda: [
+            {"pid": 321, "process_name": "python", "command": "python voice_broker.py"}
+        ],
+        now=lambda: "2026-07-01T12:00:00+00:00",
+    )
+    before_events = event_types(app)
+
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/processes")
+
+    assert status == 200
+    assert payload["report_only"] is True
+    assert payload["cleanup_automated"] is False
+    assert payload["conflict_count"] == 1
+    assert payload["observations"][0]["label"] == "legacy_voice_broker"
+    assert payload["conflicts"][0]["risk"] == "high"
+    assert event_types(app) == before_events
+
+
+def test_get_runtime_startup_returns_official_label_and_snapshot(
+    app: DaemonApp,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    launch_agents = home / "Library" / "LaunchAgents"
+    launch_agents.mkdir(parents=True)
+    (launch_agents / "com.ozzy.jarvisd.plist").write_text("placeholder", encoding="utf-8")
+    app.runtime_supervisor = RuntimeSupervisor(
+        home=home,
+        temp_dir=tmp_path / "temp",
+        process_provider=lambda: [],
+        now=lambda: "2026-07-01T12:00:00+00:00",
+    )
+    before_events = event_types(app)
+
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/startup")
+
+    assert status == 200
+    assert payload["report_only"] is True
+    assert payload["official_label"] == "com.ozzy.jarvisd"
+    assert payload["startup"]["official_label"] == "com.ozzy.jarvisd"
+    assert payload["startup"]["official_plist_installed"] is True
+    assert payload["startup"]["official_plist_loaded"] == "not_checked"
+    assert event_types(app) == before_events
+
+
+def test_get_runtime_legacy_returns_guidance_and_no_cleanup(
+    app: DaemonApp,
+    tmp_path: Path,
+) -> None:
+    app.runtime_supervisor = RuntimeSupervisor(
+        home=tmp_path / "home",
+        temp_dir=tmp_path / "temp",
+        process_provider=lambda: [
+            {"pid": 333, "process_name": "python", "command": "python listen_ozzy.py loop"}
+        ],
+        now=lambda: "2026-07-01T12:00:00+00:00",
+    )
+    before_events = event_types(app)
+
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/legacy")
+
+    assert status == 200
+    assert payload["legacy_conflict_count"] == 1
+    assert payload["legacy_conflicts"][0]["label"] == "legacy_listener"
+    guidance = " ".join(payload["guidance"])
+    assert "detected only" in guidance
+    assert "no cleanup performed" in guidance
+    assert "explicit human approval" in guidance
+    assert event_types(app) == before_events
+
+
+def test_unknown_runtime_route_returns_json_404(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, content_type, body = request_raw("GET", f"{base_url}/runtime/missing")
+
+    assert status == 404
+    assert "application/json" in content_type
+    assert "<html" not in body.lower()
+    payload = json.loads(body)
+    assert payload == {"error": "Not found", "status": 404}
+
+
 def test_cli_health_state_and_events_can_query_ephemeral_server(
     app: DaemonApp,
     config_path: Path,
@@ -520,6 +613,32 @@ def test_cli_health_state_and_events_can_query_ephemeral_server(
         "daemon.started",
         "state.changed",
     ]
+
+
+def test_cli_runtime_commands_can_query_ephemeral_server(
+    app: DaemonApp,
+    config_path: Path,
+    tmp_path: Path,
+) -> None:
+    app.runtime_supervisor = RuntimeSupervisor(
+        home=tmp_path / "home",
+        temp_dir=tmp_path / "temp",
+        process_provider=lambda: [
+            {"pid": 444, "process_name": "python", "command": "python auto_jarvis.py"}
+        ],
+        now=lambda: "2026-07-01T12:00:00+00:00",
+    )
+    with running_server(app) as base_url:
+        processes = run_cli("--config", str(config_path), "runtime", "processes", "--url", base_url)
+        startup = run_cli("--config", str(config_path), "runtime", "startup", "--url", base_url)
+        legacy = run_cli("--config", str(config_path), "runtime", "legacy", "--url", base_url)
+
+    assert processes.returncode == 0, processes.stderr
+    assert startup.returncode == 0, startup.stderr
+    assert legacy.returncode == 0, legacy.stderr
+    assert json.loads(processes.stdout)["conflict_count"] == 1
+    assert json.loads(startup.stdout)["official_label"] == "com.ozzy.jarvisd"
+    assert json.loads(legacy.stdout)["legacy_conflict_count"] == 1
 
 
 def test_health_cli_exits_nonzero_when_daemon_is_unreachable(config_path: Path) -> None:

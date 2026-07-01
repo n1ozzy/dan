@@ -62,6 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
     events_after.add_argument("--limit", type=int, default=100)
     events_after.add_argument("--url", help="Base URL for a running jarvisd")
 
+    runtime_parser = subcommands.add_parser("runtime")
+    runtime_commands = runtime_parser.add_subparsers(dest="runtime_command", required=True)
+    runtime_processes = runtime_commands.add_parser("processes")
+    runtime_processes.add_argument("--url", help="Base URL for a running jarvisd")
+    runtime_startup = runtime_commands.add_parser("startup")
+    runtime_startup.add_argument("--url", help="Base URL for a running jarvisd")
+    runtime_legacy = runtime_commands.add_parser("legacy")
+    runtime_legacy.add_argument("--url", help="Base URL for a running jarvisd")
+
     subcommands.add_parser("doctor")
     return parser
 
@@ -104,6 +113,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "events" and args.events_command == "after":
         query = urlencode({"after_id": args.after_id, "limit": args.limit})
         return _handle_remote_json(_base_url(args, config), f"/events?{query}")
+
+    if args.command == "runtime":
+        return _handle_remote_json(_base_url(args, config), f"/runtime/{args.runtime_command}")
 
     parser.error("unknown command")
     return 2
