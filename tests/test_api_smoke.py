@@ -82,6 +82,7 @@ height = 620
 
 [security]
 localhost_only = true
+api_token_required = false
 require_approval_for_shell = true
 require_approval_for_file_write = true
 require_approval_for_network = true

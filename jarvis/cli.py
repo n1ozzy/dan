@@ -14,6 +14,7 @@ from jarvis.config import ConfigError, JarvisConfig, load_config
 from jarvis.daemon.app import DaemonAppError, create_daemon_app
 from jarvis.daemon.lifecycle import DaemonServerError, serve_forever
 from jarvis.paths import RuntimePaths, resolve_runtime_paths
+from jarvis.security.transport import API_TOKEN_HEADER, TransportTokenError, load_api_token
 from jarvis.store.db import (
     DatabaseError,
     close_quietly,
@@ -152,6 +153,8 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"ConfigError: {exc}", file=sys.stderr)
         return 2
+
+    _configure_transport_token(paths)
 
     if args.command == "config" and args.config_command == "show":
         _print_json(config.to_dict())
@@ -441,6 +444,19 @@ def _handle_remote_json(
     return 0
 
 
+_transport_token: str | None = None
+
+
+def _configure_transport_token(paths: RuntimePaths) -> None:
+    """Load the local API token so mutating CLI requests can authenticate."""
+
+    global _transport_token
+    try:
+        _transport_token = load_api_token(paths.runtime_dir)
+    except TransportTokenError:
+        _transport_token = None
+
+
 def _request_json(
     base_url: str,
     path: str,
@@ -451,6 +467,8 @@ def _request_json(
 ) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}{path}"
     headers = {"Accept": "application/json"}
+    if method in {"POST", "PATCH", "DELETE"} and _transport_token is not None:
+        headers[API_TOKEN_HEADER] = _transport_token
     data = None
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

@@ -64,7 +64,7 @@ def assert_allowed_cors_headers(headers: object, origin: str) -> None:
     assert headers.get("Access-Control-Allow-Origin") == origin
     assert headers.get("Vary") == "Origin"
     assert headers.get("Access-Control-Allow-Credentials") != "true"
-    assert headers.get("Access-Control-Allow-Headers") == "Content-Type"
+    assert headers.get("Access-Control-Allow-Headers") == "Content-Type, X-Jarvis-Token"
     methods = {method.strip() for method in headers.get("Access-Control-Allow-Methods", "").split(",")}
     assert methods == set(ALLOWED_METHODS)
 

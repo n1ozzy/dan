@@ -109,6 +109,7 @@ class PanelConfig:
 @dataclass(frozen=True)
 class SecurityConfig:
     localhost_only: bool = True
+    api_token_required: bool = True
     require_approval_for_shell: bool = True
     require_approval_for_file_write: bool = True
     require_approval_for_network: bool = True

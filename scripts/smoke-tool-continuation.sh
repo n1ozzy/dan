@@ -182,9 +182,27 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def api_token() -> str | None:
+    token_path = os.path.join(smoke_dir, "runtime", "api-token")
+    try:
+        with open(token_path, "r", encoding="utf-8") as handle:
+            token = handle.read().strip()
+    except OSError:
+        return None
+    return token or None
+
+
+def auth_headers(method: str) -> dict:
+    headers = {"Accept": "application/json"}
+    token = api_token()
+    if token and method in {"POST", "PATCH", "DELETE"}:
+        headers["X-Jarvis-Token"] = token
+    return headers
+
+
 def raw_request_json(method: str, path: str, payload: dict | None = None, timeout: float = 5) -> dict:
     data = None
-    headers = {"Accept": "application/json"}
+    headers = auth_headers(method)
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -195,7 +213,7 @@ def raw_request_json(method: str, path: str, payload: dict | None = None, timeou
 
 def request_json_status(method: str, path: str, payload: dict | None = None, timeout: float = 30) -> tuple[int, dict]:
     data = None
-    headers = {"Accept": "application/json"}
+    headers = auth_headers(method)
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"

@@ -515,11 +515,47 @@ function renderRuntimeObservations(observations) {
   }
 }
 
+const API_TOKEN_STORAGE_KEY = "jarvis-api-token";
+const MUTATING_METHODS = new Set(["POST", "PATCH", "DELETE"]);
+
+function apiToken() {
+  try {
+    return window.localStorage.getItem(API_TOKEN_STORAGE_KEY) || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function promptForApiToken() {
+  const entered = window.prompt(
+    "Jarvis API token required (see ~/.jarvis/runtime/api-token):",
+    "",
+  );
+  if (entered === null) {
+    return "";
+  }
+  const token = entered.trim();
+  try {
+    window.localStorage.setItem(API_TOKEN_STORAGE_KEY, token);
+  } catch (error) {
+    // storage unavailable - token works for this call only
+  }
+  return token;
+}
+
 async function requestJson(path, options = {}) {
+  const method = options.method || "GET";
   const init = {
-    method: options.method || "GET",
+    method,
     headers: {},
   };
+
+  if (MUTATING_METHODS.has(method)) {
+    const token = apiToken() || promptForApiToken();
+    if (token) {
+      init.headers["X-Jarvis-Token"] = token;
+    }
+  }
 
   if (Object.prototype.hasOwnProperty.call(options, "body")) {
     init.headers["Content-Type"] = "application/json";
@@ -534,6 +570,18 @@ async function requestJson(path, options = {}) {
   }
 
   const payload = await readResponsePayload(response);
+  if (response.status === 401 && MUTATING_METHODS.has(method)) {
+    try {
+      window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+    } catch (error) {
+      // ignore storage errors
+    }
+    throw makeRequestError("Unauthorized - set the Jarvis API token and retry", {
+      route: path,
+      status: response.status,
+      payload,
+    });
+  }
   if (!response.ok) {
     throw makeRequestError(payload.error || `HTTP ${response.status}`, {
       route: path,

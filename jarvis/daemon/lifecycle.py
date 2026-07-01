@@ -47,6 +47,7 @@ from jarvis.daemon.app import (
     DaemonAppNotFoundError,
     DaemonAppNotStartedError,
 )
+from jarvis.security.transport import API_TOKEN_HEADER, verify_api_token
 from jarvis.store.event_store import EventStoreError
 from jarvis.memory import MemoryError
 from jarvis.tools.registry import ToolRegistryError
@@ -58,7 +59,8 @@ MAX_REQUEST_BODY_BYTES = 1_048_576
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 ALLOWED_CORS_ORIGINS = {"http://127.0.0.1:41800", "http://localhost:41800", "null"}
 CORS_ALLOW_METHODS = "GET, POST, PATCH, DELETE, OPTIONS"
-CORS_ALLOW_HEADERS = "Content-Type"
+CORS_ALLOW_HEADERS = f"Content-Type, {API_TOKEN_HEADER}"
+MUTATING_METHODS = {"POST", "PATCH", "DELETE"}
 
 
 class LifecycleHook(Protocol):
@@ -177,6 +179,10 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
     parsed = urlparse(handler.path)
     path = parsed.path
     query = parse_qs(parsed.query)
+
+    if method in MUTATING_METHODS and not _transport_authorized(handler, app):
+        _write_json(handler, 401, {"error": "Unauthorized", "status": 401})
+        return
 
     try:
         if method == "GET" and path == "/health":
@@ -359,6 +365,15 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         _write_json(handler, 400, {"error": str(exc), "status": 400})
     except Exception:
         _write_json(handler, 500, {"error": "Internal server error", "status": 500})
+
+
+def _transport_authorized(handler: BaseHTTPRequestHandler, app: DaemonApp) -> bool:
+    """Check the local transport token on mutating requests (fail closed)."""
+
+    if not app.config.security.api_token_required:
+        return True
+    provided = handler.headers.get(API_TOKEN_HEADER)
+    return verify_api_token(app.api_token, provided)
 
 
 def _query_int(query: dict[str, list[str]], key: str, *, default: int) -> int:

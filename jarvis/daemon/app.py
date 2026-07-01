@@ -20,6 +20,7 @@ from jarvis.events.types import EventType
 from jarvis.memory import MemoryBlock, MemoryError, MemoryManager
 from jarvis.paths import RuntimePaths, ensure_runtime_dirs, resolve_runtime_paths
 from jarvis.runtime.supervisor import RuntimeSupervisor
+from jarvis.security.transport import ensure_api_token
 from jarvis.store.db import (
     close_quietly,
     connect_db,
@@ -82,6 +83,7 @@ class DaemonApp:
     brain_manager: BrainManager | None = None
     context_builder: ContextBuilder | None = None
     memory_manager: MemoryManager | None = None
+    api_token: str | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
 
@@ -620,6 +622,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         )
 
     ensure_runtime_dirs(paths)
+    api_token = ensure_api_token(paths.runtime_dir)
     initialized_conn = initialize_database(paths.db_path)
     close_quietly(initialized_conn)
     conn = _connect_daemon_db(paths.db_path)
@@ -650,6 +653,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         brain_manager=brain_manager,
         context_builder=context_builder,
         memory_manager=memory_manager,
+        api_token=api_token,
     )
 
 
