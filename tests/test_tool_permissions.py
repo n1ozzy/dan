@@ -240,6 +240,56 @@ def test_approval_probe_request_creates_approval_without_tool_run_or_runtime_sid
     assert table_count(conn, "voice_queue") == 0
 
 
+def test_approval_required_tool_without_turn_id_keeps_approval_created_uncorrelated(
+    conn: sqlite3.Connection,
+    event_store: EventStore,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(ApprovalTool())
+
+    result = registry.request_tool(
+        ToolRequest(id="run-no-turn", tool_name="approval", arguments={}, requested_by="api"),
+        permission_policy=ToolPermissionPolicy(),
+        approval_gate=ApprovalGate(conn, event_store=event_store),
+    )
+
+    assert result.status == "approval_required"
+    event = event_store.list_after(0, limit=10)[0]
+    assert event.type == EventType.APPROVAL_CREATED
+    assert event.turn_id is None
+    assert event.correlation_id is None
+
+
+def test_approval_required_tool_with_turn_id_correlates_approval_created_event(
+    conn: sqlite3.Connection,
+    event_store: EventStore,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(ApprovalTool())
+
+    result = registry.request_tool(
+        ToolRequest(
+            id="run-direct-turn",
+            tool_name="approval",
+            arguments={"command": "status"},
+            requested_by="api",
+            turn_id="turn-direct",
+        ),
+        permission_policy=ToolPermissionPolicy(),
+        approval_gate=ApprovalGate(conn, event_store=event_store),
+    )
+
+    assert result.status == "approval_required"
+    event = event_store.list_after(0, limit=10)[0]
+    assert event.type == EventType.APPROVAL_CREATED
+    assert event.turn_id == "turn-direct"
+    assert event.correlation_id == "turn-direct"
+    assert event.payload["approval_id"] == result.approval_id
+    assert event.payload["risk"] == "shell_read"
+    assert event.payload["requested_by"] == "api"
+    assert event.payload["payload"]["tool_name"] == "approval"
+
+
 def test_blocked_tool_does_not_execute() -> None:
     tool = BlockedTool()
     registry = ToolRegistry()

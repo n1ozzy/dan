@@ -82,6 +82,12 @@ payload stores the tool name, JSON-safe arguments, requesting origin, and turn
 ID. A human or explicit client must later approve and call
 `POST /approvals/{id}/execute`.
 
+`approval.created` events from model-originated captures carry the current
+turn ID as both `turn_id` and `correlation_id`. Direct `POST /tools/request`
+approval-required calls remain uncorrelated when no `turn_id` is provided; when
+a direct request includes `turn_id`, the approval-created event uses it for
+both fields.
+
 Rejected, pending, missing, duplicate, and blocked approvals do not execute.
 `approval_probe` is still a harmless placeholder. After approval, explicit
 execution returns `{"ok": true, "message": "approval_probe executed safely"}`

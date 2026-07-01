@@ -657,6 +657,23 @@ def test_model_originated_safe_echo_tool_call_creates_approval_without_execution
     assert approval["metadata"]["origin"] == "model"
     assert approval["metadata"]["tool_call_id"] == "call-echo"
 
+    assert app.event_store is not None
+    approval_events = [
+        event
+        for event in app.event_store.list_by_turn_id(str(payload["turn_id"]), limit=100)
+        if event.type == "approval.created"
+    ]
+    assert len(approval_events) == 1
+    approval_event = approval_events[0]
+    assert approval_event.turn_id == payload["turn_id"]
+    assert approval_event.correlation_id == payload["turn_id"]
+    assert approval_event.payload["approval_id"] == tool_call["approval_id"]
+    assert approval_event.payload["risk"] == "safe_read"
+    assert approval_event.payload["requested_by"] == "model"
+    assert approval_event.payload["payload"]["tool_name"] == "echo"
+    assert approval_event.payload["metadata"]["origin"] == "model"
+    assert approval_event.payload["metadata"]["tool_call_id"] == "call-echo"
+
     capture = payload["turn"]["metadata"]["tool_call_capture"]
     assert capture["origin"] == "model"
     assert capture["total"] == 1

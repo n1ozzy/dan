@@ -143,6 +143,8 @@ class ToolRegistry:
                         "tool_request_id": request.id,
                         **dict(request.metadata),
                     },
+                    turn_id=request.turn_id,
+                    correlation_id=request.turn_id,
                 )
                 approval_id = str(approval["id"])
             return ToolResult(
@@ -196,12 +198,16 @@ class ApprovalGate:
         action_type: str,
         payload: Mapping[str, Any],
         metadata: Mapping[str, Any] | None = None,
+        turn_id: str | None = None,
+        correlation_id: str | None = None,
     ) -> dict[str, Any]:
         approval_id = str(uuid.uuid4())
         created_at = self._now()
         normalized_risk = _required_text(risk, "risk")
         normalized_requested_by = _required_text(requested_by, "requested_by")
         normalized_action_type = _required_text(action_type, "action_type")
+        event_turn_id = _optional_text(turn_id, "turn_id")
+        event_correlation_id = _optional_text(correlation_id, "correlation_id")
         safe_payload = _redact(_json_safe(payload))
         safe_metadata = _redact(_json_safe(metadata or {}))
 
@@ -235,6 +241,8 @@ class ApprovalGate:
                 "payload": safe_payload,
                 "metadata": safe_metadata,
             },
+            turn_id=event_turn_id,
+            correlation_id=event_correlation_id,
         )
         approval = self.get_approval(approval_id)
         if approval is None:
@@ -318,9 +326,22 @@ class ApprovalGate:
         ).fetchall()
         return [_approval_from_row(row) for row in rows]
 
-    def _append_event(self, event_type: str, payload: Mapping[str, Any]) -> None:
+    def _append_event(
+        self,
+        event_type: str,
+        payload: Mapping[str, Any],
+        *,
+        turn_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
         if self._event_store is not None:
-            self._event_store.append(event_type, "approval_gate", _redact(_json_safe(payload)))
+            self._event_store.append(
+                event_type,
+                "approval_gate",
+                _redact(_json_safe(payload)),
+                correlation_id=correlation_id,
+                turn_id=turn_id,
+            )
 
 
 class ToolRunRecorder:
@@ -560,6 +581,12 @@ def _required_text(value: Any, label: str) -> str:
     if not normalized:
         raise ToolRegistryError(f"{label} must be a non-empty string.")
     return normalized
+
+
+def _optional_text(value: Any, label: str) -> str | None:
+    if value is None:
+        return None
+    return _required_text(value, label)
 
 
 def _bounded_limit(limit: int) -> int:

@@ -422,6 +422,8 @@ class TurnOrchestrator:
                     "tool_call_id": call_id,
                     "tool_request_id": request_id,
                 },
+                turn_id=turn_id,
+                correlation_id=correlation_id,
             )
             approval_id = str(approval["id"])
             self._append_event(
