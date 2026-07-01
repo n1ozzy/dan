@@ -117,6 +117,54 @@ def test_redacts_github_token_patterns() -> None:
     assert rendered.count(REDACTION_PLACEHOLDER) == 2
 
 
+def test_redacts_github_oauth_app_and_refresh_token_patterns() -> None:
+    raw_tokens = [
+        "gho_1234567890abcdef",
+        "ghs_1234567890abcdef",
+        "ghu_1234567890abcdef",
+        "ghr_1234567890abcdef",
+    ]
+
+    redacted = redact_secrets({"stdout": " ".join(raw_tokens)})
+
+    rendered = json.dumps(redacted, sort_keys=True)
+    for raw_token in raw_tokens:
+        assert raw_token not in rendered
+    assert rendered.count(REDACTION_PLACEHOLDER) == len(raw_tokens)
+
+
+def test_redacts_slack_token_patterns() -> None:
+    raw_bot = "xoxb-1234567890-abcdefghijk"
+    raw_app = "xoxa-1234567890-abcdefghijk"
+    raw_user = "xoxp-1234567890-abcdefghijk"
+
+    redacted = redact_secrets({"stdout": f"{raw_bot} {raw_app} {raw_user}"})
+
+    rendered = json.dumps(redacted, sort_keys=True)
+    assert raw_bot not in rendered
+    assert raw_app not in rendered
+    assert raw_user not in rendered
+    assert rendered.count(REDACTION_PLACEHOLDER) == 3
+
+
+def test_redacts_aws_access_key_id_pattern() -> None:
+    raw_key = "AKIAIOSFODNN7EXAMPLE"
+
+    redacted = redact_secrets({"stdout": f"aws key {raw_key} in output"})
+
+    rendered = json.dumps(redacted, sort_keys=True)
+    assert raw_key not in rendered
+    assert rendered.count(REDACTION_PLACEHOLDER) == 1
+
+
+def test_preserves_akia_like_text_that_is_not_a_key() -> None:
+    ordinary = "AKIAtooshort and akiafestiwal remain readable"
+
+    redacted = redact_secrets({"stdout": ordinary})
+
+    assert redacted == {"stdout": ordinary}
+
+
 def test_redaction_does_not_mutate_original_payload_object() -> None:
     payload = {
         "password": "hunter2",

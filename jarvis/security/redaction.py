@@ -69,8 +69,10 @@ SECRET_VALUE_PATTERNS = (
     re.compile(r"(?i)(\bAuthorization\s*[:=]\s*Basic\s+)[A-Za-z0-9+/=._-]+"),
     re.compile(r"(?i)(\bBasic\s+)[A-Za-z0-9+/=._-]{8,}"),
     re.compile(r"(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{8,}"),
-    re.compile(r"(?<![A-Za-z0-9_])ghp_[A-Za-z0-9_]{8,}"),
+    re.compile(r"(?<![A-Za-z0-9_])gh[oprsu]_[A-Za-z0-9_]{8,}"),
     re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9][A-Za-z0-9._-]*"),
+    re.compile(r"(?<![A-Za-z0-9_])xox[abps]-[A-Za-z0-9-]{8,}"),
+    re.compile(r"(?<![A-Za-z0-9_])AKIA[0-9A-Z]{16}(?![A-Za-z0-9_])"),
 )
 
 
