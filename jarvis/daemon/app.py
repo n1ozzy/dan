@@ -17,6 +17,7 @@ from jarvis.config import JarvisConfig, load_config
 from jarvis.events.bus import EventBus
 from jarvis.events.models import Event, utc_now_iso
 from jarvis.events.types import EventType
+from jarvis.memory import MemoryBlock, MemoryError, MemoryManager
 from jarvis.paths import RuntimePaths, ensure_runtime_dirs, resolve_runtime_paths
 from jarvis.runtime.supervisor import RuntimeSupervisor
 from jarvis.store.db import (
@@ -80,6 +81,7 @@ class DaemonApp:
     started: bool = False
     brain_manager: BrainManager | None = None
     context_builder: ContextBuilder | None = None
+    memory_manager: MemoryManager | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
 
@@ -209,6 +211,91 @@ class DaemonApp:
         finally:
             close_quietly(conn)
 
+    def list_memory(
+        self,
+        *,
+        active_only: bool = False,
+        kinds: list[str] | tuple[str, ...] | None = None,
+        limit: int = 100,
+    ) -> list[MemoryBlock]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        return self._require_memory_manager().list_blocks(
+            active_only=active_only,
+            kinds=kinds,
+            limit=limit,
+        )
+
+    def create_memory(
+        self,
+        *,
+        kind: str,
+        title: str,
+        body: str,
+        priority: int = 0,
+        active: bool = True,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> MemoryBlock:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        return self._require_memory_manager().create_block(
+            kind,
+            title,
+            body,
+            priority=priority,
+            active=active,
+            metadata=metadata,
+        )
+
+    def get_memory(self, memory_id: str) -> MemoryBlock:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        normalized_id = _required_text(memory_id, "memory_id")
+        block = self._require_memory_manager().get_block(normalized_id)
+        if block is None:
+            raise DaemonAppNotFoundError(f"Memory block not found: {normalized_id}")
+        return block
+
+    def update_memory(
+        self,
+        memory_id: str,
+        *,
+        title: str | None = None,
+        body: str | None = None,
+        priority: int | None = None,
+        active: bool | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> MemoryBlock:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        normalized_id = _required_text(memory_id, "memory_id")
+        manager = self._require_memory_manager()
+        if manager.get_block(normalized_id) is None:
+            raise DaemonAppNotFoundError(f"Memory block not found: {normalized_id}")
+        try:
+            return manager.update_block(
+                normalized_id,
+                title=title,
+                body=body,
+                priority=priority,
+                active=active,
+                metadata=metadata,
+            )
+        except MemoryError as exc:
+            raise DaemonAppError(str(exc)) from exc
+
+    def disable_memory(self, memory_id: str) -> MemoryBlock:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        normalized_id = _required_text(memory_id, "memory_id")
+        manager = self._require_memory_manager()
+        if manager.get_block(normalized_id) is None:
+            raise DaemonAppNotFoundError(f"Memory block not found: {normalized_id}")
+        try:
+            return manager.disable_block(normalized_id)
+        except MemoryError as exc:
+            raise DaemonAppError(str(exc)) from exc
+
     def list_tool_specs(self) -> list[ToolSpec]:
         if not self.started:
             raise DaemonAppNotStartedError("Daemon app is not started.")
@@ -321,6 +408,7 @@ class DaemonApp:
         self.state_machine = None
         self.brain_manager = None
         self.context_builder = None
+        self.memory_manager = None
         self.approval_gate = None
         self.tool_run_recorder = None
         self.started = False
@@ -349,6 +437,11 @@ class DaemonApp:
         if self.context_builder is None:
             raise DaemonAppError("Daemon app is not initialized with a context builder.")
         return self.context_builder
+
+    def _require_memory_manager(self) -> MemoryManager:
+        if self.memory_manager is None:
+            raise DaemonAppError("Daemon app is not initialized with a memory manager.")
+        return self.memory_manager
 
     def _require_approval_gate(self) -> ApprovalGate:
         if self.approval_gate is None:
@@ -491,6 +584,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
             tool_permission_policy=tool_permission_policy,
             approval_gate=None,
             tool_run_recorder=None,
+            memory_manager=None,
         )
 
     ensure_runtime_dirs(paths)
@@ -500,7 +594,13 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     event_store = create_event_store(conn)
     state_machine = RuntimeStateMachine(event_store, event_bus=event_bus)
     brain_manager = BrainManager.from_config(config)
-    context_builder = ContextBuilder(conn, config=config, event_store=event_store)
+    memory_manager = MemoryManager(conn, event_store=event_store)
+    context_builder = ContextBuilder(
+        conn,
+        config=config,
+        event_store=event_store,
+        memory_manager=memory_manager,
+    )
     approval_gate = ApprovalGate(conn, event_store=event_store)
     tool_run_recorder = ToolRunRecorder(conn, event_store=event_store)
     return DaemonApp(
@@ -517,6 +617,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         tool_run_recorder=tool_run_recorder,
         brain_manager=brain_manager,
         context_builder=context_builder,
+        memory_manager=memory_manager,
     )
 
 

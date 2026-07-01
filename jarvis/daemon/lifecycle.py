@@ -6,6 +6,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import unquote
 
 from jarvis.api.routes_approvals import (
     ApprovalRequestValidationError,
@@ -21,6 +22,14 @@ from jarvis.api.routes_input import (
     TextInputValidationError,
     get_text_input_method_error,
     post_text_input,
+)
+from jarvis.api.routes_memory import (
+    MemoryRequestValidationError,
+    delete_memory,
+    get_memory,
+    get_memory_block,
+    patch_memory,
+    post_memory,
 )
 from jarvis.api.routes_runtime import (
     get_runtime_legacy,
@@ -39,6 +48,7 @@ from jarvis.daemon.app import (
     DaemonAppNotStartedError,
 )
 from jarvis.store.event_store import EventStoreError
+from jarvis.memory import MemoryError
 from jarvis.tools.registry import ToolRegistryError
 from jarvis.turns.models import ConversationRepositoryError, TurnRepositoryError
 from jarvis.turns.orchestrator import TurnOrchestratorBusyError, TurnOrchestratorError
@@ -112,6 +122,12 @@ def _make_handler(app: DaemonApp) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:
             _dispatch(self, app, "POST")
+
+        def do_PATCH(self) -> None:
+            _dispatch(self, app, "PATCH")
+
+        def do_DELETE(self) -> None:
+            _dispatch(self, app, "DELETE")
 
         def send_error(
             self,
@@ -203,6 +219,40 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, post_tool_request(app, request_payload))
             return
 
+        if method == "GET" and path == "/memory":
+            active_only = _query_bool(query, "active_only", default=False)
+            limit = _query_int(query, "limit", default=100)
+            kinds = _query_memory_kinds(query, "kind")
+            _write_json(
+                handler,
+                200,
+                get_memory(
+                    app,
+                    active_only=active_only,
+                    kinds=kinds,
+                    limit=limit,
+                ),
+            )
+            return
+
+        if method == "POST" and path == "/memory":
+            request_payload = _read_json_body(handler)
+            _write_json(handler, 201, post_memory(app, request_payload))
+            return
+
+        memory_id = _memory_resource_id(path)
+        if memory_id is not None:
+            if method == "GET":
+                _write_json(handler, 200, get_memory_block(app, memory_id))
+                return
+            if method == "PATCH":
+                request_payload = _read_json_body(handler)
+                _write_json(handler, 200, patch_memory(app, memory_id, request_payload))
+                return
+            if method == "DELETE":
+                _write_json(handler, 200, delete_memory(app, memory_id))
+                return
+
         if method == "GET" and path == "/approvals":
             limit = _query_int(query, "limit", default=50)
             _write_json(handler, 200, get_approvals(app, limit=limit))
@@ -238,8 +288,21 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, post_text_input(app, request_payload))
             return
 
+        if method in {"PATCH", "DELETE"}:
+            _write_json(
+                handler,
+                405,
+                {"error": f"{method} {path} is not implemented.", "status": 405},
+            )
+            return
+
         _write_json(handler, 404, {"error": "Not found", "status": 404})
-    except (ApprovalRequestValidationError, TextInputValidationError, ToolRequestValidationError) as exc:
+    except (
+        ApprovalRequestValidationError,
+        MemoryRequestValidationError,
+        TextInputValidationError,
+        ToolRequestValidationError,
+    ) as exc:
         _write_json(handler, 400, {"error": str(exc), "status": 400})
     except DaemonAppNotStartedError as exc:
         _write_json(handler, 503, {"error": str(exc), "status": 503})
@@ -260,6 +323,7 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         ValueError,
         DaemonAppError,
         EventStoreError,
+        MemoryError,
         ConversationRepositoryError,
         TurnRepositoryError,
     ) as exc:
@@ -296,6 +360,29 @@ def _query_required_text(query: dict[str, list[str]], key: str) -> str:
     if not value:
         raise ValueError(f"{key} must be a non-empty string.")
     return value
+
+
+def _query_memory_kinds(query: dict[str, list[str]], key: str) -> list[str] | None:
+    if key not in query:
+        return None
+    kinds: list[str] = []
+    for raw_value in query[key]:
+        for item in raw_value.split(","):
+            normalized = item.strip()
+            if not normalized:
+                raise ValueError(f"{key} must not contain empty values.")
+            kinds.append(normalized)
+    return kinds
+
+
+def _memory_resource_id(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) != 2 or parts[0] != "memory":
+        return None
+    memory_id = unquote(parts[1]).strip()
+    if not memory_id:
+        return None
+    return memory_id
 
 
 def _approval_action(path: str) -> tuple[str, str] | None:

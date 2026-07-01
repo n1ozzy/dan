@@ -7,6 +7,7 @@ __all__ = [
     "routes_health",
     "routes_history",
     "routes_input",
+    "routes_memory",
     "routes_runtime",
     "routes_settings",
     "routes_state",

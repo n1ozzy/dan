@@ -7,7 +7,7 @@ import json
 import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from jarvis.config import ConfigError, JarvisConfig, load_config
@@ -78,6 +78,44 @@ def build_parser() -> argparse.ArgumentParser:
     turns_list.add_argument("--url", help="Base URL for a running jarvisd")
     turns_list.add_argument("--timeout", type=_positive_timeout, default=5.0)
 
+    memory_parser = subcommands.add_parser("memory")
+    memory_commands = memory_parser.add_subparsers(dest="memory_command", required=True)
+    memory_list = memory_commands.add_parser("list")
+    memory_list.add_argument("--active-only", action="store_true")
+    memory_list.add_argument("--kind", action="append")
+    memory_list.add_argument("--limit", type=int)
+    memory_list.add_argument("--url", help="Base URL for a running jarvisd")
+    memory_list.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    memory_create = memory_commands.add_parser("create")
+    memory_create.add_argument("--kind", required=True)
+    memory_create.add_argument("--title", required=True)
+    memory_create.add_argument("--body", required=True)
+    memory_create.add_argument("--priority", type=int, default=0)
+    memory_create.add_argument("--metadata-json")
+    memory_create.add_argument("--url", help="Base URL for a running jarvisd")
+    memory_create.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    memory_show = memory_commands.add_parser("show")
+    memory_show.add_argument("--id", required=True)
+    memory_show.add_argument("--url", help="Base URL for a running jarvisd")
+    memory_show.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    memory_update = memory_commands.add_parser("update")
+    memory_update.add_argument("--id", required=True)
+    memory_update.add_argument("--title")
+    memory_update.add_argument("--body")
+    memory_update.add_argument("--priority", type=int)
+    memory_update.add_argument("--active", type=_bool_arg)
+    memory_update.add_argument("--metadata-json")
+    memory_update.add_argument("--url", help="Base URL for a running jarvisd")
+    memory_update.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    memory_disable = memory_commands.add_parser("disable")
+    memory_disable.add_argument("--id", required=True)
+    memory_disable.add_argument("--url", help="Base URL for a running jarvisd")
+    memory_disable.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
     health_parser = subcommands.add_parser("health")
     health_parser.add_argument("--url", help="Base URL for a running jarvisd")
 
@@ -141,6 +179,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "turns" and args.turns_command == "list":
         return _handle_turns_list(args, _base_url(args, config))
+
+    if args.command == "memory":
+        return _handle_memory_command(args, _base_url(args, config))
 
     if args.command == "health":
         return _handle_remote_json(_base_url(args, config), "/health")
@@ -266,10 +307,113 @@ def _handle_turns_list(args: argparse.Namespace, base_url: str) -> int:
     return _handle_remote_json(base_url, path, timeout=args.timeout)
 
 
+def _handle_memory_command(args: argparse.Namespace, base_url: str) -> int:
+    command = args.memory_command
+    if command == "list":
+        query: dict[str, object] = {}
+        if args.active_only:
+            query["active_only"] = "true"
+        if args.kind:
+            query["kind"] = ",".join(args.kind)
+        if args.limit is not None:
+            query["limit"] = args.limit
+        return _handle_remote_json(
+            base_url,
+            _path_with_query("/memory", query),
+            timeout=args.timeout,
+        )
+
+    if command == "create":
+        metadata, error = _metadata_json_arg(args.metadata_json)
+        if error is not None:
+            _print_json_error(error)
+            return 2
+        payload: dict[str, Any] = {
+            "kind": args.kind,
+            "title": args.title,
+            "body": args.body,
+            "priority": args.priority,
+        }
+        if metadata is not None:
+            payload["metadata"] = metadata
+        return _handle_remote_json(
+            base_url,
+            "/memory",
+            method="POST",
+            payload=payload,
+            timeout=args.timeout,
+        )
+
+    if command == "show":
+        return _handle_remote_json(
+            base_url,
+            _memory_id_path(args.id),
+            timeout=args.timeout,
+        )
+
+    if command == "update":
+        metadata, error = _metadata_json_arg(args.metadata_json)
+        if error is not None:
+            _print_json_error(error)
+            return 2
+        payload: dict[str, Any] = {}
+        if args.title is not None:
+            payload["title"] = args.title
+        if args.body is not None:
+            payload["body"] = args.body
+        if args.priority is not None:
+            payload["priority"] = args.priority
+        if args.active is not None:
+            payload["active"] = args.active
+        if metadata is not None:
+            payload["metadata"] = metadata
+        return _handle_remote_json(
+            base_url,
+            _memory_id_path(args.id),
+            method="PATCH",
+            payload=payload,
+            timeout=args.timeout,
+        )
+
+    if command == "disable":
+        return _handle_remote_json(
+            base_url,
+            _memory_id_path(args.id),
+            method="DELETE",
+            timeout=args.timeout,
+        )
+
+    print(f"unknown memory command: {command}", file=sys.stderr)
+    return 2
+
+
 def _path_with_query(path: str, query: dict[str, object]) -> str:
     if not query:
         return path
     return f"{path}?{urlencode(query)}"
+
+
+def _memory_id_path(memory_id: str) -> str:
+    return f"/memory/{quote(memory_id, safe='')}"
+
+
+def _metadata_json_arg(raw_value: str | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if raw_value is None:
+        return None, None
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        return None, {
+            "error": "invalid_metadata_json",
+            "message": "--metadata-json must be a JSON object.",
+            "detail": exc.msg,
+        }
+    if not isinstance(value, dict):
+        return None, {
+            "error": "invalid_metadata_json",
+            "message": "--metadata-json must be a JSON object.",
+        }
+    return value, None
 
 
 def _handle_remote_json(
@@ -380,6 +524,15 @@ def _positive_timeout(value: str) -> float:
     if timeout <= 0:
         raise argparse.ArgumentTypeError("timeout must be greater than 0")
     return timeout
+
+
+def _bool_arg(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    raise argparse.ArgumentTypeError("value must be true or false")
 
 
 if __name__ == "__main__":
