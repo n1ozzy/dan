@@ -80,9 +80,12 @@ def test_review_handoff_contains_required_orientation() -> None:
     required_snippets = (
         "Jarvis v4.1 Reviewer Handoff",
         "JARVIS-V3-EXECUTION-ROADMAP.md is historical only",
-        "/Users/n1_ozzy/Documents/dev/dan is read-only legacy reference only",
-        "EventStore now redacts secrets before persistence",
-        "Prompt 19A",
+        "read-only reference",
+        "FAZY A–H",
+        "docs/MASTER_PLAN.md",
+        "jarvis-dan-report",
+        "decree §7.8",
+        "never auto-execute",
     )
 
     missing = [snippet for snippet in required_snippets if snippet not in handoff]

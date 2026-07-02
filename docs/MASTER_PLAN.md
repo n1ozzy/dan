@@ -72,6 +72,21 @@ nie przytakiwać; fakt / przykład / wizja / decyzja / commitment rozdzielane ja
 
 ## 3. Stan faktyczny repo (zweryfikowany 2026-07-02)
 
+> **AKTUALIZACJA 2026-07-02 wieczór — FAZY A–H ZAMKNIĘTE.** Stan poniżej
+> (615 testów, szkielety, znaleziska F1–F5) to obraz sprzed sekwencji v4.2 —
+> zostaje jako zapis historyczny. Stan bieżący: **1322 testy, 22/22 smoke**;
+> zrealizowane FAZY A–F, voice track G0–G4 (GATE G4 + Gate G zaliczone,
+> G5 odroczone dekretem §7.8, model M1 zostaje), H1 menu-bar shell
+> (NSStatusItem + NSPopover + WKWebView, cockpit operator-first z widokiem
+> podstawowym/zaawansowanym), H2 `scripts/jarvis-dan-report` (diagnose-only,
+> snapshot w `docs/reviews/2026-07-02-legacy-dan-leftovers.md`), H3 docs
+> handoff. Znaleziska F1–F5 rozliczone w FAZIE A/B (fail-closed roots,
+> realpath containment, source-sensitivity, redakcja rozszerzona, token
+> transportowy). Orientacja dla reviewerów: `docs/REVIEW_HANDOFF.md`.
+> Backlog po-MVP: przeprojektowanie zawartości panelu pod operatora
+> (wybór modelu/effort, kontrolki głosu/PTT — wymagają nowych endpointów
+> daemona; feedback Ozzy'ego 2026-07-02).
+
 Działa i jest przetestowane (615 testów):
 
 - text turn pipeline (`POST /input/text`, CLI, historia, konwersacje),
@@ -288,8 +303,23 @@ z PRO). Wchodzi PRZED G5 — nie czeka na voice-clone (dekret §7.8).
 ### FAZA H — Wykończenie
 
 - **H1** — MenuBar shell (PyObjC) — panel native, nadal thin client.
-- **H2** — legacy DAN cleanup helpers (diagnose-only).
-- **H3** — docs handoff finalny.
+  **DONE 2026-07-02**: NSStatusItem (wordmark JARVIS jako template icon)
+  + NSPopover 480×760 (ciemny chrome/underlay) + WKWebView na tych samych
+  assetach cockpita; token seed z `~/.jarvis/runtime/api-token`. Cockpit
+  operator-first: widok podstawowy (Rozmowa z Enter-wysyła, Zgody na
+  narzędzia, czytelna Historia) + przełącznik „Zaawansowane" (API, Stan
+  daemona, Pamięć, Narzędzia, Ustawienia, Zdarzenia, Runtime — z opisami).
+  Backlog (feedback Ozzy'ego): wybór modelu/effort/providera i kontrolki
+  głosu (silnik/tempo/PTT/nasłuch) wymagają nowych endpointów daemona —
+  osobny etap, nie łatka w panelu.
+- **H2** — legacy DAN cleanup helpers (diagnose-only). **DONE 2026-07-02**:
+  `scripts/jarvis-dan-report` (`jarvis/diagnostics/legacy_dan.py`) —
+  inwentaryzacja procesów/LaunchAgentów/repo/tmp/HF cache/TTS z podziałem
+  na śmieci DANa (15,6 GiB do decyzji) vs zasoby Jarvisa (M1 — nie kasować);
+  strukturalnie niezdolny do kasowania (test kontraktu źródła). Snapshot:
+  `docs/reviews/2026-07-02-legacy-dan-leftovers.md`.
+- **H3** — docs handoff finalny. **DONE 2026-07-02**: `REVIEW_HANDOFF.md`
+  przepisany na stan po FAZACH A–H, adnotacja stanu bieżącego w §3.
 
 ---
 

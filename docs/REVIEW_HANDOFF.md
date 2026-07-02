@@ -4,8 +4,9 @@
 
 - This document is for future model/human review.
 - It summarizes current state, completed milestones, manual smoke results,
-  known risks, and recommended next prompts.
-- It is not an execution roadmap by itself.
+  known risks, and recommended next steps.
+- It is not an execution roadmap by itself; the plan-of-record is
+  `docs/MASTER_PLAN.md`.
 - It does not supersede `docs/CONTRACTS.md`, `docs/DECISIONS.md`,
   `docs/SECURITY_MODEL.md`, or `docs/MACOS_OPERATOR_CONTRACT.md`.
 
@@ -13,147 +14,83 @@
 
 - Jarvis v4.1 docs and current code are authoritative.
 - JARVIS-V3-EXECUTION-ROADMAP.md is historical only.
-- /Users/n1_ozzy/Documents/dev/dan is read-only legacy reference only.
+- The legacy DAN checkout under `~/Documents/dev` is read-only reference;
+  decree §7.6: nothing of it is deleted, stopped, or reused as runtime.
 
-## Current HEAD
+## Current state (2026-07-02, FAZY A–H closed)
 
-Reviewer command:
-
-```sh
-git rev-parse HEAD
-```
-
-Current known commit:
-
-```text
-8225520af661f0f3ad13d3423ea4249d4714287b
-docs: separate operator examples from commitments
-```
-
-Reviewers should verify the current `HEAD` before using this document. Treat
-this section as orientation, not proof that the checkout is still at this commit.
-
-## Completed milestones
-
-- Contracts/scaffold/config/schema/EventStore/state machine/daemon API.
-- RuntimeSupervisor report-only.
-- Brain interface, MockBrainAdapter, Claude CLI/Codex CLI safe subprocess
-  adapter foundation.
-- Text turn pipeline and CLI input.
-- Read-only conversations/turns API and CLI.
-- Tool registry, ApprovalGate, safe placeholders.
-- Execute-approved endpoint.
-- Model tool-call capture.
-- Provider tool-call parser.
-- Memory API/CLI.
-- Memory runtime smoke harness.
-- Static cockpit.
-- Localhost-only CORS for cockpit.
-- Central EventStore secret redaction.
-- Prompt 19A: approval approve/reject decision events.
-- Prompt 19B: `PermissionPolicy` on model-originated tool-call path.
-- Prompt 19C: `awaiting_approval` turn status with
-  `/state.pending_approval_count`; runtime remains in the canonical state set.
-- Prompt 20A: macOS operator contract added before Prompt 19D-mini so
-  continuation design accounts for future one-shot tools and longer operator
-  sessions.
-- Prompt 20A-FIX: operator examples separated from implementation commitments;
-  concrete macOS capabilities require later scoped prompts, contracts, tests,
-  and permission policy before implementation.
-- Prompt 19D-mini: approved, explicitly executed one-shot tool results continue
-  the original `awaiting_approval` turn through a continuation brain request.
-  The same turn is updated to `finished` on continuation success; continuation
-  failure leaves the tool run recorded and the turn `awaiting_approval` with
-  predictable `tool_result_continuation` error metadata.
+- **1322 tests, 22/22 smoke scripts green** (`scripts/smoke-*.sh`).
+- FAZY A–F closed: hardening (fail-closed roots, realpath containment,
+  transport token), permission model, real file/shell tools behind the
+  approval loop, operator adapters, WebSocket `/stream`, brain switch,
+  launchd lifecycle, e2e MVP smoke.
+- Voice track G0–G4 live and gated: GATE G4 closed, Gate G safety review
+  passed (`docs/reviews/2026-07-02-gate-g-voice-safety-review.md`,
+  retention = option A unchanged). G5 voice-clone deferred by decree §7.8;
+  the MLX chatterbox model (M1) stays on disk and must not be deleted.
+- H1 menu-bar shell: `scripts/jarvis-panel` — NSStatusItem (JARVIS wordmark
+  template icon) + NSPopover 480×760 + WKWebView rendering the same static
+  cockpit assets; token seeded from `~/.jarvis/runtime/api-token`; thin
+  client, zero authority (ADR-002). Cockpit is operator-first: basic view
+  (conversation input with Enter-to-send, tool approvals, readable history)
+  plus an advanced toggle for API/health/memory/tools/settings/events/runtime.
+- H2 diagnose-only DAN report: `scripts/jarvis-dan-report`
+  (`jarvis/diagnostics/legacy_dan.py`) inventories DAN leftovers, split
+  into DAN junk vs Jarvis assets; structurally incapable of deleting
+  (source-contract test). Snapshot:
+  `docs/reviews/2026-07-02-legacy-dan-leftovers.md`.
+- Reviewers should verify the actual `HEAD` with `git log --oneline -5`;
+  do not trust this file over the checkout.
 
 ## Manual smoke results known
 
-- Text runtime smoke passed.
-- Claude CLI brain smoke passed.
-- Tools approval smoke passed.
-- Provider tool-call capture smoke passed.
-- Memory runtime smoke passed.
-- Static cockpit manual smoke passed enough to confirm health/state, input via
-  mock, history/turns, events, tools load, and runtime read-only behavior.
-- CORS confirmed with `curl` and an `Origin` header.
-- `voice_queue` and `worker_jobs` remained `0` during relevant smokes.
+- All 22 smoke harnesses in `scripts/` pass on the current HEAD; they use
+  fake/mock brains and audio only (live mic/speaker/GUI is Ozzy-only by
+  decree). Fake brains in smokes must speak the Claude CLI `stream-json`
+  protocol where the harness requires it.
+- Panel visual verification is Ozzy-only: popover rendering, template icon
+  in the menu bar, dark chrome.
 
 ## Current safety boundaries
 
-- `jarvisd` owns truth.
-- The panel is client only.
-- Provider sessions are not memory.
-- Model-originated tool calls are classified through `PermissionPolicy`; only
-  non-blocked registered calls become approvals, never execution.
-- Approval execute is explicit.
-- Runtime conflicts are report-only.
-- Voice/workers/launchd are not active.
-- EventStore now redacts secrets before persistence.
+- `jarvisd` owns truth; the panel and cockpit are clients only.
+- Mutating endpoints require the local transport token; WebSocket
+  authenticates via the `jarvis-token.<token>` subprotocol; localhost only.
+- Model-originated tool calls go: PermissionPolicy(source) → approval →
+  explicit execute → ToolRun → continuation; never auto-execute.
+- `file_read` outside approved roots is BLOCKED, symlink escapes are
+  BLOCKED (fail-closed, realpath-based; tested).
+- Runtime conflicts and legacy leftovers are report-only; nothing is ever
+  auto-killed or auto-deleted.
+- Banned TTS engines by decree: edgeTTS, piper, XTTS (see
+  `tests/test_voice_broker.py`); chatterbox is reserved for G5.
+- Package pins unchanged; `pyobjc==12.2.1` lives in the `[panel]` extra so
+  the daemon and test suite never import AppKit/WebKit.
+- Schema and migrations are frozen (guarded by
+  `tests/git_guards.py::assert_schema_and_migrations_unchanged`).
 
-## Known open risks / review priorities
+## Known open items / review priorities
 
-- H5: API auth/CSRF/Origin/Host hardening still needed before dangerous tools.
-- H6/M2/M3: file/shell safety needs `realpath`, fail-closed roots, and write
-  restrictions before real file/shell tools.
-- M4: CLI model labeling vs actual provider model may need review.
-- M5: recent-turn ordering by second timestamp/random uuid may need rowid
-  ordering.
-- M7: `ps` timeout in runtime supervisor if still unresolved.
-- Tool schema validation if still unresolved.
-- HookRouter not implemented yet.
-- Workers not implemented yet.
-- Voice not implemented yet.
-
-## Recommended next prompt sequence
-
-- Prompt 20B: macOS capability inventory and permission model.
-- Then consider HookRouter foundation.
-- Future work list to keep separate from Prompt 20B: HookRouter, workers,
-  macOS Accessibility read-only/action, ScreenCaptureKit/Vision, SMS/browser/
-  passkey examples/classes, and voice.
+- **Panel content redesign (post-MVP backlog):** Ozzy's 2026-07-02 review —
+  the operator wants model/provider/effort switching and voice controls
+  (engine/tempo/PTT/listening toggle) in the panel; these need new daemon
+  endpoints and a scoped design, not panel-side hacks. The basic/advanced
+  split is v1 of that redesign.
+- Gate G review §7 optional follow-ups (only with Ozzy's green light;
+  retention is CLOSED as option A): recorder-vs-lease health check, dead
+  `LISTENING_LEASE_CANCELLED` type, degenerate rule for 3+ letters.
+- G5 voice-clone: deferred by decree §7.8 — do not start it in review.
 
 ## Reviewer checklist
-
-Start with repository state:
 
 ```sh
 git status --short
 git log --oneline -n 20
-git diff --stat
+.venv/bin/python -m pytest -q          # full suite, ~2.5 min
+for s in scripts/smoke-*.sh; do "$s" >/dev/null 2>&1 && echo "PASS $s" || echo "FAIL $s"; done
 ```
 
-Use targeted tests from `README.md` and `docs/runbooks/*` before broadening.
-Useful starting point:
-
-```sh
-.venv/bin/python -m pytest \
-  tests/test_tool_result_continuation.py \
-  tests/test_awaiting_approval_status.py \
-  tests/test_model_tool_permission_policy.py \
-  tests/test_approval_events.py \
-  tests/test_secret_redaction.py \
-  tests/test_event_store.py \
-  tests/test_api_cors.py \
-  tests/test_panel_assets.py \
-  tests/test_api_smoke.py \
-  tests/test_memory_api.py \
-  tests/test_tool_permissions.py \
-  tests/test_text_turn_pipeline.py \
-  tests/test_brain_cli_adapters.py \
-  tests/test_history_api.py \
-  tests/test_turn_repository.py \
-  tests/test_context_builder.py \
-  tests/test_memory_manager.py \
-  tests/test_runtime_supervisor.py \
-  tests/test_state_machine.py \
-  tests/test_db_schema.py \
-  tests/test_config.py \
-  tests/test_imports.py \
-  tests/test_scaffold_contracts.py \
-  -v
-```
-
-Inspect project contracts and runbooks:
+Key contracts and runbooks:
 
 ```sh
 sed -n '1,240p' docs/CONTRACTS.md
@@ -164,30 +101,35 @@ sed -n '1,240p' docs/PANEL_CONTRACT.md
 ls docs/runbooks
 ```
 
-Inspect current implementation focus areas:
+## Runbook index
 
-```sh
-sed -n '1,240p' jarvis/store/event_store.py
-sed -n '1,240p' jarvis/security/redaction.py
-sed -n '1,260p' jarvis/turns/orchestrator.py
-sed -n '1,240p' jarvis/tools/registry.py
-sed -n '1,240p' jarvis/tools/permissions.py
-sed -n '1,240p' jarvis/daemon/lifecycle.py
-```
+- `docs/runbooks/ACCESSIBILITY_TCC.md` — Accessibility permission flow.
+- `docs/runbooks/BRAIN_ADAPTERS.md` — CLI brain adapters and switching.
+- `docs/runbooks/E2E_MVP_SMOKE.md` — operator acceptance smoke, §6 map.
+- `docs/runbooks/G4_LIVE_GATE.md` — live voice gate procedure (Ozzy-only).
+- `docs/runbooks/LAUNCHD.md` — launchd lifecycle, never auto-install.
+- `docs/runbooks/MEMORY_API.md` — memory blocks API/CLI.
+- `docs/runbooks/PANEL_COCKPIT.md` — static cockpit, routes, stream.
+- `docs/runbooks/PANEL_MENUBAR.md` — H1 menu-bar shell install/run.
+- `docs/runbooks/PROVIDER_SMOKE.md` — real-provider manual smoke.
+- `docs/runbooks/SCREEN_RECORDING_TCC.md` — screen capture permission.
+- `docs/runbooks/TERMINAL_AUTOMATION_TCC.md` — terminal automation TCC.
+- `docs/runbooks/TEXT_RUNTIME_SMOKE.md` — text pipeline smoke.
+- `docs/runbooks/TOOLS_AND_APPROVALS.md` — approval loop operations.
 
 ## What not to do during review
 
-- Do not start voice.
-- Do not run `launchctl`.
-- Do not clean legacy processes automatically.
-- Do not use old DAN as runtime.
-- Do not modify schema unless explicitly scoped.
+- Do not start G5 / voice cloning.
+- Do not run live mic/speaker/GUI tests — Ozzy-only by decree.
+- Do not clean legacy DAN processes, files, or models — report only
+  (`scripts/jarvis-dan-report`); deleting is Ozzy's manual decision.
+- Do not use old DAN as runtime or copy its code (decree §7.6).
+- Do not modify schema/migrations or package pins.
 - Do not run real provider subprocesses unless doing manual smoke.
-- Do not treat cockpit as source of truth.
-- Do not broaden scope into workers/voice while reviewing approval loop.
+- Do not treat the cockpit/panel as a source of truth.
 
 ## Handoff prompt for reviewer
 
 ```text
-Review this repository as Jarvis v4.1. Use docs/REVIEW_HANDOFF.md as orientation, but verify against current code. Focus on approval loop, PermissionPolicy, EventStore redaction, transport safety, and context/memory correctness. Do not implement changes unless explicitly asked.
+Review this repository as Jarvis v4.1 after FAZY A–H. Use docs/REVIEW_HANDOFF.md as orientation, but verify against current code. Plan-of-record: docs/MASTER_PLAN.md. Focus on the approval loop, PermissionPolicy, transport auth, voice gate boundaries (G0–G4 live, G5 deferred), and the thin-client panel. Do not implement changes unless explicitly asked.
 ```
