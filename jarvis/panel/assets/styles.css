@@ -193,6 +193,35 @@ body.show-advanced .card.advanced {
   margin: 0;
 }
 
+.voice-controls {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.ptt-button {
+  min-height: 54px;
+  font-weight: 650;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ptt-button.talking {
+  border-color: #34d399;
+  background: #0f2b22;
+  color: #a7f3d0;
+}
+
+#listenToggle.active {
+  border-color: #34d399;
+  background: #0f2b22;
+}
+
+#voiceStatus.live {
+  color: #34d399;
+}
+
 .api-card {
   grid-template-columns: auto 1fr;
   align-items: center;

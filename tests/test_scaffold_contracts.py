@@ -136,7 +136,7 @@ def test_runtime_scaffold_avoids_legacy_escape_hatches() -> None:
         for path in files:
             if "__pycache__" in path.parts or path.suffix not in text_suffixes:
                 continue
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8", errors="replace")
             for snippet in FORBIDDEN_RUNTIME_SNIPPETS:
                 if snippet in text:
                     offenders.append((str(path.relative_to(ROOT)), snippet))

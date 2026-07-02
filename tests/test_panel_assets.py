@@ -18,6 +18,11 @@ REQUIRED_ROUTES = (
     "/health",
     "/state",
     "/input/text",
+    "/voice/ptt/down",
+    "/voice/ptt/up",
+    "/voice/listen/lock",
+    "/voice/listen/unlock",
+    "/voice/listening",
     "/conversations",
     "/turns",
     "/memory",
@@ -165,6 +170,25 @@ def test_index_splits_basic_and_advanced_views() -> None:
     assert ".card.advanced" in styles
     assert "show-advanced" in styles
     assert "show-advanced" in script
+
+
+def test_index_has_voice_controls_in_basic_view() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    # The operator's PTT lives in the always-visible basic view (MASTER_PLAN
+    # §4a: "PTT: przycisk + globalny hotkey" — the button half).
+    for element_id in ("pttButton", "listenToggle", "voiceStatus"):
+        assert element_id in markup, element_id
+    section_start = markup.index("voiceHeading")
+    assert "advanced" not in markup[section_start - 200 : section_start]
+
+    # Hold-to-talk: press acquires the lease, release frees it — pointer AND
+    # keyboard; live status refresh rides the listening.lease.* stream events.
+    assert "pointerdown" in script
+    assert "pointerup" in script
+    assert "keyup" in script
+    assert 'startsWith("listening.")' in script
 
 
 def test_app_sends_text_input_on_enter() -> None:

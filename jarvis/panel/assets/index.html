@@ -39,6 +39,25 @@
         <pre id="inputError" class="error-box" hidden></pre>
       </section>
 
+      <section class="card" aria-labelledby="voiceHeading">
+        <div class="section-head">
+          <h2 id="voiceHeading">Głos</h2>
+          <span id="voiceStatus" class="muted" aria-live="polite">…</span>
+        </div>
+        <div class="voice-controls">
+          <button id="pttButton" type="button" class="ptt-button">
+            Trzymaj i mów (PTT)
+          </button>
+          <button id="listenToggle" type="button">Włącz nasłuch</button>
+        </div>
+        <p class="muted section-desc">
+          PTT: trzymasz — słucha, puszczasz — przetwarza. Nasłuch ciągły
+          słucha do wyłączenia (albo wygaśnięcia); bez żadnego z nich
+          mikrofon jest martwy.
+        </p>
+        <pre id="voiceError" class="error-box" hidden></pre>
+      </section>
+
       <section class="card" aria-labelledby="approvalsHeading">
         <div class="section-head">
           <h2 id="approvalsHeading">Zgody na narzędzia</h2>
