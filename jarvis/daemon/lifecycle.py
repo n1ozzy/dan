@@ -44,6 +44,15 @@ from jarvis.api.routes_runtime import (
 )
 from jarvis.api.routes_audio import get_audio_devices
 from jarvis.api.routes_settings import get_settings, update_settings
+from jarvis.api.routes_voice import (
+    VoiceDisabledError,
+    VoiceRequestValidationError,
+    get_listening,
+    post_listen_lock,
+    post_listen_unlock,
+    post_ptt_down,
+    post_ptt_up,
+)
 from jarvis.api.routes_state import get_state
 from jarvis.api.routes_tools import ToolRequestValidationError, get_tools, post_tool_request
 from jarvis.api.routes_workers import (
@@ -377,6 +386,26 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, update_settings(app, request_payload))
             return
 
+        if method == "GET" and path == "/voice/listening":
+            _write_json(handler, 200, get_listening(app))
+            return
+
+        if method == "POST" and path in {
+            "/voice/ptt/down",
+            "/voice/ptt/up",
+            "/voice/listen/lock",
+            "/voice/listen/unlock",
+        }:
+            request_payload = _read_json_body(handler)
+            voice_handlers = {
+                "/voice/ptt/down": post_ptt_down,
+                "/voice/ptt/up": post_ptt_up,
+                "/voice/listen/lock": post_listen_lock,
+                "/voice/listen/unlock": post_listen_unlock,
+            }
+            _write_json(handler, 200, voice_handlers[path](app, request_payload))
+            return
+
         if method == "GET" and path == "/input/text":
             _write_json(handler, 405, get_text_input_method_error())
             return
@@ -401,9 +430,12 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         MemoryRequestValidationError,
         TextInputValidationError,
         ToolRequestValidationError,
+        VoiceRequestValidationError,
         WorkerRequestValidationError,
     ) as exc:
         _write_json(handler, 400, {"error": str(exc), "status": 400})
+    except VoiceDisabledError as exc:
+        _write_json(handler, 409, {"error": str(exc), "status": 409})
     except DaemonAppNotStartedError as exc:
         _write_json(handler, 503, {"error": str(exc), "status": 503})
     except DaemonAppBusyError as exc:

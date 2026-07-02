@@ -36,8 +36,9 @@ class VoiceRequest:
 @dataclass(frozen=True)
 class ListeningLease:
     id: str
-    mode: ListeningMode
+    mode: str
     source: str
-    created_at: datetime | None = None
-    expires_at: datetime | None = None
-    released_at: datetime | None = None
+    status: str = "active"
+    created_at: str | None = None
+    expires_at: str | None = None
+    released_at: str | None = None

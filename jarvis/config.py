@@ -86,6 +86,9 @@ class VoiceConfig:
     default_stt: str = "mock"
     ptt_mode: str = "hold"
     queue_persisted: bool = True
+    recorder: str = "mock"
+    ptt_hold_ttl_seconds: int = 30
+    listen_lock_ttl_seconds: int = 600
 
 
 @dataclass(frozen=True)

@@ -111,6 +111,7 @@ class DaemonApp:
     context_builder: ContextBuilder | None = None
     memory_manager: MemoryManager | None = None
     worker_broker: WorkerBroker | None = None
+    voice_recorder: Any = None
     api_token: str | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
@@ -127,8 +128,12 @@ class DaemonApp:
         # bad audio backend kills the daemon at startup (established rule).
         # Requests build their own manager on a per-request connection.
         from jarvis.audio.devices import AudioDeviceManager
+        from jarvis.voice.recorder import build_recorder
 
         AudioDeviceManager(self._require_conn(), config=self.config.audio)
+        # One stateful recorder for the whole daemon: leases decide when it
+        # runs, so per-request lease managers must share it.
+        self.voice_recorder = build_recorder(self.config.voice.recorder)
 
         event_store.append(EventType.DAEMON_STARTED, "daemon", {"service": "jarvisd"})
         state_machine.transition(RuntimeState.IDLE, reason="daemon started")
@@ -250,6 +255,43 @@ class DaemonApp:
                     )
             rows = conn.execute("SELECT key, value_json FROM settings ORDER BY key").fetchall()
             return {str(key): json.loads(str(value_json)) for key, value_json in rows}
+        finally:
+            close_quietly(conn)
+
+    def _listening_manager(self, conn: sqlite3.Connection):
+        from jarvis.voice.listening import ListeningLeaseManager
+
+        return ListeningLeaseManager(
+            conn,
+            config=self.config.voice,
+            recorder=self.voice_recorder,
+            event_store=create_event_store(conn),
+        )
+
+    def acquire_listening_lease(self, *, mode: str, source: str):
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        conn = self._connect_existing()
+        try:
+            return self._listening_manager(conn).acquire(mode=mode, source=source)
+        finally:
+            close_quietly(conn)
+
+    def release_listening_leases(self, *, mode: str):
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        conn = self._connect_existing()
+        try:
+            return self._listening_manager(conn).release(mode=mode)
+        finally:
+            close_quietly(conn)
+
+    def active_listening_leases(self):
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        conn = self._connect_existing()
+        try:
+            return self._listening_manager(conn).active()
         finally:
             close_quietly(conn)
 
