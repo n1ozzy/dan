@@ -40,8 +40,9 @@ from jarvis.tools import (
     ToolSpec,
     create_default_tool_registry,
 )
-from jarvis.tools.file_tool import FileReadTool
+from jarvis.tools.file_tool import FileReadTool, FileWriteTool
 from jarvis.tools.registry import ApprovalProbeTool
+from jarvis.tools.shell_tool import ShellReadTool
 from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.turns.orchestrator import TextTurnResult, TurnOrchestrator
 from jarvis.turns.models import Turn
@@ -616,9 +617,14 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     # One containment source feeds both the policy and the file tool so the
     # advisory check and the execution-time re-check can never disagree.
     approved_roots = [str(root) for root in config.security.approved_roots] or [str(paths.home)]
+    shell_read_whitelist = [str(cmd) for cmd in config.security.shell_read_whitelist] or None
     tool_registry = create_default_tool_registry()
     tool_registry.register(ApprovalProbeTool())
     tool_registry.register(FileReadTool(approved_roots=approved_roots))
+    tool_registry.register(FileWriteTool(approved_roots=approved_roots))
+    tool_registry.register(
+        ShellReadTool(whitelist=shell_read_whitelist, approved_roots=approved_roots)
+    )
     tool_permission_policy = ToolPermissionPolicy(
         destructive_tools_enabled=config.security.destructive_tools_enabled,
         approved_roots=approved_roots,

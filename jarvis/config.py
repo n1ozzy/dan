@@ -118,6 +118,9 @@ class SecurityConfig:
     # daemon then falls back to its runtime home only — never to the whole
     # filesystem (fail-closed, docs/SECURITY_MODEL.md).
     approved_roots: tuple[str, ...] = ()
+    # Exact-match whitelist for the read-only shell tool. Empty means the
+    # conservative built-in default set (jarvis/tools/shell_tool.py).
+    shell_read_whitelist: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

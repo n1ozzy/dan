@@ -82,6 +82,84 @@ class FileReadTool(Tool):
         return any(_is_within_root(resolved, root) for root in self.approved_roots)
 
 
+class FileWriteTool(Tool):
+    name = "file_write"
+    description = "Write a UTF-8 text file under the approved roots (approval-gated)."
+    risk = "file_write"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Absolute or ~-relative file path."},
+            "content": {"type": "string", "description": "UTF-8 text content to write."},
+            "overwrite": {
+                "type": "boolean",
+                "description": "Must be true to replace an existing file (default false).",
+            },
+        },
+        "required": ["path", "content"],
+    }
+
+    def __init__(self, approved_roots: Iterable[str]):
+        self.approved_roots = tuple(_normalize_path(root) for root in approved_roots)
+
+    def run(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        path = _required_path_argument(arguments)
+        content = arguments.get("content")
+        if not isinstance(content, str):
+            raise ToolExecutionError("file_write requires string content.")
+        overwrite = arguments.get("overwrite", False)
+        if not isinstance(overwrite, bool):
+            raise ToolExecutionError("file_write overwrite must be a boolean.")
+
+        encoded = content.encode("utf-8")
+        if len(encoded) > HARD_MAX_BYTES:
+            raise ToolExecutionError(
+                f"file_write content exceeds {HARD_MAX_BYTES} bytes."
+            )
+
+        resolved = _normalize_path(path)
+        if not self._is_within_approved_roots(resolved):
+            raise ToolExecutionError(f"file_write path is outside approved roots: {resolved}")
+
+        parent = os.path.dirname(resolved)
+        if not os.path.isdir(parent):
+            raise ToolExecutionError(f"file_write parent directory does not exist: {parent}")
+
+        existed = os.path.lexists(resolved)
+        if existed and not overwrite:
+            raise ToolExecutionError(
+                f"file_write target exists; pass overwrite=true to replace: {resolved}"
+            )
+        if existed and not os.path.isfile(resolved):
+            raise ToolExecutionError(
+                f"file_write target exists and is not a regular file: {resolved}"
+            )
+
+        temp_path = f"{resolved}.jarvis-write-{os.getpid()}.tmp"
+        try:
+            with open(temp_path, "wb") as handle:
+                handle.write(encoded)
+            os.replace(temp_path, resolved)
+        except OSError as exc:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise ToolExecutionError(f"file_write cannot write file: {exc}") from exc
+
+        return {
+            "ok": True,
+            "path": resolved,
+            "bytes_written": len(encoded),
+            "replaced_existing": existed,
+        }
+
+    def _is_within_approved_roots(self, resolved: str) -> bool:
+        if not self.approved_roots:
+            return False
+        return any(_is_within_root(resolved, root) for root in self.approved_roots)
+
+
 class FileReadPlaceholderTool(Tool):
     name = "file_read_placeholder"
     description = "Placeholder for future approved file reads; does not read files."
@@ -154,5 +232,6 @@ __all__ = [
     "FileReadTool",
     "FileTool",
     "FileWritePlaceholderTool",
+    "FileWriteTool",
     "HARD_MAX_BYTES",
 ]

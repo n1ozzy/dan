@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# FAZA C3 smoke: real read-only file tool through the live daemon.
+# FAZA C3+C4 smoke: real file tools and whitelisted shell through the daemon.
 # Proves: direct user file_read executes immediately inside approved roots,
-# out-of-roots requests are blocked without a ToolRun, model-originated
-# requests stay approval-gated, secret-looking content is redacted in
-# tool_runs and events, transport token is enforced end to end.
+# out-of-roots requests are blocked without a ToolRun, file_write and
+# shell_read go through the full approval -> explicit execute lifecycle,
+# secret-looking content is redacted in tool_runs and events, and the
+# transport token is enforced end to end.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -248,12 +249,59 @@ except HTTPError as exc:
         fail(f"tokenless request expected 401, got {exc.code}")
 print("tokenless request status: 401")
 
-# 4. DB-level assertions: one ToolRun, secrets redacted, no queues touched.
+# 4. file_write: approval -> explicit execute -> file lands on disk.
+write_target = os.path.join(workspace, "written.txt")
+status, write_requested = request_json_status(
+    "POST",
+    "/tools/request",
+    {
+        "tool_name": "file_write",
+        "arguments": {"path": write_target, "content": "written by jarvis smoke\n"},
+        "requested_by": "smoke",
+    },
+)
+if status != 200 or write_requested.get("status") != "approval_required":
+    fail(f"file_write did not require approval: {status} {write_requested}")
+if os.path.exists(write_target):
+    fail("file_write wrote before approval")
+approval_id = write_requested["approval_id"]
+status, _ = request_json_status("POST", f"/approvals/{approval_id}/approve")
+if status != 200:
+    fail(f"file_write approve failed: {status}")
+if os.path.exists(write_target):
+    fail("file_write wrote after approve without execute")
+status, executed = request_json_status("POST", f"/approvals/{approval_id}/execute")
+if status != 200 or not executed.get("ok"):
+    fail(f"file_write execute failed: {status} {executed}")
+with open(write_target, "r", encoding="utf-8") as handle:
+    if handle.read() != "written by jarvis smoke\n":
+        fail("file_write content mismatch")
+print("file_write lifecycle: approval -> execute -> file on disk PASS")
+
+# 5. shell_read: whitelisted command through approval lifecycle.
+status, shell_requested = request_json_status(
+    "POST",
+    "/tools/request",
+    {"tool_name": "shell_read", "arguments": {"command": "pwd"}, "requested_by": "smoke"},
+)
+if status != 200 or shell_requested.get("status") != "approval_required":
+    fail(f"shell_read did not require approval: {status} {shell_requested}")
+approval_id = shell_requested["approval_id"]
+request_json_status("POST", f"/approvals/{approval_id}/approve")
+status, shell_executed = request_json_status("POST", f"/approvals/{approval_id}/execute")
+if status != 200 or not shell_executed.get("ok"):
+    fail(f"shell_read execute failed: {status} {shell_executed}")
+shell_stdout = (shell_executed.get("result") or {}).get("stdout", "").strip()
+if not shell_stdout:
+    fail("shell_read produced no stdout")
+print(f"shell_read lifecycle: pwd -> {shell_stdout}")
+
+# 6. DB-level assertions: three ToolRuns, secrets redacted, no queues touched.
 conn = sqlite3.connect(db_path)
 try:
     tool_runs = conn.execute("SELECT COUNT(*) FROM tool_runs").fetchone()[0]
-    if tool_runs != 1:
-        fail(f"expected exactly 1 tool_run, found {tool_runs}")
+    if tool_runs != 3:
+        fail(f"expected exactly 3 tool_runs, found {tool_runs}")
     stored_outputs = json.dumps(
         [row[0] for row in conn.execute("SELECT output_json FROM tool_runs").fetchall()]
     )
