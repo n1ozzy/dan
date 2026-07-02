@@ -16,6 +16,7 @@ CLAUDE_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-claude-cli-brain.sh"
 TOOLS_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-tools-approvals.sh"
 MEMORY_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-memory-runtime.sh"
 CONTINUATION_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-tool-continuation.sh"
+FILE_READ_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-file-read.sh"
 RUNBOOK = ROOT / "docs" / "runbooks" / "TEXT_RUNTIME_SMOKE.md"
 PROVIDER_RUNBOOK = ROOT / "docs" / "runbooks" / "PROVIDER_SMOKE.md"
 TOOLS_RUNBOOK = ROOT / "docs" / "runbooks" / "TOOLS_AND_APPROVALS.md"
@@ -156,6 +157,16 @@ def test_continuation_smoke_script_is_executable() -> None:
     mode = CONTINUATION_SMOKE_SCRIPT.stat().st_mode
     assert mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     assert os.access(CONTINUATION_SMOKE_SCRIPT, os.X_OK)
+
+
+def test_file_read_smoke_script_exists() -> None:
+    assert FILE_READ_SMOKE_SCRIPT.is_file()
+
+
+def test_file_read_smoke_script_is_executable() -> None:
+    mode = FILE_READ_SMOKE_SCRIPT.stat().st_mode
+    assert mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    assert os.access(FILE_READ_SMOKE_SCRIPT, os.X_OK)
 
 
 def test_smoke_script_passes_bash_syntax_check() -> None:

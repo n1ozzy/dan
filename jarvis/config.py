@@ -114,6 +114,10 @@ class SecurityConfig:
     require_approval_for_file_write: bool = True
     require_approval_for_network: bool = True
     destructive_tools_enabled: bool = False
+    # File-tool containment roots. Empty means "no roots configured": the
+    # daemon then falls back to its runtime home only — never to the whole
+    # filesystem (fail-closed, docs/SECURITY_MODEL.md).
+    approved_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

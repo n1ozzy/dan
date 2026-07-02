@@ -11,6 +11,7 @@ from typing import Any
 
 from jarvis.events.models import utc_now_iso
 from jarvis.events.types import EventType
+from jarvis.security.redaction import redact_secret_text
 from jarvis.store.event_store import EventStore
 from jarvis.tools.permissions import (
     RequestSource,
@@ -821,6 +822,13 @@ SECRET_KEY_PARTS = (
 
 
 def _redact(value: Any) -> Any:
+    """Redact secrets in persisted tool payloads.
+
+    Sensitive keys are masked entirely; string values additionally pass the
+    central pattern redaction so secret-looking substrings (tokens inside file
+    contents, command output, etc.) never persist raw in tool_runs/approvals.
+    """
+
     if isinstance(value, Mapping):
         redacted: dict[str, Any] = {}
         for key, item in value.items():
@@ -833,6 +841,8 @@ def _redact(value: Any) -> Any:
         return redacted
     if isinstance(value, list):
         return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return redact_secret_text(value)
     return value
 
 
