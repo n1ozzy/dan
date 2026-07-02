@@ -18,12 +18,13 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 
 ## ⚠️ ZASADY PROJEKTU (obowiązują w KAŻDYM tasku)
 
-- **TDD:** najpierw test odtwarzający bug (czerwony), potem minimalny fix (zielony). Projekt ma ~1322 testy i dyscyplinę „zielone co krok".
+- **TDD (celowany):** przy fixie napisz test odtwarzający konkretny bug i odpalaj **tylko TEN test** — nie całą matrycę.
 - **NIE podbijaj paczek.** Wszystkie zależności są już najnowsze (supertonic 1.3.1, mlx-whisper 0.4.3, mlx-audio 0.4.4, pyobjc 12.2.1, onnxruntime 1.27.0, torch 2.12.1, numpy 2.4.6, httpx/sounddevice/soundfile/pytest — wszystkie latest). `pip install -U` to NIE jest fix. Szczegóły w tasku **FIX-15**.
-- **Preflight sesji = tanio:** `git log -1` (zgodność z handoffem) + `git status --short` + health daemona. **NIE** odpalaj pełnych smoke'ów/pytest na starcie, jeśli tree czysty na tym samym HEAD — szkoda tokenów. Testy odpalasz po pierwszej własnej zmianie i na końcu.
+- **Preflight sesji = tanio:** `git log -1` + `git status --short` + health daemona. **NIGDY** nie odpalaj testów na starcie sesji.
+- **🔬 TESTY — NIE co task (twarde żądanie Ozzy'ego 2026-07-03):** pełny `pytest` + smoke odpalaj **wyłącznie po DUŻYCH taskach** (FIX-03, FIX-04, FIX-05, FIX-07, FIX-09 — fundament / współbieżność / głos / migracje), **po ich wykonaniu**. Przy WSZYSTKICH pozostałych: co najwyżej **celowany test danego fixa** (ten jeden plik/case), **nigdy pełna matryca 1322 testów**. Zero rutynowego pełnego pytest na koniec każdego taska.
 - **NIE odpalaj multi-agentowych workflow/fan-outów** (Workflow, deep-research, 7+ subagentów) **bez wyraźnej zgody Ozzy'ego** — tokeny ograniczone.
 - **Linie mogły się przesunąć** — po wcześniejszych fixach zweryfikuj `plik:linia` grepem/Read zanim edytujesz.
-- **Na koniec:** pełny `pytest` + relevantny smoke, commit z rzeczowym opisem, aktualizacja statusu w tym pliku. Handoff jeśli zamykasz większy blok.
+- **Na koniec taska:** commit z rzeczowym opisem + odhacz status w tym pliku. Pełne testy TYLKO jeśli to duży task (patrz reguła 🔬 wyżej).
 
 ---
 
