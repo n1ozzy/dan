@@ -140,16 +140,18 @@ w politykę retencji (wiek/rozmiar) jako drobnicę FAZY H.
    martwy typ `LISTENING_LEASE_CANCELLED`, luka degenerate rule dla
    3+ liter — kandydaci na drobnice, nie blokery.
 
-## 8. Checklista werdyktu (wypełnia Ozzy)
+## 8. Checklista werdyktu (wypełnił Ozzy, 2026-07-02)
 
-- [ ] §1 Mikrofon za lease + TTL — akceptuję stan (w tym lazy expiry
+- [x] §1 Mikrofon za lease + TTL — akceptuję stan (w tym lazy expiry
       i odnawialny hold bez limitu łącznego)
-- [ ] §2 `source="voice"` tylko wewnętrzną ścieżką za bramkami — akceptuję
-- [ ] §3 Firewall halucynacji (energia + junk + degenerate) — akceptuję
+- [x] §2 `source="voice"` tylko wewnętrzną ścieżką za bramkami — akceptuję
+- [x] §3 Firewall halucynacji (energia + junk + degenerate) — akceptuję
       (progi pozostają w gestii operatora przez TOML)
-- [ ] §4 Ograniczenie filmu przy otwartym PTT — akceptuję jako
+- [x] §4 Ograniczenie filmu przy otwartym PTT — akceptuję jako
       udokumentowane ograniczenie zakresu
-- [ ] §5 Anti-echo unia/0.75/30 s — akceptuję (kalibracja progiem)
-- [ ] §6 Retencja: [ ] akceptuję bez zmian / [ ] drobnica FAZY H:
+- [x] §5 Anti-echo unia/0.75/30 s — akceptuję (kalibracja progiem)
+- [x] §6 Retencja: **[x] akceptuję bez zmian** (opcja A — baza lokalna,
+      single-user; pruning nie wchodzi) / [ ] drobnica FAZY H:
       pruning + redakcja logów
-- [ ] **WERDYKT GATE G: ZALICZONY / poprawki (lista):**
+- [x] **WERDYKT GATE G: ZALICZONY** (Ozzy: "ok jedziemy, A",
+      2026-07-02 — retencja bez zmian, FAZA H odblokowana)
