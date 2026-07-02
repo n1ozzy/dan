@@ -89,6 +89,9 @@ class VoiceConfig:
     recorder: str = "mock"
     ptt_hold_ttl_seconds: int = 30
     listen_lock_ttl_seconds: int = 600
+    fillers: tuple[str, ...] = ("Już sprawdzam.", "Chwila.")
+    filler_after_ms: int = 1200
+    min_sentence_chars: int = 12
 
 
 @dataclass(frozen=True)

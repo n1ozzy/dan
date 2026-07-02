@@ -96,6 +96,7 @@ class TurnOrchestrator:
         tool_permission_policy: ToolPermissionPolicy | None = None,
         conversation_repository: ConversationRepository | None = None,
         turn_repository: TurnRepository | None = None,
+        speech_pipeline: Any | None = None,
         source: str = "turn_orchestrator",
     ) -> None:
         self._conn = conn
@@ -109,7 +110,26 @@ class TurnOrchestrator:
         self._tool_permission_policy = tool_permission_policy
         self._conversations = conversation_repository or ConversationRepository(conn)
         self._turns = turn_repository or TurnRepository(conn)
+        self._speech = speech_pipeline
         self._source = _required_text(source, "source")
+
+    def _speak(self, turn_id: str, text: str) -> None:
+        """Queue the spoken form of a finished answer (G0/G3, best effort)."""
+
+        if self._speech is None:
+            return
+        try:
+            self._speech.speak_text(turn_id=turn_id, text=text)
+        except Exception:  # speech must never fail a finished turn
+            pass
+
+    def _arm_filler(self, turn_id: str) -> Any:
+        if self._speech is None:
+            return None
+        try:
+            return self._speech.arm_filler(turn_id=turn_id)
+        except Exception:
+            return None
 
     def run_text_turn(self, text: str) -> Turn:
         """Compatibility wrapper for the Prompt 01 placeholder API."""
@@ -232,9 +252,12 @@ class TurnOrchestrator:
                 model=request_model,
             )
 
+            filler_timer = self._arm_filler(turn.id)
             try:
                 response = self._brain_manager.generate(context_result.request)
             except Exception as exc:
+                if filler_timer is not None:
+                    filler_timer.disarm()
                 self._record_brain_failure(
                     turn=turn,
                     conversation_id=conversation.id,
@@ -245,6 +268,8 @@ class TurnOrchestrator:
                     correlation_id=correlation_id,
                 )
                 raise TurnOrchestratorError(f"brain generation failed: {exc}") from exc
+            if filler_timer is not None:
+                filler_timer.disarm()
 
             response_model = _response_model(response, request_model)
             self._append_event(
@@ -322,6 +347,9 @@ class TurnOrchestrator:
                 correlation_id=correlation_id,
                 turn_id=turn.id,
             )
+            # Speak the raw model text: the chunker strips tool-call blocks,
+            # and an awaiting_approval turn speaks only its safe prefix (G0 §4).
+            self._speak(turn.id, response.text)
             event_ids.append(
                 self._state_machine.transition(
                     RuntimeState.IDLE,
@@ -475,6 +503,7 @@ class TurnOrchestrator:
             brain_model=response_model,
             metadata={"tool_result_continuation": success_metadata},
         )
+        self._speak(turn.id, continuation_text)
         self._append_event(
             EventType.TURN_FINISHED,
             {

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from enum import StrEnum
 
 
@@ -25,12 +24,12 @@ class VoiceRequest:
     id: str
     text: str
     priority: int
-    status: VoiceRequestStatus = VoiceRequestStatus.QUEUED
+    status: str = VoiceRequestStatus.QUEUED.value
     turn_id: str | None = None
     correlation_id: str | None = None
     engine: str | None = None
     voice: str | None = None
-    created_at: datetime | None = None
+    created_at: str | None = None
 
 
 @dataclass(frozen=True)

@@ -112,6 +112,7 @@ class DaemonApp:
     memory_manager: MemoryManager | None = None
     worker_broker: WorkerBroker | None = None
     voice_recorder: Any = None
+    voice_broker: Any = None
     api_token: str | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
@@ -135,6 +136,21 @@ class DaemonApp:
         # runs, so per-request lease managers must share it.
         self.voice_recorder = build_recorder(self.config.voice.recorder)
 
+        if self.config.voice.enabled:
+            from jarvis.voice.broker import VoiceBroker
+            from jarvis.voice.tts import build_tts_engine
+
+            # Engine construction validates the name: a banned or unknown
+            # TTS engine kills the daemon at startup (decree §7.3).
+            engine = build_tts_engine(self.config.voice.default_tts)
+            if self.config.voice.broker_enabled:
+                self.voice_broker = VoiceBroker(
+                    self._connect_existing,
+                    config=self.config.voice,
+                    engine=engine,
+                )
+                self.voice_broker.start()
+
         event_store.append(EventType.DAEMON_STARTED, "daemon", {"service": "jarvisd"})
         state_machine.transition(RuntimeState.IDLE, reason="daemon started")
         self.started = True
@@ -142,6 +158,10 @@ class DaemonApp:
     def stop(self, reason: str | None = None) -> None:
         event_store = self._require_event_store()
         state_machine = self._require_state_machine()
+
+        if self.voice_broker is not None:
+            self.voice_broker.stop()
+            self.voice_broker = None
 
         if self.started:
             event_store.append(
@@ -681,6 +701,14 @@ class DaemonApp:
         return self.tool_run_recorder
 
     def _create_turn_orchestrator(self) -> TurnOrchestrator:
+        speech_pipeline = None
+        if self.config.voice.enabled and self.config.voice.speak_responses:
+            from jarvis.voice.speech import SpeechPipeline
+
+            speech_pipeline = SpeechPipeline(
+                self._connect_existing,
+                config=self.config.voice,
+            )
         return TurnOrchestrator(
             conn=self._require_conn(),
             event_store=self._require_event_store(),
@@ -691,6 +719,7 @@ class DaemonApp:
             tool_registry=self.tool_registry,
             approval_gate=self._require_approval_gate(),
             tool_permission_policy=self.tool_permission_policy,
+            speech_pipeline=speech_pipeline,
         )
 
     def _execute_approved_tool_locked(self, approval_id: str) -> dict[str, Any]:

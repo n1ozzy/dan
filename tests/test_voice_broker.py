@@ -1,0 +1,325 @@
+"""G3 TTS engines + VoiceBroker + speech pipeline tests (ADR-005, decree §7.3).
+
+Only the broker plays speech; engines are pluggable with mock-only tests;
+banned engines are refused by name; the next chunk is synthesized while the
+previous one plays; fillers fire at most once per turn.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from jarvis.store.db import close_quietly, initialize_database
+from jarvis.voice.broker import VoiceBroker
+from jarvis.voice.queue import VoiceQueue
+from jarvis.voice.speech import SpeechPipeline
+from jarvis.voice.tts import (
+    BannedEngineError,
+    MockTTSEngine,
+    TTSEngineError,
+    build_tts_engine,
+)
+from tests.git_guards import assert_schema_and_migrations_unchanged
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    path = tmp_path / "voice.db"
+    conn = initialize_database(path)
+    close_quietly(conn)
+    return path
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(path)
+
+
+def voice_config(**overrides) -> SimpleNamespace:
+    values = {
+        "enabled": True,
+        "speak_responses": True,
+        "broker_enabled": True,
+        "default_tts": "mock",
+        "fillers": ["Już sprawdzam.", "Chwila."],
+        "filler_after_ms": 50,
+        "min_sentence_chars": 12,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+# --- engines -------------------------------------------------------------
+
+
+def test_build_engine_returns_mock() -> None:
+    engine = build_tts_engine("mock")
+    assert isinstance(engine, MockTTSEngine)
+
+
+@pytest.mark.parametrize("banned", ["edgetts", "edgeTTS", "piper", "xtts", "XTTS"])
+def test_banned_engines_are_refused_by_decree(banned: str) -> None:
+    with pytest.raises(BannedEngineError):
+        build_tts_engine(banned)
+
+
+def test_unknown_engine_fails_closed() -> None:
+    with pytest.raises(TTSEngineError):
+        build_tts_engine("nope")
+
+
+def test_decreed_real_engines_are_reserved_not_silent() -> None:
+    # Supertonic/Chatterbox are decreed (§7.3) but not implemented yet; asking
+    # for them must say so loudly instead of falling back to anything else.
+    for name in ("supertonic", "chatterbox"):
+        with pytest.raises(TTSEngineError):
+            build_tts_engine(name)
+
+
+# --- broker ----------------------------------------------------------------
+
+
+def test_broker_drains_queue_in_order_and_marks_done(db_path: Path) -> None:
+    conn = connect(db_path)
+    queue = VoiceQueue(conn)
+    queue.enqueue(text="Pierwsze zdanie kolejki.", turn_id="t", kind="sentence", seq=0)
+    queue.enqueue(text="Drugie zdanie kolejki.", turn_id="t", kind="sentence", seq=1)
+    engine = MockTTSEngine()
+    broker = VoiceBroker(lambda: connect(db_path), config=voice_config(), engine=engine)
+
+    played = broker.drain_all()
+
+    assert played == 2
+    assert [op for op, _ in engine.log if op == "play"] == ["play", "play"]
+    texts = [text for op, text in engine.log if op == "play"]
+    assert texts == ["Pierwsze zdanie kolejki.", "Drugie zdanie kolejki."]
+    statuses = [row[0] for row in conn.execute("SELECT status FROM voice_queue").fetchall()]
+    assert statuses == ["done", "done"]
+    close_quietly(conn)
+
+
+def test_broker_prefetches_next_chunk_while_playing(db_path: Path) -> None:
+    conn = connect(db_path)
+    queue = VoiceQueue(conn)
+    queue.enqueue(text="Zdanie grane jako pierwsze.", turn_id="t", kind="sentence", seq=0)
+    queue.enqueue(text="Zdanie syntezowane w tle.", turn_id="t", kind="sentence", seq=1)
+    close_quietly(conn)
+
+    gate = threading.Event()
+    engine = MockTTSEngine(play_gate=gate)
+    broker = VoiceBroker(lambda: connect(db_path), config=voice_config(), engine=engine)
+
+    thread = threading.Thread(target=broker.drain_all, daemon=True)
+    thread.start()
+    # While play #1 is blocked on the gate, synth #2 must already happen.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        synths = [text for op, text in engine.log if op == "synth"]
+        if "Zdanie syntezowane w tle." in synths:
+            break
+        time.sleep(0.01)
+    else:
+        gate.set()
+        thread.join(timeout=5)
+        pytest.fail(f"next chunk was not prefetched during playback: {engine.log}")
+    gate.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_broker_engine_failure_marks_failed_and_continues(db_path: Path) -> None:
+    conn = connect(db_path)
+    queue = VoiceQueue(conn)
+    queue.enqueue(text="EXPLODE podczas syntezy.", turn_id="t", kind="sentence", seq=0)
+    queue.enqueue(text="Zdanie po awarii silnika.", turn_id="t", kind="sentence", seq=1)
+    engine = MockTTSEngine(explode_on="EXPLODE")
+    broker = VoiceBroker(lambda: connect(db_path), config=voice_config(), engine=engine)
+
+    played = broker.drain_all()
+
+    assert played == 1
+    statuses = dict(conn.execute("SELECT text, status FROM voice_queue").fetchall())
+    assert statuses["EXPLODE podczas syntezy."] == "failed"
+    assert statuses["Zdanie po awarii silnika."] == "done"
+    close_quietly(conn)
+
+
+def test_broker_recovers_orphaned_speaking_rows_on_start(db_path: Path) -> None:
+    conn = connect(db_path)
+    queue = VoiceQueue(conn)
+    queue.enqueue(text="Osierocone przez restart zdanie.", turn_id="t", kind="sentence", seq=0)
+    queue.claim_next()  # simulate a crash mid-playback
+    close_quietly(conn)
+
+    broker = VoiceBroker(
+        lambda: connect(db_path), config=voice_config(), engine=MockTTSEngine()
+    )
+    played = broker.drain_all()
+
+    assert played == 1
+
+
+# --- speech pipeline (chunker -> queue + fillers) ---------------------------
+
+
+def test_speak_text_enqueues_sentences_with_seq(db_path: Path) -> None:
+    pipeline = SpeechPipeline(lambda: connect(db_path), config=voice_config())
+
+    count = pipeline.speak_text(
+        turn_id="turn-1",
+        text="Pierwsze zdanie odpowiedzi. Drugie zdanie odpowiedzi.",
+    )
+
+    assert count == 2
+    conn = connect(db_path)
+    rows = conn.execute(
+        "SELECT text, metadata_json FROM voice_queue ORDER BY rowid"
+    ).fetchall()
+    close_quietly(conn)
+    assert [row[0] for row in rows] == [
+        "Pierwsze zdanie odpowiedzi.",
+        "Drugie zdanie odpowiedzi.",
+    ]
+    assert '"seq": 0' in rows[0][1]
+    assert '"seq": 1' in rows[1][1]
+
+
+def test_speak_text_never_enqueues_tool_call_blocks(db_path: Path) -> None:
+    pipeline = SpeechPipeline(lambda: connect(db_path), config=voice_config())
+
+    pipeline.speak_text(
+        turn_id="turn-1",
+        text=(
+            "Sprawdzam plik dla ciebie teraz. "
+            '<jarvis_tool_call>{"name":"file_read"}</jarvis_tool_call> '
+            "Zaraz wrócę z wynikiem pliku."
+        ),
+    )
+
+    conn = connect(db_path)
+    texts = [row[0] for row in conn.execute("SELECT text FROM voice_queue").fetchall()]
+    close_quietly(conn)
+    assert texts
+    assert all("tool_call" not in text and "file_read" not in text for text in texts)
+
+
+def test_speak_text_disabled_is_a_no_op(db_path: Path) -> None:
+    pipeline = SpeechPipeline(
+        lambda: connect(db_path), config=voice_config(speak_responses=False)
+    )
+
+    count = pipeline.speak_text(turn_id="t", text="Nie powinno trafić do kolejki.")
+
+    assert count == 0
+    conn = connect(db_path)
+    rows = conn.execute("SELECT COUNT(*) FROM voice_queue").fetchone()[0]
+    close_quietly(conn)
+    assert rows == 0
+
+
+def test_filler_fires_once_when_generation_is_slow(db_path: Path) -> None:
+    pipeline = SpeechPipeline(lambda: connect(db_path), config=voice_config())
+
+    timer = pipeline.arm_filler(turn_id="turn-slow")
+    time.sleep(0.2)  # past filler_after_ms=50
+    timer.disarm()
+
+    conn = connect(db_path)
+    rows = conn.execute(
+        "SELECT text, metadata_json, interrupt_policy FROM voice_queue"
+    ).fetchall()
+    close_quietly(conn)
+    assert len(rows) == 1
+    assert rows[0][0] in ("Już sprawdzam.", "Chwila.")
+    assert '"kind": "filler"' in rows[0][1]
+    assert rows[0][2] == "interruptible"
+
+
+def test_filler_does_not_fire_when_disarmed_in_time(db_path: Path) -> None:
+    pipeline = SpeechPipeline(
+        lambda: connect(db_path), config=voice_config(filler_after_ms=5000)
+    )
+
+    timer = pipeline.arm_filler(turn_id="turn-fast")
+    timer.disarm()
+    time.sleep(0.1)
+
+    conn = connect(db_path)
+    rows = conn.execute("SELECT COUNT(*) FROM voice_queue").fetchone()[0]
+    close_quietly(conn)
+    assert rows == 0
+
+
+# --- daemon integration -------------------------------------------------------
+
+
+def test_finished_turn_is_spoken_through_the_broker(tmp_path: Path) -> None:
+    from jarvis.daemon.app import create_daemon_app
+    from tests.test_api_smoke import config_text, request_json, running_server
+
+    config_path = tmp_path / "jarvis.toml"
+    config_path.write_text(
+        config_text(tmp_path / "home" / "jarvis.db")
+        .replace("[voice]\nenabled = false", "[voice]\nenabled = true")
+        .replace("speak_responses = false", "speak_responses = true")
+        .replace("broker_enabled = false", "broker_enabled = true"),
+        encoding="utf-8",
+    )
+    daemon_app = create_daemon_app(config_path)
+    daemon_app.start()
+    try:
+        with running_server(daemon_app) as base_url:
+            status, turn = request_json(
+                "POST",
+                f"{base_url}/input/text",
+                {"text": "Powiedz pierwsze zdanie. Powiedz drugie zdanie."},
+            )
+            assert status == 200, turn
+
+            db = tmp_path / "home" / "jarvis.db"
+            deadline = time.monotonic() + 10
+            statuses: list[str] = []
+            while time.monotonic() < deadline:
+                conn = sqlite3.connect(db)
+                statuses = [
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT status FROM voice_queue ORDER BY rowid"
+                    ).fetchall()
+                ]
+                close_quietly(conn)
+                if statuses and all(s == "done" for s in statuses):
+                    break
+                time.sleep(0.1)
+            assert statuses, "no voice requests were enqueued for the finished turn"
+            assert all(s == "done" for s in statuses), statuses
+    finally:
+        daemon_app.close()
+
+
+def test_banned_engine_in_config_kills_daemon_at_startup(tmp_path: Path) -> None:
+    from jarvis.daemon.app import create_daemon_app
+    from tests.test_api_smoke import config_text
+
+    config_path = tmp_path / "jarvis.toml"
+    config_path.write_text(
+        config_text(tmp_path / "home" / "jarvis.db")
+        .replace("[voice]\nenabled = false", "[voice]\nenabled = true")
+        .replace('default_tts = "mock"', 'default_tts = "edgetts"'),
+        encoding="utf-8",
+    )
+    daemon_app = create_daemon_app(config_path)
+    with pytest.raises(BannedEngineError):
+        daemon_app.start()
+
+
+def test_schema_and_migrations_are_unchanged() -> None:
+    assert_schema_and_migrations_unchanged(ROOT)
