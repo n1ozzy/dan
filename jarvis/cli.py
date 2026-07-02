@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -229,8 +230,21 @@ def _handle_db_command(command: str, paths: RuntimePaths) -> int:
     return 2
 
 
+class _TerminationSignal(KeyboardInterrupt):
+    """SIGTERM turned into an exception so the graceful-stop path runs."""
+
+
+def _raise_termination(signum: int, frame: object) -> None:
+    raise _TerminationSignal(signal.Signals(signum).name)
+
+
 def _handle_daemon_run(config_path: str | None) -> int:
     app = None
+    # launchd stops the daemon with SIGTERM; without this handler Python
+    # dies mid-loop and events keep a daemon.started with no matching
+    # daemon.stopped.
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _raise_termination)
     try:
         config = load_config(config_path)
         # Logging must exist before the app initializes: the voice.* logger
@@ -240,6 +254,10 @@ def _handle_daemon_run(config_path: str | None) -> int:
         app.start()
         serve_forever(app, app.config.daemon.host, app.config.daemon.port)
         return 0
+    except _TerminationSignal as exc:
+        if app is not None:
+            app.stop(reason=str(exc))
+        return 0
     except KeyboardInterrupt:
         if app is not None:
             app.stop(reason="keyboard interrupt")
@@ -248,6 +266,7 @@ def _handle_daemon_run(config_path: str | None) -> int:
         print(f"DaemonError: {exc}", file=sys.stderr)
         return 2
     finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
         if app is not None:
             app.close()
 
