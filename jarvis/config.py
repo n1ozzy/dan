@@ -119,6 +119,15 @@ class VoiceConfig:
         "thank you for watching",
         "thanks for watching",
     )
+    # Anti-echo (G4c): a transcript overlapping recently spoken TTS this much
+    # is dropped before it can become a turn. Content-based, driven by DB
+    # state (voice_queue rows that reached playback), never /tmp; thresholds
+    # calibrated at the G4 live gate together with the stt_min_* values.
+    anti_echo_window_seconds: int = 30
+    anti_echo_overlap_threshold: float = 0.75
+    # How long a voice turn retries a busy pipeline (e.g. a barged-in turn
+    # still winding down) before the transcript is dropped with a log.
+    transcript_turn_retry_seconds: float = 10.0
     ptt_hold_ttl_seconds: int = 30
     listen_lock_ttl_seconds: int = 600
     fillers: tuple[str, ...] = ("Już sprawdzam.", "Chwila.")

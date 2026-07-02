@@ -244,3 +244,57 @@ def test_temp_audio_files_are_owner_only(tmp_path: Path) -> None:
     )
     engine.play(SynthesizedChunk(text="tryb pliku", audio=b"\x00" * 64))
     assert probe.read_text().strip() == "600"
+
+
+# --- barge-in: playback cancellation (G4c, VOICE_STREAMING §7 leg 3) -----------
+
+
+def test_stop_playback_kills_the_player_process(tmp_path: Path) -> None:
+    """Cancel of playback = kill of the sox `play` subprocess (G3+ design).
+    A long-running player dies promptly and play() raises instead of
+    pretending the chunk finished."""
+
+    import threading
+    import time
+
+    binary, _ = fake_supertonic(tmp_path)
+    marker = tmp_path / "player-started.txt"
+    player = write_script(
+        tmp_path / "slow-player",
+        f'echo "started $$" > {marker}\nsleep 30\nexit 0\n',
+    )
+    engine = build_tts_engine("supertonic", config=full_config(tmp_path, binary, player))
+    chunk = engine.synthesize("Długi chunk przerwany barge-inem.")
+
+    errors: list[Exception] = []
+
+    def play() -> None:
+        try:
+            engine.play(chunk)
+        except TTSEngineError as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=play, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not marker.exists():
+        time.sleep(0.01)
+    assert marker.exists(), "player never started"
+
+    started = time.monotonic()
+    engine.stop_playback()
+    thread.join(timeout=5)
+    assert not thread.is_alive(), "playback survived stop_playback"
+    assert time.monotonic() - started < 5
+    assert len(errors) == 1
+    assert list(Path(engine.workdir).iterdir()) == []
+
+
+def test_stop_playback_when_idle_is_a_no_op(tmp_path: Path) -> None:
+    engine, _, played_file = build_engine(tmp_path)
+
+    engine.stop_playback()  # nothing playing — must not blow up
+
+    chunk = engine.synthesize("Zdanie grane po bezczynnym stopie.")
+    engine.play(chunk)  # and must not poison the NEXT playback
+    assert played_file.read_text().splitlines()

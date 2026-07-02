@@ -155,6 +155,47 @@ def test_broker_engine_failure_marks_failed_and_continues(db_path: Path) -> None
     close_quietly(conn)
 
 
+def test_broker_never_plays_a_row_cancelled_after_claim(db_path: Path) -> None:
+    """Barge-in race (G4c): a prefetched row cancelled during the current
+    playback must be skipped — the broker re-checks DB truth before playing."""
+
+    conn = connect(db_path)
+    queue = VoiceQueue(conn)
+    queue.enqueue(text="Zdanie grane przed barge-in.", turn_id="turn-1", kind="sentence", seq=0)
+    queue.enqueue(text="Zdanie anulowane w locie.", turn_id="turn-2", kind="sentence", seq=1)
+
+    gate = threading.Event()
+    engine = MockTTSEngine(play_gate=gate)
+    broker = VoiceBroker(lambda: connect(db_path), config=voice_config(), engine=engine)
+
+    thread = threading.Thread(target=broker.drain_all, daemon=True)
+    thread.start()
+    # Wait until row #2 is claimed (prefetch) while play #1 blocks on the gate.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        row = conn.execute(
+            "SELECT status FROM voice_queue WHERE turn_id = 'turn-2'"
+        ).fetchone()
+        if row and row[0] == "speaking":
+            break
+        time.sleep(0.01)
+    else:
+        gate.set()
+        thread.join(timeout=5)
+        pytest.fail("row #2 was never claimed for prefetch")
+
+    queue.cancel_turn("turn-2")  # leg 2 flips the claimed row mid-playback
+    gate.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    played = [text for op, text in engine.log if op == "play"]
+    assert played == ["Zdanie grane przed barge-in."]
+    statuses = dict(conn.execute("SELECT text, status FROM voice_queue").fetchall())
+    assert statuses["Zdanie anulowane w locie."] == "cancelled"
+    close_quietly(conn)
+
+
 def test_broker_recovers_orphaned_speaking_rows_on_start(db_path: Path) -> None:
     conn = connect(db_path)
     queue = VoiceQueue(conn)

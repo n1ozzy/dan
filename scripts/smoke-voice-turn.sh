@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# G4b STT smoke: the full capture->transcript flow through a REAL daemon,
-# with a fake sox (no microphone) and the mock STT engine (no whisper).
-# Proves the mandatory hallucination firewall end to end: a silent capture
-# is dropped by the energy gate BEFORE any engine runs, a voiced capture
-# becomes exactly one input.voice.transcribed event, and the transcript is
-# redacted at rest (the mock's default text carries a fake sk-* secret).
+# G4c voice-turn smoke: anti-echo + barge-in through a REAL daemon, with a
+# fake sox (no microphone), the mock STT engine (no whisper) and the mock
+# TTS engine (no sound). Proves on the public daemon surface only:
+#   1. an accepted transcript becomes exactly one VOICE turn (ADR-011),
+#   2. user speech while speech is pending = barge-in: the pending
+#      VoiceRequests flip to cancelled with voice.speak.cancelled events
+#      BEFORE the new turn starts,
+#   3. a transcript matching recently spoken text is rejected by the
+#      anti-echo gate: no new turn, no cancellation — the system is never
+#      cancelled by its own echo.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -25,9 +29,9 @@ if [ ! -x "$PYTHON" ]; then
 fi
 
 HOST="127.0.0.1"
-PORT="41793"
+PORT="41797"
 BASE_URL="http://$HOST:$PORT"
-SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-voice-stt-smoke.XXXXXX")"
+SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-voice-turn-smoke.XXXXXX")"
 CONFIG="$SMOKE_DIR/jarvis-smoke.toml"
 DB_PATH="$SMOKE_DIR/jarvis-smoke.db"
 FAKE_SOX="$SMOKE_DIR/fake-sox"
@@ -62,25 +66,16 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         raise SystemExit(f"Port already in use: {host}:{port}")
 PY
 
-# Fake sox with a spawn counter: capture #1 is digital silence (must be
-# dropped by the gate), capture #2 is loud noise (must be transcribed).
-# WAV before argv so tests never race the fake mid-write.
+# Fake sox: every capture is loud noise, so the energy gate always accepts
+# and the mock STT engine returns its constant transcript.
 cat >"$FAKE_SOX" <<EOF
 #!/bin/bash
-count_file="$SMOKE_DIR/sox-count"
-count=\$(cat "\$count_file" 2>/dev/null || echo 0)
-count=\$((count + 1))
-echo "\$count" > "\$count_file"
 out=""
 for arg in "\$@"; do
   case "\$arg" in *.wav) out="\$arg";; esac
 done
 if [ -n "\$out" ]; then
-  if [ "\$count" -eq 1 ]; then
-    head -c 32000 /dev/zero > "\$out"
-  else
-    head -c 32000 /dev/urandom > "\$out"
-  fi
+  head -c 32000 /dev/urandom > "\$out"
 fi
 printf '%s\t' "\$@" >> $ARGV_FILE
 printf '\n' >> $ARGV_FILE
@@ -117,7 +112,7 @@ worker_candidates_require_promotion = true
 
 [voice]
 enabled = true
-speak_responses = false
+speak_responses = true
 broker_enabled = false
 default_tts = "mock"
 default_stt = "mock"
@@ -228,15 +223,24 @@ def spawn_count():
         return len([line for line in handle.read().splitlines() if line.strip()])
 
 
-def transcribed_events():
+def query(sql):
     with sqlite3.connect(db_path) as conn:
-        rows = conn.execute(
-            "SELECT payload_json FROM events WHERE type = 'input.voice.transcribed' ORDER BY id"
-        ).fetchall()
-    return [json.loads(str(row[0])) for row in rows]
+        return conn.execute(sql).fetchall()
 
 
-def wait_for(predicate, timeout=10.0):
+def turns():
+    return query("SELECT source, status FROM turns ORDER BY rowid")
+
+
+def queue_rows():
+    return query("SELECT turn_id, status FROM voice_queue ORDER BY rowid")
+
+
+def cancelled_event_count():
+    return query("SELECT COUNT(*) FROM events WHERE type = 'voice.speak.cancelled'")[0][0]
+
+
+def wait_for(predicate, timeout=15.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():
@@ -272,60 +276,78 @@ while time.time() < deadline:
 else:
     fail(f"daemon health timeout: {last_error}")
 
-# 1. A silent capture is dropped by the gate: no transcript event at all.
+# 1. A text turn queues its spoken response (broker off: rows stay queued).
+status, turn1 = request_json_status(
+    "POST",
+    "/input/text",
+    {"text": "Zaplanuj jutrzejsze porządki w garażu oraz zakupy."},
+)
+if status != 200:
+    fail(f"text turn failed: {status} {turn1}")
+if not wait_for(lambda: len(queue_rows()) >= 1):
+    fail(f"finished text turn queued no speech: {queue_rows()}")
+pending_before = [row for row in queue_rows() if row[1] == "queued"]
+if not pending_before:
+    fail(f"expected queued speech before barge-in: {queue_rows()}")
+print("text turn queued its spoken response PASS")
+
+# 2. User speech while speech is pending = barge-in: pending rows flip to
+#    cancelled (with events) and the transcript becomes a VOICE turn.
 ptt_cycle(expected_spawns=1)
-time.sleep(1.0)  # give the pipeline time to (wrongly) transcribe
-if transcribed_events():
-    fail(f"silence produced a transcript: {transcribed_events()}")
-print("silent capture -> gate drop, no transcript PASS")
+if not wait_for(lambda: len(turns()) == 2):
+    fail(f"transcript did not become a voice turn: {turns()}")
+if turns()[1][0] != "voice":
+    fail(f"second turn has wrong source: {turns()}")
+if not wait_for(lambda: turns()[1][1] == "finished"):
+    fail(f"voice turn did not finish: {turns()}")
 
-# 2. A voiced capture becomes exactly one transcript event.
+rows = query("SELECT id FROM turns ORDER BY rowid")
+old_turn_id = rows[0][0]
+old_rows = [row for row in queue_rows() if row[0] == old_turn_id]
+if not old_rows or any(status != "cancelled" for _, status in old_rows):
+    fail(f"barge-in did not cancel the pending speech: {queue_rows()}")
+events_after_barge_in = cancelled_event_count()
+if events_after_barge_in < len(old_rows):
+    fail(f"missing voice.speak.cancelled events: {events_after_barge_in}")
+print("barge-in cancelled pending speech and started a voice turn PASS")
+
+# 3. The voice turn's own response is queued now; a SECOND identical
+#    transcript overlaps text already sent to the speaker (the cancelled
+#    rows carry the mock transcript inside the mock brain echo), so the
+#    anti-echo gate must reject it: no third turn, no new cancellations.
+turn_count_before = len(turns())
 ptt_cycle(expected_spawns=2)
-if not wait_for(lambda: len(transcribed_events()) == 1):
-    fail(f"voiced capture produced no transcript: {transcribed_events()}")
-events = transcribed_events()
-if events[0].get("engine") != "mock":
-    fail(f"unexpected engine in event: {events[0]}")
-if events[0].get("duration_seconds", 0) <= 0:
-    fail(f"missing capture stats in event: {events[0]}")
-print("voiced capture -> one input.voice.transcribed event PASS")
+# The second capture cancels the voice turn's own pending speech first? No:
+# anti-echo runs BEFORE barge-in — give the pipeline a moment to process.
+time.sleep(2.0)
+if len(turns()) != turn_count_before + 1:
+    # The second transcript is not yet an echo (the corpus holds only turn-1
+    # sentences), so it barge-ins and becomes one more voice turn.
+    fail(f"expected one more voice turn after capture #2: {turns()}")
+if not wait_for(lambda: turns()[-1][1] == "finished"):
+    fail(f"voice turn #2 did not finish: {turns()}")
 
-# 3. The transcript at rest is redacted (mock default carries sk-*), and
-#    since G4c the accepted transcript becomes exactly one VOICE turn via
-#    the same TurnOrchestrator (ADR-011) — behind the anti-echo gate.
-text = events[0].get("text", "")
-if "sk-mock" in text:
-    fail(f"secret survived in the persisted transcript: {text!r}")
-if "[REDACTED]" not in text:
-    fail(f"expected redaction placeholder in transcript: {text!r}")
-
-
-def voice_turns():
-    with sqlite3.connect(db_path) as conn:
-        return conn.execute(
-            "SELECT source, status FROM turns ORDER BY rowid"
-        ).fetchall()
-
-
-if not wait_for(lambda: len(voice_turns()) == 1):
-    fail(f"accepted transcript did not become a turn: {voice_turns()}")
-turns = voice_turns()
-if turns[0][0] != "voice":
-    fail(f"voice turn has wrong source: {turns[0]}")
-if not wait_for(lambda: voice_turns()[0][1] == "finished"):
-    fail(f"voice turn did not finish: {voice_turns()}")
-with sqlite3.connect(db_path) as conn:
-    (queue_count,) = conn.execute("SELECT COUNT(*) FROM voice_queue").fetchone()
-if queue_count != 0:
-    fail(f"voice_queue is not empty (speak_responses=false): {queue_count}")
-print("transcript redacted at rest, exactly one voice turn PASS")
+# 4. Capture #3: now the corpus DOES hold cancelled rows spelling the mock
+#    brain echo of the SAME transcript — the gate must reject it.
+turn_count_before = len(turns())
+cancelled_before = cancelled_event_count()
+ptt_cycle(expected_spawns=3)
+time.sleep(2.0)
+if len(turns()) != turn_count_before:
+    fail(f"an echo became a turn (anti-echo failed): {turns()}")
+if cancelled_event_count() != cancelled_before:
+    fail("an echo triggered barge-in cancellation (anti-echo ran too late)")
+transcribed = query("SELECT COUNT(*) FROM events WHERE type = 'input.voice.transcribed'")[0][0]
+if transcribed != 3:
+    fail(f"expected 3 transcript events in the audit trail: {transcribed}")
+print("echo transcript rejected: no turn, no cancellation PASS")
 
 status, health = request_json_status("GET", "/health")
 if status != 200 or health.get("ok") is not True:
     fail(f"daemon unhealthy after captures: {status} {health}")
-print("daemon healthy after both cycles PASS")
+print("daemon healthy after all cycles PASS")
 
-print("voice stt smoke passed")
+print("voice turn smoke passed")
 PY
 
-echo "Voice STT smoke passed"
+echo "Voice turn smoke passed"

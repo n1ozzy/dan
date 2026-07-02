@@ -97,6 +97,13 @@ class VoiceBroker:
                 else None
             )
 
+            # Barge-in (G4c): a claimed row may have been flipped to
+            # 'cancelled' while the previous chunk was playing — re-check DB
+            # truth so a cancelled row is never played.
+            if not self._still_speaking(current):
+                current = next_request
+                continue
+
             try:
                 self._play(chunk)
             except Exception as exc:  # playback must never kill the loop
@@ -114,6 +121,16 @@ class VoiceBroker:
 
     def _claim(self) -> VoiceRequest | None:
         return self._with_queue(lambda queue: queue.claim_next())
+
+    def _still_speaking(self, request: VoiceRequest) -> bool:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT status FROM voice_queue WHERE id = ?", (request.id,)
+            ).fetchone()
+            return row is not None and str(row[0]) == "speaking"
+        finally:
+            close_quietly(conn)
 
     def _mark_done(self, request: VoiceRequest) -> None:
         self._with_queue(lambda queue: queue.mark_done(request.id))

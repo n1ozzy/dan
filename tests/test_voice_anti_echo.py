@@ -1,0 +1,192 @@
+"""AntiEchoGate tests (G4c — echo of Jarvis's own TTS never becomes a turn).
+
+The gate compares an incoming transcript against what the daemon recently
+sent to the speaker — read from the persisted voice_queue (daemon state,
+never a /tmp flag — AUDIO_RUNTIME §4). Deterministic token-overlap: same
+inputs, same decision. Fail-closed for turn creation: a dropped user
+sentence that duplicates Jarvis's own words is acceptable; an echo that
+becomes a turn is a contract violation by construction.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Callable
+
+import pytest
+
+from jarvis.store.db import close_quietly, initialize_database
+from jarvis.voice.anti_echo import AntiEchoGate
+from jarvis.voice.queue import VoiceQueue
+
+
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    path = tmp_path / "anti-echo.db"
+    close_quietly(initialize_database(path))
+    return path
+
+
+def connect(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(path)
+
+
+def factory_for(db_path: Path) -> Callable[[], sqlite3.Connection]:
+    return lambda: connect(db_path)
+
+
+def gate_config(**overrides) -> SimpleNamespace:
+    values = {
+        "anti_echo_window_seconds": 30,
+        "anti_echo_overlap_threshold": 0.75,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def build_gate(db_path: Path, **overrides) -> AntiEchoGate:
+    return AntiEchoGate(factory_for(db_path), config=gate_config(**overrides))
+
+
+def speak_and_finish(db_path: Path, text: str, *, now: str | None = None) -> None:
+    """Put one row through queued -> speaking -> done, like the broker would."""
+
+    conn = connect(db_path)
+    try:
+        queue = VoiceQueue(conn, now=(lambda: now) if now else None)
+        request = queue.enqueue(text=text, turn_id="turn-spoken", kind="sentence", seq=0)
+        claimed = queue.claim_next()
+        assert claimed is not None and claimed.id == request.id
+        queue.mark_done(request.id)
+    finally:
+        close_quietly(conn)
+
+
+def enqueue_only(db_path: Path, text: str) -> None:
+    conn = connect(db_path)
+    try:
+        VoiceQueue(conn).enqueue(text=text, turn_id="turn-queued", kind="sentence", seq=0)
+    finally:
+        close_quietly(conn)
+
+
+def iso(moment: datetime) -> str:
+    return moment.isoformat(timespec="seconds")
+
+
+# --- acceptance --------------------------------------------------------------
+
+
+def test_fresh_transcript_is_accepted_when_nothing_was_spoken(db_path: Path) -> None:
+    decision = build_gate(db_path).accepts_transcript("Włącz proszę światło w kuchni.")
+
+    assert decision.accepted is True
+    assert decision.reason == "ok"
+
+
+def test_unrelated_transcript_is_accepted_despite_recent_speech(db_path: Path) -> None:
+    speak_and_finish(db_path, "Sprawdziłem kalendarz i nie masz dziś spotkań.")
+
+    decision = build_gate(db_path).accepts_transcript("Puść jakąś muzykę do pracy.")
+
+    assert decision.accepted is True
+
+
+def test_transcript_with_mostly_new_tokens_is_accepted(db_path: Path) -> None:
+    speak_and_finish(db_path, "Raport jest gotowy.")
+
+    # Shares a token or two but is clearly the user's own sentence.
+    decision = build_gate(db_path).accepts_transcript(
+        "Dobra, skoro raport gotowy, to wyślij go teraz mailem do zespołu."
+    )
+
+    assert decision.accepted is True
+
+
+# --- echo rejection ----------------------------------------------------------
+
+
+def test_exact_echo_of_spoken_sentence_is_rejected(db_path: Path) -> None:
+    spoken = "Sprawdziłem kalendarz i nie masz dziś spotkań."
+    speak_and_finish(db_path, spoken)
+
+    decision = build_gate(db_path).accepts_transcript(spoken)
+
+    assert decision.accepted is False
+    assert decision.reason == "echo"
+    assert decision.matched_text == spoken
+
+
+def test_echo_survives_case_and_punctuation_differences(db_path: Path) -> None:
+    speak_and_finish(db_path, "Sprawdziłem kalendarz i nie masz dziś spotkań.")
+
+    decision = build_gate(db_path).accepts_transcript(
+        "sprawdziłem kalendarz, i nie masz dziś spotkań"
+    )
+
+    assert decision.accepted is False
+
+
+def test_fragment_of_spoken_sentence_is_rejected(db_path: Path) -> None:
+    speak_and_finish(
+        db_path, "Sprawdziłem kalendarz i nie masz dziś żadnych spotkań po południu."
+    )
+
+    # The mic caught only the tail of the playback.
+    decision = build_gate(db_path).accepts_transcript("nie masz dziś żadnych spotkań")
+
+    assert decision.accepted is False
+    assert decision.reason == "echo"
+
+
+def test_recently_cancelled_speech_still_counts_as_echo_source(db_path: Path) -> None:
+    # A barge-in cancels rows mid-play; their audio was already in the air.
+    conn = connect(db_path)
+    try:
+        queue = VoiceQueue(conn)
+        queue.enqueue(text="Zdanie przerwane w połowie grania.", turn_id="t", seq=0)
+        queue.claim_next()
+        queue.cancel_turn("t")
+    finally:
+        close_quietly(conn)
+
+    decision = build_gate(db_path).accepts_transcript("Zdanie przerwane w połowie grania.")
+
+    assert decision.accepted is False
+
+
+# --- what does NOT count as spoken -------------------------------------------
+
+
+def test_queued_but_never_played_text_does_not_block_the_user(db_path: Path) -> None:
+    enqueue_only(db_path, "To zdanie nigdy nie zagrało w głośniku.")
+
+    decision = build_gate(db_path).accepts_transcript(
+        "To zdanie nigdy nie zagrało w głośniku."
+    )
+
+    assert decision.accepted is True
+
+
+def test_speech_older_than_window_does_not_block_the_user(db_path: Path) -> None:
+    stale = iso(datetime.now(UTC) - timedelta(seconds=120))
+    speak_and_finish(db_path, "Stare zdanie sprzed dwóch minut.", now=stale)
+
+    decision = build_gate(db_path, anti_echo_window_seconds=30).accepts_transcript(
+        "Stare zdanie sprzed dwóch minut."
+    )
+
+    assert decision.accepted is True
+
+
+def test_decision_is_deterministic_for_identical_inputs(db_path: Path) -> None:
+    speak_and_finish(db_path, "Sprawdziłem kalendarz i nie masz dziś spotkań.")
+    gate = build_gate(db_path)
+
+    first = gate.accepts_transcript("Sprawdziłem kalendarz i nie masz dziś spotkań.")
+    second = gate.accepts_transcript("Sprawdziłem kalendarz i nie masz dziś spotkań.")
+
+    assert (first.accepted, first.reason) == (second.accepted, second.reason)

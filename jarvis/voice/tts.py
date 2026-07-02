@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +46,9 @@ class MockTTSEngine:
 
     `play_gate` lets tests block playback to prove the broker prefetches the
     next chunk while the previous one plays; `explode_on` triggers a
-    synthesis failure for error-path tests.
+    synthesis failure for error-path tests. `stop_playback()` mirrors the
+    real engines' barge-in leg 3: it interrupts only the CURRENT playback,
+    which then raises like a killed player process would.
     """
 
     name = "mock"
@@ -59,6 +63,7 @@ class MockTTSEngine:
         self._play_gate = play_gate
         self._explode_on = explode_on
         self._lock = threading.Lock()
+        self._current_interrupt: threading.Event | None = None
 
     def synthesize(self, text: str) -> SynthesizedChunk:
         with self._lock:
@@ -68,10 +73,30 @@ class MockTTSEngine:
         return SynthesizedChunk(text=text, audio=text.encode("utf-8"))
 
     def play(self, chunk: SynthesizedChunk) -> None:
-        if self._play_gate is not None:
-            self._play_gate.wait(timeout=30)
+        interrupt = threading.Event()
         with self._lock:
-            self.log.append(("play", chunk.text))
+            self._current_interrupt = interrupt
+        try:
+            if self._play_gate is not None:
+                deadline = time.monotonic() + 30
+                while not self._play_gate.is_set() and time.monotonic() < deadline:
+                    if interrupt.wait(0.005):
+                        with self._lock:
+                            self.log.append(("play_interrupted", chunk.text))
+                        raise TTSEngineError(
+                            f"mock playback interrupted for {chunk.text!r}"
+                        )
+            with self._lock:
+                self.log.append(("play", chunk.text))
+        finally:
+            with self._lock:
+                self._current_interrupt = None
+
+    def stop_playback(self) -> None:
+        with self._lock:
+            interrupt = self._current_interrupt
+        if interrupt is not None:
+            interrupt.set()
 
 
 # Empirical fact (live inventory, docs/reviews/2026-07-02-voice-tools-inventory.md):
@@ -84,11 +109,12 @@ class SupertonicEngine:
     """First real TTS engine (decree §7.3): shells out to the supertonic CLI.
 
     One subprocess per chunk keeps the daemon insulated from ONNX crashes
-    (the D4 subprocess precedent) and makes cancellation a plain kill later
-    in G4. Synthesized audio lives in RAM; the only disk artifacts are
-    transient WAVs in a private runtime workdir, unlinked in finally blocks.
-    Playback happens here and only here — the broker is the sole caller
-    (ADR-005), so this does not add a second speaker path.
+    (the D4 subprocess precedent) and makes cancellation a plain kill: the
+    barge-in playback leg (G4c) is `stop_playback()`, which kills the
+    current player process. Synthesized audio lives in RAM; the only disk
+    artifacts are transient WAVs in a private runtime workdir, unlinked in
+    finally blocks. Playback happens here and only here — the broker is the
+    sole caller (ADR-005), so this does not add a second speaker path.
     """
 
     name = "supertonic"
@@ -110,6 +136,8 @@ class SupertonicEngine:
         self._steps = max(1, int(voice_cfg.supertonic_steps or 14))
         self._speed = float(voice_cfg.supertonic_speed or 1.35)
         self._timeout = max(1, int(voice_cfg.tts_timeout_seconds or 120))
+        self._player_lock = threading.Lock()
+        self._player_proc: subprocess.Popen[str] | None = None
         workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
         workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(workdir, 0o700)
@@ -149,19 +177,50 @@ class SupertonicEngine:
             # 44.1 kHz / 16-bit / mono is what supertonic emits; the margin
             # keeps a stuck player from hanging the broker thread forever.
             duration = len(chunk.audio) / (44100 * 2)
-            proc = subprocess.run(
-                [self._player, str(path)],
-                capture_output=True, text=True, timeout=duration + 30, check=False,
-            )
+            with self._player_lock:
+                # Own process group: stop_playback() kills the player AND
+                # anything it spawned, so no orphan can hold the pipes open.
+                proc = subprocess.Popen(
+                    [self._player, str(path)],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    start_new_session=True,
+                )
+                self._player_proc = proc
+            try:
+                _, stderr = proc.communicate(timeout=duration + 30)
+            except subprocess.TimeoutExpired as exc:
+                proc.kill()
+                proc.communicate()
+                raise TTSEngineError("supertonic player timed out.") from exc
+            finally:
+                with self._player_lock:
+                    self._player_proc = None
             if proc.returncode != 0:
                 raise TTSEngineError(
                     f"supertonic player exited {proc.returncode}: "
-                    f"{(proc.stderr or '').strip()[:200]}"
+                    f"{(stderr or '').strip()[:200]}"
                 )
-        except subprocess.TimeoutExpired as exc:
-            raise TTSEngineError("supertonic player timed out.") from exc
         finally:
             path.unlink(missing_ok=True)
+
+    def stop_playback(self) -> None:
+        """Barge-in leg 3: kill the current player process (and only it)."""
+
+        with self._player_lock:
+            proc = self._player_proc
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def _resolve_supertonic_binary(explicit: str) -> str:

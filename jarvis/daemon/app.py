@@ -114,6 +114,9 @@ class DaemonApp:
     voice_recorder: Any = None
     voice_broker: Any = None
     voice_stt: Any = None
+    voice_gateway: Any = None
+    voice_cancellation: Any = None
+    voice_generation_registry: Any = None
     api_token: str | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
@@ -137,19 +140,50 @@ class DaemonApp:
         # STT pipeline first (the recorder needs its capture sink). Building
         # the engine validates the name, so an unknown or unavailable STT
         # engine kills the daemon at startup (established rule). Transcripts
-        # end as `input.voice.transcribed` events + an optional consumer;
-        # they do NOT become turns yet — that wiring arrives with the
-        # anti-echo gate (G4c), so an echo can never become a turn.
+        # end as `input.voice.transcribed` events and flow to the gateway:
+        # anti-echo gate -> mic-side barge-in -> the same TurnOrchestrator
+        # as panel text (ADR-011). The gate sits BEFORE turn creation, so an
+        # echo of Jarvis's own TTS can never become a turn by construction.
         on_capture = None
+        tts_engine = None
         if self.config.voice.enabled:
+            from jarvis.voice.anti_echo import AntiEchoGate
+            from jarvis.voice.cancellation import (
+                CancellationCoordinator,
+                GenerationRegistry,
+            )
+            from jarvis.voice.gateway import VoiceTurnGateway
             from jarvis.voice.stt import build_stt_engine
             from jarvis.voice.transcription import TranscriptionPipeline
+            from jarvis.voice.tts import build_tts_engine
+            from jarvis.turns.orchestrator import TurnOrchestratorBusyError
+
+            # Engine construction validates the name: a banned or unknown
+            # TTS engine kills the daemon at startup (decree §7.3), and so
+            # does a real engine whose binary/player cannot be found.
+            tts_engine = build_tts_engine(self.config.voice.default_tts, config=self.config)
+
+            self.voice_generation_registry = GenerationRegistry()
+            self.voice_cancellation = CancellationCoordinator(
+                self._connect_existing,
+                generation_registry=self.voice_generation_registry,
+                engine=tts_engine,
+            )
+            self.voice_gateway = VoiceTurnGateway(
+                anti_echo=AntiEchoGate(self._connect_existing, config=self.config.voice),
+                cancellation=self.voice_cancellation,
+                turn_starter=self._start_voice_turn,
+                speech_active=self._voice_speech_active,
+                busy_exceptions=(DaemonAppBusyError, TurnOrchestratorBusyError),
+                retry_seconds=float(self.config.voice.transcript_turn_retry_seconds),
+            )
 
             stt_engine = build_stt_engine(self.config.voice.default_stt, config=self.config)
             self.voice_stt = TranscriptionPipeline(
                 self._connect_existing,
                 config=self.config.voice,
                 engine=stt_engine,
+                on_transcript=self.voice_gateway.handle_transcript,
             )
             on_capture = self.voice_stt.accept_capture
 
@@ -165,21 +199,17 @@ class DaemonApp:
             on_capture=on_capture,
         )
 
-        if self.config.voice.enabled:
+        if self.config.voice.enabled and self.config.voice.broker_enabled:
             from jarvis.voice.broker import VoiceBroker
-            from jarvis.voice.tts import build_tts_engine
 
-            # Engine construction validates the name: a banned or unknown
-            # TTS engine kills the daemon at startup (decree §7.3), and so
-            # does a real engine whose binary/player cannot be found.
-            engine = build_tts_engine(self.config.voice.default_tts, config=self.config)
-            if self.config.voice.broker_enabled:
-                self.voice_broker = VoiceBroker(
-                    self._connect_existing,
-                    config=self.config.voice,
-                    engine=engine,
-                )
-                self.voice_broker.start()
+            # The broker shares the engine with the cancellation coordinator:
+            # one engine, one player, one kill target (ADR-005).
+            self.voice_broker = VoiceBroker(
+                self._connect_existing,
+                config=self.config.voice,
+                engine=tts_engine,
+            )
+            self.voice_broker.start()
 
         event_store.append(EventType.DAEMON_STARTED, "daemon", {"service": "jarvisd"})
         state_machine.transition(RuntimeState.IDLE, reason="daemon started")
@@ -193,9 +223,19 @@ class DaemonApp:
             self.voice_broker.stop()
             self.voice_broker = None
 
+        # STT first (no new transcripts), then the gateway — its stop()
+        # WAITS for the in-flight voice turn, which writes through the
+        # shared daemon connection; the daemon.stopped event below must
+        # never race it on that connection.
         if self.voice_stt is not None:
             self.voice_stt.stop()
             self.voice_stt = None
+
+        if self.voice_gateway is not None:
+            self.voice_gateway.stop()
+            self.voice_gateway = None
+        self.voice_cancellation = None
+        self.voice_generation_registry = None
 
         if self.started:
             event_store.append(
@@ -675,6 +715,32 @@ class DaemonApp:
             )
         finally:
             self.text_turn_lock.release()
+
+    def _start_voice_turn(self, text: str) -> TextTurnResult:
+        """Gateway hook: an accepted transcript enters the SAME orchestrator
+        as panel text (ADR-011), marked with the voice source. The HTTP layer
+        refuses this source on purpose — only this internal path mints voice
+        turns."""
+
+        return self.handle_text_input(
+            text=text,
+            source="voice",
+            metadata={"origin": "voice_transcript"},
+        )
+
+    def _voice_speech_active(self) -> bool:
+        """Barge-in probe: is Jarvis speaking (queue) or generating (registry)?"""
+
+        registry = self.voice_generation_registry
+        if registry is not None and registry.active_count() > 0:
+            return True
+        from jarvis.voice.queue import VoiceQueue
+
+        conn = self._connect_existing()
+        try:
+            return VoiceQueue(conn).pending_count() > 0
+        finally:
+            close_quietly(conn)
 
     def close(self) -> None:
         close_quietly(self.conn)
