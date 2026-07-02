@@ -68,6 +68,37 @@ def test_flush_emits_the_unterminated_tail() -> None:
     assert chunker.flush() == ["Zdanie bez końca"]
 
 
+def test_blank_line_after_unterminated_line_does_not_crash() -> None:
+    # Regression (G4 live gate 2026-07-02): a streamed answer with a blank
+    # line after a line without a sentence terminator ("Jasne:\n\n- punkt")
+    # made _next_sentence return bare None -> TypeError in _drain -> the
+    # speech session muted the rest of the turn.
+    chunks = collect(
+        SentenceChunker(),
+        ["Oto plan działania:\n", "\nPierwszy krok jest gotowy."],
+    )
+
+    assert chunks == ["Oto plan działania:", "Pierwszy krok jest gotowy."]
+
+
+def test_leading_newline_delta_is_consumed() -> None:
+    chunker = SentenceChunker()
+
+    assert chunker.feed("\n") == []
+    assert chunker.feed("\n\n") == []
+    assert chunker.feed("Po pustych liniach zdanie.") == []
+    assert chunker.flush() == ["Po pustych liniach zdanie."]
+
+
+def test_blank_line_before_tool_call_suspicion_stays_fail_closed() -> None:
+    chunker = SentenceChunker()
+
+    # Empty line consumed, the tool-call prefix suspicion is held, nothing
+    # of the block ever comes out.
+    assert chunker.feed("Nagłówek bez kropki\n\n<jarvis_tool") == ["Nagłówek bez kropki"]
+    assert chunker.flush() == []
+
+
 def test_tool_call_block_is_never_spoken() -> None:
     text = (
         "Muszę sprawdzić plik konfiguracyjny teraz. "

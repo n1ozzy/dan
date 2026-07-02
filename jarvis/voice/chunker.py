@@ -105,7 +105,10 @@ class SentenceChunker:
                 sentence = text[:index].strip()
                 if sentence:
                     return sentence, text[index + 1 :]
-                return None if limit == len(text) else self._next_sentence(text[index + 1 :])
+                # Blank line: consume it and keep scanning the rest. (This
+                # branch once returned bare None — a streamed "Jasne:\n\n…"
+                # then crashed _drain and muted the rest of the turn.)
+                return self._next_sentence(text[index + 1 :])
             if char in SENTENCE_TERMINATORS:
                 end = index + 1
                 # consume runs like "?!" or "..."
