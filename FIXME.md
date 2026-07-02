@@ -62,7 +62,7 @@ PROBLEM (bezpieczeństwo, HIGH — RCE): jarvis/tools/shell_tool.py uruchamia wh
 ZADANIE: Zweryfikuj linie. Napisz test: utwórz tymczasowe repo git z .git/config ustawiającym core.fsmonitor (lub core.hooksPath) na skrypt tworzący plik-sentinel; wywołaj ShellReadTool na "git status" w tym cwd; asertuj, że sentinel NIE powstał. Potem wprowadź hardening: przy komendach git dołóż do env GIT_CONFIG_NOSYSTEM=1 i GIT_CONFIG_GLOBAL=/dev/null oraz flagi -c core.fsmonitor= -c core.hooksPath=/dev/null -c protocol.ext.allow=never. Upewnij się że legalne `git status --short` w normalnym repo nadal działa. pytest.
 ```
 
-## - [x] FIX-03 · CRITICAL: współdzielone połączenie SQLite przez wątki 🔴 — DONE (opcja A: ThreadLocalConnection)
+## - [x] FIX-03 · CRITICAL: współdzielone połączenie SQLite przez wątki 🔴 — DONE `b61f537` (opcja A: ThreadLocalConnection)
 
 - **Pliki:** `jarvis/daemon/app.py` (~`:130`/`:1130` — `sqlite3.connect(check_same_thread=False)`), konsumenci: `repository`, `event_store`, `approval_gate`, `tool_run_recorder`; powiązane: `app.py:596` (wątki workerów), `jarvis/memory/manager.py:315` (transakcja + event osobno)
 - **Problem:** jedno `self.conn` obsługuje **zapisy** z wielu wątków HTTP + wątków workerów, chronione dwiema rozłącznymi blokadami które się nie pokrywają. Bo to jedno connection, bloki `with conn:` dzielą jedną transakcję → rollback jednego wątku wyrzuca niezacommitowany append-only event drugiego (ciche gubienie), albo `sqlite3.ProgrammingError`. **WAL tego nie naprawia** (to przeplot na jednym connection, nie kontencja blokad).
