@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_ORIGINS = (
     "http://127.0.0.1:41800",
     "http://localhost:41800",
-    "null",
 )
 ALLOWED_METHODS = ("GET", "POST", "PATCH", "DELETE", "OPTIONS")
 FORBIDDEN_RUNTIME_SNIPPETS = (
@@ -76,6 +75,16 @@ def test_get_health_reflects_allowed_local_cockpit_origin(app: DaemonApp, origin
 
     assert status == 200
     assert_allowed_cors_headers(headers, origin)
+
+
+def test_get_health_rejects_null_origin(app: DaemonApp) -> None:
+    """Origin "null" (file:// pages) must never be reflected — local pages could read private GETs."""
+    with running_server(app) as base_url:
+        status, headers, _body = request_raw("GET", f"{base_url}/health", origin="null")
+
+    assert status == 200
+    assert headers.get("Access-Control-Allow-Origin") is None
+    assert headers.get("Access-Control-Allow-Credentials") != "true"
 
 
 def test_get_health_does_not_allow_arbitrary_origin(app: DaemonApp) -> None:

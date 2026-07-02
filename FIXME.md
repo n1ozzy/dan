@@ -30,7 +30,7 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 
 # TIER 1 — MUSI (≈ 1,5 dnia) — po tym wszystko *niebezpieczne* jest zamknięte
 
-## - [ ] FIX-01 · CORS `null` origin czyta prywatne dane 🟠 HIGH
+## - [x] FIX-01 · CORS `null` origin czyta prywatne dane 🟠 HIGH — DONE
 
 - **Pliki:** `jarvis/daemon/lifecycle.py:91`, test `tests/test_api_cors.py`
 - **Problem:** `"null"` jest w `ALLOWED_CORS_ORIGINS`, a token-gate obejmuje tylko `MUTATING_METHODS` (POST/PATCH/DELETE, l.94) → GET-y nietokenowane. Lokalna złośliwa strona (`file://`, origin `null`) robi `fetch('http://127.0.0.1:41800/conversations'|'/memory'|'/settings')` i eksfiltruje dane. `test_api_cors.py:21` wręcz utrwala `null` jako dozwolony.

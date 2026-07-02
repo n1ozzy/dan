@@ -88,7 +88,7 @@ from jarvis.turns.orchestrator import TurnOrchestratorBusyError, TurnOrchestrato
 
 MAX_REQUEST_BODY_BYTES = 1_048_576
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-ALLOWED_CORS_ORIGINS = {"http://127.0.0.1:41800", "http://localhost:41800", "null"}
+ALLOWED_CORS_ORIGINS = {"http://127.0.0.1:41800", "http://localhost:41800"}
 CORS_ALLOW_METHODS = "GET, POST, PATCH, DELETE, OPTIONS"
 CORS_ALLOW_HEADERS = f"Content-Type, {API_TOKEN_HEADER}"
 MUTATING_METHODS = {"POST", "PATCH", "DELETE"}
