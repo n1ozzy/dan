@@ -113,6 +113,7 @@ class DaemonApp:
     worker_broker: WorkerBroker | None = None
     voice_recorder: Any = None
     voice_broker: Any = None
+    voice_stt: Any = None
     api_token: str | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
@@ -132,6 +133,26 @@ class DaemonApp:
         from jarvis.voice.recorder import build_recorder
 
         AudioDeviceManager(self._require_conn(), config=self.config.audio)
+
+        # STT pipeline first (the recorder needs its capture sink). Building
+        # the engine validates the name, so an unknown or unavailable STT
+        # engine kills the daemon at startup (established rule). Transcripts
+        # end as `input.voice.transcribed` events + an optional consumer;
+        # they do NOT become turns yet — that wiring arrives with the
+        # anti-echo gate (G4c), so an echo can never become a turn.
+        on_capture = None
+        if self.config.voice.enabled:
+            from jarvis.voice.stt import build_stt_engine
+            from jarvis.voice.transcription import TranscriptionPipeline
+
+            stt_engine = build_stt_engine(self.config.voice.default_stt, config=self.config)
+            self.voice_stt = TranscriptionPipeline(
+                self._connect_existing,
+                config=self.config.voice,
+                engine=stt_engine,
+            )
+            on_capture = self.voice_stt.accept_capture
+
         # One stateful recorder for the whole daemon: leases decide when it
         # runs, so per-request lease managers must share it. Building it
         # validates the backend (a missing sox binary kills the daemon at
@@ -141,6 +162,7 @@ class DaemonApp:
             self.config.voice.recorder,
             config=self.config,
             input_device_provider=self._resolve_recorder_input_device,
+            on_capture=on_capture,
         )
 
         if self.config.voice.enabled:
@@ -170,6 +192,10 @@ class DaemonApp:
         if self.voice_broker is not None:
             self.voice_broker.stop()
             self.voice_broker = None
+
+        if self.voice_stt is not None:
+            self.voice_stt.stop()
+            self.voice_stt = None
 
         if self.started:
             event_store.append(

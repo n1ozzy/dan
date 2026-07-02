@@ -96,6 +96,29 @@ class VoiceConfig:
     recorder_sample_rate: int = 16000
     recorder_highpass_hz: int = 80
     recorder_gain_db: float = 0.0
+    # STT (G4b, decree §7.4). The gate thresholds and the junk list are the
+    # mandatory hallucination filters (live-confirmed fact: silence
+    # transcribes as „Dziękuję."); thresholds to be calibrated against the
+    # first real recordings at the G4 live gate.
+    stt_model: str = "mlx-community/whisper-large-v3-turbo"
+    stt_language: str = "pl"
+    stt_min_rms: int = 300
+    stt_min_voiced_seconds: float = 0.3
+    stt_min_voiced_ratio: float = 0.05
+    stt_junk_phrases: tuple[str, ...] = (
+        "dziękuję",
+        "dziękuję bardzo",
+        "dziękuję za oglądanie",
+        "dzięki za oglądanie",
+        "dziękuję za uwagę",
+        "napisy stworzone przez społeczność amara.org",
+        "napisy wykonane przez społeczność amara.org",
+        "zapraszam na kolejny film",
+        "do zobaczenia w kolejnym filmie",
+        "thank you",
+        "thank you for watching",
+        "thanks for watching",
+    )
     ptt_hold_ttl_seconds: int = 30
     listen_lock_ttl_seconds: int = 600
     fillers: tuple[str, ...] = ("Już sprawdzam.", "Chwila.")
