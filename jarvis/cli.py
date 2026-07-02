@@ -11,8 +11,9 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from jarvis.config import ConfigError, JarvisConfig, load_config
-from jarvis.daemon.app import DaemonAppError, create_daemon_app
+from jarvis.daemon.app import DaemonAppError, create_daemon_app, create_daemon_app_from_config
 from jarvis.daemon.lifecycle import DaemonServerError, serve_forever
+from jarvis.logging import configure_logging
 from jarvis.paths import RuntimePaths, resolve_runtime_paths
 from jarvis.security.transport import API_TOKEN_HEADER, TransportTokenError, load_api_token
 from jarvis.store.db import (
@@ -231,7 +232,11 @@ def _handle_db_command(command: str, paths: RuntimePaths) -> int:
 def _handle_daemon_run(config_path: str | None) -> int:
     app = None
     try:
-        app = create_daemon_app(config_path, initialize=True)
+        config = load_config(config_path)
+        # Logging must exist before the app initializes: the voice.* logger
+        # diagnostics are the calibration channel for the live gate.
+        configure_logging(config)
+        app = create_daemon_app_from_config(config, initialize=True)
         app.start()
         serve_forever(app, app.config.daemon.host, app.config.daemon.port)
         return 0
