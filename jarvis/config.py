@@ -91,6 +91,7 @@ class VoiceConfig:
 @dataclass(frozen=True)
 class AudioConfig:
     enabled: bool = False
+    backend: str = "native"
     input_policy: str = "pin_builtin_mic"
     preferred_input: str = "Mikrofon (MacBook Air)"
     output_policy: str = "follow_system_default"

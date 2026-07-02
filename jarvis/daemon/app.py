@@ -123,6 +123,13 @@ class DaemonApp:
         event_store = self._require_event_store()
         state_machine = self._require_state_machine()
 
+        # Constructing the manager validates the configured backend, so a
+        # bad audio backend kills the daemon at startup (established rule).
+        # Requests build their own manager on a per-request connection.
+        from jarvis.audio.devices import AudioDeviceManager
+
+        AudioDeviceManager(self._require_conn(), config=self.config.audio)
+
         event_store.append(EventType.DAEMON_STARTED, "daemon", {"service": "jarvisd"})
         state_machine.transition(RuntimeState.IDLE, reason="daemon started")
         self.started = True
@@ -243,6 +250,24 @@ class DaemonApp:
                     )
             rows = conn.execute("SELECT key, value_json FROM settings ORDER BY key").fetchall()
             return {str(key): json.loads(str(value_json)) for key, value_json in rows}
+        finally:
+            close_quietly(conn)
+
+    def get_audio_devices(self):
+        """Observe audio devices through the owning manager (CONTRACTS §9)."""
+
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        from jarvis.audio.devices import AudioDeviceManager
+
+        conn = self._connect_existing()
+        try:
+            manager = AudioDeviceManager(
+                conn,
+                config=self.config.audio,
+                event_store=create_event_store(conn),
+            )
+            return manager.current()
         finally:
             close_quietly(conn)
 

@@ -42,6 +42,7 @@ from jarvis.api.routes_runtime import (
     get_runtime_processes,
     get_runtime_startup,
 )
+from jarvis.api.routes_audio import get_audio_devices
 from jarvis.api.routes_settings import get_settings, update_settings
 from jarvis.api.routes_state import get_state
 from jarvis.api.routes_tools import ToolRequestValidationError, get_tools, post_tool_request
@@ -256,6 +257,10 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
 
         if method == "GET" and path == "/settings":
             _write_json(handler, 200, get_settings(app))
+            return
+
+        if method == "GET" and path == "/audio/devices":
+            _write_json(handler, 200, get_audio_devices(app))
             return
 
         if method == "GET" and path == "/brain/adapters":
