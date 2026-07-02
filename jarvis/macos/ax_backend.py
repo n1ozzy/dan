@@ -247,9 +247,19 @@ def _copy_focused_application() -> ctypes.c_void_p:
         app = _copy_attribute(system_wide, "AXFocusedApplication")
     finally:
         _release(system_wide)
-    if app is None:
+    if app is not None:
+        return app
+    # Live finding (2026-07-02): the system-wide focus query fails with
+    # kAXErrorCannotComplete (-25204) when the process is not a GUI app
+    # (terminal/launchd-hosted jarvisd). Resolve the frontmost pid from the
+    # on-screen window list instead and target that app directly.
+    pid = _frontmost_pid()
+    if pid is None:
         raise AccessibilityError("no focused application")
-    return app
+    app = fw.ax.AXUIElementCreateApplication(pid)
+    if not app:
+        raise AccessibilityError(f"cannot create AX element for pid {pid}")
+    return ctypes.c_void_p(app)
 
 
 def _find_element(
@@ -342,18 +352,20 @@ _CG_ON_SCREEN_ONLY = 1  # kCGWindowListOptionOnScreenOnly
 _CG_NULL_WINDOW_ID = 0  # kCGNullWindowID
 
 
-def _pid_for_app_name(app_name: str) -> int | None:
-    """Resolve a pid from the on-screen window owner names (no TCC needed).
+def _window_owner_entries() -> list[tuple[str | None, int | None, int | None]]:
+    """(owner_name, owner_pid, layer) for on-screen windows, front to back.
 
-    Only owner names and pids are read — never window contents; ADR-018
-    keeps observation of other apps out of scope."""
+    Only owner names, pids and layers are read — never window contents;
+    ADR-018 keeps observation of other apps' UI out of scope."""
 
     fw = _fw()
     windows = fw.ax.CGWindowListCopyWindowInfo(_CG_ON_SCREEN_ONLY, _CG_NULL_WINDOW_ID)
     if not windows:
-        return None
+        return []
     owner_name_key = fw.cf.CFStringCreateWithCString(None, b"kCGWindowOwnerName", _UTF8)
     owner_pid_key = fw.cf.CFStringCreateWithCString(None, b"kCGWindowOwnerPID", _UTF8)
+    layer_key = fw.cf.CFStringCreateWithCString(None, b"kCGWindowLayer", _UTF8)
+    entries: list[tuple[str | None, int | None, int | None]] = []
     try:
         count = fw.cf.CFArrayGetCount(windows)
         for index in range(count):
@@ -361,20 +373,41 @@ def _pid_for_app_name(app_name: str) -> int | None:
             if not entry:
                 continue
             name_ref = fw.cf.CFDictionaryGetValue(entry, owner_name_key)
-            if not name_ref or _cfstring_to_str(ctypes.c_void_p(name_ref)) != app_name:
-                continue
+            name = _cfstring_to_str(ctypes.c_void_p(name_ref)) if name_ref else None
             pid_ref = fw.cf.CFDictionaryGetValue(entry, owner_pid_key)
-            if not pid_ref:
-                continue
-            holder = ctypes.c_int64()
-            if fw.cf.CFNumberGetValue(
-                ctypes.c_void_p(pid_ref), _NUMBER_AS_INT64, ctypes.byref(holder)
-            ):
-                return int(holder.value)
+            pid = _cfnumber_to_int(pid_ref)
+            layer = _cfnumber_to_int(fw.cf.CFDictionaryGetValue(entry, layer_key))
+            entries.append((name, pid, layer))
     finally:
         fw.cf.CFRelease(owner_name_key)
         fw.cf.CFRelease(owner_pid_key)
+        fw.cf.CFRelease(layer_key)
         fw.cf.CFRelease(windows)
+    return entries
+
+
+def _cfnumber_to_int(ref: int | None) -> int | None:
+    if not ref:
+        return None
+    holder = ctypes.c_int64()
+    if _fw().cf.CFNumberGetValue(ctypes.c_void_p(ref), _NUMBER_AS_INT64, ctypes.byref(holder)):
+        return int(holder.value)
+    return None
+
+
+def _frontmost_pid() -> int | None:
+    """Pid of the frontmost regular app: first layer-0 on-screen window."""
+
+    for _name, pid, layer in _window_owner_entries():
+        if layer == 0 and pid is not None:
+            return pid
+    return None
+
+
+def _pid_for_app_name(app_name: str) -> int | None:
+    for name, pid, _layer in _window_owner_entries():
+        if name == app_name and pid is not None:
+            return pid
     return None
 
 

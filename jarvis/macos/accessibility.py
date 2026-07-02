@@ -320,7 +320,13 @@ def _probe() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(_probe())
+    # `python -m` executes this file as __main__ while ax_backend re-imports
+    # it as jarvis.macos.accessibility — two distinct AccessibilityError
+    # classes, so a local _probe would not catch the backend's errors.
+    # Delegate to the canonical module instance.
+    from jarvis.macos import accessibility as _canonical
+
+    raise SystemExit(_canonical._probe())
 
 
 __all__ = [
