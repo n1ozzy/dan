@@ -52,6 +52,17 @@ The OCR bridge alone (no TCC needed) can be exercised on any PNG:
 
 ## 4. Revoking / troubleshooting
 
+- **Probe says `false` although the grant exists**: some hosts spawn their
+  subprocesses TCC-*disclaimed* (each process is its own TCC client — the
+  Claude desktop app does this via its `disclaimer` helper), so a grant
+  given to the host app does not preflight as granted in the child. A
+  one-shot request binds the existing grant (or pops the system prompt):
+
+  ```bash
+  .venv/bin/python -c "import ctypes; l = ctypes.CDLL('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices'); l.CGRequestScreenCaptureAccess.restype = ctypes.c_bool; print(bool(l.CGRequestScreenCaptureAccess()))"
+  ```
+
+  Then re-run the probe. (Verified live during the D4 gate, 2026-07-02.)
 - Revoke: System Settings → Privacy & Security → Screen Recording → toggle
   off. Running daemons lose the capability on their next capture; reads
   start failing cleanly again.
