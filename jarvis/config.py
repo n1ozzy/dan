@@ -92,6 +92,17 @@ class VoiceConfig:
     fillers: tuple[str, ...] = ("Już sprawdzam.", "Chwila.")
     filler_after_ms: int = 1200
     min_sentence_chars: int = 12
+    # Supertonic (decree §7.3; defaults from Ozzy's audition + live inventory
+    # 2026-07-02). Empty binary = auto-detect (venv bin next to python, PATH).
+    supertonic_binary: str = ""
+    supertonic_voice: str = "M1"
+    supertonic_lang: str = "pl"
+    supertonic_steps: int = 14
+    supertonic_speed: float = 1.35
+    # sox's player: sox is part of the decreed stack (§7.4) and its legacy
+    # macOS counterpart is a banned string in this repo (DAN's direct-play sin).
+    playback_binary: str = "play"
+    tts_timeout_seconds: int = 120
 
 
 @dataclass(frozen=True)

@@ -77,11 +77,14 @@ def test_unknown_engine_fails_closed() -> None:
 
 
 def test_decreed_real_engines_are_reserved_not_silent() -> None:
-    # Supertonic/Chatterbox are decreed (§7.3) but not implemented yet; asking
-    # for them must say so loudly instead of falling back to anything else.
-    for name in ("supertonic", "chatterbox"):
-        with pytest.raises(TTSEngineError):
-            build_tts_engine(name)
+    # Chatterbox is decreed (§7.3) but lands in G5; asking for it must say so
+    # loudly instead of falling back to anything else. Supertonic is real now
+    # (tests/test_voice_tts_supertonic.py) but still refuses to build without
+    # the daemon config instead of guessing paths silently.
+    with pytest.raises(TTSEngineError):
+        build_tts_engine("chatterbox")
+    with pytest.raises(TTSEngineError):
+        build_tts_engine("supertonic")
 
 
 # --- broker ----------------------------------------------------------------

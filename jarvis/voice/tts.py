@@ -7,15 +7,20 @@ decree — asking for them is an explicit error, never a silent fallback.
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import sys
 import threading
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
 BANNED_ENGINES = ("edgetts", "piper", "xtts")
 # Decreed but not yet implemented; each arrives in its own stage.
 RESERVED_ENGINES = {
-    "supertonic": "Supertonic lands with the first real engine step of G3.",
     "chatterbox": "Chatterbox MLX voice-clone lands in G5.",
 }
 
@@ -69,7 +74,113 @@ class MockTTSEngine:
             self.log.append(("play", chunk.text))
 
 
-def build_tts_engine(name: str) -> Any:
+# Empirical fact (live inventory, docs/reviews/2026-07-02-voice-tools-inventory.md):
+# typographic quotes crash the supertonic CLI, so they are stripped before
+# synthesis. The original text stays canonical everywhere else.
+_SUPERTONIC_STRIP = dict.fromkeys(map(ord, "„”“‚’‘«»"))
+
+
+class SupertonicEngine:
+    """First real TTS engine (decree §7.3): shells out to the supertonic CLI.
+
+    One subprocess per chunk keeps the daemon insulated from ONNX crashes
+    (the D4 subprocess precedent) and makes cancellation a plain kill later
+    in G4. Synthesized audio lives in RAM; the only disk artifacts are
+    transient WAVs in a private runtime workdir, unlinked in finally blocks.
+    Playback happens here and only here — the broker is the sole caller
+    (ADR-005), so this does not add a second speaker path.
+    """
+
+    name = "supertonic"
+
+    def __init__(self, *, config: Any) -> None:
+        voice_cfg = config.voice
+        self._binary = _resolve_supertonic_binary(str(voice_cfg.supertonic_binary or ""))
+        player = str(voice_cfg.playback_binary or "")
+        if player and "/" not in player:
+            player = shutil.which(player) or player
+        if not (player and Path(player).is_file() and os.access(player, os.X_OK)):
+            raise TTSEngineError(
+                f"Supertonic player {player!r} is not an executable file "
+                "(set voice.playback_binary)."
+            )
+        self._player = player
+        self._voice = str(voice_cfg.supertonic_voice or "M1")
+        self._lang = str(voice_cfg.supertonic_lang or "pl")
+        self._steps = max(1, int(voice_cfg.supertonic_steps or 14))
+        self._speed = float(voice_cfg.supertonic_speed or 1.35)
+        self._timeout = max(1, int(voice_cfg.tts_timeout_seconds or 120))
+        workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
+        workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(workdir, 0o700)
+        self.workdir = str(workdir)
+
+    def synthesize(self, text: str) -> SynthesizedChunk:
+        clean = str(text or "").translate(_SUPERTONIC_STRIP).strip()
+        if not clean:
+            raise TTSEngineError(f"Nothing speakable left after sanitizing {text!r}.")
+        out = Path(self.workdir) / f"tts-{uuid.uuid4().hex}.wav"
+        cmd = [
+            self._binary, "tts", clean, "-o", str(out),
+            "--voice", self._voice, "--lang", self._lang,
+            "--steps", str(self._steps), "--speed", f"{self._speed:.2f}",
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=self._timeout, check=False
+            )
+            if proc.returncode != 0:
+                raise TTSEngineError(
+                    f"supertonic exited {proc.returncode}: {(proc.stderr or '').strip()[:200]}"
+                )
+            if not out.is_file() or out.stat().st_size < 1000:
+                raise TTSEngineError("supertonic produced no usable audio output.")
+            return SynthesizedChunk(text=text, audio=out.read_bytes())
+        except subprocess.TimeoutExpired as exc:
+            raise TTSEngineError(f"supertonic timed out after {self._timeout}s.") from exc
+        finally:
+            out.unlink(missing_ok=True)
+
+    def play(self, chunk: SynthesizedChunk) -> None:
+        path = Path(self.workdir) / f"play-{uuid.uuid4().hex}.wav"
+        try:
+            path.touch(mode=0o600)
+            path.write_bytes(chunk.audio)
+            # 44.1 kHz / 16-bit / mono is what supertonic emits; the margin
+            # keeps a stuck player from hanging the broker thread forever.
+            duration = len(chunk.audio) / (44100 * 2)
+            proc = subprocess.run(
+                [self._player, str(path)],
+                capture_output=True, text=True, timeout=duration + 30, check=False,
+            )
+            if proc.returncode != 0:
+                raise TTSEngineError(
+                    f"supertonic player exited {proc.returncode}: "
+                    f"{(proc.stderr or '').strip()[:200]}"
+                )
+        except subprocess.TimeoutExpired as exc:
+            raise TTSEngineError("supertonic player timed out.") from exc
+        finally:
+            path.unlink(missing_ok=True)
+
+
+def _resolve_supertonic_binary(explicit: str) -> str:
+    """Explicit config path, else the venv bin next to python, else PATH."""
+
+    candidates = [explicit] if explicit else [
+        str(Path(sys.executable).parent / "supertonic"),
+        shutil.which("supertonic") or "",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise TTSEngineError(
+        "supertonic binary not found (set voice.supertonic_binary or install "
+        "the decreed package into the daemon's venv)."
+    )
+
+
+def build_tts_engine(name: str, *, config: Any | None = None) -> Any:
     normalized = str(name or "").strip().lower()
     if normalized in BANNED_ENGINES:
         raise BannedEngineError(
@@ -82,6 +193,13 @@ def build_tts_engine(name: str) -> Any:
         )
     if normalized == "mock":
         return MockTTSEngine()
+    if normalized == "supertonic":
+        if config is None:
+            raise TTSEngineError(
+                "TTS engine 'supertonic' needs the daemon config "
+                "(voice.supertonic_* and runtime.runtime_dir)."
+            )
+        return SupertonicEngine(config=config)
     raise TTSEngineError(f"Unknown TTS engine {name!r}.")
 
 
@@ -89,6 +207,7 @@ __all__ = [
     "BANNED_ENGINES",
     "BannedEngineError",
     "MockTTSEngine",
+    "SupertonicEngine",
     "SynthesizedChunk",
     "TTSEngineError",
     "build_tts_engine",

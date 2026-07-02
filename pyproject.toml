@@ -17,6 +17,14 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.6",
 ]
+# Decreed voice toolchain (MASTER_PLAN §7.3/§7.4, Ozzy 2026-07-02). The
+# runtime shells out to these — they are tools, not imports — so the core
+# dependency list stays empty; this group documents the pinned decree set.
+voice = [
+  "supertonic==1.3.1",
+  "mlx-whisper==0.4.3",
+  "mlx-audio==0.4.4",
+]
 
 [project.scripts]
 jarvisd = "jarvis.cli:main"

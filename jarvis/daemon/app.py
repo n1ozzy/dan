@@ -141,8 +141,9 @@ class DaemonApp:
             from jarvis.voice.tts import build_tts_engine
 
             # Engine construction validates the name: a banned or unknown
-            # TTS engine kills the daemon at startup (decree §7.3).
-            engine = build_tts_engine(self.config.voice.default_tts)
+            # TTS engine kills the daemon at startup (decree §7.3), and so
+            # does a real engine whose binary/player cannot be found.
+            engine = build_tts_engine(self.config.voice.default_tts, config=self.config)
             if self.config.voice.broker_enabled:
                 self.voice_broker = VoiceBroker(
                     self._connect_existing,
