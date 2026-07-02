@@ -60,6 +60,12 @@ from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.turns.orchestrator import TextTurnResult, TurnOrchestrator
 from jarvis.turns.models import Turn
 from jarvis.turns.repository import ConversationRepository, TurnRepository
+from jarvis.workers import (
+    MockWorker,
+    UnknownWorkerKindError,
+    WorkerBroker,
+    WorkerBrokerError,
+)
 
 
 # The persisted brain choice lives in the daemon-owned settings table, not in
@@ -104,6 +110,7 @@ class DaemonApp:
     brain_manager: BrainManager | None = None
     context_builder: ContextBuilder | None = None
     memory_manager: MemoryManager | None = None
+    worker_broker: WorkerBroker | None = None
     api_token: str | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
@@ -381,6 +388,64 @@ class DaemonApp:
         except MemoryError as exc:
             raise DaemonAppError(str(exc)) from exc
 
+    def create_worker_job(
+        self,
+        *,
+        worker_kind: str,
+        prompt: str,
+        requested_by: str,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Enqueue a worker job and run it in a background thread.
+
+        The response is the queued job; callers observe progress via
+        GET /workers/jobs/<id> and the worker.job.* event stream.
+        """
+
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        broker = self._require_worker_broker()
+        try:
+            job = broker.enqueue(
+                worker_kind=worker_kind,
+                prompt=prompt,
+                requested_by=requested_by,
+                metadata=metadata,
+            )
+        except UnknownWorkerKindError as exc:
+            raise DaemonAppNotFoundError(str(exc)) from exc
+
+        def _run() -> None:
+            try:
+                broker.execute(job.id)
+            except WorkerBrokerError:
+                # Worker failures are already persisted by execute(); this
+                # only catches broker-level races (e.g. job cancelled between
+                # enqueue and thread start). The job row stays authoritative.
+                get_logger(__name__).exception("Worker job execution failed: %s", job.id)
+
+        threading.Thread(
+            target=_run, name=f"jarvis-worker-{job.id[:8]}", daemon=True
+        ).start()
+        return job.to_dict()
+
+    def list_worker_jobs(
+        self, *, limit: int = 50, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        jobs = self._require_worker_broker().list_jobs(limit=limit, status=status)
+        return [job.to_dict() for job in jobs]
+
+    def get_worker_job(self, job_id: str) -> dict[str, Any]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        normalized_id = _required_text(job_id, "job_id")
+        job = self._require_worker_broker().get_job(normalized_id)
+        if job is None:
+            raise DaemonAppNotFoundError(f"Unknown worker job: {normalized_id}")
+        return job.to_dict()
+
     def list_tool_specs(self) -> list[ToolSpec]:
         if not self.started:
             raise DaemonAppNotStartedError("Daemon app is not started.")
@@ -498,6 +563,7 @@ class DaemonApp:
         self.brain_manager = None
         self.context_builder = None
         self.memory_manager = None
+        self.worker_broker = None
         self.approval_gate = None
         self.tool_run_recorder = None
         self.started = False
@@ -531,6 +597,11 @@ class DaemonApp:
         if self.memory_manager is None:
             raise DaemonAppError("Daemon app is not initialized with a memory manager.")
         return self.memory_manager
+
+    def _require_worker_broker(self) -> WorkerBroker:
+        if self.worker_broker is None:
+            raise DaemonAppError("Daemon app is not initialized with a worker broker.")
+        return self.worker_broker
 
     def _require_approval_gate(self) -> ApprovalGate:
         if self.approval_gate is None:
@@ -765,6 +836,15 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     )
     approval_gate = ApprovalGate(conn, event_store=event_store)
     tool_run_recorder = ToolRunRecorder(conn, event_store=event_store)
+    # E2: the mock worker is the only registered worker; real provider
+    # workers (codex/claude CLI) arrive in their own stage behind config.
+    worker_broker = WorkerBroker(
+        conn,
+        event_store=event_store,
+        memory_manager=memory_manager,
+        workers=[MockWorker()],
+        require_candidate_promotion=config.memory.worker_candidates_require_promotion,
+    )
     return DaemonApp(
         config=config,
         paths=paths,
@@ -780,6 +860,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         brain_manager=brain_manager,
         context_builder=context_builder,
         memory_manager=memory_manager,
+        worker_broker=worker_broker,
         api_token=api_token,
     )
 

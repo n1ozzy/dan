@@ -107,6 +107,39 @@ class MemoryManager:
         self._append_memory_event("created", block)
         return block
 
+    def create_candidate(
+        self,
+        kind: str,
+        title: str,
+        body: str,
+        *,
+        priority: int = 0,
+        proposed_by: str = "worker",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> MemoryBlock:
+        """Create a memory *candidate*: an inactive block awaiting promotion.
+
+        Candidates never enter brain context (only active blocks do), so a
+        worker result stays advisory until a human — or an explicit policy —
+        promotes it (CONTRACTS.md §6, ADR-009).
+        """
+
+        candidate_metadata = _jsonable_metadata(metadata)
+        candidate_metadata["candidate"] = True
+        candidate_metadata["proposed_by"] = proposed_by
+        block = self.create_block(
+            kind,
+            title,
+            body,
+            priority=priority,
+            active=False,
+            metadata=candidate_metadata,
+        )
+        self._append_candidate_event(
+            "memory.candidate.created", block, {"proposed_by": proposed_by}
+        )
+        return block
+
     def get_block(self, block_id: str) -> MemoryBlock | None:
         rows = self._read_blocks("WHERE id = ?", (block_id,))
         return rows[0] if rows else None
@@ -151,7 +184,25 @@ class MemoryManager:
         active: bool | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> MemoryBlock:
-        return self._update_block(
+        # Activating a candidate IS promotion, whatever else the update
+        # touches: an active block enters brain context, so it must never
+        # stay flagged as a candidate (fail-closed on the flag, not the
+        # caller's intent).
+        existing = self.get_block(block_id)
+        promoting = (
+            active is True
+            and existing is not None
+            and not existing.active
+            and (metadata if metadata is not None else existing.metadata).get("candidate")
+            is True
+        )
+        if promoting:
+            merged = _jsonable_metadata(metadata if metadata is not None else existing.metadata)
+            merged["candidate"] = False
+            merged.setdefault("promoted_by", "human")
+            metadata = merged
+
+        block = self._update_block(
             block_id,
             title=title,
             body=body,
@@ -160,6 +211,23 @@ class MemoryManager:
             metadata=metadata,
             event_action="updated",
         )
+        if promoting:
+            self._append_candidate_event(
+                "memory.candidate.promoted",
+                block,
+                {"promoted_by": block.metadata.get("promoted_by", "human")},
+            )
+        return block
+
+    def promote_candidate(self, block_id: str, *, promoted_by: str = "human") -> MemoryBlock:
+        existing = self.get_block(block_id)
+        if existing is None:
+            raise MemoryError(f"Memory block not found: {block_id}")
+        if existing.metadata.get("candidate") is not True:
+            raise MemoryError(f"Memory block is not a candidate: {block_id}")
+        metadata = dict(existing.metadata)
+        metadata["promoted_by"] = promoted_by
+        return self.update_block(block_id, active=True, metadata=metadata)
 
     def disable_block(self, block_id: str) -> MemoryBlock:
         return self._update_block(block_id, active=False, event_action="disabled")
@@ -275,6 +343,20 @@ class MemoryManager:
             "metadata": _redact_value(block.metadata),
         }
         self._event_store.append("memory.updated", "memory_manager", payload)
+
+    def _append_candidate_event(
+        self, event_type: str, block: MemoryBlock, extra: Mapping[str, Any]
+    ) -> None:
+        if self._event_store is None:
+            return
+        payload = {
+            "block_id": block.id,
+            "kind": block.kind,
+            "title": redact_secrets(block.title),
+            "active": block.active,
+            **dict(extra),
+        }
+        self._event_store.append(event_type, "memory_manager", payload)
 
 
 def utc_now_iso() -> str:

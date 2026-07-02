@@ -45,6 +45,12 @@ from jarvis.api.routes_runtime import (
 from jarvis.api.routes_settings import get_settings, update_settings
 from jarvis.api.routes_state import get_state
 from jarvis.api.routes_tools import ToolRequestValidationError, get_tools, post_tool_request
+from jarvis.api.routes_workers import (
+    WorkerRequestValidationError,
+    get_worker_job,
+    get_worker_jobs,
+    post_worker_job,
+)
 from jarvis.api.websocket import (
     EventStreamSession,
     WebSocketHandshakeError,
@@ -286,6 +292,26 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, post_tool_request(app, request_payload))
             return
 
+        if method == "POST" and path == "/workers/jobs":
+            request_payload = _read_json_body(handler)
+            _write_json(handler, 201, post_worker_job(app, request_payload))
+            return
+
+        if method == "GET" and path == "/workers/jobs":
+            limit = _query_int(query, "limit", default=50)
+            status_filter = query["status"][0] if "status" in query else None
+            _write_json(
+                handler,
+                200,
+                get_worker_jobs(app, limit=limit, status=status_filter),
+            )
+            return
+
+        worker_job_id = _worker_job_resource_id(path)
+        if method == "GET" and worker_job_id is not None:
+            _write_json(handler, 200, get_worker_job(app, worker_job_id))
+            return
+
         if method == "GET" and path == "/memory":
             active_only = _query_bool(query, "active_only", default=False)
             limit = _query_int(query, "limit", default=100)
@@ -370,6 +396,7 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         MemoryRequestValidationError,
         TextInputValidationError,
         ToolRequestValidationError,
+        WorkerRequestValidationError,
     ) as exc:
         _write_json(handler, 400, {"error": str(exc), "status": 400})
     except DaemonAppNotStartedError as exc:
@@ -510,6 +537,16 @@ def _query_memory_kinds(query: dict[str, list[str]], key: str) -> list[str] | No
                 raise ValueError(f"{key} must not contain empty values.")
             kinds.append(normalized)
     return kinds
+
+
+def _worker_job_resource_id(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) != 3 or parts[0] != "workers" or parts[1] != "jobs":
+        return None
+    job_id = unquote(parts[2]).strip()
+    if not job_id:
+        return None
+    return job_id
 
 
 def _memory_resource_id(path: str) -> str | None:
