@@ -8,6 +8,7 @@ decree — asking for them is an explicit error, never a silent fallback.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -105,6 +106,20 @@ class MockTTSEngine:
 _SUPERTONIC_STRIP = dict.fromkeys(map(ord, "„”“‚’‘«»"))
 
 
+def apply_pronunciations(text: str, pronunciations: dict[str, str]) -> str:
+    """Rewrite anglicisms to phonetic spellings before synthesis (data-driven).
+
+    Case-insensitive substring match, longest keys first, so inflected forms
+    ("runtime'ie") keep their endings and longer entries win over prefixes.
+    """
+
+    rewritten = text
+    for key in sorted(pronunciations, key=len, reverse=True):
+        if key:
+            rewritten = re.sub(re.escape(key), pronunciations[key], rewritten, flags=re.IGNORECASE)
+    return rewritten
+
+
 class SupertonicEngine:
     """First real TTS engine (decree §7.3): shells out to the supertonic CLI.
 
@@ -138,6 +153,10 @@ class SupertonicEngine:
         self._timeout = max(1, int(voice_cfg.tts_timeout_seconds or 120))
         self._pad_start = max(0.0, float(getattr(voice_cfg, "playback_pad_start_seconds", 0.0) or 0.0))
         self._pad_end = max(0.0, float(getattr(voice_cfg, "playback_pad_end_seconds", 0.0) or 0.0))
+        self._pronunciations = {
+            str(key): str(value)
+            for key, value in dict(getattr(voice_cfg, "tts_pronunciations", {}) or {}).items()
+        }
         self._player_lock = threading.Lock()
         self._player_proc: subprocess.Popen[str] | None = None
         workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
@@ -146,7 +165,8 @@ class SupertonicEngine:
         self.workdir = str(workdir)
 
     def synthesize(self, text: str) -> SynthesizedChunk:
-        clean = str(text or "").translate(_SUPERTONIC_STRIP).strip()
+        spoken = apply_pronunciations(str(text or ""), self._pronunciations)
+        clean = spoken.translate(_SUPERTONIC_STRIP).strip()
         if not clean:
             raise TTSEngineError(f"Nothing speakable left after sanitizing {text!r}.")
         out = Path(self.workdir) / f"tts-{uuid.uuid4().hex}.wav"

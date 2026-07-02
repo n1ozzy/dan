@@ -191,6 +191,46 @@ def test_a_sentence_containing_a_junk_prefix_is_not_junk(db_path: Path) -> None:
         pipeline.stop()
 
 
+def test_degenerate_repeated_char_transcript_is_dropped(db_path: Path) -> None:
+    # Live-confirmed at the G4 gate (2026-07-02): ambient noise slipped past
+    # the gate and whisper answered with 446 x "m". A junk-phrase list can
+    # never enumerate variable-length babble — this needs a shape rule.
+    engine = RecordingEngine(transcript="m" * 446)
+    got: list[str] = []
+    pipeline = run_pipeline(db_path, engine, on_transcript=got.append)
+    try:
+        pipeline.accept_capture(SPEECH)
+        assert pipeline.flush()
+        assert got == []
+        assert transcribed_events(db_path) == []
+    finally:
+        pipeline.stop()
+
+
+def test_degenerate_two_letter_babble_is_dropped(db_path: Path) -> None:
+    engine = RecordingEngine(transcript="No no no no no no no.")
+    pipeline = run_pipeline(db_path, engine)
+    try:
+        pipeline.accept_capture(SPEECH)
+        assert pipeline.flush()
+        assert transcribed_events(db_path) == []
+    finally:
+        pipeline.stop()
+
+
+def test_short_low_variety_speech_is_not_degenerate(db_path: Path) -> None:
+    # Short real utterances ("Tak tak") stay: the rule needs BOTH length
+    # and near-zero character variety before it may drop anything.
+    engine = RecordingEngine(transcript="Tak tak")
+    pipeline = run_pipeline(db_path, engine)
+    try:
+        pipeline.accept_capture(SPEECH)
+        assert pipeline.flush()
+        assert [event["text"] for event in transcribed_events(db_path)] == ["Tak tak"]
+    finally:
+        pipeline.stop()
+
+
 def test_empty_transcript_is_dropped(db_path: Path) -> None:
     engine = RecordingEngine(transcript="   ")
     pipeline = run_pipeline(db_path, engine)

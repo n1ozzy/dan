@@ -48,6 +48,18 @@ def normalize_phrase(text: str) -> str:
     return " ".join("".join(cleaned).split())
 
 
+def is_degenerate_phrase(text: str) -> bool:
+    """Variable-length babble ("mmmm…", "no no no…") no junk list can hold.
+
+    Live-confirmed at the G4 gate (2026-07-02): noise past the energy gate
+    made whisper emit 446 x "m". Requires BOTH enough length and near-zero
+    character variety, so short real words ("Tak tak") always pass.
+    """
+
+    letters = normalize_phrase(text).replace(" ", "")
+    return len(letters) >= 12 and len(set(letters)) <= 2
+
+
 class TranscriptionPipeline:
     def __init__(
         self,
@@ -107,6 +119,9 @@ class TranscriptionPipeline:
                 return
             if normalize_phrase(text) in self._junk:
                 _LOGGER.info("junk transcript dropped: %r", text)
+                return
+            if is_degenerate_phrase(text):
+                _LOGGER.info("degenerate transcript dropped: %d chars", len(text))
                 return
             if not self._append_event(text, decision):
                 return

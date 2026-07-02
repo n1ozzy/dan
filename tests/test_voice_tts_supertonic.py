@@ -231,6 +231,39 @@ def test_play_failure_raises_and_cleans(tmp_path: Path) -> None:
     assert list(Path(engine.workdir).iterdir()) == []
 
 
+def test_synthesize_applies_pronunciation_map(tmp_path: Path) -> None:
+    # Ozzy's gate feedback (2026-07-02): anglicisms must be spoken Polish-
+    # phonetically ("runtime" -> "rantajm"). The map is DATA in the TOML;
+    # matching is case-insensitive and catches inflections ("runtime'ie").
+    binary, args_file = fake_supertonic(tmp_path)
+    player, _ = fake_player(tmp_path)
+    engine = build_tts_engine(
+        "supertonic",
+        config=full_config(
+            tmp_path,
+            binary,
+            player,
+            tts_pronunciations={"runtime": "rantajm", "stateless": "stejtles"},
+        ),
+    )
+
+    engine.synthesize("Stateless brain na żywym runtime'ie działa.")
+
+    # argv: ["tts", <text>, "-o", <path>, ...] — the path itself contains
+    # "runtime" (the runtime workdir), so assert on the text argument only.
+    spoken = args_file.read_text().splitlines()[1]
+    assert "rantajm'ie" in spoken
+    assert "stejtles" in spoken
+    assert "runtime" not in spoken.casefold()
+    assert "stateless" not in spoken.casefold()
+
+
+def test_synthesize_without_pronunciations_keeps_text(tmp_path: Path) -> None:
+    engine, args_file, _ = build_engine(tmp_path)
+    engine.synthesize("Runtime zostaje jak był.")
+    assert "Runtime" in args_file.read_text()
+
+
 def fake_player_recording_argv(tmp_path: Path) -> tuple[Path, Path]:
     """Fake player: records its full argv, one argument per line."""
 

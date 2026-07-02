@@ -154,6 +154,10 @@ class VoiceConfig:
     # the process alive past the audible audio. 0.0 = no pad effect at all.
     playback_pad_start_seconds: float = 0.0
     playback_pad_end_seconds: float = 0.0
+    # Pronunciation map (data, not code): anglicisms spoken Polish-
+    # phonetically, e.g. runtime -> rantajm. Case-insensitive substring
+    # match, so inflections ("runtime'ie") keep their endings.
+    tts_pronunciations: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
