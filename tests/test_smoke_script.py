@@ -18,6 +18,8 @@ MEMORY_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-memory-runtime.sh"
 CONTINUATION_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-tool-continuation.sh"
 FILE_READ_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-file-read.sh"
 STREAM_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-stream.sh"
+E2E_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-e2e-mvp.sh"
+E2E_RUNBOOK = ROOT / "docs" / "runbooks" / "E2E_MVP_SMOKE.md"
 RUNBOOK = ROOT / "docs" / "runbooks" / "TEXT_RUNTIME_SMOKE.md"
 PROVIDER_RUNBOOK = ROOT / "docs" / "runbooks" / "PROVIDER_SMOKE.md"
 TOOLS_RUNBOOK = ROOT / "docs" / "runbooks" / "TOOLS_AND_APPROVALS.md"
@@ -435,6 +437,75 @@ def test_pytest_only_syntax_checks_memory_smoke_script() -> None:
     direct_exec = "subprocess.run([str(MEMORY_" + "SMOKE_SCRIPT)"
 
     assert direct_exec not in text
+
+
+# F1 e2e MVP smoke: one daemon instance walks the operator scenario from
+# MASTER_PLAN §6 end to end (fake CLI brain + fake backends, no providers).
+REQUIRED_E2E_SMOKE_SNIPPETS = (
+    "daemon run",
+    "/health",
+    "/input/text",
+    "Restarting daemon",
+    "<jarvis_tool_call>",
+    "/approvals/",
+    "/execute",
+    "/reject",
+    "409",
+    "401",
+    "/tools/request",
+    "blocked",
+    "/brain/switch",
+    "/workers/jobs",
+    "/runtime/processes",
+    "/stream",
+    "redact",
+    "approved_roots",
+)
+
+
+def test_e2e_smoke_script_exists_and_is_executable() -> None:
+    assert E2E_SMOKE_SCRIPT.is_file()
+    assert os.access(E2E_SMOKE_SCRIPT, os.X_OK)
+    mode = stat.S_IMODE(E2E_SMOKE_SCRIPT.stat().st_mode)
+    assert mode & stat.S_IXUSR
+
+
+def test_e2e_smoke_script_references_required_operator_flow() -> None:
+    text = E2E_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    missing = [snippet for snippet in REQUIRED_E2E_SMOKE_SNIPPETS if snippet not in text]
+    assert missing == []
+
+
+def test_e2e_smoke_script_uses_fake_local_cli_brain_only() -> None:
+    text = E2E_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "fake-brain" in text
+    assert "command -v claude" not in text
+    assert 'command = "claude"' not in text
+    assert "api.anthropic.com" not in text
+
+
+def test_pytest_only_syntax_checks_e2e_smoke_script() -> None:
+    result = subprocess.run(
+        ["bash", "-n", str(E2E_SMOKE_SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_e2e_smoke_runbook_maps_acceptance_criteria() -> None:
+    text = E2E_RUNBOOK.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    assert "smoke-e2e-mvp.sh" in text
+    assert "master_plan" in lowered and "§6" in text
+    # The runbook must say where every criterion is proven, including the
+    # ones this harness does not cover itself.
+    for marker in ("symlink", "accessibility", "screen", "launchd", "live gate"):
+        assert marker in lowered, marker
 
 
 def test_smoke_runbook_exists() -> None:
