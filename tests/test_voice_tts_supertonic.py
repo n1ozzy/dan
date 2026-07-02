@@ -231,6 +231,58 @@ def test_play_failure_raises_and_cleans(tmp_path: Path) -> None:
     assert list(Path(engine.workdir).iterdir()) == []
 
 
+def fake_player_recording_argv(tmp_path: Path) -> tuple[Path, Path]:
+    """Fake player: records its full argv, one argument per line."""
+
+    argv_file = tmp_path / "player-argv.txt"
+    script = write_script(
+        tmp_path / "fake-player-argv",
+        f"""
+printf '%s\\n' "$@" > {argv_file}
+exit 0
+""",
+    )
+    return script, argv_file
+
+
+def test_play_without_pads_passes_only_the_file(tmp_path: Path) -> None:
+    binary, _ = fake_supertonic(tmp_path)
+    player, argv_file = fake_player_recording_argv(tmp_path)
+    engine = build_tts_engine("supertonic", config=full_config(tmp_path, binary, player))
+    chunk = engine.synthesize("Bez padów player dostaje sam plik.")
+
+    engine.play(chunk)
+
+    argv = argv_file.read_text().splitlines()
+    assert len(argv) == 1
+    assert argv[0].endswith(".wav")
+
+
+def test_play_appends_pad_effect_when_configured(tmp_path: Path) -> None:
+    # G4 live-gate fact: chunk boundaries click and swallow tails because
+    # each chunk is its own player process; pads keep the stream open past
+    # the audible audio (and give Bluetooth its codec-latency tail back).
+    binary, _ = fake_supertonic(tmp_path)
+    player, argv_file = fake_player_recording_argv(tmp_path)
+    engine = build_tts_engine(
+        "supertonic",
+        config=full_config(
+            tmp_path,
+            binary,
+            player,
+            playback_pad_start_seconds=0.2,
+            playback_pad_end_seconds=0.4,
+        ),
+    )
+    chunk = engine.synthesize("Pady wchodzą do komendy playera.")
+
+    engine.play(chunk)
+
+    argv = argv_file.read_text().splitlines()
+    assert argv[0].endswith(".wav")
+    assert argv[1:] == ["pad", "0.2", "0.4"]
+
+
 def test_temp_audio_files_are_owner_only(tmp_path: Path) -> None:
     # The played file is transient transport, but it still lives on disk for
     # a moment — keep it 0600 like every other runtime artifact.

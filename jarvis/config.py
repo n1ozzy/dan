@@ -148,6 +148,12 @@ class VoiceConfig:
     # macOS counterpart is a banned string in this repo (DAN's direct-play sin).
     playback_binary: str = "play"
     tts_timeout_seconds: int = 120
+    # Playback pads (G4 live-gate fact 2026-07-02): each chunk is its own
+    # `play` process, so the device stream opens/closes on chunk boundaries —
+    # clicks, swallowed tails, on Bluetooth whole missing words. Pads keep
+    # the process alive past the audible audio. 0.0 = no pad effect at all.
+    playback_pad_start_seconds: float = 0.0
+    playback_pad_end_seconds: float = 0.0
 
 
 @dataclass(frozen=True)

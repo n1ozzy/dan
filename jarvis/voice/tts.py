@@ -136,6 +136,8 @@ class SupertonicEngine:
         self._steps = max(1, int(voice_cfg.supertonic_steps or 14))
         self._speed = float(voice_cfg.supertonic_speed or 1.35)
         self._timeout = max(1, int(voice_cfg.tts_timeout_seconds or 120))
+        self._pad_start = max(0.0, float(getattr(voice_cfg, "playback_pad_start_seconds", 0.0) or 0.0))
+        self._pad_end = max(0.0, float(getattr(voice_cfg, "playback_pad_end_seconds", 0.0) or 0.0))
         self._player_lock = threading.Lock()
         self._player_proc: subprocess.Popen[str] | None = None
         workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
@@ -176,12 +178,15 @@ class SupertonicEngine:
             path.write_bytes(chunk.audio)
             # 44.1 kHz / 16-bit / mono is what supertonic emits; the margin
             # keeps a stuck player from hanging the broker thread forever.
-            duration = len(chunk.audio) / (44100 * 2)
+            duration = len(chunk.audio) / (44100 * 2) + self._pad_start + self._pad_end
+            command = [self._player, str(path)]
+            if self._pad_start > 0 or self._pad_end > 0:
+                command += ["pad", f"{self._pad_start:g}", f"{self._pad_end:g}"]
             with self._player_lock:
                 # Own process group: stop_playback() kills the player AND
                 # anything it spawned, so no orphan can hold the pipes open.
                 proc = subprocess.Popen(
-                    [self._player, str(path)],
+                    command,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     start_new_session=True,
                 )
