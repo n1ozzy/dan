@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import inspect
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from jarvis.brain.base import BrainAdapter, BrainRequest, BrainResponse
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
@@ -33,7 +35,9 @@ class BrainManager:
         self._current_adapter_name = default_adapter
 
     @classmethod
-    def from_config(cls, config: object) -> "BrainManager":
+    def from_config(
+        cls, config: object, *, generation_registry: Any | None = None
+    ) -> "BrainManager":
         brain_config = getattr(config, "brain", None)
         default_adapter = getattr(brain_config, "default_adapter", "mock")
         default_model = getattr(brain_config, "default_model", "mock-local")
@@ -47,6 +51,8 @@ class BrainManager:
                     args=getattr(claude_config, "args", ["-p"]),
                     model=getattr(claude_config, "model", ""),
                     timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
+                    stream_args=getattr(claude_config, "stream_args", None),
+                    generation_registry=generation_registry,
                 )
             )
 
@@ -84,9 +90,30 @@ class BrainManager:
         self.get_adapter(name)
         self._current_adapter_name = name
 
-    def generate(self, request: BrainRequest, adapter_name: str | None = None) -> BrainResponse:
+    def generate(
+        self,
+        request: BrainRequest,
+        adapter_name: str | None = None,
+        *,
+        on_delta: Callable[[str], None] | None = None,
+    ) -> BrainResponse:
         adapter = self.get_adapter(adapter_name)
+        if on_delta is not None and _accepts_on_delta(adapter):
+            return adapter.generate(request, on_delta=on_delta)
+        # G0 §2 degradation: an adapter without streaming gets the plain
+        # call; the caller sentence-cuts the final text after the fact.
         return adapter.generate(request)
+
+
+def _accepts_on_delta(adapter: BrainAdapter) -> bool:
+    """Feature detection instead of a TypeError probe: a signature check can
+    never mask a real TypeError raised inside a streaming adapter."""
+
+    try:
+        parameters = inspect.signature(adapter.generate).parameters
+    except (TypeError, ValueError):
+        return False
+    return "on_delta" in parameters
 
 
 def _should_register_cli_adapter(config: object, default_adapter: str, adapter_name: str) -> bool:

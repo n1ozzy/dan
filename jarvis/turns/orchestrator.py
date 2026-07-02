@@ -131,6 +131,44 @@ class TurnOrchestrator:
         except Exception:
             return None
 
+    def _start_speech_stream(self, turn_id: str, filler_timer: Any) -> Any:
+        """Open the live delta consumer (G4d); None when speech is off."""
+
+        if self._speech is None or not hasattr(self._speech, "start_stream"):
+            return None
+        try:
+            return self._speech.start_stream(turn_id=turn_id, filler_timer=filler_timer)
+        except Exception:  # speech must never fail generation
+            return None
+
+    def _finish_speech(self, session: Any, turn_id: str, text: str) -> None:
+        """Close the stream against the canonical text (best effort).
+
+        With a session, sentences already queued from deltas are NOT
+        re-enqueued — finalize only flushes the tail (or chunks the whole
+        canonical text when no delta ever arrived)."""
+
+        if session is None:
+            self._speak(turn_id, text)
+            return
+        try:
+            session.finalize(text)
+        except Exception:  # speech must never fail a finished turn
+            pass
+
+    def _cancel_turn_speech(self, turn_id: str) -> None:
+        """Turn failure is a §7 cancellation trigger: sentences already
+        queued from deltas of a failed generation must not be spoken."""
+
+        if self._speech is None:
+            return
+        try:
+            from jarvis.voice.queue import VoiceQueue
+
+            VoiceQueue(self._conn, event_store=self._event_store).cancel_turn(turn_id)
+        except Exception:  # cancellation is best effort on the failure path
+            pass
+
     def run_text_turn(self, text: str) -> Turn:
         """Compatibility wrapper for the Prompt 01 placeholder API."""
 
@@ -253,11 +291,18 @@ class TurnOrchestrator:
             )
 
             filler_timer = self._arm_filler(turn.id)
+            speech_session = self._start_speech_stream(turn.id, filler_timer)
             try:
-                response = self._brain_manager.generate(context_result.request)
+                response = self._brain_manager.generate(
+                    context_result.request,
+                    on_delta=speech_session.feed if speech_session is not None else None,
+                )
             except Exception as exc:
                 if filler_timer is not None:
                     filler_timer.disarm()
+                # §7: a failed turn cancels its own queued speech — deltas
+                # already sentence-cut into the queue were never truth.
+                self._cancel_turn_speech(turn.id)
                 self._record_brain_failure(
                     turn=turn,
                     conversation_id=conversation.id,
@@ -349,7 +394,9 @@ class TurnOrchestrator:
             )
             # Speak the raw model text: the chunker strips tool-call blocks,
             # and an awaiting_approval turn speaks only its safe prefix (G0 §4).
-            self._speak(turn.id, response.text)
+            # A streaming session already queued its sentences live; this
+            # only flushes the tail (or chunks everything when no delta came).
+            self._finish_speech(speech_session, turn.id, response.text)
             event_ids.append(
                 self._state_machine.transition(
                     RuntimeState.IDLE,
@@ -458,9 +505,14 @@ class TurnOrchestrator:
                 correlation_id=correlation_id,
                 turn_id=turn.id,
             )
-            response = self._brain_manager.generate(request)
+            speech_session = self._start_speech_stream(turn.id, None)
+            response = self._brain_manager.generate(
+                request,
+                on_delta=speech_session.feed if speech_session is not None else None,
+            )
             continuation_text = _continuation_answer_text(response)
         except Exception as exc:
+            self._cancel_turn_speech(turn.id)
             return self._record_continuation_failure(
                 turn=turn,
                 adapter_name=adapter_name,
@@ -503,7 +555,7 @@ class TurnOrchestrator:
             brain_model=response_model,
             metadata={"tool_result_continuation": success_metadata},
         )
-        self._speak(turn.id, continuation_text)
+        self._finish_speech(speech_session, turn.id, continuation_text)
         self._append_event(
             EventType.TURN_FINISHED,
             {

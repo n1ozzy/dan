@@ -73,7 +73,15 @@ class BrainResponse:
 
 
 class BrainAdapter(Protocol):
-    """Stateless model connector interface."""
+    """Stateless model connector interface.
+
+    `generate` MAY accept an optional keyword `on_delta(text: str)` (G0 §2):
+    called zero or more times with incremental text fragments, best effort.
+    Deltas carry no authority — the returned `BrainResponse.text` is the
+    single canonical answer, and adapters that cannot stream simply never
+    call it. The manager only passes `on_delta` to adapters that declare it,
+    so existing adapters keep working unchanged.
+    """
 
     name: str
     default_model: str

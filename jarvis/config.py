@@ -52,6 +52,10 @@ class BrainCliAdapterConfig:
     args: list[str] = field(default_factory=list)
     model: str = ""
     timeout_seconds: int = 120
+    # Streaming flags appended when a turn wants deltas (G4d). None = the
+    # adapter's own defaults (claude: --output-format stream-json --verbose
+    # --include-partial-messages).
+    stream_args: list[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -369,6 +373,12 @@ def _build_brain_cli_config(
     args = selected.get("args")
     if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
         raise ConfigError(f"{section_name}.args must be a list of strings")
+    stream_args = selected.get("stream_args")
+    if stream_args is not None and (
+        not isinstance(stream_args, list)
+        or not all(isinstance(item, str) for item in stream_args)
+    ):
+        raise ConfigError(f"{section_name}.stream_args must be a list of strings")
     try:
         return BrainCliAdapterConfig(**selected)
     except TypeError as exc:

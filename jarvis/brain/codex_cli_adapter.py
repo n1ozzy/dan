@@ -35,7 +35,9 @@ class CodexCliAdapter:
     def available_models(self) -> list[str]:
         return [self.default_model]
 
-    def generate(self, request: BrainRequest) -> BrainResponse:
+    def generate(self, request: BrainRequest, *, on_delta=None) -> BrainResponse:
+        # Codex CLI has no wired streaming mode yet: on_delta is accepted and
+        # ignored (G0 §2 degradation — the final text is chunked after the fact).
         return generate_cli_response(
             adapter_name=self.name,
             command_name=self.command,

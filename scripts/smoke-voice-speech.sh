@@ -64,14 +64,28 @@ PY
 cat >"$FAKE_BRAIN" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
+# Since G4d a speech-enabled daemon calls the CLI in stream-json mode; the
+# fake answers in whichever format it was asked for (fake-brain pattern).
+STREAM=0
+for arg in "$@"; do
+  if [ "$arg" = "stream-json" ]; then STREAM=1; fi
+done
+emit() {
+  if [ "$STREAM" = "1" ]; then
+    escaped="$(printf '%s' "$1" | sed 's/"/\\"/g')"
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"%s"}\n' "$escaped"
+  else
+    printf '%s\n' "$1"
+  fi
+}
 PROMPT="$(cat)"
 if printf '%s' "$PROMPT" | tail -n 6 | grep -q "SLOW_TURN"; then
   sleep 2
-  printf 'Wolna odpowiedz przyszla teraz. Drugie zdanie wolnej odpowiedzi.\n'
+  emit 'Wolna odpowiedz przyszla teraz. Drugie zdanie wolnej odpowiedzi.'
 elif printf '%s' "$PROMPT" | tail -n 6 | grep -q "TOOL_TURN"; then
-  printf 'Zaraz sprawdze plik dla ciebie. <jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"voice smoke"}}</jarvis_tool_call>\n'
+  emit 'Zaraz sprawdze plik dla ciebie. <jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"voice smoke"}}</jarvis_tool_call>'
 else
-  printf 'Pierwsze zdanie odpowiedzi glosowej. Drugie zdanie odpowiedzi glosowej.\n'
+  emit 'Pierwsze zdanie odpowiedzi glosowej. Drugie zdanie odpowiedzi glosowej.'
 fi
 FAKE
 chmod +x "$FAKE_BRAIN"

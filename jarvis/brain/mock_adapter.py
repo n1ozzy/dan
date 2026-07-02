@@ -18,7 +18,9 @@ class MockBrainAdapter:
     def available_models(self) -> list[str]:
         return [self.default_model]
 
-    def generate(self, request: BrainRequest) -> BrainResponse:
+    def generate(self, request: BrainRequest, *, on_delta=None) -> BrainResponse:
+        # G0 §2: the mock cannot stream; it never calls on_delta and the
+        # chunker sentence-cuts the final text after the fact.
         normalized_input = request.input_text.strip()
         if normalized_input:
             text = f"Jarvis mock response: {normalized_input}"

@@ -93,6 +93,12 @@ class DaemonAppBusyError(DaemonAppError):
     """Raised when a serialized app operation is already running."""
 
 
+def _build_generation_registry() -> Any:
+    from jarvis.voice.cancellation import GenerationRegistry
+
+    return GenerationRegistry()
+
+
 @dataclass
 class DaemonApp:
     config: JarvisConfig
@@ -116,7 +122,9 @@ class DaemonApp:
     voice_stt: Any = None
     voice_gateway: Any = None
     voice_cancellation: Any = None
-    voice_generation_registry: Any = None
+    # Daemon-lifetime (not voice-lifetime): streaming adapters register kill
+    # handles here (G4d), the cancellation coordinator fires them (leg 1).
+    voice_generation_registry: Any = field(default_factory=_build_generation_registry)
     api_token: str | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
@@ -148,10 +156,7 @@ class DaemonApp:
         tts_engine = None
         if self.config.voice.enabled:
             from jarvis.voice.anti_echo import AntiEchoGate
-            from jarvis.voice.cancellation import (
-                CancellationCoordinator,
-                GenerationRegistry,
-            )
+            from jarvis.voice.cancellation import CancellationCoordinator
             from jarvis.voice.gateway import VoiceTurnGateway
             from jarvis.voice.stt import build_stt_engine
             from jarvis.voice.transcription import TranscriptionPipeline
@@ -163,7 +168,9 @@ class DaemonApp:
             # does a real engine whose binary/player cannot be found.
             tts_engine = build_tts_engine(self.config.voice.default_tts, config=self.config)
 
-            self.voice_generation_registry = GenerationRegistry()
+            # The registry itself is daemon-lifetime (streaming adapters hold
+            # a reference from create_daemon_app); voice only wires the
+            # coordinator that fires it.
             self.voice_cancellation = CancellationCoordinator(
                 self._connect_existing,
                 generation_registry=self.voice_generation_registry,
@@ -234,8 +241,9 @@ class DaemonApp:
         if self.voice_gateway is not None:
             self.voice_gateway.stop()
             self.voice_gateway = None
+        # The generation registry stays: it is daemon-lifetime and shared
+        # with the brain adapters built in create_daemon_app.
         self.voice_cancellation = None
-        self.voice_generation_registry = None
 
         if self.started:
             event_store.append(
@@ -1037,7 +1045,11 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     conn = _connect_daemon_db(paths.db_path)
     event_store = create_event_store(conn)
     state_machine = RuntimeStateMachine(event_store, event_bus=event_bus)
-    brain_manager = BrainManager.from_config(config)
+    # One registry instance is shared between the streaming brain adapters
+    # (which register subprocess kill handles per turn, G4d) and the voice
+    # cancellation coordinator (which fires them on barge-in, G4c).
+    generation_registry = _build_generation_registry()
+    brain_manager = BrainManager.from_config(config, generation_registry=generation_registry)
     _restore_persisted_brain_adapter(conn, brain_manager)
     memory_manager = MemoryManager(conn, event_store=event_store)
     context_builder = ContextBuilder(
@@ -1073,6 +1085,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         context_builder=context_builder,
         memory_manager=memory_manager,
         worker_broker=worker_broker,
+        voice_generation_registry=generation_registry,
         api_token=api_token,
     )
 
