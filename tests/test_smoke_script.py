@@ -17,6 +17,7 @@ TOOLS_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-tools-approvals.sh"
 MEMORY_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-memory-runtime.sh"
 CONTINUATION_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-tool-continuation.sh"
 FILE_READ_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-file-read.sh"
+STREAM_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-stream.sh"
 RUNBOOK = ROOT / "docs" / "runbooks" / "TEXT_RUNTIME_SMOKE.md"
 PROVIDER_RUNBOOK = ROOT / "docs" / "runbooks" / "PROVIDER_SMOKE.md"
 TOOLS_RUNBOOK = ROOT / "docs" / "runbooks" / "TOOLS_AND_APPROVALS.md"
@@ -227,6 +228,48 @@ def test_continuation_smoke_script_passes_bash_syntax_check() -> None:
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_stream_smoke_script_exists() -> None:
+    assert STREAM_SMOKE_SCRIPT.is_file()
+
+
+def test_stream_smoke_script_is_executable() -> None:
+    mode = STREAM_SMOKE_SCRIPT.stat().st_mode
+    assert mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    assert os.access(STREAM_SMOKE_SCRIPT, os.X_OK)
+
+
+def test_stream_smoke_script_passes_bash_syntax_check() -> None:
+    result = subprocess.run(
+        ["bash", "-n", str(STREAM_SMOKE_SCRIPT)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_stream_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:
+    text = STREAM_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    offenders = [snippet for snippet in FORBIDDEN_SCRIPT_SNIPPETS if snippet in text]
+    assert offenders == []
+
+
+def test_stream_smoke_script_exercises_stream_contract() -> None:
+    text = STREAM_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    for snippet in (
+        "GET /stream HTTP/1.1",
+        "Sec-WebSocket-Key",
+        "jarvis-token.",
+        "output_omitted",
+        "1003",
+    ):
+        assert snippet in text
 
 
 def test_smoke_script_avoids_forbidden_process_and_legacy_calls() -> None:

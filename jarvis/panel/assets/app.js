@@ -7,7 +7,20 @@ const cockpit = {
   online: false,
   selectedConversationId: null,
   approvedApprovals: new Map(),
+  stream: {
+    socket: null,
+    base: null,
+    lastEventId: 0,
+    retryMs: 2000,
+    reconnectTimer: null,
+    approvalsTimer: null,
+  },
 };
+
+const STREAM_SUBPROTOCOL = "jarvis.v1";
+const STREAM_TOKEN_SUBPROTOCOL_PREFIX = "jarvis-token.";
+const STREAM_MAX_RETRY_MS = 15000;
+const MAX_LIVE_EVENT_ROWS = 50;
 
 const el = {};
 
@@ -50,6 +63,7 @@ function bindElements() {
     "approvalList",
     "toolsError",
     "refreshEventsButton",
+    "streamStatus",
     "eventList",
     "eventsError",
     "refreshRuntimeButton",
@@ -78,6 +92,8 @@ function bindEvents() {
     el.apiBaseInput.value = cockpit.apiBase;
     cockpit.selectedConversationId = null;
     cockpit.approvedApprovals.clear();
+    disconnectStream("api base changed");
+    cockpit.stream.lastEventId = 0;
     refreshAll();
   });
 }
@@ -86,6 +102,7 @@ async function refreshAll() {
   const healthOk = await refreshHealthAndState();
   if (!healthOk) {
     clearDynamicSections();
+    disconnectStream("daemon offline");
     return;
   }
 
@@ -96,6 +113,7 @@ async function refreshAll() {
     refreshEvents(),
     refreshRuntime(),
   ]);
+  connectStream();
 }
 
 async function refreshHealthAndState() {
@@ -456,6 +474,10 @@ async function refreshEvents() {
     const payload = await requestJson("/events?after_id=0&limit=50");
     const events = Array.isArray(payload.events) ? payload.events : [];
     renderEvents(events);
+    const latestId = Number(payload.latest_event_id);
+    if (Number.isFinite(latestId) && latestId > cockpit.stream.lastEventId) {
+      cockpit.stream.lastEventId = latestId;
+    }
   } catch (error) {
     clearNode(el.eventList);
     renderError(el.eventsError, error);
@@ -472,11 +494,174 @@ function renderEvents(events) {
 
   const latestFirst = [...events].reverse();
   for (const event of latestFirst) {
-    const row = document.createElement("div");
-    row.className = "list-row";
-    appendLine(row, `#${event.id} - ${event.type || "event"}`, "input-line");
-    appendLine(row, event.source || event.created_at || "", "muted");
-    el.eventList.appendChild(row);
+    el.eventList.appendChild(eventRow(event));
+  }
+}
+
+function eventRow(event) {
+  const row = document.createElement("div");
+  row.className = "list-row";
+  appendLine(row, `#${event.id} - ${event.type || "event"}`, "input-line");
+  appendLine(row, event.source || event.created_at || "", "muted");
+  return row;
+}
+
+// --- Live event stream (GET /stream WebSocket, read-only; ADR-019) ---
+
+function streamUrl() {
+  const base = apiBase().replace(/^http/, "ws");
+  if (cockpit.stream.lastEventId > 0) {
+    return `${base}/stream?after_id=${cockpit.stream.lastEventId}`;
+  }
+  return `${base}/stream`;
+}
+
+function connectStream() {
+  const stream = cockpit.stream;
+  if (
+    stream.socket &&
+    stream.base === apiBase() &&
+    (stream.socket.readyState === WebSocket.OPEN ||
+      stream.socket.readyState === WebSocket.CONNECTING)
+  ) {
+    return;
+  }
+  disconnectStream("reconnecting");
+
+  // The browser cannot set X-Jarvis-Token on a WebSocket handshake, so the
+  // token rides along as a jarvis-token.<token> subprotocol entry.
+  const protocols = [STREAM_SUBPROTOCOL];
+  const token = apiToken();
+  if (token) {
+    protocols.push(`${STREAM_TOKEN_SUBPROTOCOL_PREFIX}${token}`);
+  }
+
+  let socket;
+  try {
+    socket = new WebSocket(streamUrl(), protocols);
+  } catch (error) {
+    setStreamStatus("stream off");
+    scheduleStreamReconnect();
+    return;
+  }
+
+  stream.socket = socket;
+  stream.base = apiBase();
+  setStreamStatus("stream connecting");
+
+  socket.addEventListener("open", () => {
+    stream.retryMs = 2000;
+    setStreamStatus("live");
+  });
+  socket.addEventListener("message", (message) => {
+    handleStreamMessage(message.data);
+  });
+  socket.addEventListener("close", () => {
+    if (stream.socket === socket) {
+      stream.socket = null;
+      setStreamStatus(apiToken() ? "stream off" : "stream off (token?)");
+      scheduleStreamReconnect();
+    }
+  });
+}
+
+function disconnectStream(reason) {
+  const stream = cockpit.stream;
+  if (stream.reconnectTimer !== null) {
+    clearTimeout(stream.reconnectTimer);
+    stream.reconnectTimer = null;
+  }
+  if (stream.socket) {
+    const socket = stream.socket;
+    stream.socket = null;
+    try {
+      socket.close(1000, reason || "cockpit disconnect");
+    } catch (error) {
+      // already closed
+    }
+  }
+  setStreamStatus("stream off");
+}
+
+function scheduleStreamReconnect() {
+  const stream = cockpit.stream;
+  if (stream.reconnectTimer !== null || !cockpit.online) {
+    return;
+  }
+  stream.reconnectTimer = setTimeout(() => {
+    stream.reconnectTimer = null;
+    if (cockpit.online) {
+      connectStream();
+    }
+  }, stream.retryMs);
+  stream.retryMs = Math.min(stream.retryMs * 2, STREAM_MAX_RETRY_MS);
+}
+
+function handleStreamMessage(raw) {
+  let frame;
+  try {
+    frame = JSON.parse(raw);
+  } catch (error) {
+    return;
+  }
+
+  if (frame.type === "stream.hello") {
+    const latestId = Number(frame.latest_event_id);
+    if (Number.isFinite(latestId) && latestId > cockpit.stream.lastEventId) {
+      cockpit.stream.lastEventId = latestId;
+    }
+    return;
+  }
+  if (frame.type !== "event" || !frame.event) {
+    return;
+  }
+
+  const event = frame.event;
+  const eventId = Number(event.id);
+  if (Number.isFinite(eventId) && eventId > cockpit.stream.lastEventId) {
+    cockpit.stream.lastEventId = eventId;
+  }
+  prependLiveEvent(event);
+
+  const type = String(event.type || "");
+  if (type === "state.changed" && event.payload && event.payload.new_state) {
+    setText(el.stateLabel, event.payload.new_state);
+  }
+  if (type.startsWith("approval.") || type.startsWith("tool.")) {
+    scheduleApprovalsRefresh();
+  }
+}
+
+function prependLiveEvent(event) {
+  const emptyRow = el.eventList.querySelector(".empty-row");
+  if (emptyRow) {
+    emptyRow.remove();
+  }
+  el.eventList.insertBefore(eventRow(event), el.eventList.firstChild);
+  while (el.eventList.children.length > MAX_LIVE_EVENT_ROWS) {
+    el.eventList.removeChild(el.eventList.lastChild);
+  }
+}
+
+function scheduleApprovalsRefresh() {
+  const stream = cockpit.stream;
+  if (stream.approvalsTimer !== null) {
+    return;
+  }
+  stream.approvalsTimer = setTimeout(async () => {
+    stream.approvalsTimer = null;
+    try {
+      await refreshToolsAndApprovals();
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function setStreamStatus(label) {
+  if (el.streamStatus) {
+    setText(el.streamStatus, label);
+    el.streamStatus.classList.toggle("live", label === "live");
   }
 }
 

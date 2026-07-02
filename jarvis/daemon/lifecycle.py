@@ -39,6 +39,14 @@ from jarvis.api.routes_runtime import (
 from jarvis.api.routes_settings import get_settings, update_settings
 from jarvis.api.routes_state import get_state
 from jarvis.api.routes_tools import ToolRequestValidationError, get_tools, post_tool_request
+from jarvis.api.websocket import (
+    EventStreamSession,
+    WebSocketHandshakeError,
+    extract_token_candidates,
+    select_subprotocol,
+    validate_websocket_upgrade,
+    websocket_accept_key,
+)
 from jarvis.daemon.app import (
     DaemonApp,
     DaemonAppBusyError,
@@ -47,6 +55,7 @@ from jarvis.daemon.app import (
     DaemonAppNotFoundError,
     DaemonAppNotStartedError,
 )
+from jarvis.logging import get_logger
 from jarvis.security.transport import API_TOKEN_HEADER, verify_api_token
 from jarvis.store.event_store import EventStoreError
 from jarvis.memory import MemoryError
@@ -179,6 +188,10 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
     parsed = urlparse(handler.path)
     path = parsed.path
     query = parse_qs(parsed.query)
+
+    if method == "GET" and path == "/stream":
+        _handle_stream(handler, app, query)
+        return
 
     if method in MUTATING_METHODS and not _transport_authorized(handler, app):
         _write_json(handler, 401, {"error": "Unauthorized", "status": 401})
@@ -365,6 +378,66 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         _write_json(handler, 400, {"error": str(exc), "status": 400})
     except Exception:
         _write_json(handler, 500, {"error": "Internal server error", "status": 500})
+
+
+def _handle_stream(
+    handler: BaseHTTPRequestHandler,
+    app: DaemonApp,
+    query: dict[str, list[str]],
+) -> None:
+    """Upgrade GET /stream to the read-only websocket event stream (ADR-019).
+
+    Everything up to the 101 answers as plain JSON; past the upgrade the
+    socket speaks websocket frames only, so failures just drop the
+    connection instead of writing an HTTP body into the frame stream.
+    """
+
+    handler.close_connection = True
+
+    # Fail closed: the stream carries event history, so the handshake needs
+    # the same transport token as mutating requests. Browsers cannot set
+    # custom websocket headers, hence the jarvis-token.<token> subprotocol.
+    if app.config.security.api_token_required:
+        candidates = extract_token_candidates(handler.headers)
+        if not any(verify_api_token(app.api_token, candidate) for candidate in candidates):
+            _write_json(handler, 401, {"error": "Unauthorized", "status": 401})
+            return
+
+    try:
+        key = validate_websocket_upgrade(handler.headers)
+        after_id = _stream_after_id(query)
+    except (WebSocketHandshakeError, ValueError) as exc:
+        _write_json(handler, 400, {"error": str(exc), "status": 400})
+        return
+
+    subprotocol = select_subprotocol(handler.headers)
+    response_lines = [
+        "HTTP/1.1 101 Switching Protocols",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        f"Sec-WebSocket-Accept: {websocket_accept_key(key)}",
+    ]
+    if subprotocol is not None:
+        response_lines.append(f"Sec-WebSocket-Protocol: {subprotocol}")
+    handler.connection.sendall(("\r\n".join(response_lines) + "\r\n\r\n").encode("ascii"))
+
+    session = EventStreamSession(handler.connection, handler.rfile, app, after_id=after_id)
+    try:
+        session.run()
+    except Exception:
+        # Past the upgrade there is no HTTP error channel left; the daemon
+        # must survive any single stream connection dying.
+        get_logger(__name__).exception("Event stream session failed")
+        return
+
+
+def _stream_after_id(query: dict[str, list[str]]) -> int | None:
+    if "after_id" not in query:
+        return None
+    after_id = _query_int(query, "after_id", default=0)
+    if after_id < 0:
+        raise ValueError("after_id must be zero or positive.")
+    return after_id
 
 
 def _transport_authorized(handler: BaseHTTPRequestHandler, app: DaemonApp) -> bool:

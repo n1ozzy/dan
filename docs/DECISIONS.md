@@ -393,6 +393,54 @@ CGEvent path arrives only via a new ADR.
 
 ---
 
+## ADR-019 — `GET /stream` is a token-gated, read-only websocket that never carries bulk tool output
+
+**Status:** Accepted
+
+**Context.** FAZA D3 (MASTER_PLAN §7.1) moves the cockpit from event polling
+to a live push channel before D4 screen events arrive. The daemon is a
+zero-dependency stdlib `ThreadingHTTPServer`; the transport token (C1)
+guards mutating routes; and D2 left a recorded caveat: `ui_read_window`
+tool output is on-screen text, persisted (redacted) in `tool_runs` and in
+`tool.finished` event payloads.
+
+**Decision.**
+
+- **`GET /stream` upgrades to RFC 6455 implemented in-repo**
+  (`jarvis/api/websocket.py`, ctypes-free stdlib only) on the connection
+  thread the server already dedicates. No new runtime dependency.
+- **The handshake is fail-closed behind the transport token.** Browsers
+  cannot set `X-Jarvis-Token` on a WebSocket connect, so the cockpit sends
+  it as a `jarvis-token.<token>` subprotocol entry next to `jarvis.v1`;
+  CLI/tests use the header. No token (when `security.api_token_required`
+  is on, the default) means 401 before any upgrade. The token subprotocol
+  is never echoed back. This makes the stream *stricter* than `GET /events`.
+- **The stream is strictly read-only.** It pushes persisted events (the
+  same append-only store `GET /events` reads). Any client TEXT/BINARY
+  frame closes the connection with 1003; unmasked or malformed client
+  frames close with 1002. Approvals and actions stay on the POST routes.
+- **Bulk tool output does not ride the stream.** Event payload key
+  `output` (today: `tool.finished`, incl. `ui_read_window` screen text) is
+  replaced with `output_omitted: true`. Consumers fetch details over the
+  HTTP API. This is the conscious decision D2 required — the default is
+  *not* to push screen text; widening needs a new ADR.
+- **Redaction is applied twice**: events are redacted at append time, and
+  the stream re-runs `redact_secrets` on every payload it ships, so even a
+  row that reached the DB outside `EventStore.append` leaves redacted.
+- Reading the handler's buffered `rfile` under a socket timeout permanently
+  poisons `SocketIO`; the session drains handshake leftovers once
+  (non-blocking) and then uses `select()` + `recv()` on the raw socket.
+
+**Consequences.** The cockpit gets live events (≤ the 0.25 s poll interval
+of latency) with reconnect/backoff, and D4 screen events have a transport
+that is not HTTP polling. Streaming latency is poll-bounded, not
+event-driven; if D4 needs tighter latency, an EventBus wake-up can be added
+without changing the wire contract. `GET /events` keeps returning full
+payloads (including `tool.finished.output`) as before — tightening that
+route is a separate decision.
+
+---
+
 ## Decision log
 
 | ADR | Title | Status |
@@ -415,6 +463,7 @@ CGEvent path arrives only via a new ADR.
 | 016 | Runtime state names are canonical and finite | Accepted |
 | 017 | `ui_read` observes only the frontmost app and focused window, via a jarvisd-owned backend | Accepted |
 | 018 | `ui_act` uses AX-only actions, always approval-gated, never touching credentials | Accepted |
+| 019 | `GET /stream` is a token-gated, read-only websocket that never carries bulk tool output | Accepted |
 
 > ADR-013 and ADR-014 were added by the Prompt 00B inventory, grounded in
 > [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md). Further migration

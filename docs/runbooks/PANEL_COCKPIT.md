@@ -64,13 +64,32 @@ not start, stop, supervise, or clean up any process.
 - Tools: lists registered tools and pending approvals.
 - Approvals: approve, reject, and execute-approved actions require explicit
   clicks. Approval alone does not execute.
-- Events: polls `GET /events?after_id=0&limit=50`; no streaming path is used.
+- Events: initial backlog from `GET /events?after_id=0&limit=50`, then live
+  read-only push over the `GET /stream` WebSocket (ADR-019). The stream
+  indicator shows `live` when connected; the Refresh button still works as a
+  polling fallback.
 - Runtime: reads `GET /runtime/processes` and shows conflict count plus
   report-only status.
 
+## Live Stream
+
+The cockpit connects to `GET /stream` (WebSocket) after the first successful
+refresh. The stream is read-only display: it renders incoming events, updates
+the state pill on `state.changed`, and triggers a pending-approvals re-fetch
+on `approval.*`/`tool.*` events. All approvals and actions still go through
+the existing POST endpoints — the socket never carries a mutation.
+
+Browsers cannot set `X-Jarvis-Token` on a WebSocket handshake, so the token
+from local storage rides along as a `jarvis-token.<token>` subprotocol entry
+next to `jarvis.v1`. When `security.api_token_required` is on (default) and
+no token is stored yet, the stream shows `stream off (token?)` — perform any
+mutating action once (the cockpit prompts for the token) and the stream
+reconnects with it. Streamed `tool.finished` events never include the bulk
+`output` payload (`output_omitted: true`); details stay on the HTTP API.
+
 ## Intentional Non-Goals
 
-- no WebSocket
+- no WebSocket mutations (the stream is read-only; actions use POST routes)
 - no voice
 - no native MenuBar
 - no launchd

@@ -24,6 +24,7 @@ REQUIRED_ROUTES = (
     "/tools",
     "/approvals",
     "/events",
+    "/stream",
     "/runtime/processes",
 )
 
@@ -111,10 +112,30 @@ def test_panel_cockpit_runbook_documents_boundaries() -> None:
 
     assert "not the final macos menubar panel" in lowered
     assert "not a source of truth" in lowered
-    assert "no websocket" in lowered
+    assert "no websocket mutations" in lowered
     assert "no voice" in lowered
     assert "no native menubar" in lowered
     assert "display-only" in lowered
+
+
+def test_panel_cockpit_runbook_documents_read_only_stream() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    assert "/stream" in text
+    assert "adr-019" in lowered
+    assert "read-only" in lowered
+    assert "jarvis-token." in text
+    assert "output_omitted" in text
+
+
+def test_app_stream_client_is_read_only() -> None:
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "new WebSocket" in script
+    assert "jarvis-token." in script
+    # Display-only client: the socket never sends application data.
+    assert ".send(" not in script
 
 
 def test_panel_cockpit_runbook_documents_local_cors_development() -> None:

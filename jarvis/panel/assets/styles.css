@@ -145,6 +145,10 @@ h2 {
   box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
 }
 
+#streamStatus.live {
+  color: #34d399;
+}
+
 .state-pill {
   max-width: 112px;
   overflow: hidden;
