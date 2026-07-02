@@ -46,7 +46,7 @@ PROBLEM (bezpieczeństwo, HIGH): w jarvis/daemon/lifecycle.py stała ALLOWED_COR
 ZADANIE: Zweryfikuj aktualną linię (mogła się przesunąć). Napisz najpierw test, że żądanie z Origin: null NIE dostaje nagłówka Access-Control-Allow-Origin: null. Potem usuń "null" z allowlisty i popraw istniejący test tak, by asertował odrzucenie. Nie ruszaj dozwolonych originów 127.0.0.1/localhost. Uruchom pytest dla API/CORS. Zaproponuj (ale nie wprowadzaj bez pytania) dołożenie tokenu na GET-ach jako osobny task.
 ```
 
-## - [x] FIX-02 · git-config RCE mimo approval-gate 🟠 HIGH — DONE
+## - [x] FIX-02 · git-config RCE mimo approval-gate 🟠 HIGH — DONE `78a58b4`
 
 - **Pliki:** `jarvis/tools/shell_tool.py:46` (`_SCRUBBED_ENV`) i wywołanie `subprocess.run` (~l.95)
 - **Problem:** `_SCRUBBED_ENV` ustawia tylko PATH/LANG/LC_ALL — brak `GIT_CONFIG_NOSYSTEM`/`GIT_CONFIG_GLOBAL`. Whitelistowane `git status/log/diff` lecą w atakowalnym `cwd`; repo ze złośliwym `.git/config [core] fsmonitor = /tmp/evil.sh` wykona ten skrypt przy „niewinnym" `git status`. Operator zatwierdza tekst „git status --short", nie widząc exec sterowanego configiem.
@@ -62,7 +62,7 @@ PROBLEM (bezpieczeństwo, HIGH — RCE): jarvis/tools/shell_tool.py uruchamia wh
 ZADANIE: Zweryfikuj linie. Napisz test: utwórz tymczasowe repo git z .git/config ustawiającym core.fsmonitor (lub core.hooksPath) na skrypt tworzący plik-sentinel; wywołaj ShellReadTool na "git status" w tym cwd; asertuj, że sentinel NIE powstał. Potem wprowadź hardening: przy komendach git dołóż do env GIT_CONFIG_NOSYSTEM=1 i GIT_CONFIG_GLOBAL=/dev/null oraz flagi -c core.fsmonitor= -c core.hooksPath=/dev/null -c protocol.ext.allow=never. Upewnij się że legalne `git status --short` w normalnym repo nadal działa. pytest.
 ```
 
-## - [ ] FIX-03 · CRITICAL: współdzielone połączenie SQLite przez wątki 🔴
+## - [x] FIX-03 · CRITICAL: współdzielone połączenie SQLite przez wątki 🔴 — DONE (opcja A: ThreadLocalConnection)
 
 - **Pliki:** `jarvis/daemon/app.py` (~`:130`/`:1130` — `sqlite3.connect(check_same_thread=False)`), konsumenci: `repository`, `event_store`, `approval_gate`, `tool_run_recorder`; powiązane: `app.py:596` (wątki workerów), `jarvis/memory/manager.py:315` (transakcja + event osobno)
 - **Problem:** jedno `self.conn` obsługuje **zapisy** z wielu wątków HTTP + wątków workerów, chronione dwiema rozłącznymi blokadami które się nie pokrywają. Bo to jedno connection, bloki `with conn:` dzielą jedną transakcję → rollback jednego wątku wyrzuca niezacommitowany append-only event drugiego (ciche gubienie), albo `sqlite3.ProgrammingError`. **WAL tego nie naprawia** (to przeplot na jednym connection, nie kontencja blokad).

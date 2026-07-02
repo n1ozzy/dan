@@ -66,7 +66,21 @@ class MemoryManager:
         timestamp = self._now()
         block_id = uuid.uuid4().hex
 
+        block = MemoryBlock(
+            id=block_id,
+            kind=normalized_kind,
+            title=normalized_title,
+            body=normalized_body,
+            priority=normalized_priority,
+            active=bool(active),
+            created_at=timestamp,
+            updated_at=timestamp,
+            source_event_id=source_event_id,
+            metadata=metadata_dict,
+        )
         try:
+            # Row insert and its audit event share one transaction: a failed
+            # event append rolls the mutation back (FIX-03 DoD).
             with self._conn:
                 self._conn.execute(
                     """
@@ -89,22 +103,9 @@ class MemoryManager:
                         _metadata_to_json(metadata_dict),
                     ),
                 )
+                self._append_memory_event("created", block)
         except sqlite3.Error as exc:
             raise MemoryError(f"Could not create memory block: {exc}") from exc
-
-        block = MemoryBlock(
-            id=block_id,
-            kind=normalized_kind,
-            title=normalized_title,
-            body=normalized_body,
-            priority=normalized_priority,
-            active=bool(active),
-            created_at=timestamp,
-            updated_at=timestamp,
-            source_event_id=source_event_id,
-            metadata=metadata_dict,
-        )
-        self._append_memory_event("created", block)
         return block
 
     def create_candidate(
@@ -278,7 +279,21 @@ class MemoryManager:
         new_metadata = existing.metadata if metadata is None else _jsonable_metadata(metadata)
         updated_at = self._now()
 
+        block = MemoryBlock(
+            id=existing.id,
+            kind=existing.kind,
+            title=new_title,
+            body=new_body,
+            priority=new_priority,
+            active=new_active,
+            created_at=existing.created_at,
+            updated_at=updated_at,
+            source_event_id=existing.source_event_id,
+            metadata=new_metadata,
+        )
         try:
+            # Mutation and its audit event share one transaction: a failed
+            # event append rolls the mutation back (FIX-03 DoD).
             with self._conn:
                 self._conn.execute(
                     """
@@ -297,22 +312,9 @@ class MemoryManager:
                         block_id,
                     ),
                 )
+                self._append_memory_event(event_action, block)
         except sqlite3.Error as exc:
             raise MemoryError(f"Could not update memory block {block_id}: {exc}") from exc
-
-        block = MemoryBlock(
-            id=existing.id,
-            kind=existing.kind,
-            title=new_title,
-            body=new_body,
-            priority=new_priority,
-            active=new_active,
-            created_at=existing.created_at,
-            updated_at=updated_at,
-            source_event_id=existing.source_event_id,
-            metadata=new_metadata,
-        )
-        self._append_memory_event(event_action, block)
         return block
 
     def _read_blocks(self, where_sql: str = "", params: tuple[Any, ...] = ()) -> list[MemoryBlock]:

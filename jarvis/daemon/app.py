@@ -23,6 +23,7 @@ from jarvis.paths import RuntimePaths, ensure_runtime_dirs, resolve_runtime_path
 from jarvis.runtime.supervisor import RuntimeSupervisor
 from jarvis.security.transport import ensure_api_token
 from jarvis.store.db import (
+    ThreadLocalConnection,
     close_quietly,
     connect_db,
     get_schema_version,
@@ -128,6 +129,10 @@ class DaemonApp:
     api_token: str | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
+    # Worker job threads, tracked so stop() can drain them before the
+    # daemon.stopped event (FIX-03 DoD).
+    worker_threads: list[threading.Thread] = field(default_factory=list)
+    _worker_threads_lock: Any = field(default_factory=threading.Lock)
 
     def start(self) -> None:
         """Start app-level state without running the long-lived HTTP loop."""
@@ -244,6 +249,18 @@ class DaemonApp:
         # The generation registry stays: it is daemon-lifetime and shared
         # with the brain adapters built in create_daemon_app.
         self.voice_cancellation = None
+
+        # Drain worker job threads before daemon.stopped: their writes go
+        # through the daemon store and must land before the final event.
+        with self._worker_threads_lock:
+            pending_workers = [t for t in self.worker_threads if t.is_alive()]
+            self.worker_threads = []
+        for thread in pending_workers:
+            thread.join(timeout=10)
+            if thread.is_alive():
+                get_logger(__name__).warning(
+                    "Worker thread %s did not finish before daemon stop.", thread.name
+                )
 
         if self.started:
             event_store.append(
@@ -593,9 +610,13 @@ class DaemonApp:
                 # enqueue and thread start). The job row stays authoritative.
                 get_logger(__name__).exception("Worker job execution failed: %s", job.id)
 
-        threading.Thread(
+        thread = threading.Thread(
             target=_run, name=f"jarvis-worker-{job.id[:8]}", daemon=True
-        ).start()
+        )
+        with self._worker_threads_lock:
+            self.worker_threads = [t for t in self.worker_threads if t.is_alive()]
+            self.worker_threads.append(thread)
+        thread.start()
         return job.to_dict()
 
     def list_worker_jobs(
@@ -1124,14 +1145,16 @@ def _restore_persisted_brain_adapter(
         )
 
 
-def _connect_daemon_db(path: Path) -> sqlite3.Connection:
-    """Open the daemon-owned connection for the threaded local HTTP server."""
+def _connect_daemon_db(path: Path) -> ThreadLocalConnection:
+    """Open the daemon-owned connection for the threaded local HTTP server.
 
-    conn = sqlite3.connect(path, check_same_thread=False)
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
+    Per-thread connections behind one facade (FIX-03): a single shared
+    connection would make concurrent HTTP/worker threads share one implicit
+    transaction, so one thread's rollback could silently discard another's
+    append-only event.
+    """
+
+    return ThreadLocalConnection(path)
 
 
 def _request_source_from_approval(approval: Mapping[str, Any]) -> RequestSource | None:
