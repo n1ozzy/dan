@@ -86,6 +86,33 @@
         <pre id="toolsError" class="error-box" hidden></pre>
       </section>
 
+      <section class="card" aria-labelledby="settingsHeading">
+        <div class="section-head">
+          <h2 id="settingsHeading">Settings</h2>
+          <button id="refreshSettingsButton" type="button">Refresh</button>
+        </div>
+        <div class="brain-switch-line">
+          <label class="inline-field brain-field">
+            <span>Brain</span>
+            <select id="brainAdapterSelect" aria-label="Brain adapter"></select>
+          </label>
+          <button id="switchBrainButton" type="button">Switch</button>
+        </div>
+        <p id="brainAdapterLabel" class="muted"></p>
+        <form id="settingsForm" class="settings-form">
+          <input id="settingKey" type="text" placeholder="key" aria-label="Setting key" />
+          <input
+            id="settingValue"
+            type="text"
+            placeholder='JSON value, e.g. true or "text"'
+            aria-label="Setting value (JSON)"
+          />
+          <button id="saveSettingButton" type="submit">Save</button>
+        </form>
+        <div id="settingsList" class="list compact-list"></div>
+        <pre id="settingsError" class="error-box" hidden></pre>
+      </section>
+
       <section class="card" aria-labelledby="eventsHeading">
         <div class="section-head">
           <h2 id="eventsHeading">Events</h2>

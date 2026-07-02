@@ -62,6 +62,14 @@ not start, stop, supervise, or clean up any process.
 - Memory: lists active blocks from `GET /memory?active_only=true`, creates a
   block with `POST /memory`, and soft-disables with `DELETE /memory/{id}`.
 - Tools: lists registered tools and pending approvals.
+- Settings: renders daemon-owned settings from `GET /settings` and saves a
+  key/value change with `POST /settings` (transport token required; values
+  are entered as JSON, e.g. `true`, `3`, `"text"`). The same card switches
+  the brain adapter: the select is populated from `GET /brain/adapters`
+  (current + default shown) and the Switch button posts to `POST /brain/switch`.
+  The cockpit keeps no local settings copy — every mutation POSTs and then
+  re-fetches daemon truth, and a `brain.*` event on the stream also triggers
+  a debounced re-fetch of settings and health.
 - Approvals: approve, reject, and execute-approved actions require explicit
   clicks. Approval alone does not execute.
 - Events: initial backlog from `GET /events?after_id=0&limit=50`, then live

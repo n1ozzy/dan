@@ -14,6 +14,7 @@ const cockpit = {
     retryMs: 2000,
     reconnectTimer: null,
     approvalsTimer: null,
+    settingsTimer: null,
   },
 };
 
@@ -62,6 +63,16 @@ function bindElements() {
     "toolList",
     "approvalList",
     "toolsError",
+    "refreshSettingsButton",
+    "brainAdapterSelect",
+    "switchBrainButton",
+    "brainAdapterLabel",
+    "settingsForm",
+    "settingKey",
+    "settingValue",
+    "saveSettingButton",
+    "settingsList",
+    "settingsError",
     "refreshEventsButton",
     "streamStatus",
     "eventList",
@@ -82,6 +93,9 @@ function bindEvents() {
   el.refreshHistoryButton.addEventListener("click", refreshHistory);
   el.refreshMemoryButton.addEventListener("click", refreshMemory);
   el.refreshToolsButton.addEventListener("click", refreshToolsAndApprovals);
+  el.refreshSettingsButton.addEventListener("click", refreshSettings);
+  el.switchBrainButton.addEventListener("click", switchBrain);
+  el.settingsForm.addEventListener("submit", saveSetting);
   el.refreshEventsButton.addEventListener("click", refreshEvents);
   el.refreshRuntimeButton.addEventListener("click", refreshRuntime);
   el.textForm.addEventListener("submit", sendTextInput);
@@ -110,6 +124,7 @@ async function refreshAll() {
     refreshHistory(),
     refreshMemory(),
     refreshToolsAndApprovals(),
+    refreshSettings(),
     refreshEvents(),
     refreshRuntime(),
   ]);
@@ -467,6 +482,136 @@ async function executeApproval(approvalId, button) {
   }
 }
 
+// --- Settings (GET /settings + POST /settings, brain switch; ADR-002) ---
+// The cockpit never keeps a settings copy: every render reads the daemon
+// and every mutation POSTs, then re-fetches daemon truth.
+
+async function refreshSettings() {
+  clearError(el.settingsError);
+
+  try {
+    const [settingsPayload, brainPayload] = await Promise.all([
+      requestJson("/settings"),
+      requestJson("/brain/adapters"),
+    ]);
+    renderBrainAdapters(brainPayload);
+    renderSettings(settingsPayload.settings || {});
+  } catch (error) {
+    clearNode(el.settingsList);
+    clearNode(el.brainAdapterSelect);
+    setText(el.brainAdapterLabel, "");
+    renderError(el.settingsError, error);
+  }
+}
+
+function renderBrainAdapters(payload) {
+  clearNode(el.brainAdapterSelect);
+
+  const adapters = Array.isArray(payload.adapters) ? payload.adapters : [];
+  for (const adapter of adapters) {
+    const option = document.createElement("option");
+    option.value = adapter.name;
+    setText(option, adapter.name);
+    el.brainAdapterSelect.appendChild(option);
+  }
+  if (payload.current) {
+    el.brainAdapterSelect.value = payload.current;
+  }
+  setText(
+    el.brainAdapterLabel,
+    `current ${payload.current || "n/a"} - default ${payload.default || "n/a"}`,
+  );
+}
+
+function renderSettings(settings) {
+  clearNode(el.settingsList);
+
+  const entries = Object.entries(settings);
+  if (entries.length === 0) {
+    renderEmpty(el.settingsList, "No settings");
+    return;
+  }
+
+  for (const [key, value] of entries) {
+    const row = document.createElement("article");
+    row.className = "list-row";
+    appendLine(row, key, "input-line");
+    appendLine(row, JSON.stringify(value), "final-line");
+
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const editButton = smallButton("Edit");
+    editButton.addEventListener("click", () => {
+      el.settingKey.value = key;
+      el.settingValue.value = JSON.stringify(value);
+      el.settingValue.focus();
+    });
+    actions.appendChild(editButton);
+    row.appendChild(actions);
+    el.settingsList.appendChild(row);
+  }
+}
+
+async function saveSetting(event) {
+  event.preventDefault();
+  clearError(el.settingsError);
+
+  const key = el.settingKey.value.trim();
+  if (!key || !cockpit.online) {
+    return;
+  }
+
+  let value;
+  try {
+    value = JSON.parse(el.settingValue.value);
+  } catch (error) {
+    renderError(
+      el.settingsError,
+      makeRequestError('Setting value must be valid JSON, e.g. true, 3 or "text"', {
+        value: el.settingValue.value,
+      }),
+    );
+    return;
+  }
+
+  setBusy(el.saveSettingButton, true);
+  try {
+    await requestJson("/settings", {
+      method: "POST",
+      body: { key, value },
+    });
+    el.settingKey.value = "";
+    el.settingValue.value = "";
+    await refreshSettings();
+  } catch (error) {
+    renderError(el.settingsError, error);
+  } finally {
+    setBusy(el.saveSettingButton, false);
+  }
+}
+
+async function switchBrain() {
+  clearError(el.settingsError);
+
+  const adapter = el.brainAdapterSelect.value;
+  if (!adapter || !cockpit.online) {
+    return;
+  }
+
+  setBusy(el.switchBrainButton, true);
+  try {
+    await requestJson("/brain/switch", {
+      method: "POST",
+      body: { adapter },
+    });
+    await Promise.all([refreshSettings(), refreshHealthAndState(), refreshEvents()]);
+  } catch (error) {
+    renderError(el.settingsError, error);
+  } finally {
+    setBusy(el.switchBrainButton, false);
+  }
+}
+
 async function refreshEvents() {
   clearError(el.eventsError);
 
@@ -630,6 +775,9 @@ function handleStreamMessage(raw) {
   if (type.startsWith("approval.") || type.startsWith("tool.")) {
     scheduleApprovalsRefresh();
   }
+  if (type.startsWith("brain.")) {
+    scheduleSettingsRefresh();
+  }
 }
 
 function prependLiveEvent(event) {
@@ -652,6 +800,21 @@ function scheduleApprovalsRefresh() {
     stream.approvalsTimer = null;
     try {
       await refreshToolsAndApprovals();
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function scheduleSettingsRefresh() {
+  const stream = cockpit.stream;
+  if (stream.settingsTimer !== null) {
+    return;
+  }
+  stream.settingsTimer = setTimeout(async () => {
+    stream.settingsTimer = null;
+    try {
+      await Promise.all([refreshSettings(), refreshHealthAndState()]);
     } catch (error) {
       // section renders its own errors
     }
@@ -820,6 +983,11 @@ function setInteractiveEnabled(enabled) {
     el.memoryPriority,
     el.memoryBody,
     el.createMemoryButton,
+    el.brainAdapterSelect,
+    el.switchBrainButton,
+    el.settingKey,
+    el.settingValue,
+    el.saveSettingButton,
   ];
 
   for (const control of controls) {
@@ -833,13 +1001,17 @@ function clearDynamicSections() {
   clearNode(el.memoryList);
   clearNode(el.toolList);
   clearNode(el.approvalList);
+  clearNode(el.settingsList);
+  clearNode(el.brainAdapterSelect);
   clearNode(el.eventList);
   clearNode(el.runtimeList);
   clearNode(el.runtimeObservationList);
   el.inputResponse.textContent = "";
+  setText(el.brainAdapterLabel, "");
   renderEmpty(el.conversationList, "Daemon offline");
   renderEmpty(el.memoryList, "Daemon offline");
   renderEmpty(el.toolList, "Daemon offline");
+  renderEmpty(el.settingsList, "Daemon offline");
   renderEmpty(el.eventList, "Daemon offline");
   renderEmpty(el.runtimeObservationList, "Daemon offline");
 }

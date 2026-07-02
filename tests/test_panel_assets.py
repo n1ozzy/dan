@@ -26,6 +26,9 @@ REQUIRED_ROUTES = (
     "/events",
     "/stream",
     "/runtime/processes",
+    "/settings",
+    "/brain/adapters",
+    "/brain/switch",
 )
 
 FORBIDDEN_APP_SNIPPETS = (
@@ -65,6 +68,45 @@ def test_app_references_required_daemon_routes() -> None:
     missing = [route for route in REQUIRED_ROUTES if route not in script]
 
     assert missing == []
+
+
+def test_index_has_settings_section_with_brain_switch() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "settingsHeading" in markup
+    assert "settingsList" in markup
+    assert "settingKey" in markup
+    assert "settingValue" in markup
+    assert "brainAdapterSelect" in markup
+    assert "switchBrainButton" in markup
+
+
+def test_app_settings_are_rendered_from_daemon_truth_only() -> None:
+    script = APP_JS.read_text(encoding="utf-8")
+
+    # Thin client: settings and brain state come from the daemon on every
+    # render; a mutation POSTs and then re-fetches instead of patching a
+    # local copy.
+    assert "refreshSettings" in script
+    assert "/brain/adapters" in script
+    assert "/brain/switch" in script
+    # The API token is the only value the cockpit keeps in local storage.
+    setter_calls = [
+        line for line in script.splitlines() if "localStorage.setItem" in line
+    ]
+    assert all("API_TOKEN_STORAGE_KEY" in line for line in setter_calls)
+    assert len(setter_calls) >= 1
+
+
+def test_panel_cockpit_runbook_documents_settings_section() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+    lowered = text.lower()
+
+    assert "get /settings" in lowered
+    assert "post /settings" in lowered
+    assert "/brain/adapters" in text
+    assert "/brain/switch" in text
+    assert "re-fetch" in lowered
 
 
 def test_app_avoids_unsafe_or_legacy_runtime_snippets() -> None:
