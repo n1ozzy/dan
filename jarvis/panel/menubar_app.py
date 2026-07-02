@@ -28,6 +28,16 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 # Must match API_TOKEN_STORAGE_KEY in jarvis/panel/assets/app.js.
 COCKPIT_TOKEN_STORAGE_KEY = "jarvis-api-token"
 
+# Menu-bar display height in points; the PNG carries 2x pixels for retina.
+STATUS_ICON_HEIGHT = 18.0
+
+
+def status_icon_path() -> Path:
+    """Template wordmark for the status item (black + alpha; AppKit
+    recolors template images for light/dark menu bars)."""
+
+    return ASSETS_DIR / "menubar-icon.png"
+
 
 class PanelShellError(Exception):
     """Raised when the menu-bar shell cannot be built or run."""
@@ -163,7 +173,11 @@ class MenuBarApp:
         status_bar = AppKit.NSStatusBar.systemStatusBar()
         item = status_bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
         button = item.button()
-        button.setTitle_("J")
+        icon = self._load_status_icon(AppKit)
+        if icon is not None:
+            button.setImage_(icon)
+        else:
+            button.setTitle_("J")
         button.setToolTip_("Jarvis panel")
         button.setTarget_(controller)
         button.setAction_("togglePanel:")
@@ -171,6 +185,20 @@ class MenuBarApp:
             AppKit.NSEventMaskLeftMouseUp | AppKit.NSEventMaskRightMouseUp
         )
         return item
+
+    def _load_status_icon(self, AppKit):  # noqa: N803
+        path = status_icon_path()
+        if not path.is_file():
+            return None
+        image = AppKit.NSImage.alloc().initWithContentsOfFile_(str(path))
+        if image is None:
+            return None
+        pixel_w, pixel_h = image.size().width, image.size().height
+        if pixel_h > 0:
+            scale = STATUS_ICON_HEIGHT / pixel_h
+            image.setSize_(AppKit.NSMakeSize(pixel_w * scale, STATUS_ICON_HEIGHT))
+        image.setTemplate_(True)
+        return image
 
     def _toggle_popover(self, AppKit):  # noqa: N803
         button = self._status_item.button()

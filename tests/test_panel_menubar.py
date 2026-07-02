@@ -134,6 +134,19 @@ class TestProbe:
         assert menubar_app.probe(settings) == 2
 
 
+class TestStatusIcon:
+    def test_icon_asset_exists_in_panel_assets(self) -> None:
+        path = menubar_app.status_icon_path()
+
+        assert path == ROOT / "jarvis" / "panel" / "assets" / "menubar-icon.png"
+        assert path.is_file()
+
+    def test_icon_is_a_png(self) -> None:
+        head = menubar_app.status_icon_path().read_bytes()[:8]
+
+        assert head == b"\x89PNG\r\n\x1a\n"
+
+
 class TestRunbook:
     def test_runbook_documents_install_run_and_boundaries(self) -> None:
         text = (ROOT / "docs" / "runbooks" / "PANEL_MENUBAR.md").read_text(encoding="utf-8")
