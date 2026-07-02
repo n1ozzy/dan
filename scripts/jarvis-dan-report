@@ -1,0 +1,17 @@
+#!/bin/sh
+# Legacy DAN leftovers report — DIAGNOSE-ONLY (FAZA H, H2).
+#
+# Prints what the legacy DAN install left behind so Ozzy has a ready
+# decision list. Never deletes, stops, or unloads anything.
+set -eu
+
+if [ -z "${JARVIS_REPO:-}" ]; then
+  JARVIS_REPO="$(cd "$(dirname "$0")/.." && pwd)"
+fi
+
+PYTHON="$JARVIS_REPO/.venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+  PYTHON="$(command -v python3)"
+fi
+
+exec "$PYTHON" -m jarvis.diagnostics.legacy_dan "$@"
