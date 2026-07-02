@@ -64,9 +64,12 @@ Decision authority: tool and framework choices are **decreed by Ozzy**
   inventory. `ui_act` without per-call gating is "a model with a mouse".
   Focused-field reads can capture passwords mid-typing — `ui_read` results
   pass redaction, and secure input fields (kSecureTextField) are never read.
-- **Future tool names:** `ui_active_app`, `ui_read_window`, `ui_click`,
-  `ui_type`, `ui_focus_app`.
-- **Status:** `planned:D1` (`ui_read`), `planned:D2` (`ui_act`).
+- **Tool names:** `ui_active_app`, `ui_read_window` (implemented); `ui_click`,
+  `ui_type`, `ui_focus_app` (future, D2).
+- **Status:** `implemented:D1` (`ui_read` — ADR-017: surfaces = frontmost app
+  + focused window, ctypes backend, TCC onboarding in
+  [runbooks/ACCESSIBILITY_TCC.md](runbooks/ACCESSIBILITY_TCC.md)),
+  `planned:D2` (`ui_act`).
 
 ## 3. Speech-to-text — MLX whisper (decreed)
 

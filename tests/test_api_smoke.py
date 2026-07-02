@@ -539,6 +539,8 @@ def test_get_tools_returns_default_tools(app: DaemonApp) -> None:
     assert tools["system_status"]["risk"] == "safe_status"
     assert tools["approval_probe"]["risk"] == "shell_read"
     assert "Approval-required demo tool" in tools["approval_probe"]["description"]
+    assert tools["ui_active_app"]["risk"] == "ui_read"
+    assert tools["ui_read_window"]["risk"] == "ui_read"
 
 
 def test_post_tools_request_echo_executes_and_records_run(app: DaemonApp) -> None:

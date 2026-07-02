@@ -34,6 +34,7 @@ class PermissionClass(StrEnum):
     SHELL_WRITE = "shell_write"
     NETWORK = "network"
     DESTRUCTIVE = "destructive"
+    UI_READ = "ui_read"
 
 
 class RequestSource(StrEnum):
@@ -116,6 +117,29 @@ class ToolPermissionPolicy:
             return _approval_required(
                 normalized_risk,
                 f"{tool_name} is {normalized_risk} but {normalized_source} requests require approval.",
+                source=normalized_source,
+            )
+
+        if normalized_risk == PermissionClass.UI_READ:
+            # §3: ui_read | user A | model AP | auto B. D1 approved surfaces
+            # are the frontmost app and its focused window only; secure text
+            # fields are stripped at the tool layer regardless of source.
+            if normalized_source in AUTO_SOURCES:
+                return _blocked(
+                    normalized_risk,
+                    f"{tool_name} is ui_read and unattended {normalized_source} "
+                    "requests may not observe the UI.",
+                    source=normalized_source,
+                )
+            if normalized_source in USER_SOURCES:
+                return _allow(
+                    normalized_risk,
+                    f"{tool_name} ui_read observes an approved surface for a user source.",
+                    source=normalized_source,
+                )
+            return _approval_required(
+                normalized_risk,
+                f"{tool_name} ui_read from {normalized_source} requires approval.",
                 source=normalized_source,
             )
 

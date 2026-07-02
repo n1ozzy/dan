@@ -319,6 +319,41 @@ runtime states require a new ADR and tests.
 
 ---
 
+## ADR-017 — `ui_read` observes only the frontmost app and focused window, via a jarvisd-owned backend
+
+**Status:** Accepted
+
+**Context.** FAZA D1 (MASTER_PLAN) adds read-only Accessibility. The §3
+matrix row says `ui_read` | user **A (approved surfaces)** | model AP |
+auto B, but "approved surfaces" had no concrete definition, and the project
+has zero runtime dependencies (no pyobjc).
+
+**Decision.**
+
+- **Approved surfaces in D1 are exactly the frontmost application and its
+  focused window.** The tools (`ui_active_app`, `ui_read_window`) expose
+  nothing broader — no other apps, no other windows, no system-wide UI tree.
+  Widening the surface requires a new ADR, not a config flag.
+- The adapter is a pluggable, jarvisd-owned backend
+  (`jarvis/macos/accessibility.py`): `ax` (real AXUIElement via **ctypes**,
+  keeping the zero-dependency rule) or `fake` (deterministic fixture for
+  tests/smoke, announced as `backend: "fake"` in every payload). An unknown
+  backend name fails the daemon at startup — no silent fallback.
+- **Secure text fields are stripped at the tool layer**, not (only) in the
+  backend: every snapshot passes `sanitize_window_snapshot`, which drops
+  values of `AXSecureTextField` elements and clips element counts and text
+  lengths. A buggy backend cannot leak a password into tool_runs. The `ax`
+  backend additionally never copies secure values in the first place.
+- The model never talks to AX. Tools go through ToolRegistry →
+  PermissionPolicy (`ui_read` row) → EventStore like every other tool.
+
+**Consequences.** TCC onboarding is a documented human step
+([runbooks/ACCESSIBILITY_TCC.md](runbooks/ACCESSIBILITY_TCC.md)); without the
+grant reads fail cleanly and the daemon keeps running. D2 (`ui_act`) will
+reuse the adapter but stays approval-gated per the matrix.
+
+---
+
 ## Decision log
 
 | ADR | Title | Status |
@@ -339,6 +374,7 @@ runtime states require a new ADR and tests.
 | 014 | `jarvisd` launchd artifacts avoid the `~/Documents` TCC trap | Accepted |
 | 015 | Worker job lifecycle uses worker_jobs for state and events for history | Accepted |
 | 016 | Runtime state names are canonical and finite | Accepted |
+| 017 | `ui_read` observes only the frontmost app and focused window, via a jarvisd-owned backend | Accepted |
 
 > ADR-013 and ADR-014 were added by the Prompt 00B inventory, grounded in
 > [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md). Further migration

@@ -121,6 +121,10 @@ class SecurityConfig:
     # Exact-match whitelist for the read-only shell tool. Empty means the
     # conservative built-in default set (jarvis/tools/shell_tool.py).
     shell_read_whitelist: tuple[str, ...] = ()
+    # ui_read backend: "ax" (real AXUIElement, needs the Accessibility TCC
+    # grant) or "fake" (deterministic fixture for tests/smoke). Unknown
+    # names fail the daemon at startup — never a silent fallback.
+    ui_read_backend: str = "ax"
 
 
 @dataclass(frozen=True)
