@@ -15,6 +15,12 @@ from jarvis.api.routes_approvals import (
     get_approvals,
     reject_approval,
 )
+from jarvis.api.routes_brain import (
+    BrainRequestValidationError,
+    get_brain_adapters,
+    get_brain_current,
+    post_brain_switch,
+)
 from jarvis.api.routes_events import get_events
 from jarvis.api.routes_health import get_health
 from jarvis.api.routes_history import get_conversations, get_turns
@@ -246,6 +252,19 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, get_settings(app))
             return
 
+        if method == "GET" and path == "/brain/adapters":
+            _write_json(handler, 200, get_brain_adapters(app))
+            return
+
+        if method == "GET" and path == "/brain/current":
+            _write_json(handler, 200, get_brain_current(app))
+            return
+
+        if method == "POST" and path == "/brain/switch":
+            request_payload = _read_json_body(handler)
+            _write_json(handler, 200, post_brain_switch(app, request_payload))
+            return
+
         if method == "GET" and path == "/runtime/processes":
             _write_json(handler, 200, get_runtime_processes(app))
             return
@@ -347,6 +366,7 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         _write_json(handler, 404, {"error": "Not found", "status": 404})
     except (
         ApprovalRequestValidationError,
+        BrainRequestValidationError,
         MemoryRequestValidationError,
         TextInputValidationError,
         ToolRequestValidationError,

@@ -12,11 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from jarvis.brain.context_builder import ContextBuilder
-from jarvis.brain.manager import BrainManager
+from jarvis.brain.manager import BrainManager, BrainManagerError
 from jarvis.config import JarvisConfig, load_config
 from jarvis.events.bus import EventBus
 from jarvis.events.models import Event, utc_now_iso
 from jarvis.events.types import EventType
+from jarvis.logging import get_logger
 from jarvis.memory import MemoryBlock, MemoryError, MemoryManager
 from jarvis.paths import RuntimePaths, ensure_runtime_dirs, resolve_runtime_paths
 from jarvis.runtime.supervisor import RuntimeSupervisor
@@ -59,6 +60,11 @@ from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.turns.orchestrator import TextTurnResult, TurnOrchestrator
 from jarvis.turns.models import Turn
 from jarvis.turns.repository import ConversationRepository, TurnRepository
+
+
+# The persisted brain choice lives in the daemon-owned settings table, not in
+# process memory: jarvisd owns truth, so a restart restores the last switch.
+BRAIN_ADAPTER_SETTING_KEY = "brain.current_adapter"
 
 
 class DaemonAppError(Exception):
@@ -141,7 +147,11 @@ class DaemonApp:
             "host": self.config.daemon.host,
             "port": self.config.daemon.port,
             "voice_enabled": self.config.voice.enabled,
-            "brain_adapter": self.config.brain.default_adapter,
+            "brain_adapter": (
+                self.brain_manager.current_adapter_name
+                if self.brain_manager is not None
+                else self.config.brain.default_adapter
+            ),
             "launchd_label": self.config.launchd.label,
             "pending_approval_count": self._pending_approval_count(),
         }
@@ -228,6 +238,63 @@ class DaemonApp:
             return {str(key): json.loads(str(value_json)) for key, value_json in rows}
         finally:
             close_quietly(conn)
+
+    def list_brain_adapters(self) -> list[dict[str, Any]]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        manager = self._require_brain_manager()
+        adapters: list[dict[str, Any]] = []
+        for name in manager.adapter_names():
+            adapter = manager.get_adapter(name)
+            models = getattr(adapter, "available_models", None)
+            adapters.append(
+                {
+                    "name": name,
+                    "models": list(models()) if callable(models) else [],
+                    "current": name == manager.current_adapter_name,
+                }
+            )
+        return adapters
+
+    def current_brain_adapter(self) -> str:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        return self._require_brain_manager().current_adapter_name
+
+    def switch_brain(self, adapter_name: str) -> dict[str, Any]:
+        """Switch the active brain adapter and persist the choice.
+
+        The switch only ever changes which stateless adapter answers the next
+        turn; conversation history lives in SQLite and is untouched. Persisting
+        happens before the in-memory switch so the settings table (jarvisd's
+        truth) can never lag behind a switch that already took effect.
+        """
+
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        name = _required_text(adapter_name, "adapter")
+        manager = self._require_brain_manager()
+        previous = manager.current_adapter_name
+        try:
+            manager.get_adapter(name)
+        except BrainManagerError as exc:
+            raise DaemonAppNotFoundError(str(exc)) from exc
+
+        self.update_settings({BRAIN_ADAPTER_SETTING_KEY: name})
+        manager.switch_adapter(name)
+        changed = previous != name
+        if changed:
+            self._require_event_store().append(
+                EventType.BRAIN_SWITCHED,
+                "api",
+                {"from": previous, "to": name, "persisted": True},
+            )
+        return {
+            "ok": True,
+            "adapter": name,
+            "previous": previous,
+            "changed": changed,
+        }
 
     def list_memory(
         self,
@@ -688,6 +755,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     event_store = create_event_store(conn)
     state_machine = RuntimeStateMachine(event_store, event_bus=event_bus)
     brain_manager = BrainManager.from_config(config)
+    _restore_persisted_brain_adapter(conn, brain_manager)
     memory_manager = MemoryManager(conn, event_store=event_store)
     context_builder = ContextBuilder(
         conn,
@@ -714,6 +782,40 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         memory_manager=memory_manager,
         api_token=api_token,
     )
+
+
+def _restore_persisted_brain_adapter(
+    conn: sqlite3.Connection, brain_manager: BrainManager
+) -> None:
+    """Restore the last persisted brain switch (settings table owns truth).
+
+    A stale persisted choice (adapter no longer registered by config) must not
+    brick the daemon: fall back to the config default and log the mismatch.
+    """
+
+    row = conn.execute(
+        "SELECT value_json FROM settings WHERE key = ?",
+        (BRAIN_ADAPTER_SETTING_KEY,),
+    ).fetchone()
+    if row is None:
+        return
+    try:
+        persisted = json.loads(str(row[0]))
+    except json.JSONDecodeError:
+        persisted = None
+    if not isinstance(persisted, str) or not persisted.strip():
+        get_logger(__name__).warning(
+            "Ignoring malformed persisted brain adapter setting %r", row[0]
+        )
+        return
+    try:
+        brain_manager.switch_adapter(persisted.strip())
+    except BrainManagerError:
+        get_logger(__name__).warning(
+            "Persisted brain adapter %r is not registered; keeping default %r",
+            persisted,
+            brain_manager.current_adapter_name,
+        )
 
 
 def _connect_daemon_db(path: Path) -> sqlite3.Connection:
@@ -791,6 +893,7 @@ def _required_text(value: Any, label: str) -> str:
 
 
 __all__ = [
+    "BRAIN_ADAPTER_SETTING_KEY",
     "DaemonApp",
     "DaemonAppBusyError",
     "DaemonAppConflictError",
