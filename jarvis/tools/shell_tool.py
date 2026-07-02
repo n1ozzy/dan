@@ -49,6 +49,22 @@ _SCRUBBED_ENV = {
     "LC_ALL": "C.UTF-8",
 }
 
+# git honours repo-local .git/config, so a malicious repo can turn a
+# whitelisted read-only command into code execution (core.fsmonitor,
+# core.hooksPath). Neutralize config-driven exec paths for every git run.
+_GIT_ENV_HARDENING = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+}
+_GIT_ARGV_HARDENING = (
+    "-c",
+    "core.fsmonitor=",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "protocol.ext.allow=never",
+)
+
 
 class ShellReadTool(Tool):
     name = "shell_read"
@@ -90,6 +106,10 @@ class ShellReadTool(Tool):
 
         cwd = self._resolve_cwd(arguments)
         argv = shlex.split(normalized)
+        env = dict(_SCRUBBED_ENV)
+        if argv and argv[0] == "git":
+            argv = [argv[0], *_GIT_ARGV_HARDENING, *argv[1:]]
+            env.update(_GIT_ENV_HARDENING)
 
         try:
             completed = subprocess.run(
@@ -97,7 +117,7 @@ class ShellReadTool(Tool):
                 capture_output=True,
                 timeout=SHELL_TIMEOUT_SECONDS,
                 shell=False,
-                env=dict(_SCRUBBED_ENV),
+                env=env,
                 cwd=cwd,
             )
         except subprocess.TimeoutExpired as exc:

@@ -7,6 +7,7 @@ lifecycle, and that nothing runs before approval.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -160,6 +161,73 @@ def test_refuses_whitelisted_prefix_with_extra_args(shell_tool: ShellReadTool) -
 def test_refuses_shell_metacharacters(shell_tool: ShellReadTool) -> None:
     with pytest.raises(ToolExecutionError, match="not whitelisted"):
         shell_tool.run({"command": "pwd; rm -rf /"})
+
+
+def _init_git_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True)
+
+
+def _make_sentinel_script(path: Path, sentinel: Path) -> Path:
+    script = path / "evil.sh"
+    script.write_text(f"#!/bin/sh\ntouch {sentinel}\n", encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+def test_git_status_does_not_execute_repo_local_fsmonitor(
+    shell_tool: ShellReadTool, approved_root: Path
+) -> None:
+    repo = approved_root / "evil-repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    sentinel = approved_root / "fsmonitor-sentinel"
+    script = _make_sentinel_script(approved_root, sentinel)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.fsmonitor", str(script)],
+        check=True,
+        capture_output=True,
+    )
+
+    output = shell_tool.run({"command": "git status --short", "cwd": str(repo)})
+
+    assert output["ok"] is True
+    assert not sentinel.exists(), "repo-local core.fsmonitor was executed"
+
+
+def test_git_status_ignores_repo_local_hooks_path(
+    shell_tool: ShellReadTool, approved_root: Path
+) -> None:
+    repo = approved_root / "hooked-repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    hooks = approved_root / "evil-hooks"
+    hooks.mkdir()
+    sentinel = approved_root / "hooks-sentinel"
+    _make_sentinel_script(hooks, sentinel).rename(hooks / "post-index-change")
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.hooksPath", str(hooks)],
+        check=True,
+        capture_output=True,
+    )
+
+    output = shell_tool.run({"command": "git status --short", "cwd": str(repo)})
+
+    assert output["ok"] is True
+    assert not sentinel.exists(), "repo-local core.hooksPath hook was executed"
+
+
+def test_git_status_still_works_in_legit_repo(
+    shell_tool: ShellReadTool, approved_root: Path
+) -> None:
+    repo = approved_root / "legit-repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    (repo / "file.txt").write_text("hello\n", encoding="utf-8")
+
+    output = shell_tool.run({"command": "git status --short", "cwd": str(repo)})
+
+    assert output["ok"] is True
+    assert "file.txt" in output["stdout"]
 
 
 def test_custom_whitelist_replaces_default(approved_root: Path) -> None:

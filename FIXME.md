@@ -30,7 +30,7 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 
 # TIER 1 — MUSI (≈ 1,5 dnia) — po tym wszystko *niebezpieczne* jest zamknięte
 
-## - [x] FIX-01 · CORS `null` origin czyta prywatne dane 🟠 HIGH — DONE
+## - [x] FIX-01 · CORS `null` origin czyta prywatne dane 🟠 HIGH — DONE `884d500`
 
 - **Pliki:** `jarvis/daemon/lifecycle.py:91`, test `tests/test_api_cors.py`
 - **Problem:** `"null"` jest w `ALLOWED_CORS_ORIGINS`, a token-gate obejmuje tylko `MUTATING_METHODS` (POST/PATCH/DELETE, l.94) → GET-y nietokenowane. Lokalna złośliwa strona (`file://`, origin `null`) robi `fetch('http://127.0.0.1:41800/conversations'|'/memory'|'/settings')` i eksfiltruje dane. `test_api_cors.py:21` wręcz utrwala `null` jako dozwolony.
@@ -46,7 +46,7 @@ PROBLEM (bezpieczeństwo, HIGH): w jarvis/daemon/lifecycle.py stała ALLOWED_COR
 ZADANIE: Zweryfikuj aktualną linię (mogła się przesunąć). Napisz najpierw test, że żądanie z Origin: null NIE dostaje nagłówka Access-Control-Allow-Origin: null. Potem usuń "null" z allowlisty i popraw istniejący test tak, by asertował odrzucenie. Nie ruszaj dozwolonych originów 127.0.0.1/localhost. Uruchom pytest dla API/CORS. Zaproponuj (ale nie wprowadzaj bez pytania) dołożenie tokenu na GET-ach jako osobny task.
 ```
 
-## - [ ] FIX-02 · git-config RCE mimo approval-gate 🟠 HIGH
+## - [x] FIX-02 · git-config RCE mimo approval-gate 🟠 HIGH — DONE
 
 - **Pliki:** `jarvis/tools/shell_tool.py:46` (`_SCRUBBED_ENV`) i wywołanie `subprocess.run` (~l.95)
 - **Problem:** `_SCRUBBED_ENV` ustawia tylko PATH/LANG/LC_ALL — brak `GIT_CONFIG_NOSYSTEM`/`GIT_CONFIG_GLOBAL`. Whitelistowane `git status/log/diff` lecą w atakowalnym `cwd`; repo ze złośliwym `.git/config [core] fsmonitor = /tmp/evil.sh` wykona ten skrypt przy „niewinnym" `git status`. Operator zatwierdza tekst „git status --short", nie widząc exec sterowanego configiem.
