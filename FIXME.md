@@ -133,6 +133,7 @@ ZADANIE: Zweryfikuj linie. Napisz testy odtwarzające każdy przypadek. Fixy: og
 - **Pliki:** `jarvis/daemon/lifecycle.py:209` (brak walidacji Host-header), `:622` (brak socket timeout), `:508` (brak capa na sesje WS), `:218` (401 nie drenuje body)
 - **Problem:** brak walidacji Host → localhost binding pokonywalny DNS rebindingiem dla nietokenowanych GET-ów. Brak socket timeout + blocking `rfile.read(Content-Length)` → slowloris trzyma wątek. Brak limitu równoległych sesji `/stream` (każda = osobne SQLite + wątek). 401 nie drenuje body → desync keep-alive.
 - **Fix:** odrzucaj Host spoza `{127.0.0.1, localhost, ::1}:port`; `handler.timeout` (np. 10s) + deadline na read; cap sesji WS z odrzuceniem ponad limit; drain body lub `Connection: close` przy 401.
+- **Follow-up z FIX-01:** rozważ token (`X-Jarvis-Token`) także na endpointach GET (`/conversations`, `/memory`, `/settings`) — po usunięciu `null` z CORS jedyną obroną GET-ów pozostaje localhost binding + walidacja Host z tego taska; token domyka wektor „dowolny lokalny proces czyta prywatne dane".
 - **Testy:** obcy Host odrzucony; wolne body nie blokuje w nieskończoność; N+1 sesja WS odrzucona; 401 nie desynca.
 - **DoD:** cztery obrony na miejscu, testy zielone.
 - **Estymat:** ~2–3h · **Zależności:** brak.
