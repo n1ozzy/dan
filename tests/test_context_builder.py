@@ -607,6 +607,143 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
     assert_schema_and_migrations_unchanged(ROOT)
 
 
+@pytest.fixture
+def persona_profiles(persona_path: Path) -> dict[str, Path]:
+    """Profile files living next to the base persona (E4, decree §7.7)."""
+
+    profiles: dict[str, Path] = {}
+    for name in ("gangus-3", "mentor"):
+        path = persona_path.parent / f"{name}.md"
+        path.write_text(f"Persona profile {name}: sharp and loyal to contracts.", encoding="utf-8")
+        profiles[name] = path
+    return profiles
+
+
+def test_persona_profile_setting_selects_profile_file(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+    persona_profiles: dict[str, Path],
+) -> None:
+    insert_conversation(conn)
+    insert_setting(conn, "persona.profile", "gangus-3")
+    builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    first = result.request.context_messages[0]
+    assert first.metadata["kind"] == "persona"
+    assert first.metadata["profile"] == "gangus-3"
+    assert "Persona profile gangus-3" in first.content
+    assert result.context_snapshot["persona_profile"] == "gangus-3"
+
+
+def test_missing_persona_profile_setting_uses_base_persona(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+    persona_profiles: dict[str, Path],
+) -> None:
+    insert_conversation(conn)
+    builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    first = result.request.context_messages[0]
+    assert "Persona: Jarvis owns memory" in first.content
+    assert first.metadata["profile"] == "default"
+    assert result.context_snapshot["persona_profile"] == "default"
+
+
+def test_unknown_persona_profile_falls_back_to_base_persona(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+    persona_profiles: dict[str, Path],
+) -> None:
+    insert_conversation(conn)
+    insert_setting(conn, "persona.profile", "no-such-profile")
+    builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    first = result.request.context_messages[0]
+    assert "Persona: Jarvis owns memory" in first.content
+    assert result.context_snapshot["persona_profile"] == "default"
+
+
+def test_persona_profile_path_traversal_is_rejected(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.md"
+    outside.write_text("EVIL PERSONA OUTSIDE THE PERSONA DIR", encoding="utf-8")
+    insert_conversation(conn)
+    insert_setting(conn, "persona.profile", f"../{outside.stem}")
+    builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    first = result.request.context_messages[0]
+    assert "EVIL PERSONA" not in first.content
+    assert "Persona: Jarvis owns memory" in first.content
+    assert result.context_snapshot["persona_profile"] == "default"
+
+
+def test_non_string_persona_profile_falls_back_to_base_persona(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+    persona_profiles: dict[str, Path],
+) -> None:
+    insert_conversation(conn)
+    insert_setting(conn, "persona.profile", 42)
+    builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    assert "Persona: Jarvis owns memory" in result.request.context_messages[0].content
+    assert result.context_snapshot["persona_profile"] == "default"
+
+
+def test_explicit_settings_override_persona_profile_from_table(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+    persona_profiles: dict[str, Path],
+) -> None:
+    insert_conversation(conn)
+    insert_setting(conn, "persona.profile", "gangus-3")
+    builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+        settings={"persona.profile": "mentor"},
+    )
+
+    first = result.request.context_messages[0]
+    assert "Persona profile mentor" in first.content
+    assert result.context_snapshot["persona_profile"] == "mentor"
+
+
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
     forbidden = (
         "/Users/n1_ozzy/Documents/dev/dan",

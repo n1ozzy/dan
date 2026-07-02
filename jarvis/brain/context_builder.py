@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from jarvis.brain.base import BrainMessage, BrainRequest
+from jarvis.logging import get_logger
 
 from ..memory.manager import MemoryManager
 
@@ -19,6 +21,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PERSONA_PATH = REPO_ROOT / "config" / "persona" / "jarvis.md"
 DEFAULT_CONTEXT_BUDGET_CHARS = 24000
 JOB_PROMPT_PREVIEW_CHARS = 120
+
+PERSONA_PROFILE_SETTING_KEY = "persona.profile"
+DEFAULT_PERSONA_PROFILE = "default"
+# Conservative file names only: the profile is a settings-supplied value, so
+# anything that could escape the persona directory is rejected outright.
+_PERSONA_PROFILE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
+
+_LOGGER = get_logger("brain.context_builder")
 
 
 class ContextBuilderError(Exception):
@@ -67,7 +77,8 @@ class ContextBuilder:
 
         budget = self._resolve_context_budget(max_context_chars)
         request_settings = self._build_settings(settings)
-        core_messages = self._build_core_messages(runtime_state)
+        persona_profile = self._resolve_persona_profile(request_settings)
+        core_messages = self._build_core_messages(runtime_state, persona_profile)
         recent_messages = self._build_recent_turn_messages(
             normalized_conversation_id,
             recent_turn_limit,
@@ -118,6 +129,7 @@ class ContextBuilder:
             "max_context_chars": budget,
             "estimated_context_chars": estimated_context_chars,
             "includes_persona": bool(messages and messages[0].metadata.get("kind") == "persona"),
+            "persona_profile": persona_profile,
             "provider_sessions_are_memory": False,
             "created_at": self._now(),
         }
@@ -201,15 +213,19 @@ class ContextBuilder:
                 raise ContextBuilderError(f"Invalid settings JSON for {key}: {exc}") from exc
         return values
 
-    def _build_core_messages(self, runtime_state: str | None) -> list[BrainMessage]:
+    def _build_core_messages(
+        self,
+        runtime_state: str | None,
+        persona_profile: str = DEFAULT_PERSONA_PROFILE,
+    ) -> list[BrainMessage]:
         messages: list[BrainMessage] = []
-        persona = self._load_persona()
+        persona = self._load_persona(persona_profile)
         if persona:
             messages.append(
                 BrainMessage(
                     role="system",
                     content=persona,
-                    metadata={"kind": "persona"},
+                    metadata={"kind": "persona", "profile": persona_profile},
                 )
             )
         if runtime_state:
@@ -222,13 +238,42 @@ class ContextBuilder:
             )
         return messages
 
-    def _load_persona(self) -> str | None:
+    def _resolve_persona_profile(self, request_settings: Mapping[str, Any]) -> str:
+        """Validate the settings-selected persona profile, fail-closed.
+
+        Returns the profile name only when it is a conservative file name AND
+        the profile file exists next to the base persona; anything else falls
+        back to the base persona so a bad setting can never break a turn.
+        """
+
+        requested = request_settings.get(PERSONA_PROFILE_SETTING_KEY)
+        if requested is None:
+            return DEFAULT_PERSONA_PROFILE
+        if not isinstance(requested, str) or not _PERSONA_PROFILE_NAME.fullmatch(requested):
+            _LOGGER.warning(
+                "Ignoring invalid persona profile setting %r; using the base persona.",
+                requested,
+            )
+            return DEFAULT_PERSONA_PROFILE
+        if not (self._persona_path.parent / f"{requested}.md").is_file():
+            _LOGGER.warning(
+                "Persona profile %r has no file in %s; using the base persona.",
+                requested,
+                self._persona_path.parent,
+            )
+            return DEFAULT_PERSONA_PROFILE
+        return requested
+
+    def _load_persona(self, persona_profile: str = DEFAULT_PERSONA_PROFILE) -> str | None:
+        path = self._persona_path
+        if persona_profile != DEFAULT_PERSONA_PROFILE:
+            path = self._persona_path.parent / f"{persona_profile}.md"
         try:
-            if not self._persona_path.is_file():
+            if not path.is_file():
                 return None
-            content = self._persona_path.read_text(encoding="utf-8").strip()
+            content = path.read_text(encoding="utf-8").strip()
         except OSError as exc:
-            raise ContextBuilderError(f"Could not read persona file {self._persona_path}: {exc}") from exc
+            raise ContextBuilderError(f"Could not read persona file {path}: {exc}") from exc
         return content or None
 
     def _build_recent_turn_messages(
