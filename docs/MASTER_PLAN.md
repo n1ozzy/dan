@@ -276,11 +276,14 @@ Warunek wejścia: legacy DAN wygaszony ręcznie przez Ozzy'ego (§4a, uwaga oper
 - **G4** — STT: MLX whisper (dekret §7.4) + nagrywanie (fakty o sox z §4a)
   + własne filtry śmieci + anti-echo + barge-in; transcript przez ten sam
   TurnOrchestrator. Implementacja clean-room.
-- **G5** — Chatterbox MLX voice-clone (inferencja w dedykowanym wątku — fakt
-  o MLX z §4a); docelowo własny głos Jarvisa. ElevenLabs tylko jeśli Ozzy
-  zadekretuje.
+Gate G (GATE): voice safety review dla zakresu G0–G4 (odpowiednik Gate 6
+z PRO). Wchodzi PRZED G5 — nie czeka na voice-clone (dekret §7.8).
 
-Gate G (GATE): voice safety review (odpowiednik Gate 6 z PRO).
+- **G5** — **ODROCZONE "na kiedyś" (dekret §7.8, 2026-07-02).** Chatterbox MLX
+  voice-clone (inferencja w dedykowanym wątku — fakt o MLX z §4a); docelowo
+  własny głos Jarvisa. Do odwołania głosem Jarvisa jest supertonic M1;
+  chatterbox zostaje w RESERVED_ENGINES. ElevenLabs tylko jeśli Ozzy
+  zadekretuje.
 
 ### FAZA H — Wykończenie
 
@@ -348,3 +351,8 @@ Kryteria voice (PRO §16 pkt 8–11) przechodzą do milestone'u MVP-voice po FAZ
    i sarkastycznie w gangus-3 — z granicami z `jarvis.md` powtórzonymi
    w każdym profilu; copy-paste z legacy `persona.py` pozostaje zakazany
    (§7.6); dopieszczanie treści odroczone "na koniec" (data, nie kod).
+8. **G5 voice-clone: ODROCZONE "na kiedyś".** Dekret Ozzy'ego (2026-07-02,
+   po zamknięciu Gate G4): supertonic M1 zostaje głosem Jarvisa do odwołania;
+   chatterbox pozostaje w RESERVED_ENGINES (zarezerwowany, nie implementowany).
+   Gate G (voice safety review) wchodzi PRZED G5 i obejmuje żywy zakres G0–G4
+   — nie czeka na voice-clone. Powrót do G5 wyłącznie nowym dekretem Ozzy'ego.
