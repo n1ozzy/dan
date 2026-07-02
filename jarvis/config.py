@@ -128,6 +128,10 @@ class SecurityConfig:
     # ui_act backend for UI actions; empty inherits ui_read_backend so the
     # common case stays a single knob. Same names, same fail-closed rule.
     ui_act_backend: str = ""
+    # screen_read backend: "native" (screencapture + Vision OCR, needs the
+    # Screen Recording TCC grant) or "fake" (deterministic fixture for
+    # tests/smoke). Unknown names fail the daemon at startup.
+    screen_read_backend: str = "native"
 
 
 @dataclass(frozen=True)

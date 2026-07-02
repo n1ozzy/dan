@@ -544,6 +544,8 @@ def test_get_tools_returns_default_tools(app: DaemonApp) -> None:
     assert tools["ui_click"]["risk"] == "ui_act"
     assert tools["ui_type"]["risk"] == "ui_act"
     assert tools["ui_focus_app"]["risk"] == "ui_act"
+    assert tools["screen_read_window"]["risk"] == "screen_read"
+    assert tools["screen_ocr_region"]["risk"] == "screen_read"
 
 
 def test_post_tools_request_echo_executes_and_records_run(app: DaemonApp) -> None:

@@ -441,6 +441,57 @@ route is a separate decision.
 
 ---
 
+## ADR-020 — `screen_read` D4 is narrow-only: `screencapture` + Vision-via-ctypes in a crash-isolated subprocess, pixels never persist
+
+**Status:** Accepted
+
+**Context.** FAZA D4 (MASTER_PLAN) gives the operator eyes: capture +
+on-device OCR, risk class `screen_read`. The permission model (§3) defines
+two shapes — narrow (current window / named region: user A, model AP,
+auto B) and broad (full display / continuous: user AP). ScreenCaptureKit
+and Vision are Objective-C-only frameworks, the project has zero runtime
+dependencies (no pyobjc — the D1/ADR-017 precedent), and the capability
+inventory warns that the screen routinely contains secrets.
+
+**Decision.**
+
+- **D4 implements the narrow shape only**: `screen_read_window` (frontmost
+  window, id resolved from CGWindowList — window *number* and owner only,
+  never titles or contents, so the ADR-017 surface is unchanged) and
+  `screen_ocr_region` (explicit bounded x/y/width/height). No full-display
+  tool, no continuous capture — the broad shape requires a new ADR.
+- **Capture goes through Apple's `/usr/sbin/screencapture`** (itself built
+  on ScreenCaptureKit) — that binary *is* the D4 "bridge". Driving SCK's
+  async ObjC API from ctypes would mean hand-rolled blocks and dispatch —
+  disproportionate ABI risk for zero functional gain.
+- **OCR is Vision `VNRecognizeTextRequest` driven through ctypes
+  `objc_msgSend`, executed in a short-lived subprocess**
+  (`python -m jarvis.macos.screen --ocr <png>`). Vision has no C API; the
+  ObjC bridge is the riskiest code in D4, so it never runs inside jarvisd —
+  a segfault costs one tool run, not the daemon. The bridge uses request
+  defaults only (no blocks, no queues) and returns observations in Vision's
+  natural order.
+- **Pixels are transient**: captures land as 0600 PNGs under the
+  jarvisd-owned runtime dir and are deleted right after OCR, success or
+  failure. Only OCR *text* leaves the adapter — clipped at the tool layer
+  (240 lines × 512 chars), redacted by ToolRunRecorder/EventStore as every
+  tool output, and never carried by the D3 stream (ADR-019 omits bulk
+  output).
+- Backend knob `security.screen_read_backend`: `native` (default, needs the
+  Screen Recording TCC grant — runbooks/SCREEN_RECORDING_TCC.md) or `fake`
+  (deterministic fixture whose lines include a secret-shaped token, so every
+  test/smoke run proves redaction). Unknown names fail the daemon at
+  startup.
+
+**Consequences.** "Look at my terminal / read this error" works with a
+human-grade permission trail; D4 needs its own TCC grant (Screen Recording,
+separate from Accessibility). The Vision bridge and its subprocess isolation
+were verified live on a rendered PNG; the full native capture path awaits
+the TCC grant (live gate). OCR text quality and ordering are Vision's —
+no geometric re-sorting in D4.
+
+---
+
 ## Decision log
 
 | ADR | Title | Status |
@@ -464,6 +515,7 @@ route is a separate decision.
 | 017 | `ui_read` observes only the frontmost app and focused window, via a jarvisd-owned backend | Accepted |
 | 018 | `ui_act` uses AX-only actions, always approval-gated, never touching credentials | Accepted |
 | 019 | `GET /stream` is a token-gated, read-only websocket that never carries bulk tool output | Accepted |
+| 020 | `screen_read` D4 is narrow-only: `screencapture` + Vision-via-ctypes in a crash-isolated subprocess, pixels never persist | Accepted |
 
 > ADR-013 and ADR-014 were added by the Prompt 00B inventory, grounded in
 > [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md). Further migration

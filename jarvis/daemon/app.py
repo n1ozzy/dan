@@ -41,8 +41,10 @@ from jarvis.tools import (
     create_default_tool_registry,
 )
 from jarvis.macos.accessibility import create_actor, create_reader
+from jarvis.macos.screen import create_screen_reader
 from jarvis.tools.file_tool import FileReadTool, FileWriteTool
 from jarvis.tools.registry import ApprovalProbeTool
+from jarvis.tools.screen_tool import ScreenOcrRegionTool, ScreenReadWindowTool
 from jarvis.tools.shell_tool import ShellReadTool
 from jarvis.tools.ui_tool import (
     UiActiveAppTool,
@@ -642,6 +644,14 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     tool_registry.register(UiClickTool(ui_actor))
     tool_registry.register(UiTypeTool(ui_actor))
     tool_registry.register(UiFocusAppTool(ui_actor))
+    # Captures are transient artifacts under the jarvisd-owned runtime dir;
+    # the backend deletes them right after OCR (ADR-020).
+    screen_reader = create_screen_reader(
+        config.security.screen_read_backend,
+        work_dir=paths.runtime_dir / "screen",
+    )
+    tool_registry.register(ScreenReadWindowTool(screen_reader))
+    tool_registry.register(ScreenOcrRegionTool(screen_reader))
     tool_permission_policy = ToolPermissionPolicy(
         destructive_tools_enabled=config.security.destructive_tools_enabled,
         approved_roots=approved_roots,

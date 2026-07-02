@@ -404,6 +404,47 @@ def _frontmost_pid() -> int | None:
     return None
 
 
+def frontmost_window_summary() -> dict[str, Any] | None:
+    """CG window number + owner of the frontmost layer-0 window, or None.
+
+    Backs the D4 screen_read capture (``screencapture -l <window_id>``).
+    Reads only kCGWindowNumber/OwnerName/OwnerPID/Layer — never window
+    titles or contents, so the ADR-017 surface stays unchanged.
+    """
+
+    fw = _fw()
+    windows = fw.ax.CGWindowListCopyWindowInfo(_CG_ON_SCREEN_ONLY, _CG_NULL_WINDOW_ID)
+    if not windows:
+        return None
+    number_key = fw.cf.CFStringCreateWithCString(None, b"kCGWindowNumber", _UTF8)
+    owner_name_key = fw.cf.CFStringCreateWithCString(None, b"kCGWindowOwnerName", _UTF8)
+    owner_pid_key = fw.cf.CFStringCreateWithCString(None, b"kCGWindowOwnerPID", _UTF8)
+    layer_key = fw.cf.CFStringCreateWithCString(None, b"kCGWindowLayer", _UTF8)
+    try:
+        count = fw.cf.CFArrayGetCount(windows)
+        for index in range(count):
+            entry = fw.cf.CFArrayGetValueAtIndex(windows, index)
+            if not entry:
+                continue
+            layer = _cfnumber_to_int(fw.cf.CFDictionaryGetValue(entry, layer_key))
+            if layer != 0:
+                continue
+            window_id = _cfnumber_to_int(fw.cf.CFDictionaryGetValue(entry, number_key))
+            if window_id is None:
+                continue
+            name_ref = fw.cf.CFDictionaryGetValue(entry, owner_name_key)
+            name = _cfstring_to_str(ctypes.c_void_p(name_ref)) if name_ref else None
+            pid = _cfnumber_to_int(fw.cf.CFDictionaryGetValue(entry, owner_pid_key))
+            return {"window_id": window_id, "app_name": name, "pid": pid}
+        return None
+    finally:
+        fw.cf.CFRelease(number_key)
+        fw.cf.CFRelease(owner_name_key)
+        fw.cf.CFRelease(owner_pid_key)
+        fw.cf.CFRelease(layer_key)
+        fw.cf.CFRelease(windows)
+
+
 def _pid_for_app_name(app_name: str) -> int | None:
     for name, pid, _layer in _window_owner_entries():
         if name == app_name and pid is not None:
@@ -526,4 +567,9 @@ def _release(value: ctypes.c_void_p | None) -> None:
         _fw().cf.CFRelease(value)
 
 
-__all__ = ["AXAccessibilityActor", "AXAccessibilityReader", "is_process_trusted"]
+__all__ = [
+    "AXAccessibilityActor",
+    "AXAccessibilityReader",
+    "frontmost_window_summary",
+    "is_process_trusted",
+]

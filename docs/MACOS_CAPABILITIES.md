@@ -45,9 +45,11 @@ Decision authority: tool and framework choices are **decreed by Ozzy**
   managers, tokens in terminals). OCR output MUST pass EventStore redaction
   before persistence; captures themselves are transient artifacts, never
   written into the DB.
-- **Future tool names:** `screen_read_current_window`, `screen_ocr_region`,
-  `screen_ocr_terminal`.
-- **Status:** `planned:D4`.
+- **Tool names:** `screen_read_window`, `screen_ocr_region` (both narrow;
+  `screen_ocr_terminal` folded into `screen_read_window` — the frontmost
+  window covers the "read my terminal" case in D4).
+- **Status:** `implemented:D4` (narrow shape only — ADR-020; broad capture
+  still requires a new ADR).
 
 ## 2. UI observation and action — Accessibility API
 
