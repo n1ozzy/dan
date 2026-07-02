@@ -132,6 +132,11 @@ class SecurityConfig:
     # Screen Recording TCC grant) or "fake" (deterministic fixture for
     # tests/smoke). Unknown names fail the daemon at startup.
     screen_read_backend: str = "native"
+    # terminal bridge backend: "osascript" (fixed AppleScript to
+    # Terminal/iTerm2, needs the Automation TCC grant per target app) or
+    # "fake" (deterministic fixture for tests/smoke). Unknown names fail
+    # the daemon at startup.
+    terminal_backend: str = "osascript"
 
 
 @dataclass(frozen=True)

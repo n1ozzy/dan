@@ -185,6 +185,11 @@ Decision authority: tool and framework choices are **decreed by Ozzy**
   Raw AppleScript execution from a model path is a shell in a trenchcoat.
 - **Status:** `design-only` — only if a concrete need exceeds what 8 covers;
   would require its own contract and a `shell_write`-grade risk treatment.
+- **Sanctioned narrow exception (D5, ADR-021):** the terminal operator
+  profile runs *fixed* AppleScript constants through osascript against the
+  closed set {Terminal, iTerm2} — parameters via argv, never interpolated;
+  classes `terminal_read` / `terminal_write` (the latter shell_write-grade,
+  as required above). Generic AppleScript execution stays deferred.
 
 ## 10. Local language processing — NaturalLanguage
 

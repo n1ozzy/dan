@@ -37,6 +37,8 @@ class PermissionClass(StrEnum):
     UI_READ = "ui_read"
     UI_ACT = "ui_act"
     SCREEN_READ = "screen_read"
+    TERMINAL_READ = "terminal_read"
+    TERMINAL_WRITE = "terminal_write"
 
 
 class RequestSource(StrEnum):
@@ -122,13 +124,19 @@ class ToolPermissionPolicy:
                 source=normalized_source,
             )
 
-        if normalized_risk in {PermissionClass.UI_READ, PermissionClass.SCREEN_READ}:
+        if normalized_risk in {
+            PermissionClass.UI_READ,
+            PermissionClass.SCREEN_READ,
+            PermissionClass.TERMINAL_READ,
+        }:
             # §3: ui_read | user A | model AP | auto B. D1 approved surfaces
             # are the frontmost app and its focused window only; secure text
             # fields are stripped at the tool layer regardless of source.
             # §3: screen_read (narrow) shares the row — D4 tools cover only
             # the current window / a named region; the broad shape (full
             # display / continuous) has no tools yet (ADR-020).
+            # §3: terminal_read shares it too — D5 observes only the front
+            # window of an explicitly named terminal app (ADR-021).
             if normalized_source in AUTO_SOURCES:
                 return _blocked(
                     normalized_risk,
@@ -163,6 +171,10 @@ class ToolPermissionPolicy:
             # §3: ui_act | user AP | model AP | auto B — clicking and typing
             # always cross ApprovalGate; earned per-surface trust is §6 future.
             PermissionClass.UI_ACT,
+            # §3: terminal_write | user AP | model AP | auto B — pasting into
+            # a terminal is one Enter from execution, shell_write-grade
+            # (ADR-021); never merged with terminal_read.
+            PermissionClass.TERMINAL_WRITE,
         }:
             if normalized_source in AUTO_SOURCES:
                 return _blocked(

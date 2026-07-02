@@ -42,9 +42,11 @@ from jarvis.tools import (
 )
 from jarvis.macos.accessibility import create_actor, create_reader
 from jarvis.macos.screen import create_screen_reader
+from jarvis.macos.terminal import create_terminal_bridge
 from jarvis.tools.file_tool import FileReadTool, FileWriteTool
 from jarvis.tools.registry import ApprovalProbeTool
 from jarvis.tools.screen_tool import ScreenOcrRegionTool, ScreenReadWindowTool
+from jarvis.tools.terminal_tool import TerminalPasteTool, TerminalReadScreenTool
 from jarvis.tools.shell_tool import ShellReadTool
 from jarvis.tools.ui_tool import (
     UiActiveAppTool,
@@ -652,6 +654,11 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     )
     tool_registry.register(ScreenReadWindowTool(screen_reader))
     tool_registry.register(ScreenOcrRegionTool(screen_reader))
+    # One bridge feeds both terminal tools, but read and paste keep their
+    # own risk classes (terminal_read / terminal_write, ADR-021).
+    terminal_bridge = create_terminal_bridge(config.security.terminal_backend)
+    tool_registry.register(TerminalReadScreenTool(terminal_bridge))
+    tool_registry.register(TerminalPasteTool(terminal_bridge))
     tool_permission_policy = ToolPermissionPolicy(
         destructive_tools_enabled=config.security.destructive_tools_enabled,
         approved_roots=approved_roots,

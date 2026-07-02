@@ -53,6 +53,8 @@ implemented only when their capability stage lands):
 | `ui_read` | Accessibility observation (windows, controls, focused field) | D1 |
 | `ui_act` | Accessibility actions (click, type, focus, menu) | D2 |
 | `screen_read` | ScreenCaptureKit capture + Vision OCR | D4 |
+| `terminal_read` | observing a named terminal app's front session (ADR-021) | D5 |
+| `terminal_write` | pasting a prepared command into a named terminal app (ADR-021) | D5 |
 | `audio_input` | listening under ListeningLease | G2/G4 |
 | `audio_output` | speech via voice broker | G3 |
 | `fs_watch` | FSEvents observation within approved roots | E-phase |
@@ -82,6 +84,8 @@ Columns: `user` = `direct_user_command` / `panel_command` / `voice_command`
 | `ui_act` | AP | AP | **B** | user column may earn per-surface trust later (§6) |
 | `screen_read` (narrow) | A | AP | B | narrow = current window / named region |
 | `screen_read` (broad) | AP | AP | **B** | full display / continuous |
+| `terminal_read` | A | AP | B | front session of a named app ({Terminal, iTerm2}); output is secret-bearing — redaction applies, never streamed (ADR-021) |
+| `terminal_write` | AP | AP | **B** | shell_write-grade: paste never submits, control chars rejected; never merged with `terminal_read` (ADR-021) |
 | `audio_input` | lease-gated | **B** | **B** | only user sources can create a ListeningLease; a model can never start listening |
 | `audio_output` | A (broker) | A (broker) | AP | speaking is low-risk; auto-sources queue via approval to avoid a 3 a.m. monologue |
 | `fs_watch` | A (in roots) | AP | AP | registration is config-like; watching itself is passive |

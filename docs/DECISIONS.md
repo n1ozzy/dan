@@ -492,6 +492,73 @@ no geometric re-sorting in D4.
 
 ---
 
+## ADR-021 — Terminal profile D5: fixed-script osascript bridge, read and paste split, paste never submits
+
+**Status:** Accepted
+
+**Context.** FAZA D5 (MASTER_PLAN, dawne 21D) gives the operator a
+terminal profile: "observe terminal state, paste prepared commands"
+(MACOS_OPERATOR_CONTRACT.md). The capability inventory §9 defers raw
+AppleScript as "a shell in a trenchcoat", allowing it only when a concrete
+need exceeds Shortcuts and only with its own contract plus a
+`shell_write`-grade risk treatment. Reading a terminal's contents has no
+Shortcuts-shaped alternative, and terminal output routinely contains
+secrets. The ui_read / ui_act precedent (ADR-017/018) demands that
+observing and mutating never share a risk class.
+
+**Decision.**
+
+- **Two new permission classes, never merged.** `terminal_read`
+  (user A / model AP / auto B — the ui_read / narrow-screen_read row) and
+  `terminal_write` (user AP / model AP / auto B — the shell_write-grade
+  treatment §9 requires: a pasted command is one Enter away from
+  execution, so no source ever gets a plain allow).
+- **The bridge executes only fixed AppleScript constants** via
+  `/usr/bin/osascript` (`jarvis/macos/terminal.py`). Parameters travel
+  through the `run` handler argv and are never interpolated into script
+  source — no injection surface. Targets form the closed set
+  {Terminal, iTerm2}; any other app name is an error, not a fallback.
+  This is the sanctioned narrow exception to the §9 deferral; generic
+  AppleScript execution stays deferred.
+- **The observed surface is the front window / current session** of the
+  explicitly named terminal app. Unlike ADR-017's frontmost-app rule for
+  `ui_read`, the terminal app does not need global focus — "look at my
+  terminal" is the use case — but the surface is still exactly one
+  session, named per call. `tell application` auto-launches its target,
+  so the bridge refuses to address an app that is not running (checked
+  with `pgrep -qx` before osascript ever spawns).
+- **Paste never submits.** `terminal_paste` uses iTerm2's
+  `write text ... newline NO`; pressing Enter stays with the human even
+  after approval. Terminal.app has no paste-without-execute verb, so
+  pasting into Terminal.app is unsupported (the fake backend mirrors the
+  refusal). Paste payloads are one bounded printable line
+  (max 4096 chars); control characters — including the newline that would
+  submit despite `newline NO`, the tab that triggers completion and
+  escape sequences — are rejected at the adapter AND the tool layer (the
+  D2 two-layer precedent). An auto-submitting or multi-line path requires
+  a new ADR, not a flag.
+- **Terminal text is treated as secret-bearing bulk output**: clipped at
+  the tool layer (240 lines × 512 chars), redacted by
+  ToolRunRecorder/EventStore like every tool output, never carried by the
+  D3 stream (ADR-019 omits bulk output). The paste tool does not echo its
+  text back in the result.
+- Backend knob `security.terminal_backend`: `osascript` (default,
+  needs the per-app Automation TCC grant —
+  runbooks/TERMINAL_AUTOMATION_TCC.md) or `fake` (deterministic fixture
+  whose lines include a secret-shaped token, so every test/smoke run
+  proves redaction). Unknown names fail the daemon at startup.
+
+**Consequences.** "Read my terminal / prepare this command for me" works
+with a human-grade permission trail and zero new dependencies. The
+Automation grant is per (host app → target app) pair and separate from
+Accessibility and Screen Recording. The osascript path needs a live gate
+(running iTerm2/Terminal + Automation grant) — probe:
+`python -m jarvis.macos.terminal`. Reading scrollback history, pasting
+into Terminal.app, multi-line paste and any submit path all remain out of
+scope pending their own ADRs.
+
+---
+
 ## Decision log
 
 | ADR | Title | Status |
@@ -516,6 +583,7 @@ no geometric re-sorting in D4.
 | 018 | `ui_act` uses AX-only actions, always approval-gated, never touching credentials | Accepted |
 | 019 | `GET /stream` is a token-gated, read-only websocket that never carries bulk tool output | Accepted |
 | 020 | `screen_read` D4 is narrow-only: `screencapture` + Vision-via-ctypes in a crash-isolated subprocess, pixels never persist | Accepted |
+| 021 | Terminal profile D5: fixed-script osascript bridge, read and paste split, paste never submits | Accepted |
 
 > ADR-013 and ADR-014 were added by the Prompt 00B inventory, grounded in
 > [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md). Further migration
