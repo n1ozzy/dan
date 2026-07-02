@@ -8,10 +8,14 @@ rows that at least reached playback count ('speaking', 'done', and
 so it cannot echo.
 
 The comparison is deterministic token overlap on normalized text: if the
-share of transcript tokens that also occur in one recently spoken sentence
-reaches the threshold, the transcript is rejected as echo. Fail-closed for
-turn creation: dropping a user sentence that duplicates Jarvis's own words
-is acceptable; an echo that becomes a turn is a violation by construction.
+share of transcript tokens that also occur in the UNION of everything
+recently spoken reaches the threshold, the transcript is rejected as echo.
+The union (not row-by-row) matters: a PTT capture spans several consecutive
+TTS sentences, so against any single row the overlap dilutes to ~1/n —
+measured live 2026-07-02: pure echo 0.52 per row vs 1.00 union, a real
+user interjection over playing TTS 0.31 union. Fail-closed for turn
+creation: dropping a user sentence that duplicates Jarvis's own words is
+acceptable; an echo that becomes a turn is a violation by construction.
 Thresholds are config data, calibrated at the G4 live gate.
 """
 
@@ -63,13 +67,19 @@ class AntiEchoGate:
         if not tokens:
             # Nothing comparable; junk filtering is the pipeline's job.
             return EchoDecision(accepted=True, reason="ok")
+        union: set[str] = set()
+        best_row, best_overlap = None, 0.0
         for spoken in self._recently_spoken():
             spoken_tokens = set(normalize_phrase(spoken).split())
             if not spoken_tokens:
                 continue
-            overlap = len(tokens & spoken_tokens) / len(tokens)
-            if overlap >= self._threshold:
-                return EchoDecision(accepted=False, reason="echo", matched_text=spoken)
+            union |= spoken_tokens
+            row_overlap = len(tokens & spoken_tokens) / len(tokens)
+            if row_overlap > best_overlap:
+                best_row, best_overlap = spoken, row_overlap
+        if union and len(tokens & union) / len(tokens) >= self._threshold:
+            # matched_text: the single strongest row, for readable logs.
+            return EchoDecision(accepted=False, reason="echo", matched_text=best_row)
         return EchoDecision(accepted=True, reason="ok")
 
     # -- internals -----------------------------------------------------------

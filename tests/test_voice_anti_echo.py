@@ -109,6 +109,38 @@ def test_transcript_with_mostly_new_tokens_is_accepted(db_path: Path) -> None:
 # --- echo rejection ----------------------------------------------------------
 
 
+def test_echo_spanning_multiple_spoken_chunks_is_rejected(db_path: Path) -> None:
+    # Regression (G4 live gate 2026-07-02): a 14 s PTT capture picked up
+    # SEVERAL consecutive TTS sentences. Against any single row the token
+    # overlap was ~0.52 < 0.75, so the echo became a turn and its barge-in
+    # killed Jarvis's own answer mid-sentence. Coverage must be computed
+    # against the union of everything recently spoken, not row by row.
+    speak_and_finish(db_path, "Chcesz szczegóły, to siadaj wygodnie.")
+    speak_and_finish(db_path, "Architektura jest prostsza niż twoje oczekiwania.")
+    speak_and_finish(db_path, "Mózg to jest to, co teraz gada.")
+
+    decision = build_gate(db_path).accepts_transcript(
+        "Chcesz szczegóły. To siadaj. Architektura jest prostsza niż twoje "
+        "oczekiwania. Mózg, czyli to, co teraz gada."
+    )
+
+    assert decision.accepted is False
+    assert decision.reason == "echo"
+
+
+def test_real_interjection_during_speech_stays_accepted(db_path: Path) -> None:
+    # The union must not swallow genuine user speech over playing TTS: live
+    # measurement of Ozzy's real interjection gave union coverage 0.31.
+    speak_and_finish(db_path, "Jestem bezstanowy i trzymam prawdę w bazie.")
+    speak_and_finish(db_path, "Każdy turn ma swoje zdarzenia i kolejkę głosu.")
+
+    decision = build_gate(db_path).accepts_transcript(
+        "Ciekawe, nie rozumiem o czym ty mówisz, na pewno jesteś bezstanowy, jasne."
+    )
+
+    assert decision.accepted is True
+
+
 def test_exact_echo_of_spoken_sentence_is_rejected(db_path: Path) -> None:
     spoken = "Sprawdziłem kalendarz i nie masz dziś spotkań."
     speak_and_finish(db_path, spoken)
