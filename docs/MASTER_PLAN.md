@@ -242,8 +242,13 @@ Gate D (GATE): każdy etap osobno + review; D2 wymaga działającego C1 (auth).
 - **E4** — persona: styl gangus (poziomy ostrości) + Jarvis-mentor jako
   `config/persona/` data zgodnie z PRODUCT.md (persona nie ma stanu, nie
   decyduje o toolach, nie omija approvals). Treść pisana od nowa z Ozzym,
-  nie kopiowana z persona.py (dekret §7.6). Config-only — może wejść
-  wcześniej bez szkody, jeśli będzie okazja.
+  nie kopiowana z persona.py (dekret §7.6). Zakres skorygowany dekretem
+  Ozzy'ego (2026-07-02, §7.7): oprócz plików data wchodzi mały selektor
+  profilu — ContextBuilder czyta setting `persona.profile` per request
+  i ładuje `config/persona/<profil>.md`; brak/zły profil ⇒ fallback na
+  `jarvis.md` (fail-closed, daemon się nie wywala). Poziomy ostrości są
+  wtedy realnie przełączalne z settings UI (E3), a treść pozostaje datą
+  edytowalną bez kodu ("wróci się do niej na koniec").
 
 ### FAZA F — Stabilizacja
 
@@ -335,3 +340,11 @@ Kryteria voice (PRO §16 pkt 8–11) przechodzą do milestone'u MVP-voice po FAZ
    o narzędziach trzecich**, które i tak wybraliśmy (właściwości MLX, sox,
    whispera — patrz §4a, kolumna "charakter"). Wszystko implementujemy
    clean-room pod kontrakty v4.1.
+7. **Persona (E4): profile przez settings, treść świeża i krótka.**
+   Dekret Ozzy'ego (2026-07-02): poziom ostrości wybierany settingiem
+   `persona.profile` (mały kod w ContextBuilder, fail-closed fallback na
+   `jarvis.md`) zamiast czystego config-only; treść profili (gangus-1..3,
+   mentor) pisana świeżo w sesji z Ozzym — kierunek: maksymalnie ostro
+   i sarkastycznie w gangus-3 — z granicami z `jarvis.md` powtórzonymi
+   w każdym profilu; copy-paste z legacy `persona.py` pozostaje zakazany
+   (§7.6); dopieszczanie treści odroczone "na koniec" (data, nie kod).
