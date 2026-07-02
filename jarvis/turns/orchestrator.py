@@ -18,7 +18,7 @@ from jarvis.events.types import EventType
 from jarvis.security.redaction import redact_secrets
 from jarvis.store.event_store import EventStore
 from jarvis.store.repositories import RepositoryError, ensure_mapping, ensure_non_empty_text
-from jarvis.tools.permissions import ToolDecision, ToolPermissionPolicy
+from jarvis.tools.permissions import RequestSource, ToolDecision, ToolPermissionPolicy
 from jarvis.tools.registry import (
     ApprovalGate,
     ToolRegistry,
@@ -603,6 +603,7 @@ class TurnOrchestrator:
                 permission = self._tool_registry.evaluate_permission(
                     request,
                     permission_policy=self._tool_permission_policy,
+                    source=RequestSource.MODEL_ORIGINATED,
                 )
             except ToolRegistryError as exc:
                 result.tool_calls.append(
@@ -657,6 +658,7 @@ class TurnOrchestrator:
                     "tool_name": permission.tool_name,
                     "arguments": arguments,
                     "requested_by": "model",
+                    "source": str(RequestSource.MODEL_ORIGINATED),
                     "turn_id": turn_id,
                 },
                 metadata={

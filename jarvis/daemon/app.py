@@ -30,6 +30,7 @@ from jarvis.store.db import (
 from jarvis.store.event_store import EventStore, create_event_store
 from jarvis.tools import (
     ApprovalGate,
+    RequestSource,
     ToolDecision,
     ToolPermissionPolicy,
     ToolRegistry,
@@ -310,6 +311,7 @@ class DaemonApp:
         tool_name: str,
         arguments: Mapping[str, Any],
         requested_by: str,
+        source: RequestSource | str,
         turn_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> ToolResult:
@@ -327,6 +329,7 @@ class DaemonApp:
         tool = self.tool_registry.get(tool_name)
         permission = self.tool_permission_policy.decide(
             tool.risk,
+            source=source,
             tool_name=tool.name,
             payload=request.arguments,
         )
@@ -343,6 +346,7 @@ class DaemonApp:
             result = self.tool_registry.request_tool(
                 request,
                 permission_policy=self.tool_permission_policy,
+                source=source,
                 approval_gate=self.approval_gate,
             )
             if result.status == "finished":
@@ -354,6 +358,7 @@ class DaemonApp:
         return self.tool_registry.request_tool(
             request,
             permission_policy=self.tool_permission_policy,
+            source=source,
             approval_gate=self.approval_gate,
         )
 
@@ -484,9 +489,18 @@ class DaemonApp:
             raise DaemonAppConflictError(f"Approval already executed: {normalized_approval_id}")
 
         tool_request = _tool_request_from_approval(approval)
+        request_source = _request_source_from_approval(approval)
+        if request_source is None:
+            return {
+                "ok": False,
+                "approval_id": normalized_approval_id,
+                "status": "blocked",
+                "error": "Approval payload has no valid request source; execution is blocked.",
+            }
         tool = self.tool_registry.get(tool_request.tool_name)
         permission = self.tool_permission_policy.decide(
             tool.risk,
+            source=request_source,
             tool_name=tool.name,
             payload=tool_request.arguments,
         )
@@ -665,6 +679,25 @@ def _connect_daemon_db(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+def _request_source_from_approval(approval: Mapping[str, Any]) -> RequestSource | None:
+    """Restore the original request source stored in the approval payload.
+
+    Fail closed: approvals without a recognizable source never execute
+    (docs/MACOS_PERMISSION_MODEL.md §1: unknown source => blocked).
+    """
+
+    payload = approval.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    raw_source = payload.get("source")
+    if not isinstance(raw_source, str):
+        return None
+    try:
+        return RequestSource(raw_source)
+    except ValueError:
+        return None
 
 
 def _tool_request_from_approval(approval: Mapping[str, Any]) -> ToolRequest:

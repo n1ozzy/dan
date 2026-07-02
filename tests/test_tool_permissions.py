@@ -12,7 +12,7 @@ from jarvis.events.types import EventType
 from jarvis.store.db import close_quietly, initialize_database
 from jarvis.store.event_store import EventStore, create_event_store
 from jarvis.tools.file_tool import FileReadPlaceholderTool, FileWritePlaceholderTool
-from jarvis.tools.permissions import ToolDecision, ToolPermissionPolicy
+from jarvis.tools.permissions import RequestSource, ToolDecision, ToolPermissionPolicy
 from jarvis.tools.registry import (
     ApprovalGate,
     ApprovalProbeTool,
@@ -86,7 +86,7 @@ def table_count(conn: sqlite3.Connection, table: str) -> int:
 
 
 def test_safe_read_allows() -> None:
-    result = ToolPermissionPolicy().decide("safe_read", tool_name="echo", payload={})
+    result = ToolPermissionPolicy().decide("safe_read", source=RequestSource.DIRECT_USER_COMMAND, tool_name="echo", payload={})
 
     assert result.decision == ToolDecision.ALLOW
     assert result.approval_required is False
@@ -94,7 +94,7 @@ def test_safe_read_allows() -> None:
 
 
 def test_safe_status_allows() -> None:
-    result = ToolPermissionPolicy().decide("safe_status", tool_name="system_status", payload={})
+    result = ToolPermissionPolicy().decide("safe_status", source=RequestSource.DIRECT_USER_COMMAND, tool_name="system_status", payload={})
 
     assert result.decision == ToolDecision.ALLOW
 
@@ -103,7 +103,7 @@ def test_file_read_allows_when_approved_root_policy_is_satisfied(tmp_path: Path)
     allowed_file = tmp_path / "notes.txt"
     policy = ToolPermissionPolicy(approved_roots=[str(tmp_path)])
 
-    result = policy.decide("file_read", tool_name="file.read", payload={"path": str(allowed_file)})
+    result = policy.decide("file_read", source=RequestSource.DIRECT_USER_COMMAND, tool_name="file.read", payload={"path": str(allowed_file)})
 
     assert result.decision == ToolDecision.ALLOW
 
@@ -111,7 +111,7 @@ def test_file_read_allows_when_approved_root_policy_is_satisfied(tmp_path: Path)
 def test_file_read_blocks_outside_approved_roots(tmp_path: Path) -> None:
     policy = ToolPermissionPolicy(approved_roots=[str(tmp_path / "allowed")])
 
-    result = policy.decide("file_read", tool_name="file.read", payload={"path": str(tmp_path / "other.txt")})
+    result = policy.decide("file_read", source=RequestSource.DIRECT_USER_COMMAND, tool_name="file.read", payload={"path": str(tmp_path / "other.txt")})
 
     assert result.decision == ToolDecision.BLOCKED
     assert result.blocked is True
@@ -120,7 +120,7 @@ def test_file_read_blocks_outside_approved_roots(tmp_path: Path) -> None:
 def test_file_read_blocks_when_no_approved_roots_configured(tmp_path: Path) -> None:
     policy = ToolPermissionPolicy()
 
-    result = policy.decide("file_read", tool_name="file.read", payload={"path": str(tmp_path / "notes.txt")})
+    result = policy.decide("file_read", source=RequestSource.DIRECT_USER_COMMAND, tool_name="file.read", payload={"path": str(tmp_path / "notes.txt")})
 
     assert result.decision == ToolDecision.BLOCKED
     assert result.blocked is True
@@ -139,6 +139,7 @@ def test_file_read_blocks_symlink_escaping_approved_root(tmp_path: Path) -> None
 
     result = policy.decide(
         "file_read",
+        source=RequestSource.DIRECT_USER_COMMAND,
         tool_name="file.read",
         payload={"path": str(escape_link / "secret.txt")},
     )
@@ -159,6 +160,7 @@ def test_file_read_allows_symlink_resolving_inside_approved_root(tmp_path: Path)
 
     result = policy.decide(
         "file_read",
+        source=RequestSource.DIRECT_USER_COMMAND,
         tool_name="file.read",
         payload={"path": str(inner_link / "notes.txt")},
     )
@@ -176,6 +178,7 @@ def test_file_read_allows_when_approved_root_itself_is_symlink(tmp_path: Path) -
 
     result = policy.decide(
         "file_read",
+        source=RequestSource.DIRECT_USER_COMMAND,
         tool_name="file.read",
         payload={"path": str(real_root / "notes.txt")},
     )
@@ -185,7 +188,7 @@ def test_file_read_allows_when_approved_root_itself_is_symlink(tmp_path: Path) -
 
 @pytest.mark.parametrize("risk", ["file_write", "shell_read", "shell_write", "network"])
 def test_approval_required_risks_require_approval(risk: str) -> None:
-    result = ToolPermissionPolicy().decide(risk, tool_name="risky", payload={})
+    result = ToolPermissionPolicy().decide(risk, source=RequestSource.DIRECT_USER_COMMAND, tool_name="risky", payload={})
 
     assert result.decision == ToolDecision.APPROVAL_REQUIRED
     assert result.approval_required is True
@@ -193,7 +196,7 @@ def test_approval_required_risks_require_approval(risk: str) -> None:
 
 
 def test_destructive_blocked_by_default() -> None:
-    result = ToolPermissionPolicy().decide("destructive", tool_name="delete_everything", payload={})
+    result = ToolPermissionPolicy().decide("destructive", source=RequestSource.DIRECT_USER_COMMAND, tool_name="delete_everything", payload={})
 
     assert result.decision == ToolDecision.BLOCKED
     assert result.blocked is True
@@ -202,6 +205,7 @@ def test_destructive_blocked_by_default() -> None:
 def test_destructive_requires_approval_when_enabled() -> None:
     result = ToolPermissionPolicy(destructive_tools_enabled=True).decide(
         "destructive",
+        source=RequestSource.DIRECT_USER_COMMAND,
         tool_name="delete_everything",
         payload={},
     )
@@ -211,7 +215,7 @@ def test_destructive_requires_approval_when_enabled() -> None:
 
 
 def test_unknown_risk_is_blocked() -> None:
-    result = ToolPermissionPolicy().decide("surprise", tool_name="unknown", payload={})
+    result = ToolPermissionPolicy().decide("surprise", source=RequestSource.DIRECT_USER_COMMAND, tool_name="unknown", payload={})
 
     assert result.decision == ToolDecision.BLOCKED
     assert result.blocked is True
@@ -239,7 +243,7 @@ def test_registry_lists_tool_specs() -> None:
 
 def test_approval_probe_is_approval_required_and_harmless_if_called() -> None:
     probe = ApprovalProbeTool()
-    decision = ToolPermissionPolicy().decide(probe.risk, tool_name=probe.name, payload={})
+    decision = ToolPermissionPolicy().decide(probe.risk, source=RequestSource.DIRECT_USER_COMMAND, tool_name=probe.name, payload={})
 
     assert probe.name == "approval_probe"
     assert probe.risk == "shell_read"
@@ -258,6 +262,7 @@ def test_allowed_tool_executes() -> None:
 
     result = registry.request_tool(
         ToolRequest(id="run-1", tool_name="recording", arguments={"x": 1}, requested_by="tests"),
+        source=RequestSource.DIRECT_USER_COMMAND,
         permission_policy=ToolPermissionPolicy(),
     )
 
@@ -273,6 +278,7 @@ def test_approval_required_tool_does_not_execute(conn: sqlite3.Connection) -> No
 
     result = registry.request_tool(
         ToolRequest(id="run-approval", tool_name="approval", arguments={"cmd": "status"}, requested_by="tests"),
+        source=RequestSource.DIRECT_USER_COMMAND,
         permission_policy=ToolPermissionPolicy(),
         approval_gate=ApprovalGate(conn),
     )
@@ -293,6 +299,7 @@ def test_approval_probe_request_creates_approval_without_tool_run_or_runtime_sid
 
     result = registry.request_tool(
         ToolRequest(id="run-probe", tool_name="approval_probe", arguments={}, requested_by="tests"),
+        source=RequestSource.DIRECT_USER_COMMAND,
         permission_policy=ToolPermissionPolicy(),
         approval_gate=ApprovalGate(conn),
     )
@@ -315,6 +322,7 @@ def test_approval_required_tool_without_turn_id_keeps_approval_created_uncorrela
 
     result = registry.request_tool(
         ToolRequest(id="run-no-turn", tool_name="approval", arguments={}, requested_by="api"),
+        source=RequestSource.DIRECT_USER_COMMAND,
         permission_policy=ToolPermissionPolicy(),
         approval_gate=ApprovalGate(conn, event_store=event_store),
     )
@@ -341,6 +349,7 @@ def test_approval_required_tool_with_turn_id_correlates_approval_created_event(
             requested_by="api",
             turn_id="turn-direct",
         ),
+        source=RequestSource.DIRECT_USER_COMMAND,
         permission_policy=ToolPermissionPolicy(),
         approval_gate=ApprovalGate(conn, event_store=event_store),
     )
@@ -363,6 +372,7 @@ def test_blocked_tool_does_not_execute() -> None:
 
     result = registry.request_tool(
         ToolRequest(id="run-blocked", tool_name="blocked", arguments={}, requested_by="tests"),
+        source=RequestSource.DIRECT_USER_COMMAND,
         permission_policy=ToolPermissionPolicy(),
     )
 
@@ -377,6 +387,7 @@ def test_tool_handler_exception_returns_failed_result() -> None:
 
     result = registry.request_tool(
         ToolRequest(id="run-fail", tool_name="exploding", arguments={}, requested_by="tests"),
+        source=RequestSource.DIRECT_USER_COMMAND,
         permission_policy=ToolPermissionPolicy(),
     )
 

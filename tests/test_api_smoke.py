@@ -18,6 +18,8 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+from jarvis.tools.permissions import RequestSource
+
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
@@ -762,7 +764,12 @@ def test_post_approval_execute_unknown_tool_payload_does_not_record_run(app: Dae
         risk="shell_read",
         requested_by="api",
         action_type="tool:missing",
-        payload={"tool_name": "missing", "arguments": {}, "requested_by": "api"},
+        payload={
+            "tool_name": "missing",
+            "arguments": {},
+            "requested_by": "api",
+            "source": str(RequestSource.DIRECT_USER_COMMAND),
+        },
     )
     app.approve(str(approval["id"]))
 
@@ -808,7 +815,12 @@ def test_post_approval_execute_blocks_destructive_when_disabled(app: DaemonApp) 
         risk="destructive",
         requested_by="api",
         action_type="tool:destructive_execute",
-        payload={"tool_name": "destructive_execute", "arguments": {}, "requested_by": "api"},
+        payload={
+            "tool_name": "destructive_execute",
+            "arguments": {},
+            "requested_by": "api",
+            "source": str(RequestSource.DIRECT_USER_COMMAND),
+        },
     )
     app.approve(str(approval["id"]))
 

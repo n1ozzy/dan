@@ -15,7 +15,7 @@ from jarvis.events.types import EventType
 from jarvis.security.redaction import REDACTION_PLACEHOLDER
 from jarvis.store.db import close_quietly, initialize_database
 from jarvis.store.event_store import EventStore, create_event_store
-from jarvis.tools.permissions import ToolPermissionPolicy
+from jarvis.tools.permissions import RequestSource, ToolPermissionPolicy
 from jarvis.tools.registry import (
     ApprovalGate,
     Tool,
@@ -95,6 +95,7 @@ def create_tool_approval(
             "tool_name": tool_name,
             "arguments": {"command": "status"},
             "requested_by": "tests",
+            "source": str(RequestSource.DIRECT_USER_COMMAND),
             "turn_id": turn_id,
         },
         metadata=metadata or {},
@@ -169,6 +170,7 @@ def test_decision_event_preserves_turn_id_and_correlation_id_from_approval_reque
             turn_id="turn-approval-events",
         ),
         permission_policy=ToolPermissionPolicy(),
+        source=RequestSource.DIRECT_USER_COMMAND,
         approval_gate=gate,
     )
 
@@ -248,6 +250,7 @@ def test_approve_does_not_execute_tool(app: DaemonApp) -> None:
         tool_name=tool.name,
         arguments={"command": "status"},
         requested_by="api",
+        source=RequestSource.DIRECT_USER_COMMAND,
     )
     approved = app.approve(str(requested.approval_id), reason="ok")
 
@@ -265,6 +268,7 @@ def test_rejection_does_not_execute_tool(app: DaemonApp) -> None:
         tool_name=tool.name,
         arguments={"command": "status"},
         requested_by="api",
+        source=RequestSource.DIRECT_USER_COMMAND,
     )
     rejected = app.reject(str(requested.approval_id), reason="no")
 
@@ -284,6 +288,7 @@ def test_execute_approved_behavior_remains_explicit_and_duplicate_execute_confli
         tool_name=tool.name,
         arguments={"command": "status"},
         requested_by="api",
+        source=RequestSource.DIRECT_USER_COMMAND,
         turn_id="turn-execute-approved",
     )
     app.approve(str(requested.approval_id), reason="ok")

@@ -22,7 +22,7 @@ from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.events.types import EventType
 from jarvis.store.db import close_quietly, initialize_database
 from jarvis.store.event_store import create_event_store
-from jarvis.tools import ToolPermissionPolicy, ToolRegistry
+from jarvis.tools import RequestSource, ToolPermissionPolicy, ToolRegistry
 from jarvis.tools.registry import ApprovalGate, ApprovalProbeTool, Tool, ToolRunRecorder
 from jarvis.turns.orchestrator import TurnOrchestrator
 from tests.git_guards import assert_schema_and_migrations_unchanged
@@ -421,6 +421,7 @@ def test_direct_tools_request_path_still_executes_safe_tools_without_model_gate(
         tool_name="echo",
         arguments={"text": "direct"},
         requested_by="api",
+            source=RequestSource.DIRECT_USER_COMMAND,
     )
 
     assert result.status == "finished"

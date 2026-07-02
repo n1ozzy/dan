@@ -5,6 +5,7 @@ from __future__ import annotations
 from jarvis.tools.permissions import (
     PermissionClass,
     PermissionPolicy,
+    RequestSource,
     ToolDecision,
     ToolPermissionError,
     ToolPermissionPolicy,
@@ -37,6 +38,7 @@ __all__ = [
     "EchoTool",
     "PermissionClass",
     "PermissionPolicy",
+    "RequestSource",
     "SystemStatusTool",
     "Tool",
     "ToolDecision",

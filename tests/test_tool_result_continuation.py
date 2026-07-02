@@ -9,6 +9,8 @@ from typing import Any
 
 import pytest
 
+from jarvis.tools.permissions import RequestSource
+
 from jarvis.brain import BrainAdapterError, BrainManager, BrainRequest, BrainResponse, BrainToolCall
 from jarvis.daemon.app import DaemonApp, DaemonAppConflictError, create_daemon_app
 from jarvis.events.types import EventType
@@ -218,6 +220,7 @@ def test_approval_without_turn_id_executes_without_forcing_continuation(tmp_path
             tool_name=tool.name,
             arguments={"direct": True},
             requested_by="api",
+            source=RequestSource.DIRECT_USER_COMMAND,
         )
         app.approve(str(requested.approval_id))
 
@@ -243,6 +246,7 @@ def test_approval_tied_to_non_awaiting_turn_executes_without_forcing_continuatio
             tool_name=tool.name,
             arguments={"after": "finished"},
             requested_by="api",
+            source=RequestSource.DIRECT_USER_COMMAND,
             turn_id=finished_turn.turn_id,
         )
         app.approve(str(requested.approval_id))

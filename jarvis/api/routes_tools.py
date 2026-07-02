@@ -7,6 +7,7 @@ from dataclasses import asdict
 from typing import Any
 
 from jarvis.daemon.app import DaemonApp
+from jarvis.tools.permissions import RequestSource
 from jarvis.tools.registry import ToolResult
 
 
@@ -23,10 +24,14 @@ def get_tools(app: DaemonApp) -> dict[str, object]:
 
 def post_tool_request(app: DaemonApp, request_payload: Any) -> dict[str, object]:
     payload = _validate_request_payload(request_payload)
+    # Source is assigned here, at the daemon entry point — never taken from the
+    # request payload (docs/MACOS_PERMISSION_MODEL.md §1). Every direct
+    # /tools/request caller (CLI, cockpit, API) shares the user column.
     result = app.request_tool(
         tool_name=payload["tool_name"],
         arguments=payload["arguments"],
         requested_by=payload["requested_by"],
+        source=RequestSource.DIRECT_USER_COMMAND,
         turn_id=payload.get("turn_id"),
         metadata=payload.get("metadata"),
     )

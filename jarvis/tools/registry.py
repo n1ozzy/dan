@@ -12,7 +12,12 @@ from typing import Any
 from jarvis.events.models import utc_now_iso
 from jarvis.events.types import EventType
 from jarvis.store.event_store import EventStore
-from jarvis.tools.permissions import ToolDecision, ToolPermissionPolicy, ToolPermissionResult
+from jarvis.tools.permissions import (
+    RequestSource,
+    ToolDecision,
+    ToolPermissionPolicy,
+    ToolPermissionResult,
+)
 
 
 class ToolRegistryError(Exception):
@@ -119,10 +124,12 @@ class ToolRegistry:
         request: ToolRequest,
         *,
         permission_policy: ToolPermissionPolicy,
+        source: RequestSource | str,
     ) -> ToolPermissionEvaluation:
         tool = self.get(request.tool_name)
         permission = permission_policy.decide(
             tool.risk,
+            source=source,
             tool_name=tool.name,
             payload=request.arguments,
         )
@@ -133,10 +140,15 @@ class ToolRegistry:
         request: ToolRequest,
         *,
         permission_policy: ToolPermissionPolicy,
+        source: RequestSource | str,
         approval_gate: ApprovalGate | None = None,
     ) -> ToolResult:
         tool = self.get(request.tool_name)
-        permission = self.evaluate_permission(request, permission_policy=permission_policy)
+        permission = self.evaluate_permission(
+            request,
+            permission_policy=permission_policy,
+            source=source,
+        )
 
         if permission.decision == ToolDecision.BLOCKED:
             return ToolResult(
@@ -157,6 +169,7 @@ class ToolRegistry:
                         "tool_name": tool.name,
                         "arguments": request.arguments,
                         "requested_by": request.requested_by,
+                        "source": str(source),
                         "turn_id": request.turn_id,
                     },
                     metadata={
