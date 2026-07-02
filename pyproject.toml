@@ -25,6 +25,12 @@ voice = [
   "mlx-whisper==0.4.3",
   "mlx-audio==0.4.4",
 ]
+# Menu-bar shell (PANEL_CONTRACT §5, MASTER_PLAN H1). GUI-only dependency:
+# the daemon and the test suite never import it (lazy import in menubar_app).
+panel = [
+  "pyobjc-framework-Cocoa==12.2.1",
+  "pyobjc-framework-WebKit==12.2.1",
+]
 
 [project.scripts]
 jarvisd = "jarvis.cli:main"
