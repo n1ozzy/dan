@@ -24,7 +24,6 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 - **NIE odpalaj multi-agentowych workflow/fan-outów** (Workflow, deep-research, 7+ subagentów) **bez wyraźnej zgody Ozzy'ego** — tokeny ograniczone.
 - **Linie mogły się przesunąć** — po wcześniejszych fixach zweryfikuj `plik:linia` grepem/Read zanim edytujesz.
 - **Na koniec:** pełny `pytest` + relevantny smoke, commit z rzeczowym opisem, aktualizacja statusu w tym pliku. Handoff jeśli zamykasz większy blok.
-- Głos jest **wyłączony na życzenie** (hook usunięty), ale gate głosowy jest w toku za zgodą — kod głosowy nadal ma być poprawny.
 
 ---
 
@@ -81,7 +80,7 @@ PROBLEM (CRITICAL, integralność danych): jarvis/daemon/app.py otwiera jedno sq
 ZADANIE: 1) Napisz deterministyczny test współbieżności odtwarzający zgubiony event / błąd transakcji (kilka wątków równolegle: append eventów + zapis tur). 2) Wybierz i uzasadnij strategię: A) connection-per-wątek/tura (rekomendowana, WAL wspiera multi-writer) — factory krótkotrwałych połączeń; albo B) jeden proces-wide write-lock na wszystkie zapisy self.conn. 3) Przejdź po WSZYSTKICH konsumentach self.conn i zastosuj strategię. 4) Przy okazji: dołóż tracking + join/drain (z timeoutem) wątków workerów w stop() przed appendem daemon.stopped, oraz opakuj w memory/manager.py zmianę bloku i jej memory-event w JEDNĄ transakcję. Uruchom pełny pytest + smoke. Jeśli decyzja A vs B jest niejednoznaczna — zarekomenduj i wykonaj lepszą jakościowo, nie odbijaj do usera.
 ```
 
-## - [ ] FIX-04 · Voice: „gorący mikrofon" + przeżywalność brokera 🟠 HIGH (×4)
+## - [x] FIX-04 · Voice: „gorący mikrofon" + przeżywalność brokera 🟠 HIGH (×4) — DONE (4/4 potwierdzone testami deterministycznymi, bez sprzętu)
 
 - **Pliki:** `jarvis/daemon/app.py:225` (stop bez `voice_recorder.stop()`), `jarvis/voice/listening.py:139` (brak timera lease'u), `jarvis/voice/broker.py:63` (broker umiera na nie-TTS wyjątku), `jarvis/voice/broker.py:57` (`stop()` nie zatrzymuje brokera)
 - **Problem:** (a) `stop()` nie woła `voice_recorder.stop()` → po restarcie in-process osierocony `sox` nagrywa dalej (hot mic + puchnący dysk). (b) TTL lease'u egzekwowany tylko przy wywołaniu API; crash panelu przed puszczeniem PTT = nagrywanie w nieskończoność. (c) broker propaguje nie-`TTSEngineError` (np. „database is locked") → trwale niemy. (d) `stop()` brokera nie przerywa drain-loopa ani nie ubija executora.

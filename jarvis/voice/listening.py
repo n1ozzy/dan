@@ -9,10 +9,13 @@ exactly while at least one lease is active.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from jarvis.logging import get_logger
 
 from jarvis.events.types import EventType
 from jarvis.store.repositories import utc_now_iso
@@ -209,9 +212,62 @@ class ListeningLeaseManager:
             self._event_store.append(event_type, "voice", payload)
 
 
+DEFAULT_SWEEP_INTERVAL_SECONDS = 5.0
+
+
+class ListeningLeaseSweeper:
+    """Daemon-side TTL enforcement (FIX-04b).
+
+    Lease expiry was only checked lazily inside acquire/release/active — a
+    crashed panel that never sends button-up left the recorder running for
+    hours. This small thread periodically runs a sweep callable (typically
+    manager.active(), which expires stale leases and syncs the recorder), so
+    a stale lease self-expires without any client call. Sweep exceptions are
+    logged and never kill the thread.
+    """
+
+    def __init__(
+        self,
+        sweep: Callable[[], Any],
+        *,
+        interval_seconds: float = DEFAULT_SWEEP_INTERVAL_SECONDS,
+    ) -> None:
+        self._sweep = sweep
+        self._interval = max(float(interval_seconds), 0.01)
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, name="jarvis-lease-sweeper", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+            self._thread = None
+
+    def is_alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                self._sweep()
+            except Exception:
+                get_logger(__name__).exception("Listening lease sweep failed.")
+
+
 __all__ = [
     "ALLOWED_MODES",
     "ALLOWED_SOURCES",
+    "DEFAULT_SWEEP_INTERVAL_SECONDS",
     "ListeningLeaseError",
     "ListeningLeaseManager",
+    "ListeningLeaseSweeper",
 ]

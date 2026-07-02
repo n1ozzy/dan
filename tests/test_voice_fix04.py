@@ -1,0 +1,243 @@
+"""FIX-04: hot-mic containment + voice broker survivability.
+
+(a) DaemonApp.stop() must stop the recorder (no orphaned sox after an
+    in-process restart), (b) stale leases must expire daemon-side without any
+    API call (sweeper), (c) the broker thread must survive non-TTS exceptions,
+    (d) VoiceBroker.stop() must actually terminate the drain loop and its
+    executor.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Iterator
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from jarvis.daemon.app import DaemonApp, create_daemon_app
+from jarvis.store.db import close_quietly, initialize_database
+from jarvis.voice.broker import VoiceBroker
+from jarvis.voice.queue import VoiceQueue
+from jarvis.voice.recorder import MockRecorder
+from jarvis.voice.tts import MockTTSEngine, SynthesizedChunk
+from tests.test_api_smoke import write_config
+
+
+@pytest.fixture
+def app(tmp_path: Path) -> Iterator[DaemonApp]:
+    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    daemon_app = create_daemon_app(config_path)
+    try:
+        yield daemon_app
+    finally:
+        daemon_app.close()
+
+
+@pytest.fixture
+def db_path(tmp_path: Path) -> Path:
+    path = tmp_path / "voice.db"
+    close_quietly(initialize_database(path))
+    return path
+
+
+def _connect_factory(path: Path):
+    import sqlite3
+
+    # check_same_thread=False: tests hand these connections to sweeper/broker
+    # threads while asserting from the main thread.
+    return lambda: sqlite3.connect(path, check_same_thread=False)
+
+
+def voice_config(**overrides) -> SimpleNamespace:
+    values = {
+        "enabled": True,
+        "speak_responses": True,
+        "broker_enabled": True,
+        "default_tts": "mock",
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+# --- (a) stop() must stop the recorder --------------------------------------
+
+
+def test_daemon_stop_stops_recorder(app: DaemonApp) -> None:
+    app.start()
+    recorder = app.voice_recorder
+    assert isinstance(recorder, MockRecorder)
+    recorder.start()  # a lease started listening before shutdown
+
+    app.stop()
+
+    assert recorder.recording is False, "stop() left the microphone hot"
+    assert recorder.stopped == 1
+    assert app.voice_recorder is None
+
+
+# --- (b) daemon-side lease sweeper ------------------------------------------
+
+
+def test_sweeper_expires_stale_lease_without_any_api_call(db_path: Path) -> None:
+    """A crashed panel never calls release(); the daemon-side sweeper must
+    expire the lease and stop the recorder on its own."""
+
+    from jarvis.voice.listening import ListeningLeaseManager, ListeningLeaseSweeper
+
+    clock = {"now": "2026-07-03T10:00:00+00:00"}
+    recorder = MockRecorder()
+    conn = _connect_factory(db_path)()
+    manager = ListeningLeaseManager(
+        conn,
+        config=SimpleNamespace(ptt_hold_ttl_seconds=1, listen_lock_ttl_seconds=1),
+        recorder=recorder,
+        now=lambda: clock["now"],
+    )
+    manager.acquire(mode="hold", source="ptt")
+    assert recorder.recording is True
+
+    clock["now"] = "2026-07-03T10:00:05+00:00"  # past TTL, client is dead
+    sweeper = ListeningLeaseSweeper(manager.active, interval_seconds=0.02)
+    sweeper.start()
+    try:
+        deadline = time.monotonic() + 5
+        while recorder.recording and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        sweeper.stop()
+    close_quietly(conn)
+
+    assert recorder.recording is False, "expired lease kept recording forever"
+    assert recorder.stopped == 1
+
+
+def test_sweeper_survives_exceptions_and_stops_cleanly() -> None:
+    from jarvis.voice.listening import ListeningLeaseSweeper
+
+    calls = {"count": 0}
+
+    def flaky_sweep():
+        calls["count"] += 1
+        raise RuntimeError("db hiccup")
+
+    sweeper = ListeningLeaseSweeper(flaky_sweep, interval_seconds=0.01)
+    sweeper.start()
+    deadline = time.monotonic() + 5
+    while calls["count"] < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    sweeper.stop()
+
+    assert calls["count"] >= 3, "sweeper thread died on the first exception"
+    assert not sweeper.is_alive()
+
+
+def test_daemon_start_wires_lease_sweeper_and_stop_kills_it(app: DaemonApp) -> None:
+    app.start()
+    sweeper = app.voice_lease_sweeper
+    assert sweeper is not None and sweeper.is_alive()
+
+    app.stop()
+
+    assert not sweeper.is_alive()
+    assert app.voice_lease_sweeper is None
+
+
+# --- (c) broker thread survives non-TTS exceptions ---------------------------
+
+
+class _RuntimeErrorEngine(MockTTSEngine):
+    """Not a TTSEngineError: e.g. sqlite 'database is locked' or a vanished
+    binary surfaces as a plain OSError/RuntimeError inside synthesis."""
+
+    def synthesize(self, text: str) -> SynthesizedChunk:
+        if "BOOM" in text:
+            raise RuntimeError("database is locked")
+        return super().synthesize(text)
+
+
+def test_broker_thread_survives_non_tts_exception(db_path: Path) -> None:
+    factory = _connect_factory(db_path)
+    conn = factory()
+    queue = VoiceQueue(conn)
+    queue.enqueue(text="BOOM w trakcie syntezy.", turn_id="t1", kind="sentence", seq=0)
+    engine = _RuntimeErrorEngine()
+    broker = VoiceBroker(factory, config=voice_config(), engine=engine, poll_interval=0.02)
+
+    broker.start()
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            row = conn.execute(
+                "SELECT status FROM voice_queue WHERE turn_id = 't1'"
+            ).fetchone()
+            if row and row[0] in ("failed", "queued"):
+                if row[0] == "failed":
+                    break
+            time.sleep(0.01)
+
+        assert broker._thread is not None and broker._thread.is_alive(), (
+            "a non-TTSEngineError killed the broker thread — Jarvis is mute"
+        )
+
+        # And it still speaks afterwards.
+        queue.enqueue(text="Zdanie po awarii bazy.", turn_id="t2", kind="sentence", seq=0)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            row = conn.execute(
+                "SELECT status FROM voice_queue WHERE turn_id = 't2'"
+            ).fetchone()
+            if row and row[0] == "done":
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("broker never recovered after the non-TTS exception")
+    finally:
+        broker.stop()
+        close_quietly(conn)
+
+
+# --- (d) stop() terminates the drain loop and executor -----------------------
+
+
+class _SpyEngine(MockTTSEngine):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.stop_playback_calls = 0
+
+    def stop_playback(self) -> None:
+        self.stop_playback_calls += 1
+        super().stop_playback()
+
+    def play(self, chunk: SynthesizedChunk) -> None:
+        time.sleep(0.05)
+        super().play(chunk)
+
+
+def test_broker_stop_interrupts_drain_loop_and_shuts_executor(db_path: Path) -> None:
+    factory = _connect_factory(db_path)
+    conn = factory()
+    queue = VoiceQueue(conn)
+    for seq in range(100):
+        queue.enqueue(text=f"Zdanie numer {seq} w kolejce.", turn_id="t", kind="sentence", seq=seq)
+    engine = _SpyEngine()
+    broker = VoiceBroker(factory, config=voice_config(), engine=engine, poll_interval=0.02)
+
+    broker.start()
+    deadline = time.monotonic() + 5
+    while not any(op == "play" for op, _ in engine.log) and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    started = time.monotonic()
+    broker.stop()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 4, f"stop() did not interrupt the drain loop (took {elapsed:.1f}s)"
+    assert broker._thread is None
+    assert engine.stop_playback_calls >= 1, "stop() must interrupt the current playback"
+    assert broker._executor._shutdown, "stop() must shut the prefetch executor down"
+    played = sum(1 for op, _ in engine.log if op == "play")
+    assert played < 100, "stop() played the whole queue instead of stopping"
+    close_quietly(conn)

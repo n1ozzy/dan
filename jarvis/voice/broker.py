@@ -18,7 +18,7 @@ from jarvis.store.db import close_quietly
 from jarvis.store.event_store import create_event_store
 from jarvis.voice.models import VoiceRequest
 from jarvis.voice.queue import VoiceQueue
-from jarvis.voice.tts import SynthesizedChunk, TTSEngineError
+from jarvis.voice.tts import SynthesizedChunk
 
 
 _LOGGER = get_logger("voice.broker")
@@ -51,19 +51,44 @@ class VoiceBroker:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop.clear()
+        if self._executor is None or getattr(self._executor, "_shutdown", False):
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-tts")
         self._thread = threading.Thread(target=self._run, name="jarvis-voice-broker", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        # Interrupt the current playback so a blocked play() cannot outlive
+        # the join timeout (FIX-04d).
+        try:
+            stop_playback = getattr(self._engine, "stop_playback", None)
+            if callable(stop_playback):
+                stop_playback()
+        except Exception:
+            _LOGGER.exception("stop_playback failed during broker stop.")
         if self._thread is not None:
             self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                _LOGGER.warning("Voice broker thread did not stop within timeout.")
             self._thread = None
+        self._executor.shutdown(cancel_futures=True)
 
     def _run(self) -> None:
-        self._with_queue(lambda queue: queue.recover_orphans())
+        # A non-TTS exception (sqlite "database is locked", vanished binary)
+        # must never kill the only speaker in the system (FIX-04c): log,
+        # back off, retry.
+        backoff = self._poll_interval
         while not self._stop.is_set():
-            if self.drain_all() == 0:
+            try:
+                self._with_queue(lambda queue: queue.recover_orphans())
+                played = self.drain_all()
+            except Exception:
+                _LOGGER.exception("Voice broker drain failed; retrying after backoff.")
+                self._stop.wait(backoff)
+                backoff = min(backoff * 2, 5.0)
+                continue
+            backoff = self._poll_interval
+            if played == 0:
                 self._stop.wait(self._poll_interval)
 
     # -- draining -----------------------------------------------------------
@@ -76,13 +101,20 @@ class VoiceBroker:
         current = self._claim()
         prefetched: Future | None = None
         while current is not None:
+            # Honour stop() between chunks: a long queue must not keep the
+            # drain loop alive past shutdown (FIX-04d). The claimed row goes
+            # back to 'queued' via recover_orphans on the next start.
+            if self._stop.is_set():
+                return played
             try:
                 chunk = (
                     prefetched.result()
                     if prefetched is not None
                     else self._engine.synthesize(current.text)
                 )
-            except TTSEngineError as exc:
+            except Exception as exc:
+                # Not only TTSEngineError: a sqlite error or missing binary in
+                # synthesis must fail the row, not the loop (FIX-04c).
                 self._mark_failed(current, str(exc))
                 current = self._claim()
                 prefetched = None

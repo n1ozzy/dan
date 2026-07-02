@@ -123,6 +123,7 @@ class DaemonApp:
     voice_stt: Any = None
     voice_gateway: Any = None
     voice_cancellation: Any = None
+    voice_lease_sweeper: Any = None
     # Daemon-lifetime (not voice-lifetime): streaming adapters register kill
     # handles here (G4d), the cancellation coordinator fires them (leg 1).
     voice_generation_registry: Any = field(default_factory=_build_generation_registry)
@@ -227,13 +228,42 @@ class DaemonApp:
         state_machine.transition(RuntimeState.IDLE, reason="daemon started")
         self.started = True
 
+        # Daemon-side lease TTL enforcement (FIX-04b): a crashed panel that
+        # never sends button-up must not leave the microphone hot until the
+        # next API call happens to run _expire_stale.
+        from jarvis.voice.listening import ListeningLeaseSweeper
+
+        self.voice_lease_sweeper = ListeningLeaseSweeper(
+            self._sweep_listening_leases,
+            interval_seconds=float(
+                getattr(self.config.voice, "lease_sweep_interval_seconds", 5.0)
+            ),
+        )
+        self.voice_lease_sweeper.start()
+
     def stop(self, reason: str | None = None) -> None:
         event_store = self._require_event_store()
         state_machine = self._require_state_machine()
 
+        # Sweeper first: it pokes the recorder via _sync_recorder and must
+        # not race the shutdown below.
+        if self.voice_lease_sweeper is not None:
+            self.voice_lease_sweeper.stop()
+            self.voice_lease_sweeper = None
+
         if self.voice_broker is not None:
             self.voice_broker.stop()
             self.voice_broker = None
+
+        # Recorder before STT (FIX-04a): stop() must never leave an orphaned
+        # sox recording after an in-process restart (hot mic), and stopping
+        # it first lets the final capture reach the STT pipeline below.
+        if self.voice_recorder is not None:
+            try:
+                self.voice_recorder.stop()
+            except Exception:
+                get_logger(__name__).exception("Voice recorder stop failed during shutdown.")
+            self.voice_recorder = None
 
         # STT first (no new transcripts), then the gateway — its stop()
         # WAITS for the in-flight voice turn, which writes through the
@@ -756,6 +786,17 @@ class DaemonApp:
             source="voice",
             metadata={"origin": "voice_transcript"},
         )
+
+    def _sweep_listening_leases(self) -> None:
+        """Sweeper tick: expire stale leases and sync the recorder."""
+
+        if not self.started or self.voice_recorder is None:
+            return
+        conn = self._connect_existing()
+        try:
+            self._listening_manager(conn).active()
+        finally:
+            close_quietly(conn)
 
     def _voice_speech_active(self) -> bool:
         """Barge-in probe: is Jarvis speaking (queue) or generating (registry)?"""
