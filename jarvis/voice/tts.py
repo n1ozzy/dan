@@ -150,6 +150,12 @@ class SupertonicEngine:
         self._lang = str(voice_cfg.supertonic_lang or "pl")
         self._steps = max(1, int(voice_cfg.supertonic_steps or 14))
         self._speed = float(voice_cfg.supertonic_speed or 1.35)
+        self._short_chars = max(
+            0, int(getattr(voice_cfg, "supertonic_short_sentence_chars", 0) or 0)
+        )
+        self._short_speed = float(
+            getattr(voice_cfg, "supertonic_short_sentence_speed", 1.0) or 1.0
+        )
         self._timeout = max(1, int(voice_cfg.tts_timeout_seconds or 120))
         self._pad_start = max(0.0, float(getattr(voice_cfg, "playback_pad_start_seconds", 0.0) or 0.0))
         self._pad_end = max(0.0, float(getattr(voice_cfg, "playback_pad_end_seconds", 0.0) or 0.0))
@@ -170,10 +176,18 @@ class SupertonicEngine:
         if not clean:
             raise TTSEngineError(f"Nothing speakable left after sanitizing {text!r}.")
         out = Path(self.workdir) / f"tts-{uuid.uuid4().hex}.wav"
+        # Measured at the G4 live gate (2026-07-02): above ~1.15 speed the
+        # model clips the final phoneme of short sentences (a hot cut inside
+        # the generated audio, so playback pads cannot help) and above ~1.25
+        # occasionally emits a near-silent file. Short sentences may only be
+        # slowed down, never sped up.
+        speed = self._speed
+        if 0 < len(clean) <= self._short_chars:
+            speed = min(speed, self._short_speed)
         cmd = [
             self._binary, "tts", clean, "-o", str(out),
             "--voice", self._voice, "--lang", self._lang,
-            "--steps", str(self._steps), "--speed", f"{self._speed:.2f}",
+            "--steps", str(self._steps), "--speed", f"{speed:.2f}",
         ]
         try:
             proc = subprocess.run(

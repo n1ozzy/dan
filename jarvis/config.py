@@ -144,6 +144,13 @@ class VoiceConfig:
     supertonic_lang: str = "pl"
     supertonic_steps: int = 14
     supertonic_speed: float = 1.35
+    # G4 live-gate measurement (2026-07-02, N=5 per point): above ~1.15
+    # speed supertonic clips the final phoneme of short sentences and above
+    # ~1.25 sometimes emits a near-silent file; sentences of >=24 chars are
+    # clean at 1.35. Sentences up to short_sentence_chars are synthesized at
+    # short_sentence_speed (only ever slower, never faster). 0 = disabled.
+    supertonic_short_sentence_chars: int = 24
+    supertonic_short_sentence_speed: float = 1.0
     # sox's player: sox is part of the decreed stack (§7.4) and its legacy
     # macOS counterpart is a banned string in this repo (DAN's direct-play sin).
     playback_binary: str = "play"

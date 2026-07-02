@@ -264,6 +264,84 @@ def test_synthesize_without_pronunciations_keeps_text(tmp_path: Path) -> None:
     assert "Runtime" in args_file.read_text()
 
 
+# --- short-sentence speed (G4 live-gate fact 2026-07-02) ---------------------
+# Measured: above ~1.15 speed supertonic clips the final phoneme of SHORT
+# sentences (hot cut in the generated audio, so playback pads cannot help)
+# and above ~1.25 occasionally emits a near-silent file. Short sentences are
+# synthesized at a slower, safe speed; longer text keeps the configured pace.
+
+
+def test_short_sentence_synthesized_at_short_speed(tmp_path: Path) -> None:
+    engine, args_file, _ = build_engine(
+        tmp_path,
+        supertonic_short_sentence_chars=24,
+        supertonic_short_sentence_speed=1.0,
+    )
+
+    engine.synthesize("Gotowe.")
+
+    args = args_file.read_text().splitlines()
+    assert args[args.index("--speed") + 1] == "1.00"
+
+
+def test_long_sentence_keeps_configured_speed(tmp_path: Path) -> None:
+    engine, args_file, _ = build_engine(
+        tmp_path,
+        supertonic_short_sentence_chars=24,
+        supertonic_short_sentence_speed=1.0,
+    )
+
+    engine.synthesize("Wszystkie testy przechodzą bez błędów.")
+
+    args = args_file.read_text().splitlines()
+    assert args[args.index("--speed") + 1] == "1.35"
+
+
+def test_short_speed_never_speeds_text_up(tmp_path: Path) -> None:
+    # Global speed slower than the short-sentence speed wins: the guard may
+    # only slow short sentences down, never accelerate them.
+    engine, args_file, _ = build_engine(
+        tmp_path,
+        supertonic_speed=0.9,
+        supertonic_short_sentence_chars=24,
+        supertonic_short_sentence_speed=1.0,
+    )
+
+    engine.synthesize("Gotowe.")
+
+    args = args_file.read_text().splitlines()
+    assert args[args.index("--speed") + 1] == "0.90"
+
+
+def test_zero_short_chars_disables_the_guard(tmp_path: Path) -> None:
+    engine, args_file, _ = build_engine(
+        tmp_path,
+        supertonic_short_sentence_chars=0,
+        supertonic_short_sentence_speed=1.0,
+    )
+
+    engine.synthesize("Gotowe.")
+
+    args = args_file.read_text().splitlines()
+    assert args[args.index("--speed") + 1] == "1.35"
+
+
+def test_short_guard_measures_sanitized_text(tmp_path: Path) -> None:
+    # The threshold applies to what the CLI actually speaks: after quote
+    # stripping and pronunciation rewrites, not the raw canonical text.
+    engine, args_file, _ = build_engine(
+        tmp_path,
+        supertonic_short_sentence_chars=10,
+        supertonic_short_sentence_speed=1.0,
+        tts_pronunciations={"deployment zakończony": "dip"},
+    )
+
+    engine.synthesize("„Deployment zakończony”.")  # po przepisaniu: "dip." (4 znaki)
+
+    args = args_file.read_text().splitlines()
+    assert args[args.index("--speed") + 1] == "1.00"
+
+
 def fake_player_recording_argv(tmp_path: Path) -> tuple[Path, Path]:
     """Fake player: records its full argv, one argument per line."""
 
