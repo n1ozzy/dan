@@ -1,19 +1,42 @@
-"""Recorder backends for the listening pipeline (G2).
+"""Recorder backends for the listening pipeline (G2 interface, G4a real sox).
 
-Only the mock exists until G4 brings the real sox-based recorder. The
-recorder is a dumb sink: leases decide WHEN it runs (CONTRACTS §8), the
-AudioDeviceManager decides WHICH input it uses (ADR-012).
+The recorder is a dumb sink: leases decide WHEN it runs (CONTRACTS §8), the
+AudioDeviceManager decides WHICH input it uses (ADR-012) — the device
+arrives through a provider callable, the recorder never reads audio policy
+itself. Captured audio is handed to `on_capture` as bytes in RAM; the only
+disk artifact is a transient 0600 WAV in the private runtime workdir,
+unlinked as soon as the capture ends (transport, not truth — D4 precedent).
 """
 
 from __future__ import annotations
 
+import logging
+import os
+import shutil
+import signal
+import subprocess
+import threading
+import uuid
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+
+logger = logging.getLogger(__name__)
+
+# A header-sized WAV is not an utterance: below this the capture is dropped
+# without waking any consumer. Proper energy/VAD filtering is G4b's job.
+MIN_CAPTURE_BYTES = 1024
+
 
 class RecorderBackendError(Exception):
-    """Raised when the configured recorder backend is unknown."""
+    """Raised when the recorder backend is unknown or cannot be built."""
 
 
 class MockRecorder:
     """Deterministic recorder double: counts starts/stops, captures nothing."""
+
+    name = "mock"
 
     def __init__(self) -> None:
         self.started = 0
@@ -31,12 +54,176 @@ class MockRecorder:
             self.recording = False
 
 
-def build_recorder(backend: str) -> MockRecorder:
-    if backend == "mock":
-        return MockRecorder()
+class SoxRecorder:
+    """Real capture through the sox CLI (decreed stack, MASTER_PLAN §7.4).
+
+    One subprocess per listening session: leases call start()/stop(), the
+    process records 16 kHz / mono / 16-bit (the STT stack's native shape)
+    from the policy-selected input device. Effect chain per the §4a facts:
+    highpass 80 Hz against hum; a configured gain comes after highpass and
+    would have to precede any future `silence` effect (there is none —
+    leases end captures, not VAD; VAD belongs to G4b on the STT side).
+    """
+
+    name = "sox"
+
+    def __init__(
+        self,
+        *,
+        config: Any,
+        input_device_provider: Callable[[], str | None],
+        on_capture: Callable[[bytes], None] | None = None,
+    ) -> None:
+        voice_cfg = config.voice
+        self._binary = _resolve_sox_binary(str(getattr(voice_cfg, "recorder_binary", "") or ""))
+        self._sample_rate = int(getattr(voice_cfg, "recorder_sample_rate", 16000) or 16000)
+        self._highpass_hz = int(getattr(voice_cfg, "recorder_highpass_hz", 80) or 0)
+        self._gain_db = float(getattr(voice_cfg, "recorder_gain_db", 0.0) or 0.0)
+        self._device_provider = input_device_provider
+        self._on_capture = on_capture
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._capture_path: Path | None = None
+        workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
+        workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(workdir, 0o700)
+        self.workdir = str(workdir)
+
+    @property
+    def recording(self) -> bool:
+        proc = self._proc
+        return proc is not None and proc.poll() is None
+
+    def start(self) -> None:
+        with self._lock:
+            if self._proc is not None:
+                if self._proc.poll() is None:
+                    return
+                # The previous session died on its own (device yanked, sox
+                # crash): finalize what it captured, then start fresh.
+                self._finalize_locked()
+
+            device = self._device_provider()
+            if not device:
+                # Policy said "no usable input": recording from a disallowed
+                # device is worse than not recording — fail closed, no spawn.
+                logger.warning(
+                    "sox recorder not started: audio policy offers no usable input device."
+                )
+                return
+
+            path = Path(self.workdir) / f"rec-{uuid.uuid4().hex}.wav"
+            path.touch(mode=0o600)
+            cmd = [
+                self._binary,
+                "-q",
+                "-t", "coreaudio", device,
+                "-r", str(self._sample_rate),
+                "-c", "1",
+                "-b", "16",
+                str(path),
+            ]
+            if self._highpass_hz > 0:
+                cmd += ["highpass", str(self._highpass_hz)]
+            if self._gain_db:
+                # §4a: gain must precede any future `silence` effect.
+                cmd += ["gain", f"{self._gain_db:g}"]
+            try:
+                self._proc = subprocess.Popen(
+                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+            except OSError as exc:
+                path.unlink(missing_ok=True)
+                raise RecorderBackendError(f"Failed to spawn sox recorder: {exc}") from exc
+            self._capture_path = path
+
+    def stop(self) -> None:
+        with self._lock:
+            self._finalize_locked()
+
+    # -- internals ---------------------------------------------------------
+
+    def _finalize_locked(self) -> None:
+        proc, path = self._proc, self._capture_path
+        self._proc, self._capture_path = None, None
+        if proc is not None and proc.poll() is None:
+            # SIGINT is sox's documented graceful stop (it finalizes the WAV
+            # header); escalate only if it ignores us.
+            for sig, grace in ((signal.SIGINT, 5.0), (signal.SIGTERM, 2.0)):
+                try:
+                    proc.send_signal(sig)
+                    proc.wait(timeout=grace)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+                except ProcessLookupError:
+                    break
+            else:
+                proc.kill()
+                proc.wait(timeout=5.0)
+
+        if path is None:
+            return
+        try:
+            audio = path.read_bytes() if path.is_file() else b""
+        finally:
+            path.unlink(missing_ok=True)
+        if len(audio) < MIN_CAPTURE_BYTES or self._on_capture is None:
+            return
+        try:
+            self._on_capture(audio)
+        except Exception:  # noqa: BLE001 — a consumer bug must not kill listening
+            logger.exception("voice capture consumer raised; capture dropped.")
+
+
+def _resolve_sox_binary(explicit: str) -> str:
+    """Explicit config path, else sox from PATH (brew install — inventory)."""
+
+    candidates = [explicit] if explicit else [shutil.which("sox") or ""]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
     raise RecorderBackendError(
-        f"Unknown recorder backend {backend!r}; only 'mock' exists until G4."
+        "sox recorder binary not found (set voice.recorder_binary or install "
+        "sox — decreed stack, MASTER_PLAN §7.4)."
     )
 
 
-__all__ = ["MockRecorder", "RecorderBackendError", "build_recorder"]
+def build_recorder(
+    backend: str,
+    *,
+    config: Any | None = None,
+    input_device_provider: Callable[[], str | None] | None = None,
+    on_capture: Callable[[bytes], None] | None = None,
+) -> MockRecorder | SoxRecorder:
+    normalized = str(backend or "").strip().lower()
+    if normalized == "mock":
+        return MockRecorder()
+    if normalized == "sox":
+        if config is None:
+            raise RecorderBackendError(
+                "Recorder backend 'sox' needs the daemon config "
+                "(voice.recorder_* and runtime.runtime_dir)."
+            )
+        if input_device_provider is None:
+            raise RecorderBackendError(
+                "Recorder backend 'sox' needs an input device provider "
+                "(the AudioDeviceManager decides which input — ADR-012)."
+            )
+        return SoxRecorder(
+            config=config,
+            input_device_provider=input_device_provider,
+            on_capture=on_capture,
+        )
+    raise RecorderBackendError(
+        f"Unknown recorder backend {backend!r}; expected 'mock' or 'sox'."
+    )
+
+
+__all__ = [
+    "MIN_CAPTURE_BYTES",
+    "MockRecorder",
+    "RecorderBackendError",
+    "SoxRecorder",
+    "build_recorder",
+]

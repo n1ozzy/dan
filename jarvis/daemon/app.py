@@ -133,8 +133,15 @@ class DaemonApp:
 
         AudioDeviceManager(self._require_conn(), config=self.config.audio)
         # One stateful recorder for the whole daemon: leases decide when it
-        # runs, so per-request lease managers must share it.
-        self.voice_recorder = build_recorder(self.config.voice.recorder)
+        # runs, so per-request lease managers must share it. Building it
+        # validates the backend (a missing sox binary kills the daemon at
+        # startup — established rule); the input device comes from audio
+        # policy at every start (ADR-012).
+        self.voice_recorder = build_recorder(
+            self.config.voice.recorder,
+            config=self.config,
+            input_device_provider=self._resolve_recorder_input_device,
+        )
 
         if self.config.voice.enabled:
             from jarvis.voice.broker import VoiceBroker
@@ -811,6 +818,22 @@ class DaemonApp:
         if not self.paths.db_path.is_file():
             raise DaemonAppError(f"Database does not exist: {self.paths.db_path}")
         return connect_db(self.paths.db_path)
+
+    def _resolve_recorder_input_device(self) -> str | None:
+        """Audio policy decides which input the recorder uses (ADR-012).
+
+        Resolved at every recorder start, not once at wiring time: devices
+        come and go, and the snapshot side effect keeps the DB truthful.
+        """
+
+        from jarvis.audio.devices import AudioDeviceManager
+
+        conn = self._connect_existing()
+        try:
+            manager = AudioDeviceManager(conn, config=self.config.audio)
+            return manager.current().input_device
+        finally:
+            close_quietly(conn)
 
     def _db_snapshot(self) -> tuple[int, int]:
         if not self.paths.db_path.is_file():

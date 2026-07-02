@@ -87,6 +87,15 @@ class VoiceConfig:
     ptt_mode: str = "hold"
     queue_persisted: bool = True
     recorder: str = "mock"
+    # sox recorder (G4a): leases decide WHEN it runs, the AudioDeviceManager
+    # decides WHICH input it uses (ADR-012). Empty binary = PATH lookup.
+    # highpass/gain are the §4a empirical facts (80 Hz against hum; gain, if
+    # any, must precede a future `silence` effect) — to be confronted with
+    # the first real recording at the G4 live gate.
+    recorder_binary: str = ""
+    recorder_sample_rate: int = 16000
+    recorder_highpass_hz: int = 80
+    recorder_gain_db: float = 0.0
     ptt_hold_ttl_seconds: int = 30
     listen_lock_ttl_seconds: int = 600
     fillers: tuple[str, ...] = ("Już sprawdzam.", "Chwila.")
