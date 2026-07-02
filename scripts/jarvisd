@@ -1,2 +1,25 @@
-#!/usr/bin/env sh
-printf '%s\n' "jarvisd not implemented yet"
+#!/bin/sh
+# Jarvis daemon entry wrapper (LAUNCH_SUPERVISION.md §5).
+#
+# Run by hand from the repo, or installed to ~/.jarvis/bin/jarvisd by
+# scripts/install-launchd.sh (which pins JARVIS_REPO to an absolute path,
+# because launchd cannot resolve paths relative to this repo).
+set -eu
+
+if [ -z "${JARVIS_REPO:-}" ]; then
+  JARVIS_REPO="$(cd "$(dirname "$0")/.." && pwd)"
+fi
+
+PYTHON="$JARVIS_REPO/.venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+  PYTHON="$(command -v python3)"
+fi
+
+# Config resolution: explicit JARVIS_CONFIG wins; otherwise prefer the
+# user-owned config outside the repo, falling back to the repo default.
+if [ -z "${JARVIS_CONFIG:-}" ] && [ -f "$HOME/.jarvis/jarvis.toml" ]; then
+  JARVIS_CONFIG="$HOME/.jarvis/jarvis.toml"
+  export JARVIS_CONFIG
+fi
+
+exec "$PYTHON" -m jarvis.cli daemon run "$@"

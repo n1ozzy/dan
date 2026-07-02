@@ -3,19 +3,22 @@
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <!-- The only official Jarvis label (ADR-007). Installed ONLY by a human
+       running scripts/install-launchd.sh; __HOME__ is substituted there, so
+       loading this example file directly fails loudly instead of silently. -->
   <key>Label</key>
   <string>com.ozzy.jarvisd</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/n1_ozzy/.jarvis/bin/jarvisd</string>
+    <string>__HOME__/.jarvis/bin/jarvisd</string>
   </array>
   <key>RunAtLoad</key>
-  <false/>
+  <true/>
   <key>KeepAlive</key>
   <false/>
   <key>StandardOutPath</key>
-  <string>/Users/n1_ozzy/.jarvis/logs/jarvisd.out.log</string>
+  <string>__HOME__/.jarvis/logs/jarvisd.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/n1_ozzy/.jarvis/logs/jarvisd.err.log</string>
+  <string>__HOME__/.jarvis/logs/jarvisd.err.log</string>
 </dict>
 </plist>
