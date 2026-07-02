@@ -81,6 +81,7 @@ function bindElements() {
     "runtimeList",
     "runtimeObservationList",
     "runtimeError",
+    "advancedToggle",
   ];
 
   for (const id of ids) {
@@ -99,6 +100,18 @@ function bindEvents() {
   el.refreshEventsButton.addEventListener("click", refreshEvents);
   el.refreshRuntimeButton.addEventListener("click", refreshRuntime);
   el.textForm.addEventListener("submit", sendTextInput);
+  el.textInput.addEventListener("keydown", (event) => {
+    // Enter sends; Shift+Enter keeps inserting a newline.
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      el.textForm.requestSubmit();
+    }
+  });
+  el.advancedToggle.addEventListener("click", () => {
+    const shown = document.body.classList.toggle("show-advanced");
+    el.advancedToggle.setAttribute("aria-pressed", shown ? "true" : "false");
+    el.advancedToggle.classList.toggle("active", shown);
+  });
   el.memoryForm.addEventListener("submit", createMemoryBlock);
   el.apiBaseInput.addEventListener("change", () => {
     const nextBase = el.apiBaseInput.value.trim();
@@ -215,7 +228,7 @@ async function refreshHistory() {
     if (cockpit.selectedConversationId) {
       await refreshTurns(cockpit.selectedConversationId);
     } else {
-      renderEmpty(el.turnList, "No turns");
+      renderEmpty(el.turnList, "Brak tur");
     }
   } catch (error) {
     clearNode(el.conversationList);
@@ -235,7 +248,7 @@ function renderConversations(conversations) {
   clearNode(el.conversationList);
 
   if (conversations.length === 0) {
-    renderEmpty(el.conversationList, "No conversations");
+    renderEmpty(el.conversationList, "Brak rozmów");
     return;
   }
 
@@ -261,9 +274,12 @@ function renderConversations(conversations) {
     });
 
     const title = document.createElement("strong");
-    setText(title, shortId(conversation.id));
+    setText(title, conversation.title || `Rozmowa ${formatClock(conversation.latest_turn_at || conversation.created_at)}`);
     const meta = document.createElement("span");
-    setText(meta, `${conversation.status || "unknown"} - ${conversation.turn_count || 0} turns`);
+    meta.className = "muted";
+    const turnCount = conversation.turn_count || 0;
+    const statusLabel = conversation.status === "active" ? "" : ` • ${conversation.status || "?"}`;
+    setText(meta, `${turnCount} ${turnLabel(turnCount)}${statusLabel}`);
 
     button.append(title, meta);
     el.conversationList.appendChild(button);
@@ -274,7 +290,7 @@ function renderTurns(turns) {
   clearNode(el.turnList);
 
   if (turns.length === 0) {
-    renderEmpty(el.turnList, "No turns");
+    renderEmpty(el.turnList, "Brak tur");
     return;
   }
 
@@ -334,7 +350,7 @@ function renderMemory(blocks) {
   clearNode(el.memoryList);
 
   if (blocks.length === 0) {
-    renderEmpty(el.memoryList, "No active memory");
+    renderEmpty(el.memoryList, "Brak aktywnej pamięci");
     return;
   }
 
@@ -385,7 +401,7 @@ function renderTools(tools) {
   clearNode(el.toolList);
 
   if (tools.length === 0) {
-    renderEmpty(el.toolList, "No tools");
+    renderEmpty(el.toolList, "Brak narzędzi");
     return;
   }
 
@@ -403,7 +419,7 @@ function renderApprovals(pendingApprovals) {
 
   const approved = Array.from(cockpit.approvedApprovals.values());
   if (pendingApprovals.length === 0 && approved.length === 0) {
-    renderEmpty(el.approvalList, "No pending approvals");
+    renderEmpty(el.approvalList, "Nic nie czeka na zgodę");
     return;
   }
 
@@ -528,7 +544,7 @@ function renderSettings(settings) {
 
   const entries = Object.entries(settings);
   if (entries.length === 0) {
-    renderEmpty(el.settingsList, "No settings");
+    renderEmpty(el.settingsList, "Brak ustawień");
     return;
   }
 
@@ -633,7 +649,7 @@ function renderEvents(events) {
   clearNode(el.eventList);
 
   if (events.length === 0) {
-    renderEmpty(el.eventList, "No events");
+    renderEmpty(el.eventList, "Brak zdarzeń");
     return;
   }
 
@@ -850,7 +866,7 @@ function renderRuntimeObservations(observations) {
   clearNode(el.runtimeObservationList);
 
   if (observations.length === 0) {
-    renderEmpty(el.runtimeObservationList, "No observations");
+    renderEmpty(el.runtimeObservationList, "Brak obserwacji");
     return;
   }
 
@@ -1102,4 +1118,33 @@ function shortId(value) {
     return text;
   }
   return `${text.slice(0, 8)}...${text.slice(-4)}`;
+}
+
+function formatClock(iso) {
+  if (!iso) {
+    return "?";
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "?";
+  }
+  const sameDay = date.toDateString() === new Date().toDateString();
+  const clock = date.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+  if (sameDay) {
+    return clock;
+  }
+  const day = date.toLocaleDateString("pl-PL", { day: "2-digit", month: "2-digit" });
+  return `${day} ${clock}`;
+}
+
+function turnLabel(count) {
+  if (count === 1) {
+    return "tura";
+  }
+  const lastDigit = count % 10;
+  const lastTwo = count % 100;
+  if (lastDigit >= 2 && lastDigit <= 4 && (lastTwo < 12 || lastTwo > 14)) {
+    return "tury";
+  }
+  return "tur";
 }

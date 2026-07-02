@@ -139,11 +139,47 @@ def test_panel_assets_do_not_reference_external_cdns() -> None:
     assert "https://" not in styles
 
 
+def test_index_splits_basic_and_advanced_views() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    # Operator-first: input/approvals/history are always visible; debug and
+    # plumbing sections hide behind the "Zaawansowane" toggle.
+    assert "advancedToggle" in markup
+    for advanced_heading in (
+        "apiHeading",
+        "healthHeading",
+        "memoryHeading",
+        "toolsHeading",
+        "settingsHeading",
+        "eventsHeading",
+        "runtimeHeading",
+    ):
+        section_start = markup.index(advanced_heading)
+        assert "advanced" in markup[section_start - 200 : section_start], advanced_heading
+    for basic_heading in ("inputHeading", "approvalsHeading", "historyHeading"):
+        section_start = markup.index(basic_heading)
+        assert "advanced" not in markup[section_start - 200 : section_start], basic_heading
+
+    assert ".card.advanced" in styles
+    assert "show-advanced" in styles
+    assert "show-advanced" in script
+
+
+def test_app_sends_text_input_on_enter() -> None:
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "keydown" in script
+    assert "requestSubmit" in script
+    assert "shiftKey" in script
+
+
 def test_css_has_compact_width_friendly_layout() -> None:
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
-    assert "420px" in styles
-    assert "620px" in styles
+    assert "480px" in styles
+    assert "760px" in styles
     assert "overflow" in styles
     assert "grid" in styles or "flex" in styles
 
@@ -209,7 +245,9 @@ def test_runtime_files_avoid_forbidden_legacy_strings() -> None:
         for path in files:
             if "__pycache__" in path.parts or path.suffix not in text_suffixes:
                 continue
-            text = path.read_text(encoding="utf-8")
+            # errors="replace": the forbidden snippets are ASCII, and a stray
+            # binary (e.g. Finder's .DS_Store) must not crash the scan.
+            text = path.read_text(encoding="utf-8", errors="replace")
             for snippet in FORBIDDEN_RUNTIME_SNIPPETS:
                 if snippet in text:
                     offenders.append((str(path.relative_to(ROOT)), snippet))

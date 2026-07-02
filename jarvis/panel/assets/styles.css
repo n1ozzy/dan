@@ -65,8 +65,8 @@ textarea {
 }
 
 .panel-shell {
-  width: min(100vw, 420px);
-  min-height: min(100vh, 620px);
+  width: min(100vw, 480px);
+  min-height: min(100vh, 760px);
   max-height: 100vh;
   margin: 0 auto;
   padding: 10px;
@@ -173,6 +173,24 @@ h2 {
   border: 1px solid #273446;
   border-radius: 8px;
   background: #151d28;
+}
+
+/* Advanced-only sections stay hidden until the topbar toggle enables them. */
+.card.advanced {
+  display: none;
+}
+
+body.show-advanced .card.advanced {
+  display: grid;
+}
+
+#advancedToggle.active {
+  border-color: #6da8ff;
+  background: #18345c;
+}
+
+.section-desc {
+  margin: 0;
 }
 
 .api-card {
@@ -340,6 +358,15 @@ button.list-row {
   border: 1px solid #67333b;
   color: #fecdd3;
   background: #241117;
+}
+
+/* When the viewport is no wider than the shell (menu-bar popover, narrow
+   browser window), the native frame already borders the content — a second
+   inline border reads as a page-in-a-page. */
+@media (max-width: 480px) {
+  .panel-shell {
+    border-inline: none;
+  }
 }
 
 @media (max-width: 360px) {

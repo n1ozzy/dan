@@ -134,6 +134,24 @@ class TestProbe:
         assert menubar_app.probe(settings) == 2
 
 
+class TestPopoverAppearance:
+    """The cockpit is dark-only (`color-scheme: dark`); the popover chrome
+    must follow, or the light-mode arrow/flash clashes with the content.
+    GUI construction needs a display, so this is a source contract, same
+    idiom as the lazy-import guard above."""
+
+    def test_popover_forces_dark_appearance(self) -> None:
+        source = (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+
+        assert "NSAppearanceNameDarkAqua" in source
+        assert "setAppearance_" in source
+
+    def test_webview_underlay_matches_cockpit_background(self) -> None:
+        source = (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+
+        assert "setUnderPageBackgroundColor_" in source
+
+
 class TestStatusIcon:
     def test_icon_asset_exists_in_panel_assets(self) -> None:
         path = menubar_app.status_icon_path()

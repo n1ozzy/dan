@@ -182,8 +182,8 @@ class AudioConfig:
 class PanelConfig:
     enabled: bool = False
     api_base_url: str = "http://127.0.0.1:41741"
-    width: int = 420
-    height: int = 620
+    width: int = 480
+    height: int = 760
 
 
 @dataclass(frozen=True)

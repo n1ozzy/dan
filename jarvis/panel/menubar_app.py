@@ -141,6 +141,13 @@ class MenuBarApp:
 
         frame = AppKit.NSMakeRect(0, 0, self._settings.width, self._settings.height)
         webview = WebKit.WKWebView.alloc().initWithFrame_configuration_(frame, configuration)
+        # Match the cockpit's page background (#0e1116) so load and
+        # rubber-band overscroll never flash a light underlay.
+        webview.setUnderPageBackgroundColor_(
+            AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0x0E / 255, 0x11 / 255, 0x16 / 255, 1.0
+            )
+        )
         index_url = AppKit.NSURL.fileURLWithPath_(str(self._settings.index_path))
         assets_url = AppKit.NSURL.fileURLWithPath_(str(self._settings.index_path.parent))
         webview.loadFileURL_allowingReadAccessToURL_(index_url, assets_url)
@@ -154,6 +161,12 @@ class MenuBarApp:
             AppKit.NSMakeSize(self._settings.width, self._settings.height)
         )
         popover.setBehavior_(AppKit.NSPopoverBehaviorTransient)
+        # The cockpit is dark-only (`color-scheme: dark`); pin the popover
+        # chrome (arrow, edges) to dark so a light-mode menu bar does not
+        # frame the dark content in white.
+        popover.setAppearance_(
+            AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua)
+        )
         return popover
 
     def _build_controller(self, AppKit):  # noqa: N803

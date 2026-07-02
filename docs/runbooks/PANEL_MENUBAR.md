@@ -37,7 +37,7 @@ scripts/jarvis-panel --probe    # exit 0 = PyObjC + assets OK, 2 = not
 ```
 
 - **Left-click** the "J" status item: toggle the cockpit popover
-  (size from `[panel] width/height`, default 420×620).
+  (size from `[panel] width/height`, default 480×760).
 - **Right-click**: menu with **Quit Jarvis Panel** (⌘Q also works while
   the popover has focus).
 
