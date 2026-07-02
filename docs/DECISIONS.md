@@ -354,6 +354,45 @@ reuse the adapter but stays approval-gated per the matrix.
 
 ---
 
+## ADR-018 — `ui_act` uses AX-only actions, always approval-gated, never touching credentials
+
+**Status:** Accepted
+
+**Context.** FAZA D2 adds UI actions (`ui_click`, `ui_type`, `ui_focus_app`)
+on top of the D1 adapter. The capability inventory calls unattended UI
+control "a model with a mouse"; the operator contract forbids Jarvis from
+owning or extracting credentials.
+
+**Decision.**
+
+- **Actions are AX API calls only**: `AXPress` for clicks, setting `AXValue`
+  for typing, `AXFrontmost` for focus. No CGEvent synthetic keyboard/mouse
+  input in D2 — a hotkey injector is a different risk shape and would need
+  its own ADR.
+- **Every `ui_act` request crosses ApprovalGate**, including direct user
+  commands (§3: user AP / model AP / auto B). Earned per-surface trust
+  stays a §6 future.
+- **Typing into secure text fields is refused twice**: the `ax` actor checks
+  the focused element's role/subrole before setting a value, and the tool
+  layer enforces the same rule against any backend. Typed text is never
+  echoed back in tool output (it already lives, redacted, in the tool
+  input); `ui_type` is capped at `MAX_TYPE_CHARS`.
+- `ui_focus_app` minimally widens the D1 surface: it resolves a pid from
+  on-screen window **owner names only** (CGWindowList, no window contents,
+  no TCC beyond Accessibility) and raises that app. Observation of other
+  apps' UI remains out of scope (ADR-017 unchanged).
+- Backend knob: `security.ui_act_backend`, empty inherits
+  `security.ui_read_backend`; unknown names fail the daemon at startup.
+- The fake actor records every performed action, so tests and
+  `scripts/smoke-ui-act.sh` can prove nothing executed before approval.
+
+**Consequences.** D2 gives Jarvis hands that move only after a human click
+per action. Setting `AXValue` types "atomically" (no per-keystroke events),
+which some apps may not honor — if real-world coverage disappoints, a
+CGEvent path arrives only via a new ADR.
+
+---
+
 ## Decision log
 
 | ADR | Title | Status |
@@ -375,6 +414,7 @@ reuse the adapter but stays approval-gated per the matrix.
 | 015 | Worker job lifecycle uses worker_jobs for state and events for history | Accepted |
 | 016 | Runtime state names are canonical and finite | Accepted |
 | 017 | `ui_read` observes only the frontmost app and focused window, via a jarvisd-owned backend | Accepted |
+| 018 | `ui_act` uses AX-only actions, always approval-gated, never touching credentials | Accepted |
 
 > ADR-013 and ADR-014 were added by the Prompt 00B inventory, grounded in
 > [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md). Further migration

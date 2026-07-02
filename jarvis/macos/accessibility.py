@@ -108,6 +108,99 @@ def create_reader(backend: str) -> AccessibilityReader:
     raise AccessibilityError(f"Unknown ui_read backend: {backend!r}")
 
 
+MAX_TYPE_CHARS = 4096
+
+
+class AccessibilityActor:
+    """Backend interface for UI actions (FAZA D2, risk class ui_act).
+
+    Contract: never type into secure text fields (credential ownership stays
+    with the user, docs/MACOS_OPERATOR_CONTRACT.md); the tool layer enforces
+    the same rule again on top of whatever a backend does.
+    """
+
+    backend = "abstract"
+
+    def click(self, *, label: str, role: str | None = None) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+    def type_text(self, text: str) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+    def focus_app(self, app_name: str) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+
+class FakeAccessibilityActor(AccessibilityActor):
+    """Deterministic actor for tests and smoke runs.
+
+    Clicks succeed only against the fixture's clickable elements; every
+    performed action is recorded in ``performed`` so tests and the smoke
+    harness can assert that nothing ran before an approval did.
+    """
+
+    backend = "fake"
+
+    def __init__(
+        self,
+        elements: list[Mapping[str, Any]] | None = None,
+        focused_element: Mapping[str, Any] | None = None,
+    ):
+        self._elements = (
+            [dict(element) for element in elements]
+            if elements is not None
+            else [dict(element) for element in _DEFAULT_FIXTURE_WINDOW["elements"]]
+        )
+        self._focused_element = (
+            dict(focused_element)
+            if focused_element is not None
+            else {"role": "AXTextField", "label": "Login", "secure": False}
+        )
+        self.performed: list[dict[str, Any]] = []
+
+    def click(self, *, label: str, role: str | None = None) -> Mapping[str, Any]:
+        for element in self._elements:
+            if element.get("label") != label:
+                continue
+            if role is not None and element.get("role") != role:
+                continue
+            self.performed.append({"action": "click", "label": label})
+            return {"clicked": True, "role": element.get("role"), "label": label}
+        raise AccessibilityError(f"no clickable element labelled {label!r} in the focused window")
+
+    def type_text(self, text: str) -> Mapping[str, Any]:
+        if _element_is_secure(self._focused_element):
+            raise AccessibilityError("focused element is a secure text field; typing refused")
+        self.performed.append({"action": "type_text", "chars": len(text)})
+        return {"typed": True, "chars_typed": len(text)}
+
+    def focus_app(self, app_name: str) -> Mapping[str, Any]:
+        self.performed.append({"action": "focus_app", "app_name": app_name})
+        return {"focused": True, "app_name": app_name}
+
+
+def create_actor(backend: str) -> AccessibilityActor:
+    """Build the configured actor backend; unknown names fail closed."""
+
+    normalized = str(backend).strip().lower()
+    if normalized == "fake":
+        return FakeAccessibilityActor()
+    if normalized == "ax":
+        from jarvis.macos.ax_backend import AXAccessibilityActor
+
+        return AXAccessibilityActor()
+    raise AccessibilityError(f"Unknown ui_act backend: {backend!r}")
+
+
+def _element_is_secure(element: Mapping[str, Any] | None) -> bool:
+    data = element if isinstance(element, Mapping) else {}
+    return (
+        bool(data.get("secure"))
+        or data.get("role") == SECURE_ROLE
+        or data.get("subrole") == SECURE_ROLE
+    )
+
+
 def sanitize_app_snapshot(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     data = raw if isinstance(raw, Mapping) else {}
     pid = data.get("pid")
@@ -231,12 +324,16 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "AccessibilityActor",
     "AccessibilityError",
     "AccessibilityReader",
+    "FakeAccessibilityActor",
     "FakeAccessibilityReader",
     "MAX_ELEMENTS",
     "MAX_TEXT_CHARS",
+    "MAX_TYPE_CHARS",
     "SECURE_ROLE",
+    "create_actor",
     "create_reader",
     "sanitize_app_snapshot",
     "sanitize_window_snapshot",

@@ -1,8 +1,10 @@
-# Accessibility (TCC) onboarding for `ui_read`
+# Accessibility (TCC) onboarding for `ui_read` / `ui_act`
 
 FAZA D1 ships the read-only Accessibility tools (`ui_active_app`,
-`ui_read_window`). The real `ax` backend talks to AXUIElement and works only
-when the process hosting jarvisd holds the **Accessibility** grant in TCC.
+`ui_read_window`); FAZA D2 adds the action tools (`ui_click`, `ui_type`,
+`ui_focus_app`) — one and the same **Accessibility** grant covers both.
+The real `ax` backend talks to AXUIElement and works only
+when the process hosting jarvisd holds the Accessibility grant in TCC.
 Without the grant nothing crashes: every read fails cleanly with a pointer to
 this runbook, and the daemon keeps running.
 
@@ -61,5 +63,7 @@ field values are never printed.
 The grant is process-wide, which is why the permission matrix stays in
 charge: `ui_read` is allow for user sources, approval for the model, blocked
 for scheduled/hook sources, and secure text fields are stripped at the tool
-layer for every source. UI **actions** (`ui_act`) are FAZA D2 and always
-approval-gated; nothing in D1 can click or type.
+layer for every source. UI **actions** (`ui_act`, D2) always cross
+ApprovalGate — every click or keystroke needs an explicit approve + execute,
+typing into secure text fields is refused outright, and auto sources are
+blocked (ADR-018).

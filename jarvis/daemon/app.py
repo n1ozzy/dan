@@ -40,11 +40,17 @@ from jarvis.tools import (
     ToolSpec,
     create_default_tool_registry,
 )
-from jarvis.macos.accessibility import create_reader
+from jarvis.macos.accessibility import create_actor, create_reader
 from jarvis.tools.file_tool import FileReadTool, FileWriteTool
 from jarvis.tools.registry import ApprovalProbeTool
 from jarvis.tools.shell_tool import ShellReadTool
-from jarvis.tools.ui_tool import UiActiveAppTool, UiReadWindowTool
+from jarvis.tools.ui_tool import (
+    UiActiveAppTool,
+    UiClickTool,
+    UiFocusAppTool,
+    UiReadWindowTool,
+    UiTypeTool,
+)
 from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.turns.orchestrator import TextTurnResult, TurnOrchestrator
 from jarvis.turns.models import Turn
@@ -630,6 +636,12 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     ui_reader = create_reader(config.security.ui_read_backend)
     tool_registry.register(UiActiveAppTool(ui_reader))
     tool_registry.register(UiReadWindowTool(ui_reader))
+    ui_actor = create_actor(
+        config.security.ui_act_backend or config.security.ui_read_backend
+    )
+    tool_registry.register(UiClickTool(ui_actor))
+    tool_registry.register(UiTypeTool(ui_actor))
+    tool_registry.register(UiFocusAppTool(ui_actor))
     tool_permission_policy = ToolPermissionPolicy(
         destructive_tools_enabled=config.security.destructive_tools_enabled,
         approved_roots=approved_roots,

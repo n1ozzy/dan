@@ -125,6 +125,9 @@ class SecurityConfig:
     # grant) or "fake" (deterministic fixture for tests/smoke). Unknown
     # names fail the daemon at startup — never a silent fallback.
     ui_read_backend: str = "ax"
+    # ui_act backend for UI actions; empty inherits ui_read_backend so the
+    # common case stays a single knob. Same names, same fail-closed rule.
+    ui_act_backend: str = ""
 
 
 @dataclass(frozen=True)

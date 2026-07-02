@@ -35,6 +35,7 @@ class PermissionClass(StrEnum):
     NETWORK = "network"
     DESTRUCTIVE = "destructive"
     UI_READ = "ui_read"
+    UI_ACT = "ui_act"
 
 
 class RequestSource(StrEnum):
@@ -155,6 +156,9 @@ class ToolPermissionPolicy:
             PermissionClass.SHELL_READ,
             PermissionClass.SHELL_WRITE,
             PermissionClass.NETWORK,
+            # §3: ui_act | user AP | model AP | auto B — clicking and typing
+            # always cross ApprovalGate; earned per-surface trust is §6 future.
+            PermissionClass.UI_ACT,
         }:
             if normalized_source in AUTO_SOURCES:
                 return _blocked(
