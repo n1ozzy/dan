@@ -18,6 +18,14 @@ panel, broker, listener, workers, TTS, STT or provider integrations.
 
 ## Development
 
+Install the package editable into the repo venv so the `jarvisd` entry
+point exists (`.venv/bin/jarvisd`) and `python -m jarvis.cli` works from
+any cwd:
+
+```sh
+.venv/bin/pip install -e .
+```
+
 - Reviewer orientation: `docs/REVIEW_HANDOFF.md`
 - Brain adapter setup: `docs/runbooks/BRAIN_ADAPTERS.md`
 - Manual text runtime smoke: `docs/runbooks/TEXT_RUNTIME_SMOKE.md`
