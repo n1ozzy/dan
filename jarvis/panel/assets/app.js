@@ -34,6 +34,10 @@ const MAX_LIVE_EVENT_ROWS = 50;
 // finished booting), re-poll health on this interval so the panel recovers on
 // its own instead of getting stuck on "unknown"/"offline" until a manual click.
 const HEALTH_RETRY_MS = 2000;
+// Steady status heartbeat: re-check health/state on this interval so the pill
+// is never stuck on a stale "unknown" after a startup race or a daemon restart
+// under a live panel. On a fresh reconnect it triggers a full refreshAll().
+const HEALTH_POLL_MS = 3000;
 
 const el = {};
 
@@ -42,7 +46,18 @@ document.addEventListener("DOMContentLoaded", () => {
   el.apiBaseInput.value = DEFAULT_API_BASE;
   bindEvents();
   refreshAll();
+  window.setInterval(pollHealth, HEALTH_POLL_MS);
 });
+
+// Heartbeat tick: keep the status pill current, and when the daemon comes back
+// after being unreachable, repopulate every section (not just the pill).
+async function pollHealth() {
+  const wasOnline = cockpit.online;
+  const ok = await refreshHealthAndState();
+  if (ok && !wasOnline) {
+    refreshAll();
+  }
+}
 
 function bindElements() {
   const ids = [
