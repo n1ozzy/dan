@@ -128,7 +128,7 @@ PROBLEM (spójny root: przejścia stanu nie tolerują ścieżek terminalnych/bł
 ZADANIE: Zweryfikuj linie. Napisz testy odtwarzające każdy przypadek. Fixy: ogranicz failure-handler do fazy generacji (sprawdzaj status tury przed fail() — nie ruszaj FINISHED/AWAITING_APPROVAL); stop() bierze text_turn_lock+tool_execution_lock przed STOPPING LUB terminalne IDLE toleruje STOPPING bez failowania tury (wybierz czystszą opcję); nieudana kontynuacja → FAILED lub re-runnable; recovery resetuje _state=IDLE in-memory nawet gdy persist eventu padnie; dodaj lock na transition() (validate+append+assign atomowo). pytest.
 ```
 
-## - [ ] FIX-06 · API hardening: DNS rebinding, slowloris, WS cap 🟡 MED×3 + LOW
+## - [x] FIX-06 · API hardening: DNS rebinding, slowloris, WS cap 🟡 MED×3 + LOW — DONE `9c79ea6` (4 obrony: Host-walidacja 403+close / socket timeout 10s / cap 8 sesji WS 503 / 401 Connection:close; token na GET nadal follow-up; TDD raw-socket)
 
 - **Pliki:** `jarvis/daemon/lifecycle.py:209` (brak walidacji Host-header), `:622` (brak socket timeout), `:508` (brak capa na sesje WS), `:218` (401 nie drenuje body)
 - **Problem:** brak walidacji Host → localhost binding pokonywalny DNS rebindingiem dla nietokenowanych GET-ów. Brak socket timeout + blocking `rfile.read(Content-Length)` → slowloris trzyma wątek. Brak limitu równoległych sesji `/stream` (każda = osobne SQLite + wątek). 401 nie drenuje body → desync keep-alive.
