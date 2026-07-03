@@ -57,56 +57,27 @@ dl {
   margin: 0;
 }
 
-/* --- Animowana ramka stanu (sygnatura) ------------------------------------ */
-
-@property --edge-spin {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
-}
+/* --- Ramka stanu ------------------------------------------------------------
+   Cicha struktura, nie pokaz świateł: statyczna obwódka w kolorze stanu.
+   Teal = online, bursztyn = czekają zgody, czerwień = offline. Ruch jest
+   zarezerwowany dla rzeczy, które naprawdę trwają (fala PTT, puls badge). */
 
 .statusline {
   position: fixed;
   inset: 3px;
   z-index: 40;
   pointer-events: none;
-  border-radius: 14px;
-  padding: 2px;
-  border: 1px solid rgba(45, 212, 191, 0.28);
-  --edge-color: var(--accent);
-  background: conic-gradient(
-    from var(--edge-spin),
-    transparent 0deg,
-    var(--edge-color) 55deg,
-    transparent 110deg,
-    transparent 180deg,
-    var(--edge-color) 235deg,
-    transparent 290deg
-  );
-  /* Maska zostawia tylko obwódkę: pełny box minus content-box. */
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  animation: edge-spin 6s linear infinite;
+  border-radius: 13px;
+  border: 1px solid rgba(45, 212, 191, 0.32);
+  transition: border-color 0.3s ease;
 }
 
 body.offline .statusline {
-  --edge-color: var(--red);
-  border-color: rgba(248, 113, 113, 0.35);
-  animation-duration: 2.5s;
+  border-color: rgba(248, 113, 113, 0.55);
 }
 
 body.has-pending:not(.offline) .statusline {
-  --edge-color: var(--amber);
-  border-color: rgba(251, 191, 36, 0.35);
-  animation-duration: 3.5s;
-}
-
-@keyframes edge-spin {
-  to {
-    --edge-spin: 360deg;
-  }
+  border-color: rgba(251, 191, 36, 0.5);
 }
 
 /* --- Szkielet aplikacji ----------------------------------------------------- */
@@ -861,9 +832,12 @@ details.card.collapsible[open] summary::after {
 
 @media (prefers-reduced-motion: reduce) {
   .approvals-badge,
-  .statusline,
   .ptt-button.talking .wave i {
     animation: none;
+  }
+
+  .statusline {
+    transition: none;
   }
 
   .ptt-button.talking .wave i {

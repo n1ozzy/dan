@@ -113,16 +113,16 @@ def test_cockpit_is_single_view_app_with_tabbar() -> None:
 
 
 def test_cockpit_statusline_reflects_system_state() -> None:
-    # Sygnatura panelu: animowana ramka wokół całego panelu zamiast osobnej
-    # sekcji statusu — teal online, bursztyn gdy czekają zgody, czerwień
-    # offline. Stan niesie klasa na <body>.
+    # Ramka stanu wokół panelu zamiast osobnej sekcji statusu: STATYCZNA
+    # obwódka (bez neonowych animacji) — teal online, bursztyn gdy czekają
+    # zgody, czerwień offline. Stan niesie klasa na <body>.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
     assert "statusline" in markup
     assert "statusline" in styles
-    assert "edge-spin" in styles
+    assert "conic-gradient" not in styles
     assert "offline" in script
     assert "has-pending" in script
     assert "has-pending" in styles
