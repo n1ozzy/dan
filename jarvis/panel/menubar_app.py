@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import urllib.request
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -376,7 +377,12 @@ class MenuBarApp:
             state, BORDER_STATE_COLORS["offline"]
         )
         color = AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(red, green, blue, alpha)
-        layer.setBorderColor_(color.CGColor())
+        with warnings.catch_warnings():
+            # NSColor.CGColor() zwraca nietypowany wskaźnik -> PyObjC sypie
+            # ObjCPointerWarning do logu przy każdej zmianie koloru; typowana
+            # alternatywa wymagałaby paczki Quartz, której celowo nie dodajemy.
+            warnings.simplefilter("ignore")
+            layer.setBorderColor_(color.CGColor())
         self._border_state = state
 
     def _toggle_popover(self, AppKit):  # noqa: N803
