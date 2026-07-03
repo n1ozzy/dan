@@ -7,6 +7,13 @@ const cockpit = {
   online: false,
   selectedConversationId: null,
   approvedApprovals: new Map(),
+  // Tytuły rozmów dorabiane z pierwszego input_text (GET /turns?limit=1);
+  // cache po id rozmowy, bo pierwsza tura się nie zmienia.
+  conversationTitles: new Map(),
+  pendingApprovalCount: 0,
+  // Tryb "nowa rozmowa": nie auto-wybieraj najnowszej rozmowy przy refreshu,
+  // dopóki operator nie wyśle pierwszej wiadomości.
+  composingNew: false,
   healthRetryTimer: null,
   voice: {
     enabled: false,
@@ -41,12 +48,17 @@ const HEALTH_POLL_MS = 3000;
 
 const el = {};
 
+// Relative labels ("2 min temu") drift while the panel sits open; refresh
+// every rendered [data-timestamp] node on this interval.
+const RELATIVE_TIME_TICK_MS = 60000;
+
 document.addEventListener("DOMContentLoaded", () => {
   bindElements();
   el.apiBaseInput.value = DEFAULT_API_BASE;
   bindEvents();
   refreshAll();
   window.setInterval(pollHealth, HEALTH_POLL_MS);
+  window.setInterval(refreshRelativeTimes, RELATIVE_TIME_TICK_MS);
 });
 
 // Heartbeat tick: keep the status pill current, and when the daemon comes back
@@ -61,8 +73,6 @@ async function pollHealth() {
 
 function bindElements() {
   const ids = [
-    "onlineDot",
-    "onlineLabel",
     "stateLabel",
     "refreshAllButton",
     "apiBaseInput",
@@ -71,10 +81,9 @@ function bindElements() {
     "textForm",
     "textInput",
     "sendButton",
-    "inputResponse",
     "inputError",
-    "refreshHistoryButton",
-    "conversationList",
+    "newConversationButton",
+    "conversationSelect",
     "turnList",
     "historyError",
     "refreshMemoryButton",
@@ -89,6 +98,9 @@ function bindElements() {
     "refreshToolsButton",
     "toolList",
     "approvalList",
+    "approvalsError",
+    "approvalsCard",
+    "approvalsBadge",
     "toolsError",
     "refreshSettingsButton",
     "brainAdapterSelect",
@@ -108,7 +120,6 @@ function bindElements() {
     "runtimeList",
     "runtimeObservationList",
     "runtimeError",
-    "advancedToggle",
     "pttButton",
     "listenToggle",
     "voiceStatus",
@@ -122,7 +133,21 @@ function bindElements() {
 
 function bindEvents() {
   el.refreshAllButton.addEventListener("click", refreshAll);
-  el.refreshHistoryButton.addEventListener("click", refreshHistory);
+  el.conversationSelect.addEventListener("change", async () => {
+    const conversationId = el.conversationSelect.value;
+    if (!conversationId) {
+      return;
+    }
+    cockpit.selectedConversationId = conversationId;
+    cockpit.composingNew = false;
+    clearError(el.historyError);
+    try {
+      await refreshTurns(conversationId);
+    } catch (error) {
+      clearNode(el.turnList);
+      renderError(el.historyError, error);
+    }
+  });
   el.refreshMemoryButton.addEventListener("click", refreshMemory);
   el.refreshToolsButton.addEventListener("click", refreshToolsAndApprovals);
   el.refreshSettingsButton.addEventListener("click", refreshSettings);
@@ -138,10 +163,16 @@ function bindEvents() {
       el.textForm.requestSubmit();
     }
   });
-  el.advancedToggle.addEventListener("click", () => {
-    const shown = document.body.classList.toggle("show-advanced");
-    el.advancedToggle.setAttribute("aria-pressed", shown ? "true" : "false");
-    el.advancedToggle.classList.toggle("active", shown);
+  el.approvalsBadge.addEventListener("click", () => {
+    // Badge to sygnał; klik prowadzi prosto do kart zgód.
+    el.approvalsCard.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  el.newConversationButton.addEventListener("click", () => {
+    cockpit.selectedConversationId = null;
+    cockpit.composingNew = true;
+    ensureNewConversationOption();
+    renderEmpty(el.turnList, "Nowa rozmowa — napisz pierwszą wiadomość poniżej.");
+    el.textInput.focus();
   });
   el.pttButton.addEventListener("pointerdown", (event) => {
     event.preventDefault();
@@ -172,6 +203,7 @@ function bindEvents() {
     el.apiBaseInput.value = cockpit.apiBase;
     cockpit.selectedConversationId = null;
     cockpit.approvedApprovals.clear();
+    cockpit.conversationTitles.clear();
     disconnectStream("api base changed");
     cockpit.stream.lastEventId = 0;
     refreshAll();
@@ -323,6 +355,7 @@ async function refreshHealthAndState() {
 
     const merged = { ...health, ...statePayload };
     setText(el.stateLabel, merged.state || "unknown");
+    syncPendingApprovals(merged.pending_approval_count);
     renderKeyValues(el.healthStateList, [
       ["service", merged.service],
       ["state", merged.state],
@@ -345,7 +378,6 @@ async function refreshHealthAndState() {
 async function sendTextInput(event) {
   event.preventDefault();
   clearError(el.inputError);
-  el.inputResponse.textContent = "";
 
   const text = el.textInput.value.trim();
   if (!text || !cockpit.online) {
@@ -357,21 +389,36 @@ async function sendTextInput(event) {
     body.conversation_id = cockpit.selectedConversationId;
   }
 
+  // Optymistyczny dymek: wysłana wiadomość od razu ląduje w czacie, żeby
+  // kompozytor zachowywał się jak czat, a nie formularz z osobnym wynikiem.
+  appendPendingUserBubble(text);
+
   setBusy(el.sendButton, true);
   try {
     const payload = await requestJson("/input/text", {
       method: "POST",
       body,
     });
-    setText(el.inputResponse, payload.final_text || compactJson(payload));
     el.textInput.value = "";
     cockpit.selectedConversationId = payload.conversation_id || cockpit.selectedConversationId;
+    cockpit.composingNew = false;
     await Promise.all([refreshHistory(), refreshEvents(), refreshToolsAndApprovals()]);
   } catch (error) {
     renderError(el.inputError, error);
   } finally {
     setBusy(el.sendButton, false);
   }
+}
+
+function appendPendingUserBubble(text) {
+  const emptyRow = el.turnList.querySelector(".empty-row");
+  if (emptyRow) {
+    emptyRow.remove();
+  }
+  el.turnList.appendChild(
+    chatTurn({ input_text: text, status: "received", source: "panel" }),
+  );
+  scrollChatToBottom();
 }
 
 async function refreshHistory() {
@@ -385,16 +432,21 @@ async function refreshHistory() {
     const hasSelected = conversations.some((conversation) => {
       return conversation.id === cockpit.selectedConversationId;
     });
-    if ((!cockpit.selectedConversationId || !hasSelected) && conversations.length > 0) {
+    if (
+      !cockpit.composingNew &&
+      (!cockpit.selectedConversationId || !hasSelected) &&
+      conversations.length > 0
+    ) {
       cockpit.selectedConversationId = conversations[0].id;
     }
     if (cockpit.selectedConversationId) {
       await refreshTurns(cockpit.selectedConversationId);
-    } else {
+      renderConversations(conversations);
+    } else if (!cockpit.composingNew) {
       renderEmpty(el.turnList, "Brak tur");
     }
   } catch (error) {
-    clearNode(el.conversationList);
+    clearNode(el.conversationSelect);
     clearNode(el.turnList);
     renderError(el.historyError, error);
   }
@@ -409,49 +461,79 @@ async function refreshTurns(conversationId) {
   renderTurns(turns);
 }
 
+// Rozmowy żyją w dropdownie przy czacie (nie w osobnej sekcji): wybór
+// przełącza przebieg, "+" zaczyna nową rozmowę.
 function renderConversations(conversations) {
-  clearNode(el.conversationList);
+  clearNode(el.conversationSelect);
 
-  if (conversations.length === 0) {
-    renderEmpty(el.conversationList, "Brak rozmów");
-    return;
+  if (cockpit.composingNew || conversations.length === 0) {
+    const fresh = document.createElement("option");
+    fresh.value = "";
+    setText(fresh, conversations.length === 0 ? "nowa rozmowa (brak historii)" : "nowa rozmowa…");
+    el.conversationSelect.appendChild(fresh);
   }
 
   for (const conversation of conversations) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "list-row conversation-row";
-    button.setAttribute("role", "option");
-    if (conversation.id === cockpit.selectedConversationId) {
-      button.classList.add("selected");
-      button.setAttribute("aria-selected", "true");
+    const option = document.createElement("option");
+    option.value = conversation.id;
+    const cachedTitle = conversation.title || cockpit.conversationTitles.get(conversation.id);
+    const label = cachedTitle || `Rozmowa ${formatClock(conversation.latest_turn_at || conversation.created_at)}`;
+    setText(option, `${label} · ${formatRelative(conversation.latest_turn_at || conversation.created_at)}`);
+    if (!cachedTitle) {
+      ensureConversationTitle(conversation.id, option);
     }
-    button.addEventListener("click", async () => {
-      cockpit.selectedConversationId = conversation.id;
-      renderConversations(conversations);
-      clearError(el.historyError);
-      try {
-        await refreshTurns(conversation.id);
-        // Lista tur leży pod kafelkami rozmów; bez przewinięcia przebieg
-        // rozmowy ląduje poza ekranem i klik wygląda jak brak reakcji.
-        el.turnList.scrollIntoView({ behavior: "smooth", block: "start" });
-      } catch (error) {
-        clearNode(el.turnList);
-        renderError(el.historyError, error);
-      }
-    });
-
-    const title = document.createElement("strong");
-    setText(title, conversation.title || `Rozmowa ${formatClock(conversation.latest_turn_at || conversation.created_at)}`);
-    const meta = document.createElement("span");
-    meta.className = "muted";
-    const turnCount = conversation.turn_count || 0;
-    const statusLabel = conversation.status === "active" ? "" : ` • ${conversation.status || "?"}`;
-    setText(meta, `${turnCount} ${turnLabel(turnCount)}${statusLabel}`);
-
-    button.append(title, meta);
-    el.conversationList.appendChild(button);
+    el.conversationSelect.appendChild(option);
   }
+
+  el.conversationSelect.value = cockpit.composingNew
+    ? ""
+    : cockpit.selectedConversationId || "";
+}
+
+function ensureNewConversationOption() {
+  const existing = el.conversationSelect.querySelector('option[value=""]');
+  if (!existing) {
+    const fresh = document.createElement("option");
+    fresh.value = "";
+    setText(fresh, "nowa rozmowa…");
+    el.conversationSelect.insertBefore(fresh, el.conversationSelect.firstChild);
+  }
+  el.conversationSelect.value = "";
+}
+
+// Kafelek bez tytułu dostaje początek pierwszego input_text rozmowy. Jedna
+// tania prośba (limit=1, oldest-first) na rozmowę, potem cache — pierwsza
+// tura jest niezmienna, więc nic tu nie musi się odświeżać.
+async function ensureConversationTitle(conversationId, node) {
+  if (cockpit.conversationTitles.has(conversationId)) {
+    return;
+  }
+  cockpit.conversationTitles.set(conversationId, "");
+  try {
+    const payload = await requestJson(
+      `/turns?conversation_id=${encodeURIComponent(conversationId)}&limit=1`,
+    );
+    const turns = Array.isArray(payload.turns) ? payload.turns : [];
+    const title = titleFromInput(turns.length > 0 ? turns[0].input_text : "");
+    if (title) {
+      cockpit.conversationTitles.set(conversationId, title);
+      setText(node, title);
+    }
+  } catch (error) {
+    // Fallbackowa etykieta z zegarem już stoi; spróbujemy przy kolejnym renderze.
+    cockpit.conversationTitles.delete(conversationId);
+  }
+}
+
+function titleFromInput(inputText) {
+  if (typeof inputText !== "string") {
+    return "";
+  }
+  const flat = inputText.replace(/\s+/g, " ").trim();
+  if (!flat) {
+    return "";
+  }
+  return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
 }
 
 function renderTurns(turns) {
@@ -462,14 +544,71 @@ function renderTurns(turns) {
     return;
   }
 
-  for (const turn of turns) {
-    const row = document.createElement("article");
-    row.className = "list-row";
-    appendLine(row, `${turn.source || "unknown"} - ${turn.status || "unknown"}`, "muted");
-    appendLine(row, turn.input_text || "", "input-line");
-    appendLine(row, turn.final_text || "", "final-line");
-    el.turnList.appendChild(row);
+  // Fetch przychodzi newest-first (świeże tury nie giną przy limicie);
+  // czat czyta się chronologicznie, więc odwracamy i dowozimy scroll na dół.
+  const chronological = [...turns].reverse();
+  for (const turn of chronological) {
+    el.turnList.appendChild(chatTurn(turn));
   }
+  scrollChatToBottom();
+}
+
+function scrollChatToBottom() {
+  el.turnList.scrollTop = el.turnList.scrollHeight;
+  // Wysokość logu potrafi się zmienić już po renderze (np. karta zgód
+  // urośnie w kolumnie ops) — dosuwamy jeszcze raz po przeliczeniu layoutu.
+  window.requestAnimationFrame(() => {
+    el.turnList.scrollTop = el.turnList.scrollHeight;
+  });
+}
+
+function chatTurn(turn) {
+  const wrap = document.createElement("article");
+  wrap.className = "chat-turn";
+  const status = turn.status || "unknown";
+  if (status === "failed") {
+    wrap.classList.add("failed");
+  }
+
+  if (turn.input_text) {
+    const user = document.createElement("div");
+    user.className = "chat-bubble user";
+    setText(user, turn.input_text);
+    wrap.appendChild(user);
+  }
+
+  const jarvis = document.createElement("div");
+  jarvis.className = "chat-bubble jarvis";
+  if (turn.final_text) {
+    setText(jarvis, turn.final_text);
+  } else {
+    jarvis.classList.add("placeholder");
+    setText(jarvis, turnPlaceholder(status));
+  }
+  wrap.appendChild(jarvis);
+
+  const meta = document.createElement("p");
+  meta.className = "chat-meta";
+  const metaText = document.createElement("span");
+  const statusLabel = status === "finished" ? "" : ` · ${status}`;
+  setText(metaText, `${turn.source || "unknown"}${statusLabel} · `);
+  meta.append(metaText, timeNode(turn.created_at));
+  wrap.appendChild(meta);
+
+  return wrap;
+}
+
+function turnPlaceholder(status) {
+  if (status === "failed") {
+    return "tura nieudana";
+  }
+  if (status === "cancelled") {
+    return "przerwana";
+  }
+  if (status === "finished") {
+    return "(bez odpowiedzi)";
+  }
+  return "…";
 }
 
 async function refreshMemory() {
@@ -525,13 +664,52 @@ function renderMemory(blocks) {
   for (const block of blocks) {
     const row = document.createElement("article");
     row.className = "list-row";
-    appendLine(row, `${block.kind || "memory"} - priority ${block.priority ?? 0}`, "muted");
+    appendLine(row, `${block.kind || "memory"} - priorytet ${block.priority ?? 0}`, "muted");
     appendLine(row, block.title || shortId(block.id), "input-line");
     appendLine(row, block.body || "", "final-line");
 
+    // Pochodzenie bloku: kto zaproponował i kto promował (auto-pamięć przez
+    // approvals) — bez tego nie widać, które notatki wpisał model.
+    const metadata = block.metadata || {};
+    if (metadata.proposed_by || metadata.promoted_by) {
+      appendLine(
+        row,
+        `proposed_by: ${metadata.proposed_by || "n/a"} · promoted_by: ${metadata.promoted_by || "n/a"}`,
+        "muted",
+      );
+    }
+
     const actions = document.createElement("div");
     actions.className = "row-actions";
-    const disableButton = smallButton("Disable");
+
+    const priorityInput = document.createElement("input");
+    priorityInput.type = "number";
+    priorityInput.className = "priority-input";
+    priorityInput.value = String(block.priority ?? 0);
+    priorityInput.setAttribute("aria-label", "Nowy priorytet bloku");
+    const priorityButton = smallButton("Zapisz priorytet");
+    priorityButton.addEventListener("click", async () => {
+      const priority = Number.parseInt(priorityInput.value, 10);
+      if (!Number.isFinite(priority)) {
+        return;
+      }
+      clearError(el.memoryError);
+      setBusy(priorityButton, true);
+      try {
+        await requestJson(`/memory/${encodeURIComponent(block.id)}`, {
+          method: "PATCH",
+          body: { priority },
+        });
+        await Promise.all([refreshMemory(), refreshEvents()]);
+      } catch (error) {
+        renderError(el.memoryError, error);
+      } finally {
+        setBusy(priorityButton, false);
+      }
+    });
+
+    const disableButton = smallButton("Wyłącz");
+    disableButton.classList.add("danger");
     disableButton.addEventListener("click", async () => {
       clearError(el.memoryError);
       setBusy(disableButton, true);
@@ -544,25 +722,74 @@ function renderMemory(blocks) {
         setBusy(disableButton, false);
       }
     });
-    actions.appendChild(disableButton);
+
+    actions.append(priorityInput, priorityButton, disableButton);
     row.appendChild(actions);
     el.memoryList.appendChild(row);
   }
 }
 
 async function refreshToolsAndApprovals() {
-  clearError(el.toolsError);
+  await Promise.all([refreshTools(), refreshApprovals()]);
+}
 
+async function refreshTools() {
+  clearError(el.toolsError);
   try {
     const toolsPayload = await requestJson("/tools");
-    const approvalsPayload = await requestJson("/approvals?limit=25");
     renderTools(Array.isArray(toolsPayload.tools) ? toolsPayload.tools : []);
-    renderApprovals(Array.isArray(approvalsPayload.approvals) ? approvalsPayload.approvals : []);
   } catch (error) {
     clearNode(el.toolList);
-    clearNode(el.approvalList);
     renderError(el.toolsError, error);
   }
+}
+
+async function refreshApprovals() {
+  clearError(el.approvalsError);
+  try {
+    const approvalsPayload = await requestJson("/approvals?limit=25");
+    renderApprovals(Array.isArray(approvalsPayload.approvals) ? approvalsPayload.approvals : []);
+  } catch (error) {
+    clearNode(el.approvalList);
+    renderError(el.approvalsError, error);
+  }
+}
+
+// Heartbeat /health niesie pending_approval_count — to fallback dla eventów
+// approval.* ze streamu: gdy licznik się rozjedzie z tym, co panel pokazuje,
+// dociągamy karty zgód nawet bez działającego WebSocketa.
+function syncPendingApprovals(rawCount) {
+  const count = Number(rawCount);
+  if (!Number.isFinite(count)) {
+    return;
+  }
+  if (count !== cockpit.pendingApprovalCount) {
+    scheduleApprovalsRefresh();
+  }
+  setPendingBadge(count);
+}
+
+function setPendingBadge(count) {
+  cockpit.pendingApprovalCount = count;
+  document.body.classList.toggle("has-pending", count > 0);
+  if (!el.approvalsBadge) {
+    return;
+  }
+  el.approvalsBadge.hidden = count === 0;
+  setText(el.approvalsBadge, `${count} ${approvalLabel(count)}`);
+  el.approvalsBadge.title = `Czeka na zgodę: ${count} — kliknij, żeby przejść do kart zgód`;
+}
+
+function approvalLabel(count) {
+  if (count === 1) {
+    return "zgoda";
+  }
+  const lastDigit = count % 10;
+  const lastTwo = count % 100;
+  if (lastDigit >= 2 && lastDigit <= 4 && (lastTwo < 12 || lastTwo > 14)) {
+    return "zgody";
+  }
+  return "zgód";
 }
 
 function renderTools(tools) {
@@ -584,6 +811,7 @@ function renderTools(tools) {
 
 function renderApprovals(pendingApprovals) {
   clearNode(el.approvalList);
+  setPendingBadge(pendingApprovals.length);
 
   const approved = Array.from(cockpit.approvedApprovals.values());
   if (pendingApprovals.length === 0 && approved.length === 0) {
@@ -604,7 +832,8 @@ function approvalCard(approval, mode) {
   row.className = "list-row approval-row";
   const payload = approval.payload || {};
   const title = payload.tool_name || approval.action_type || approval.id;
-  appendLine(row, `${title} - ${approval.risk || "unknown"} - ${mode}`, "input-line");
+  const modeLabel = mode === "pending" ? "czeka na zgodę" : "zatwierdzona";
+  appendLine(row, `${title} - ${approval.risk || "unknown"} - ${modeLabel}`, "input-line");
   appendLine(row, `id ${shortId(approval.id)} - ${approval.requested_by || "unknown"}`, "muted");
   for (const [key, value] of Object.entries(payload.arguments || {})) {
     appendLine(row, `${key}: ${argumentPreview(value)}`, "argument-line muted");
@@ -614,14 +843,15 @@ function approvalCard(approval, mode) {
   actions.className = "row-actions";
 
   if (mode === "pending") {
-    const approveButton = smallButton("Approve");
+    const approveButton = smallButton("Zatwierdź");
+    approveButton.classList.add("strong");
     approveButton.addEventListener("click", () => decideApproval(approval.id, "approve", approveButton));
-    const rejectButton = smallButton("Reject");
+    const rejectButton = smallButton("Odrzuć");
     rejectButton.classList.add("danger");
     rejectButton.addEventListener("click", () => decideApproval(approval.id, "reject", rejectButton));
     actions.append(approveButton, rejectButton);
   } else {
-    const executeButton = smallButton("Execute approved");
+    const executeButton = smallButton("Wykonaj zatwierdzone");
     executeButton.classList.add("strong");
     executeButton.addEventListener("click", () => executeApproval(approval.id, executeButton));
     actions.appendChild(executeButton);
@@ -632,7 +862,7 @@ function approvalCard(approval, mode) {
 }
 
 async function decideApproval(approvalId, action, button) {
-  clearError(el.toolsError);
+  clearError(el.approvalsError);
   setBusy(button, true);
   try {
     const payload = await requestJson(`/approvals/${encodeURIComponent(approvalId)}/${action}`, {
@@ -645,25 +875,25 @@ async function decideApproval(approvalId, action, button) {
     if (action === "reject") {
       cockpit.approvedApprovals.delete(approvalId);
     }
-    await Promise.all([refreshToolsAndApprovals(), refreshEvents()]);
+    await Promise.all([refreshApprovals(), refreshEvents()]);
   } catch (error) {
-    renderError(el.toolsError, error);
+    renderError(el.approvalsError, error);
   } finally {
     setBusy(button, false);
   }
 }
 
 async function executeApproval(approvalId, button) {
-  clearError(el.toolsError);
+  clearError(el.approvalsError);
   setBusy(button, true);
   try {
     await requestJson(`/approvals/${encodeURIComponent(approvalId)}/execute`, {
       method: "POST",
     });
     cockpit.approvedApprovals.delete(approvalId);
-    await Promise.all([refreshToolsAndApprovals(), refreshEvents()]);
+    await Promise.all([refreshApprovals(), refreshEvents()]);
   } catch (error) {
-    renderError(el.toolsError, error);
+    renderError(el.approvalsError, error);
   } finally {
     setBusy(button, false);
   }
@@ -1172,9 +1402,9 @@ function apiBase() {
 
 function setOnline(online) {
   cockpit.online = online;
-  el.onlineDot.classList.toggle("online", online);
-  el.onlineDot.classList.toggle("offline", !online);
-  setText(el.onlineLabel, online ? "online" : "offline");
+  // Animowana ramka panelu czyta stan z <body> — to ona jest wskaźnikiem
+  // online/offline (zielona/czerwona), nie osobna sekcja statusu.
+  document.body.classList.toggle("offline", !online);
   setInteractiveEnabled(online);
 }
 
@@ -1200,7 +1430,8 @@ function setInteractiveEnabled(enabled) {
 }
 
 function clearDynamicSections() {
-  clearNode(el.conversationList);
+  setPendingBadge(0);
+  clearNode(el.conversationSelect);
   clearNode(el.turnList);
   clearNode(el.memoryList);
   clearNode(el.toolList);
@@ -1210,14 +1441,17 @@ function clearDynamicSections() {
   clearNode(el.eventList);
   clearNode(el.runtimeList);
   clearNode(el.runtimeObservationList);
-  el.inputResponse.textContent = "";
   setText(el.brainAdapterLabel, "");
   cockpit.voice.listening = false;
   cockpit.voice.leases = [];
   cockpit.voice.pttActive = false;
   el.pttButton.classList.remove("talking");
   renderVoice();
-  renderEmpty(el.conversationList, "Daemon offline");
+  const offlineOption = document.createElement("option");
+  offlineOption.value = "";
+  setText(offlineOption, "daemon offline");
+  el.conversationSelect.appendChild(offlineOption);
+  renderEmpty(el.turnList, "Daemon offline");
   renderEmpty(el.memoryList, "Daemon offline");
   renderEmpty(el.toolList, "Daemon offline");
   renderEmpty(el.settingsList, "Daemon offline");
@@ -1325,6 +1559,58 @@ function shortId(value) {
     return text;
   }
   return `${text.slice(0, 8)}...${text.slice(-4)}`;
+}
+
+// Węzeł czasu względnego: etykieta "2 min temu", pełna data w tooltipie,
+// ISO w dataset.timestamp, żeby ticker mógł odświeżać etykiety w miejscu.
+function timeNode(iso) {
+  const node = document.createElement("time");
+  if (iso) {
+    node.dataset.timestamp = iso;
+    node.title = formatFullDate(iso);
+  }
+  setText(node, formatRelative(iso));
+  return node;
+}
+
+function refreshRelativeTimes() {
+  for (const node of document.querySelectorAll("[data-timestamp]")) {
+    setText(node, formatRelative(node.dataset.timestamp));
+  }
+}
+
+function formatRelative(iso) {
+  if (!iso) {
+    return "?";
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "?";
+  }
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) {
+    return formatClock(iso);
+  }
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) {
+    return "przed chwilą";
+  }
+  if (minutes < 60) {
+    return `${minutes} min temu`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return hours === 1 ? "godzinę temu" : `${hours} godz. temu`;
+  }
+  return formatClock(iso);
+}
+
+function formatFullDate(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return String(iso);
+  }
+  return date.toLocaleString("pl-PL");
 }
 
 function formatClock(iso) {

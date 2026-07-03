@@ -1,9 +1,38 @@
+/* Jarvis Cockpit — operator HUD, popover-first.
+   Całość mieści się w oknie bez scrollowania strony: czat wypełnia wolną
+   wysokość, kolumna ops przewija się wewnętrznie. Sygnatura: animowana
+   ramka wokół panelu niosąca stan systemu (teal online, bursztyn gdy czekają
+   zgody, czerwień offline) — zastępuje osobną sekcję statusu. */
+
 :root {
   color-scheme: dark;
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0e1116;
-  color: #edf1f7;
+
+  --bg: #0a0e13;
+  --panel: #10161f;
+  --panel-2: #0c1119;
+  --line: #1d2836;
+  --line-strong: #2a3a4d;
+  --text: #e6edf5;
+  --text-dim: #8b9bb0;
+  --text-faint: #64748b;
+
+  --accent: #2dd4bf;
+  --accent-soft: rgba(45, 212, 191, 0.12);
+  --accent-line: #14b8a6;
+  --amber: #fbbf24;
+  --amber-deep: #b45309;
+  --red: #f87171;
+
+  --user-bubble: #14425c;
+  --jarvis-bubble: #161f2c;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  font-family: var(--font-sans);
   font-size: 14px;
+  background: var(--bg);
+  color: var(--text);
 }
 
 * {
@@ -12,9 +41,208 @@
 
 body {
   margin: 0;
-  min-height: 100vh;
-  background: #0e1116;
+  height: 100vh;
+  overflow: hidden;
+  background:
+    radial-gradient(1200px 500px at 70% -10%, rgba(45, 212, 191, 0.05), transparent 60%),
+    var(--bg);
 }
+
+h1,
+h2,
+h3,
+p,
+pre,
+dl {
+  margin: 0;
+}
+
+/* --- Animowana ramka stanu (sygnatura cockpitu) --------------------------- */
+
+@property --edge-spin {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.statusline {
+  position: fixed;
+  inset: 3px;
+  z-index: 40;
+  pointer-events: none;
+  border-radius: 14px;
+  padding: 2px;
+  border: 1px solid rgba(45, 212, 191, 0.28);
+  --edge-color: var(--accent);
+  background: conic-gradient(
+    from var(--edge-spin),
+    transparent 0deg,
+    var(--edge-color) 55deg,
+    transparent 110deg,
+    transparent 180deg,
+    var(--edge-color) 235deg,
+    transparent 290deg
+  );
+  /* Maska zostawia tylko obwódkę: pełny box minus content-box. */
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: edge-spin 6s linear infinite;
+}
+
+body.offline .statusline {
+  --edge-color: var(--red);
+  border-color: rgba(248, 113, 113, 0.35);
+  animation-duration: 2.5s;
+}
+
+body.has-pending:not(.offline) .statusline {
+  --edge-color: var(--amber);
+  border-color: rgba(251, 191, 36, 0.35);
+  animation-duration: 3.5s;
+}
+
+@keyframes edge-spin {
+  to {
+    --edge-spin: 360deg;
+  }
+}
+
+/* --- Szkielet: czat + ops, zero scrolla strony ----------------------------- */
+
+.cockpit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100vh;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.chat-zone {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.ops-column {
+  flex-shrink: 0;
+  max-height: 44vh;
+  overflow-y: auto;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+/* Tablet/wide okno przeglądarki: ops w dwóch kolumnach pod czatem. */
+@media (min-width: 760px) {
+  .ops-column {
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  }
+}
+
+/* Desktop: czat po lewej, ops jako prawa kolumna pełnej wysokości. */
+@media (min-width: 1100px) {
+  .cockpit {
+    flex-direction: row;
+  }
+
+  .ops-column {
+    width: 360px;
+    max-height: none;
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- Pasek czatu (toolbar) -------------------------------------------------- */
+
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-toolbar select {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  font-size: 13px;
+}
+
+.state-pill {
+  max-width: 110px;
+  overflow: hidden;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.offline .state-pill {
+  color: var(--red);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.hud-item {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-item.live {
+  color: var(--accent);
+}
+
+/* --- Badge zgód -------------------------------------------------------------- */
+
+.approvals-badge {
+  min-height: 26px;
+  padding: 3px 12px;
+  border: 1px solid var(--amber-deep);
+  border-radius: 999px;
+  background: rgba(180, 83, 9, 0.18);
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  animation: badge-pulse 1.8s ease-out infinite;
+}
+
+.approvals-badge:hover,
+.approvals-badge:focus-visible {
+  border-color: var(--amber);
+  background: rgba(180, 83, 9, 0.32);
+}
+
+@keyframes badge-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4);
+  }
+  100% {
+    box-shadow: 0 0 0 9px rgba(251, 191, 36, 0);
+  }
+}
+
+/* --- Kontrolki bazowe --------------------------------------------------------- */
 
 button,
 input,
@@ -24,178 +252,168 @@ textarea {
 }
 
 button {
-  min-height: 24px;
-  border: 1px solid #3f4b5c;
+  min-height: 26px;
+  padding: 5px 12px;
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
-  padding: 6px 12px;
-  background: #202a36;
-  color: #f4f7fb;
+  background: #1a2432;
+  color: var(--text);
   cursor: pointer;
 }
 
 button:hover:not(:disabled),
 button:focus-visible {
-  border-color: #6da8ff;
-  background: #273448;
+  border-color: var(--accent-line);
+  background: #203040;
 }
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.5;
+  opacity: 0.45;
+}
+
+button.ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--text-dim);
+}
+
+button.ghost:hover:not(:disabled),
+button.ghost:focus-visible {
+  color: var(--text);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+button.primary {
+  border-color: var(--accent-line);
+  background: #0e3a34;
+  color: #99f6e4;
+  font-weight: 650;
+}
+
+button.primary:hover:not(:disabled),
+button.primary:focus-visible {
+  background: #11524a;
+}
+
+#listenToggle.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 input,
 select,
 textarea {
   width: 100%;
-  border: 1px solid #344253;
-  border-radius: 8px;
   padding: 6px 8px;
-  background: #101722;
-  color: #edf1f7;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
 }
 
-select {
-  min-height: 32px;
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent-line);
 }
 
 textarea {
-  min-height: 64px;
   resize: vertical;
 }
 
-.panel-shell {
-  width: min(100vw, 480px);
-  min-height: min(100vh, 760px);
-  max-height: 100vh;
-  margin: 0 auto;
-  padding: 12px;
+/* --- Czat ---------------------------------------------------------------------- */
+
+.chat-log {
+  flex: 1;
+  min-height: 120px;
   overflow-y: auto;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  background: #121821;
-  border-inline: 1px solid #263241;
-}
-
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px;
-  border: 1px solid #2b394a;
-  border-radius:12px;
-  background: #151d28;
-}
-
-.brand-line,
-.state-line,
-.section-head,
-.inline-field,
-.row-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.state-line {
-  justify-content: flex-end;
-}
-
-h1,
-h2,
-p,
-pre,
-dl {
-  margin: 0;
-}
-
-h1 {
-  font-size: 18px;
-  line-height: 1.1;
-}
-
-h2 {
-  color: #f7f9fc;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.muted {
-  color: #9aa8ba;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.status-dot {
-  width: 10px;
-  height: 10px;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background: #9e6a32;
-  box-shadow: 0 0 0 3px rgba(158, 106, 50, 0.14);
-}
-
-.status-dot.online {
-  background: #34d399;
-  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.12);
-}
-
-.status-dot.offline {
-  background: #ef4444;
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
-}
-
-#streamStatus.live {
-  color: #34d399;
-}
-
-.state-pill {
-  max-width: 112px;
-  overflow: hidden;
-  border: 1px solid #41516a;
-  border-radius: 999px;
-  padding: 4px 8px;
-  color: #b9d8ff;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.card {
-  display: grid;
-  gap: 6px;
   padding: 12px;
-  border: 1px solid #273446;
-  border-radius: 12px;
-  background: #151d28;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
 }
 
-/* Advanced-only sections stay hidden until the topbar toggle enables them. */
-.card.advanced {
-  display: none;
+.chat-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-body.show-advanced .card.advanced {
+/* Kotwica dołu: gdy przebieg nie wypełnia logu, dosuwa rozmowę do dołu jak
+   w komunikatorze; przy przepełnieniu normalny scroll. */
+.chat-log > :first-child {
+  margin-top: auto;
+}
+
+.chat-bubble {
+  max-width: 82%;
+  padding: 8px 12px;
+  border-radius: 14px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-bubble.user {
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+  background: var(--user-bubble);
+  color: #dcf1ff;
+}
+
+.chat-bubble.jarvis {
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+  border: 1px solid var(--line);
+  background: var(--jarvis-bubble);
+  color: #d9e2ee;
+}
+
+.chat-bubble.placeholder {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.chat-turn.failed .chat-bubble.jarvis {
+  border-color: #67333b;
+  background: #241117;
+  color: #fecdd3;
+}
+
+.chat-meta {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+
+.chat-turn.failed .chat-meta {
+  color: #f0a3ad;
+}
+
+/* Kompozytor. */
+.composer {
   display: grid;
+  gap: 8px;
 }
 
-#advancedToggle.active {
-  border-color: #6da8ff;
-  background: #18345c;
+.composer textarea {
+  min-height: 52px;
 }
 
-.section-desc {
-  margin: 0;
-}
-
-.voice-controls {
+.composer-actions {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
   gap: 8px;
 }
 
@@ -208,41 +426,229 @@ body.show-advanced .card.advanced {
 }
 
 .ptt-button.talking {
-  border-color: #34d399;
-  background: #0f2b22;
-  color: #a7f3d0;
+  border-color: var(--accent-line);
+  background: #0e3a34;
+  color: #99f6e4;
+  box-shadow: 0 0 14px rgba(45, 212, 191, 0.35);
 }
 
-#listenToggle.active {
-  border-color: #34d399;
-  background: #0f2b22;
+/* --- Karty ops -------------------------------------------------------------------- */
+
+.card {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
 }
 
-#voiceStatus.live {
-  color: #34d399;
-}
-
-.api-card {
-  grid-template-columns: auto 1fr;
-  align-items: center;
+body.has-pending #approvalsCard {
+  border-color: var(--amber-deep);
 }
 
 .section-head {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 8px;
+}
+
+.section-desc {
+  line-height: 1.4;
+}
+
+.section-tools {
+  display: flex;
+  justify-content: flex-end;
+}
+
+h2 {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+h3 {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* Zwijane sekcje: natywne <details>, domyślnie zwinięte. */
+details.card.collapsible summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+details.card.collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+details.card.collapsible summary::after {
+  /* \203A = › ; escape zamiast surowego znaku, bo statyczny serwer potrafi
+     podać CSS bez charsetu i chevron zmienia się w mojibake. */
+  content: "\203A";
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+details.card.collapsible[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.summary-hint {
+  margin-left: auto;
+}
+
+.subsection {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* --- Listy / wiersze ------------------------------------------------------------------ */
+
+.muted {
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.list {
+  display: grid;
+  gap: 6px;
+}
+
+.compact-list {
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.list-row,
+.empty-row {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: left;
+}
+
+.empty-row {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.input-line,
+.final-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.input-line {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.final-line {
+  color: #c3cedd;
+  font-size: 12px;
+}
+
+.argument-line {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.approval-row {
+  border-color: var(--amber-deep);
+  background: rgba(180, 83, 9, 0.07);
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.small-button {
+  min-height: 24px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.small-button.strong {
+  border-color: var(--accent-line);
+  background: #0e3a34;
+  color: #99f6e4;
+}
+
+.small-button.danger {
+  border-color: #70404a;
+  background: #3a1d26;
+  color: #fda4af;
+}
+
+.priority-input {
+  width: 64px;
+  min-height: 24px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.kv-list {
+  display: grid;
+  grid-template-columns: minmax(92px, auto) 1fr;
+  gap: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.kv-list dt {
+  color: var(--text-dim);
+}
+
+.kv-list dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
 }
 
 .inline-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
 
 .inline-field span {
-  color: #9aa8ba;
+  color: var(--text-dim);
   font-size: 12px;
-}
-
-.stack {
-  display: grid;
-  gap: 6px;
 }
 
 .memory-form {
@@ -273,98 +679,9 @@ body.show-advanced .card.advanced {
   gap: 6px;
 }
 
-.kv-list {
-  display: grid;
-  grid-template-columns: minmax(92px, auto) 1fr;
-  gap: 4px 8px;
-  font-size: 12px;
-}
-
-.kv-list dt {
-  color: #9aa8ba;
-}
-
-.kv-list dd {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: #e5eaf2;
-}
-
-.list {
-  display: grid;
-  gap: 6px;
-}
-
-.compact-list {
-  max-height: 190px;
-  overflow-y: auto;
-}
-
-.list-row,
-.empty-row {
-  width: 100%;
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-  padding: 8px;
-  border: 1px solid #263445;
-  border-radius: 8px;
-  background: #101722;
-  color: #edf1f7;
-  text-align: left;
-}
-
-button.list-row {
-  cursor: pointer;
-}
-
-.list-row.selected {
-  border-color: #6da8ff;
-  background: #152237;
-}
-
-.empty-row {
-  color: #8997aa;
-  font-size: 12px;
-}
-
-.input-line,
-.final-line {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  line-height: 1.35;
-}
-
-.input-line {
-  color: #f1f5f9;
-  font-weight: 650;
-}
-
-.final-line {
-  color: #c8d3e1;
-  font-size: 12px;
-}
-
-.row-actions {
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  margin-top: 2px;
-}
-
-.small-button {
-  min-height: 24px;
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-.small-button.strong {
-  border-color: #4f8ee8;
-  background: #18345c;
-}
-
-.small-button.danger {
-  border-color: #70404a;
-  background: #3a1d26;
+#streamStatus.live,
+#voiceStatus.live {
+  color: var(--accent);
 }
 
 .result-box,
@@ -373,14 +690,10 @@ button.list-row {
   overflow: auto;
   border-radius: 8px;
   padding: 8px;
-  font-size: 12px;
-  line-height: 1.35;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
   white-space: pre-wrap;
-}
-
-.result-box {
-  color: #d9f99d;
-  background: #101c17;
 }
 
 .error-box {
@@ -389,33 +702,28 @@ button.list-row {
   background: #241117;
 }
 
-/* When the viewport is no wider than the shell (menu-bar popover, narrow
-   browser window), the native frame already borders the content — a second
-   inline border reads as a page-in-a-page. */
-@media (max-width: 480px) {
-  .panel-shell {
-    border-inline: none;
+/* --- Ruch i wąskie okna ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .approvals-badge,
+  .statusline {
+    animation: none;
+  }
+
+  details.card.collapsible summary::after {
+    transition: none;
   }
 }
 
-@media (max-width: 360px) {
-  .topbar,
-  .api-card,
+/* Menubar popover (~420×620/760) i wąskie okna: ciaśniejsze odstępy. */
+@media (max-width: 480px) {
+  .cockpit {
+    padding: 9px;
+    gap: 8px;
+  }
+
   .memory-form,
   .settings-form {
     grid-template-columns: 1fr;
-  }
-
-  .topbar,
-  .brand-line,
-  .state-line,
-  .section-head,
-  .inline-field {
-    align-items: stretch;
-  }
-
-  .state-line,
-  .section-head {
-    justify-content: start;
   }
 }

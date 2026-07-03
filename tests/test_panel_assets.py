@@ -84,12 +84,53 @@ def test_app_fetches_turns_newest_first() -> None:
     assert "newest_first=true" in script
 
 
-def test_app_scrolls_to_turns_after_conversation_click() -> None:
-    # Lista tur leży pod kafelkami rozmów — bez przewinięcia klik "pokazuje
-    # chat na samym dole" i użytkownik musi scrollować przez całą listę.
+def test_cockpit_has_zone_layout_with_chat_core() -> None:
+    # Cockpit operatorski, popover-first: czat z kompozytorem i dropdownem
+    # rozmów w toolbarze + kolumna ops (zgody + sekcje zwijane). Czat = dymki
+    # user/jarvis z metą; strona się nie scrolluje, strefy przewijają się
+    # wewnętrznie.
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
-    assert "scrollIntoView" in script
+    assert "chat-toolbar" in markup
+    assert "conversationSelect" in markup
+    assert "newConversationButton" in markup
+    assert "chat-zone" in markup
+    assert "ops-column" in markup
+    assert "composer" in markup
+    assert "chat-log" in markup
+    assert "chat-zone" in styles
+    assert "ops-column" in styles
+    assert "chat-bubble" in styles
+    assert "chat-bubble user" in script
+    assert "chat-bubble jarvis" in script
+    assert "chat-meta" in script
+
+
+def test_cockpit_statusline_reflects_system_state() -> None:
+    # Sygnatura panelu: animowana ramka wokół całego panelu zamiast osobnej
+    # sekcji statusu — teal online, bursztyn gdy czekają zgody, czerwień
+    # offline. Stan niesie klasa na <body>.
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "statusline" in markup
+    assert "statusline" in styles
+    assert "edge-spin" in styles
+    assert "offline" in script
+    assert "has-pending" in script
+    assert "has-pending" in styles
+
+
+def test_history_click_scrolls_chat_pane_not_page() -> None:
+    # Dymki żyją w przewijanym kontenerze obok listy rozmów; klik nie skacze
+    # po stronie (stare obejście scrollIntoView na turnList usunięte).
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "turnList.scrollIntoView" not in script
+    assert "scrollTop" in script
 
 
 def test_app_references_required_daemon_routes() -> None:
@@ -169,32 +210,90 @@ def test_panel_assets_do_not_reference_external_cdns() -> None:
     assert "https://" not in styles
 
 
-def test_index_splits_basic_and_advanced_views() -> None:
+def test_index_splits_basic_and_collapsible_views() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    # Operator-first: czat/kompozytor/zgody/rozmowy zawsze widoczne; pamięć,
+    # narzędzia, zdarzenia i "Zaawansowane" (API/health/ustawienia/runtime)
+    # to natywnie zwijane <details>, domyślnie zwinięte.
+    assert "<details" in markup
+    assert "<summary" in markup
+    assert "<details open" not in markup
+
+    first_details = markup.index("<details")
+    for basic_marker in ("composer", "approvalsHeading", "conversationSelect", "chat-log"):
+        assert markup.index(basic_marker) < first_details, basic_marker
+    for collapsible_heading in (
+        "memoryHeading",
+        "toolsHeading",
+        "eventsHeading",
+        "advancedHeading",
+        "apiHeading",
+        "healthHeading",
+        "settingsHeading",
+        "runtimeHeading",
+    ):
+        assert markup.index(collapsible_heading) > first_details, collapsible_heading
+
+    assert "collapsible" in styles
+    assert "summary" in styles
+
+
+def test_topbar_shows_pending_approvals_badge() -> None:
+    # Sticky topbar sygnalizuje czekające zgody licznikiem — dziś zgodę łatwo
+    # przegapić, bo żyje dopiero w karcie niżej.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
-    # Operator-first: input/approvals/history are always visible; debug and
-    # plumbing sections hide behind the "Zaawansowane" toggle.
-    assert "advancedToggle" in markup
-    for advanced_heading in (
-        "apiHeading",
-        "healthHeading",
-        "memoryHeading",
-        "toolsHeading",
-        "settingsHeading",
-        "eventsHeading",
-        "runtimeHeading",
-    ):
-        section_start = markup.index(advanced_heading)
-        assert "advanced" in markup[section_start - 200 : section_start], advanced_heading
-    for basic_heading in ("inputHeading", "approvalsHeading", "historyHeading"):
-        section_start = markup.index(basic_heading)
-        assert "advanced" not in markup[section_start - 200 : section_start], basic_heading
+    assert "approvalsBadge" in markup
+    assert "approvals-badge" in styles
+    assert "prefers-reduced-motion" in styles
+    assert "setPendingBadge" in script
 
-    assert ".card.advanced" in styles
-    assert "show-advanced" in styles
-    assert "show-advanced" in script
+
+def test_approvals_refresh_rides_stream_with_heartbeat_fallback() -> None:
+    # Zgody odświeżają się z eventów approval.* na WebSocketcie /stream;
+    # heartbeat /health (pending_approval_count) zostaje jako fallback, gdy
+    # stream leży albo event przepadł.
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert 'startsWith("approval.")' in script
+    assert "syncPendingApprovals" in script
+    assert "pending_approval_count" in script
+
+
+def test_app_renders_relative_times_with_full_date_tooltip() -> None:
+    # "2 min temu" zamiast surowego ISO; pełna data w tooltipie; ticker
+    # dosowieża etykiety, żeby otwarty panel nie kłamał po godzinie.
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "formatRelative" in script
+    assert "min temu" in script
+    assert "dataset.timestamp" in script
+    assert ".title = " in script
+
+
+def test_app_titles_conversations_from_first_input() -> None:
+    # Kafelek rozmowy nazywa się początkiem pierwszego input_text (cache po
+    # id), nie generycznym "Rozmowa 15:47"; zegar zostaje jako fallback.
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "ensureConversationTitle" in script
+    assert "limit=1" in script
+
+
+def test_memory_rows_expose_priority_and_disable_actions() -> None:
+    # Blok pamięci: wyłączenie (DELETE /memory/{id}), edycja priorytetu
+    # (PATCH /memory/{id}) i pochodzenie bloku (proposed_by/promoted_by).
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert '"PATCH"' in script
+    assert '"DELETE"' in script
+    assert "proposed_by" in script
+    assert "promoted_by" in script
+    assert "Wyłącz" in script
 
 
 def test_index_has_voice_controls_in_basic_view() -> None:
@@ -202,11 +301,15 @@ def test_index_has_voice_controls_in_basic_view() -> None:
     script = APP_JS.read_text(encoding="utf-8")
 
     # The operator's PTT lives in the always-visible basic view (MASTER_PLAN
-    # §4a: "PTT: przycisk + globalny hotkey" — the button half).
-    for element_id in ("pttButton", "listenToggle", "voiceStatus"):
+    # §4a: "PTT: przycisk + globalny hotkey" — the button half). PTT + mic
+    # status sit in the composer; the PTT/continuous-listen mode choice lives
+    # under Zaawansowane → Głos.
+    first_details = markup.index("<details")
+    for element_id in ("pttButton", "voiceStatus"):
         assert element_id in markup, element_id
-    section_start = markup.index("voiceHeading")
-    assert "advanced" not in markup[section_start - 200 : section_start]
+        assert markup.index(element_id) < first_details, element_id
+    assert "listenToggle" in markup
+    assert "voiceHeading" in markup
 
     # Hold-to-talk: press acquires the lease, release frees it — pointer AND
     # keyboard; live status refresh rides the listening.lease.* stream events.

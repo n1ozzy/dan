@@ -53,14 +53,36 @@ not start, stop, supervise, or clean up any process.
 
 ## Sections
 
-- Header: daemon online/offline state, current runtime state, full refresh.
+- Layout: popover-first, no page scrolling — the chat zone (conversation
+  dropdown + "+ new" in the toolbar, chat log, composer with send/PTT) fills
+  the window and an ops column (approvals card + collapsible sections)
+  scrolls internally. Memory, tools, events, and the "Zaawansowane" group
+  (voice mode, settings, API base, health, runtime) are native `<details>`
+  sections, collapsed by default. An animated border around the whole panel
+  replaces a separate status section: teal online, amber when approvals are
+  pending, red offline.
+- Toolbar: conversation picker, new-conversation button, pending-approvals
+  badge, daemon state pill, and full refresh. The badge count comes from
+  `renderApprovals` and from `pending_approval_count` on the `/health`
+  heartbeat — when the two disagree (stream down, missed event), the cockpit
+  re-fetches approvals; clicking the badge scrolls to the approvals card.
 - Health: `service`, `state`, `started`, `schema_version`, `brain_adapter`, and
   `voice_enabled` when the daemon exposes them.
-- Input: sends typed text through `POST /input/text` and shows `final_text`.
-- History: lists conversations from `GET /conversations` and turns from
-  `GET /turns?conversation_id=...`.
+- Input: the composer sends typed text through `POST /input/text`; the sent
+  message appears immediately as an optimistic user bubble and the reply
+  lands in the chat via the post-send history refresh. "+ Nowa" starts a
+  fresh conversation (the next send omits `conversation_id`).
+- History: lists conversations from `GET /conversations` (titled from the
+  first turn's `input_text`, fetched once per conversation with
+  `GET /turns?...&limit=1` and cached) and renders the selected conversation
+  as a chat: user bubbles from `input_text`, Jarvis bubbles from `final_text`,
+  source/status/relative-time meta per turn. Timestamps render as relative
+  labels ("2 min temu") with the full date in the tooltip.
 - Memory: lists active blocks from `GET /memory?active_only=true`, creates a
-  block with `POST /memory`, and soft-disables with `DELETE /memory/{id}`.
+  block with `POST /memory`, edits a block's priority with
+  `PATCH /memory/{id}`, and soft-disables with `DELETE /memory/{id}`. Rows
+  show `metadata.proposed_by`/`metadata.promoted_by` when present, so
+  model-proposed blocks are distinguishable from operator-written ones.
 - Tools: lists registered tools and pending approvals.
 - Settings: renders daemon-owned settings from `GET /settings` and saves a
   key/value change with `POST /settings` (transport token required; values

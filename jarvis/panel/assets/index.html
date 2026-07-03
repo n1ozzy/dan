@@ -7,186 +7,184 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="panel-shell" aria-label="Jarvis cockpit">
-      <header class="topbar">
-        <div class="brand-line">
-          <span id="onlineDot" class="status-dot" aria-hidden="true"></span>
-          <div>
-            <h1>Jarvis</h1>
-            <!-- <p id="onlineLabel" class="muted">offline</p> -->
-          </div>
-        </div>
-        <div class="state-line">
+    <div class="statusline" aria-hidden="true"></div>
+    <main class="cockpit" aria-label="Jarvis cockpit">
+      <section class="chat-zone" aria-label="Rozmowa">
+        <header class="chat-toolbar">
+          <select id="conversationSelect" aria-label="Rozmowa"></select>
+          <button id="newConversationButton" type="button" class="ghost" title="Nowa rozmowa">+</button>
+          <button
+            id="approvalsBadge"
+            type="button"
+            class="approvals-badge"
+            hidden
+            aria-live="polite"
+          ></button>
           <span id="stateLabel" class="state-pill">unknown</span>
-          <button id="advancedToggle" type="button" aria-pressed="false">Zaawansowane</button>
-          <button id="refreshAllButton" type="button">Odśwież</button>
-        </div>
-      </header>
-
-      <section class="card" aria-labelledby="inputHeading">
-        <div class="section-head">
-          <h2 id="inputHeading">Rozmowa</h2>
-        </div>
-        <form id="textForm" class="stack">
+          <button id="refreshAllButton" type="button" class="ghost" title="Odśwież wszystko">&#8635;</button>
+        </header>
+        <div id="turnList" class="chat-log" aria-label="Przebieg rozmowy"></div>
+        <form id="textForm" class="composer">
           <textarea
             id="textInput"
-            rows="4"
-            placeholder="Napisz do Jarvisa…"
+            rows="2"
+            placeholder="Napisz do Jarvisa… (Enter wysyła, Shift+Enter = nowa linia)"
           ></textarea>
-          <button id="sendButton" type="submit">Wyślij</button>
+          <div class="composer-actions">
+            <button id="pttButton" type="button" class="ptt-button">
+              &#127908; Push To Talk
+            </button>
+            <span id="voiceStatus" class="hud-item" aria-live="polite">…</span>
+            <button id="sendButton" type="submit" class="primary">Wyślij</button>
+          </div>
         </form>
-        <pre id="inputResponse" class="result-box"></pre>
+        <pre id="historyError" class="error-box" hidden></pre>
         <pre id="inputError" class="error-box" hidden></pre>
-      </section>
-
-      <section class="card" aria-labelledby="voiceHeading">
-        <div class="section-head">
-          <h2 id="voiceHeading">Głos</h2>
-          <span id="voiceStatus" class="muted" aria-live="polite">…</span>
-        </div>
-        <div class="voice-controls">
-          <button id="pttButton" type="button" class="ptt-button">
-            Push To Talk
-          </button>
-          <button id="listenToggle" type="button">Nasłuch</button>
-        </div>
         <pre id="voiceError" class="error-box" hidden></pre>
       </section>
 
-      <section class="card" aria-labelledby="approvalsHeading">
-        <div class="section-head">
-          <h2 id="approvalsHeading">Zgody na narzędzia</h2>
-        </div>
-        <p class="muted section-desc">
-          Gdy model chce uruchomić narzędzie, prośba czeka tutaj na Twoje
-          zatwierdzenie. Pusto = nic nie czeka.
-        </p>
-        <div id="approvalList" class="list"></div>
-      </section>
+      <aside class="ops-column" aria-label="Operacje">
+        <section id="approvalsCard" class="card" aria-labelledby="approvalsHeading">
+          <div class="section-head">
+            <h2 id="approvalsHeading">Zgody na narzędzia</h2>
+          </div>
+          <div id="approvalList" class="list"></div>
+          <pre id="approvalsError" class="error-box" hidden></pre>
+        </section>
 
-      <section class="card" aria-labelledby="historyHeading">
-        <div class="section-head">
-          <h2 id="historyHeading">Historia</h2>
-          <button id="refreshHistoryButton" type="button">Odśwież</button>
-        </div>
-        <p class="muted section-desc">
-          Ostatnie rozmowy; kliknij którąś, żeby zobaczyć jej przebieg poniżej.
-        </p>
-        <div id="conversationList" class="list" role="listbox" aria-label="Rozmowy"></div>
-        <div id="turnList" class="list compact-list" aria-label="Tury"></div>
-        <pre id="historyError" class="error-box" hidden></pre>
-      </section>
+        <details class="card collapsible" aria-labelledby="memoryHeading">
+          <summary>
+            <h2 id="memoryHeading">Pamięć</h2>
+            <span class="summary-hint muted">trwałe notatki mózgu</span>
+          </summary>
+          <p class="muted section-desc">
+            Aktywne bloki trafiają do kontekstu mózgu przy każdej turze; tutaj
+            je tworzysz, zmieniasz im priorytet i wyłączasz.
+          </p>
+          <div class="section-tools">
+            <button id="refreshMemoryButton" type="button" class="ghost">Odśwież</button>
+          </div>
+          <form id="memoryForm" class="memory-form">
+            <input id="memoryKind" type="text" value="fact" aria-label="Rodzaj bloku pamięci" />
+            <input id="memoryTitle" type="text" placeholder="Tytuł" aria-label="Tytuł bloku pamięci" />
+            <input id="memoryPriority" type="number" value="0" aria-label="Priorytet bloku pamięci" />
+            <textarea id="memoryBody" rows="2" placeholder="Treść" aria-label="Treść bloku pamięci"></textarea>
+            <button id="createMemoryButton" type="submit">Utwórz</button>
+          </form>
+          <div id="memoryList" class="list"></div>
+          <pre id="memoryError" class="error-box" hidden></pre>
+        </details>
 
-      <section class="card api-card advanced" aria-labelledby="apiHeading">
-        <h2 id="apiHeading">API</h2>
-        <label class="inline-field">
-          <span>Base</span>
-          <input id="apiBaseInput" type="url" inputmode="url" autocomplete="off" />
-        </label>
-      </section>
+        <details class="card collapsible" aria-labelledby="toolsHeading">
+          <summary>
+            <h2 id="toolsHeading">Narzędzia</h2>
+            <span class="summary-hint muted">rejestr i polityka zgód</span>
+          </summary>
+          <p class="muted section-desc">
+            Narzędzia zarejestrowane w daemonie i ich polityka zgód (co wolno
+            bez pytania, co wymaga zatwierdzenia).
+          </p>
+          <div class="section-tools">
+            <button id="refreshToolsButton" type="button" class="ghost">Odśwież</button>
+          </div>
+          <div id="toolList" class="list compact-list"></div>
+          <pre id="toolsError" class="error-box" hidden></pre>
+        </details>
 
-      <section class="card advanced" aria-labelledby="healthHeading">
-        <div class="section-head">
-          <h2 id="healthHeading">Stan daemona</h2>
-        </div>
-        <p class="muted section-desc">
-          Surowy stan jarvisd z <code>/health</code> i <code>/state</code>.
-        </p>
-        <dl id="healthStateList" class="kv-list"></dl>
-        <pre id="healthError" class="error-box" hidden></pre>
-      </section>
+        <details class="card collapsible" aria-labelledby="eventsHeading">
+          <summary>
+            <h2 id="eventsHeading">Zdarzenia</h2>
+            <span id="streamStatus" class="muted" aria-live="polite">stream off</span>
+          </summary>
+          <p class="muted section-desc">
+            Surowy strumień zdarzeń daemona (debug/audyt), na żywo przez
+            WebSocket.
+          </p>
+          <div class="section-tools">
+            <button id="refreshEventsButton" type="button" class="ghost">Odśwież</button>
+          </div>
+          <div id="eventList" class="list compact-list"></div>
+          <pre id="eventsError" class="error-box" hidden></pre>
+        </details>
 
-      <section class="card advanced" aria-labelledby="memoryHeading">
-        <div class="section-head">
-          <h2 id="memoryHeading">Pamięć</h2>
-          <button id="refreshMemoryButton" type="button">Odśwież</button>
-        </div>
-        <p class="muted section-desc">
-          Trwałe notatki Jarvisa (fakty, preferencje). Aktywne bloki są
-          dodawane do kontekstu mózgu przy każdej turze; tutaj je tworzysz
-          i wyłączasz.
-        </p>
-        <form id="memoryForm" class="memory-form">
-          <input id="memoryKind" type="text" value="fact" aria-label="Rodzaj bloku pamięci" />
-          <input id="memoryTitle" type="text" placeholder="Tytuł" aria-label="Tytuł bloku pamięci" />
-          <input id="memoryPriority" type="number" value="0" aria-label="Priorytet bloku pamięci" />
-          <textarea id="memoryBody" rows="2" placeholder="Treść" aria-label="Treść bloku pamięci"></textarea>
-          <button id="createMemoryButton" type="submit">Utwórz</button>
-        </form>
-        <div id="memoryList" class="list"></div>
-        <pre id="memoryError" class="error-box" hidden></pre>
-      </section>
+        <details class="card collapsible" aria-labelledby="advancedHeading">
+          <summary>
+            <h2 id="advancedHeading">Zaawansowane</h2>
+            <span class="summary-hint muted">głos · ustawienia · daemon</span>
+          </summary>
 
-      <section class="card advanced" aria-labelledby="toolsHeading">
-        <div class="section-head">
-          <h2 id="toolsHeading">Narzędzia</h2>
-          <button id="refreshToolsButton" type="button">Odśwież</button>
-        </div>
-        <p class="muted section-desc">
-          Narzędzia zarejestrowane w daemonie i ich polityka zgód (co wolno
-          bez pytania, co wymaga zatwierdzenia).
-        </p>
-        <div id="toolList" class="list compact-list"></div>
-        <pre id="toolsError" class="error-box" hidden></pre>
-      </section>
+          <div class="subsection" aria-labelledby="voiceHeading">
+            <h3 id="voiceHeading">Głos</h3>
+            <p class="muted section-desc">
+              Tryb słuchania: PTT (przycisk przy kompozytorze albo globalny
+              hotkey) lub ciągły nasłuch.
+            </p>
+            <button id="listenToggle" type="button">Nasłuch</button>
+          </div>
 
-      <section class="card advanced" aria-labelledby="settingsHeading">
-        <div class="section-head">
-          <h2 id="settingsHeading">Ustawienia</h2>
-          <button id="refreshSettingsButton" type="button">Odśwież</button>
-        </div>
-        <p class="muted section-desc">
-          Przełącznik mózgu (adapter odpowiadający za generowanie) oraz
-          surowe ustawienia daemona jako pary klucz → wartość JSON.
-        </p>
-        <div class="brain-switch-line">
-          <label class="inline-field brain-field">
-            <span>Mózg</span>
-            <select id="brainAdapterSelect" aria-label="Adapter mózgu"></select>
-          </label>
-          <button id="switchBrainButton" type="button">Przełącz</button>
-        </div>
-        <p id="brainAdapterLabel" class="muted"></p>
-        <form id="settingsForm" class="settings-form">
-          <input id="settingKey" type="text" placeholder="klucz" aria-label="Klucz ustawienia" />
-          <input
-            id="settingValue"
-            type="text"
-            placeholder='wartość JSON, np. true albo "tekst"'
-            aria-label="Wartość ustawienia (JSON)"
-          />
-          <button id="saveSettingButton" type="submit">Zapisz</button>
-        </form>
-        <div id="settingsList" class="list compact-list"></div>
-        <pre id="settingsError" class="error-box" hidden></pre>
-      </section>
+          <div class="subsection" aria-labelledby="settingsHeading">
+            <div class="section-head">
+              <h3 id="settingsHeading">Ustawienia</h3>
+              <button id="refreshSettingsButton" type="button" class="ghost">Odśwież</button>
+            </div>
+            <p class="muted section-desc">
+              Przełącznik mózgu oraz wszystkie ustawienia daemona jako pary
+              klucz → wartość JSON (Edytuj podstawia parę do formularza).
+            </p>
+            <div class="brain-switch-line">
+              <label class="inline-field brain-field">
+                <span>Mózg</span>
+                <select id="brainAdapterSelect" aria-label="Adapter mózgu"></select>
+              </label>
+              <button id="switchBrainButton" type="button">Przełącz</button>
+            </div>
+            <p id="brainAdapterLabel" class="muted"></p>
+            <form id="settingsForm" class="settings-form">
+              <input id="settingKey" type="text" placeholder="klucz" aria-label="Klucz ustawienia" />
+              <input
+                id="settingValue"
+                type="text"
+                placeholder='wartość JSON, np. true albo "tekst"'
+                aria-label="Wartość ustawienia (JSON)"
+              />
+              <button id="saveSettingButton" type="submit">Zapisz</button>
+            </form>
+            <div id="settingsList" class="list compact-list"></div>
+            <pre id="settingsError" class="error-box" hidden></pre>
+          </div>
 
-      <section class="card advanced" aria-labelledby="eventsHeading">
-        <div class="section-head">
-          <h2 id="eventsHeading">Zdarzenia</h2>
-          <span id="streamStatus" class="muted" aria-live="polite">stream off</span>
-          <button id="refreshEventsButton" type="button">Odśwież</button>
-        </div>
-        <p class="muted section-desc">
-          Surowy strumień zdarzeń daemona (debug/audyt): każdy krok turnu,
-          narzędzia i zgody, na żywo przez WebSocket.
-        </p>
-        <div id="eventList" class="list compact-list"></div>
-        <pre id="eventsError" class="error-box" hidden></pre>
-      </section>
+          <div class="subsection" aria-labelledby="apiHeading">
+            <h3 id="apiHeading">API</h3>
+            <label class="inline-field">
+              <span>Base</span>
+              <input id="apiBaseInput" type="url" inputmode="url" autocomplete="off" />
+            </label>
+          </div>
 
-      <section class="card advanced" aria-labelledby="runtimeHeading">
-        <div class="section-head">
-          <h2 id="runtimeHeading">Runtime</h2>
-          <button id="refreshRuntimeButton" type="button">Odśwież</button>
-        </div>
-        <p class="muted section-desc">
-          Diagnostyka procesu jarvisd oraz wykryte konflikty z legacy. Tylko odczyt.
-        </p>
-        <dl id="runtimeList" class="kv-list"></dl>
-        <div id="runtimeObservationList" class="list compact-list"></div>
-        <pre id="runtimeError" class="error-box" hidden></pre>
-      </section>
+          <div class="subsection" aria-labelledby="healthHeading">
+            <h3 id="healthHeading">Stan daemona</h3>
+            <p class="muted section-desc">
+              Surowy stan jarvisd z <code>/health</code> i <code>/state</code>.
+            </p>
+            <dl id="healthStateList" class="kv-list"></dl>
+            <pre id="healthError" class="error-box" hidden></pre>
+          </div>
+
+          <div class="subsection" aria-labelledby="runtimeHeading">
+            <div class="section-head">
+              <h3 id="runtimeHeading">Runtime</h3>
+              <button id="refreshRuntimeButton" type="button" class="ghost">Odśwież</button>
+            </div>
+            <p class="muted section-desc">
+              Diagnostyka procesu jarvisd oraz wykryte konflikty z legacy.
+              Tylko odczyt.
+            </p>
+            <dl id="runtimeList" class="kv-list"></dl>
+            <div id="runtimeObservationList" class="list compact-list"></div>
+            <pre id="runtimeError" class="error-box" hidden></pre>
+          </div>
+        </details>
+      </aside>
     </main>
 
     <script src="./app.js"></script>
