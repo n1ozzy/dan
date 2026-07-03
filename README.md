@@ -1,4 +1,4 @@
-# Jarvis v4.1 Runtime
+# Jarvis v4.2 Runtime
 
 Jarvis is `jarvisd`: a local, single-user runtime where the daemon owns the
 truth.
@@ -13,8 +13,16 @@ truth.
 - Legacy DAN is reference-only. Concepts may be re-expressed; old runtime code
   is not copied into this package.
 
-Prompt 01 creates scaffold and contracts only. It does not start the daemon,
-panel, broker, listener, workers, TTS, STT or provider integrations.
+Current post-A-H state:
+
+- `scripts/jarvisd` / `.venv/bin/jarvisd` start the daemon.
+- `scripts/jarvis-panel` starts the native menu-bar panel thin client.
+- Text input, conversation history, memory, events, approvals, tool execution,
+  WebSocket streaming, provider CLI adapters, launchd assets, voice queue,
+  PTT/listening leases, recorder/STT/TTS plumbing and mock/fake smoke harnesses
+  are live.
+- Voice clone (G5), real Claude/Codex background workers, OpenAI adapter,
+  memory summarization and the WebView bridge remain deferred/backlog items.
 
 ## Development
 
@@ -24,6 +32,26 @@ any cwd:
 
 ```sh
 .venv/bin/pip install -e .
+```
+
+Run the daemon from the repo:
+
+```sh
+scripts/jarvisd
+```
+
+Or through the installed console script:
+
+```sh
+.venv/bin/jarvisd
+```
+
+Useful local checks:
+
+```sh
+.venv/bin/python -m jarvis.cli config show
+.venv/bin/python -m jarvis.cli health
+scripts/jarvis-panel
 ```
 
 - Reviewer orientation: `docs/REVIEW_HANDOFF.md`

@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "jarvis-runtime"
-version = "4.1.0a0"
-description = "Jarvis v4.1 local runtime scaffold"
+version = "4.2.0a0"
+description = "Jarvis v4.2 local runtime daemon"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }

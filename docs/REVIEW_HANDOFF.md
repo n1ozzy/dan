@@ -1,4 +1,4 @@
-# Jarvis v4.1 Reviewer Handoff
+# Jarvis v4.2 Reviewer Handoff
 
 ## Purpose
 
@@ -12,19 +12,21 @@
 
 ## Source-of-truth warning
 
-- Jarvis v4.1 docs and current code are authoritative.
+- Current Jarvis docs and current code are authoritative.
 - JARVIS-V3-EXECUTION-ROADMAP.md is historical only.
 - The legacy DAN checkout under `~/Documents/dev` is read-only reference;
   decree §7.6: nothing of it is deleted, stopped, or reused as runtime.
 
-## Current state (2026-07-02, FAZY A–H closed)
+## Current state (2026-07-03, FAZY A–H closed)
 
-- **1322 tests, 22/22 smoke scripts green** (`scripts/smoke-*.sh`).
+- **Last recorded full gate:** 1322 tests and 22/22 smoke scripts green
+  (`scripts/smoke-*.sh`) on 2026-07-02. Later fix work used focused tests; do
+  not treat this file as fresh test evidence unless the commands below are
+  re-run.
 - **Security/robustness hardening in progress** — `FIXME.md` is the source of
-  truth. Done: FIX-01..06 (CORS `null`, git-config RCE, per-thread SQLite,
-  hot-mic/broker survivability, turn/orchestrator state consistency, API
-  hardening + transport token on private-data GETs). Suite now **1350 tests**.
-  Next: FIX-07 (brain/workers). Full `pytest` runs only after big tasks.
+  truth. Completed there: FIX-01..11 plus FIX-16..17. Open after this doc sync:
+  FIX-12 minimal CI, FIX-13 SQLite backup/restore, FIX-15 Supertonic v3/model
+  asset audit. Full `pytest` runs only after big tasks.
 - FAZY A–F closed: hardening (fail-closed roots, realpath containment,
   transport token), permission model, real file/shell tools behind the
   approval loop, operator adapters, WebSocket `/stream`, brain switch,
@@ -77,10 +79,13 @@
 ## Known open items / review priorities
 
 - **Panel content redesign (post-MVP backlog):** Ozzy's 2026-07-02 review —
-  the operator wants model/provider/effort switching and voice controls in the
-  panel. PTT/listening already ride existing lease endpoints (G2); model/effort
-  switching needs new daemon endpoints and a scoped design, not panel-side
-  hacks. The basic/advanced split is v1 of that redesign.
+  the operator wants model/provider/effort switching and richer voice controls
+  in the panel. PTT/listening mode is already delivered through the existing
+  G2 lease endpoints (`/voice/ptt/down|up`, `/voice/listen/lock|unlock`,
+  `/voice/listening`); the global hold-to-talk hotkey lives in
+  `jarvis.panel.menubar_app`. Model/provider/effort switching and deeper voice
+  settings need new daemon endpoints and a scoped design, not panel-side hacks.
+  The basic/advanced split is v1 of that redesign.
 - Gate G review §7 optional follow-ups (only with Ozzy's green light;
   retention is CLOSED as option A): recorder-vs-lease health check, dead
   `LISTENING_LEASE_CANCELLED` type, degenerate rule for 3+ letters.
@@ -136,5 +141,5 @@ ls docs/runbooks
 ## Handoff prompt for reviewer
 
 ```text
-Review this repository as Jarvis v4.1 after FAZY A–H. Use docs/REVIEW_HANDOFF.md as orientation, but verify against current code. Plan-of-record: docs/MASTER_PLAN.md. Focus on the approval loop, PermissionPolicy, transport auth, voice gate boundaries (G0–G4 live, G5 deferred), and the thin-client panel. Do not implement changes unless explicitly asked.
+Review this repository as Jarvis v4.2 after FAZY A–H. Use docs/REVIEW_HANDOFF.md as orientation, but verify against current code. Plan-of-record: docs/MASTER_PLAN.md. Focus on the approval loop, PermissionPolicy, transport auth, voice gate boundaries (G0–G4 live, G5 deferred), and the thin-client panel. Do not implement changes unless explicitly asked.
 ```

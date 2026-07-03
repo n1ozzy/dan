@@ -1,4 +1,4 @@
-# FIXME — Jarvis v4.1
+# FIXME — Jarvis v4.2
 
 > Źródło: deep-review kodu (8 wymiarów) + research paczek, sesja **2026-07-03**, na HEAD `d95f304`.
 > 47 findingów (2 CRITICAL, 9 HIGH, 20 MEDIUM, 16 LOW) zgrupowanych w 14 tasków naprawczych + 1 task modelowy.
@@ -189,7 +189,7 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 - **Estymat:** ~2–4h.
 
 ```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-12 z FIXME.md (dług: brak CI).
+Repo Jarvis v4.2 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-12 z FIXME.md (dług: brak CI).
 ZASADY: preflight tanio; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu odpal lokalnie to co ma robić CI, commit + odhacz FIX-12.
 PROBLEM: docs/MASTER_PLAN.md ~63 manduje zielone testy na każdym kroku, ale nie ma żadnego CI, które to egzekwuje. Repo ma remote origin/main na GitHubie.
 ZADANIE: Dodaj minimalny GitHub Actions workflow (.github/workflows/) odpalający pytest + ruff (target py311, config z pyproject) + smoke matrix projektu na push/PR do main. Użyj Pythona >=3.11. Uwaga: część testów głosowych/macos może wymagać skipów na CI bez sprzętu — oznacz je markerami i udokumentuj co CI pokrywa a co nie. Jeśli CI dla części macos jest niewykonalne — zapisz w planie że egzekucja jest częściowo manualna-by-decree i dlaczego. Zweryfikuj że workflow jest poprawny składniowo.
@@ -202,20 +202,28 @@ ZADANIE: Dodaj minimalny GitHub Actions workflow (.github/workflows/) odpalając
 - **Estymat:** ~1–2h.
 
 ```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-13 z FIXME.md (LOW, backup SQLite).
+Repo Jarvis v4.2 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-13 z FIXME.md (LOW, backup SQLite).
 ZASADY: preflight tanio; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu commit + odhacz FIX-13.
 PROBLEM: jednoplikowa baza SQLite jest source of truth (jarvis/paths.py ~44), ale ani plan, ani runbooki nie mają procedury backup/restore ani recovery przy korupcji.
 ZADANIE: Napisz runbook backup/restore (np. sqlite3 .backup na timerze albo udokumentowana procedura kopii przy zatrzymanym daemonie) + notę o recovery przy korupcji (integrity_check, odtworzenie z backupu). Zapisz decyzję w docs/DECISIONS.md jako nowy ADR. Bez zmian w kodzie jeśli niepotrzebne — to głównie dokumentacja/runbook.
 ```
 
-## - [ ] FIX-14 · Sync dokumentacji z rzeczywistością 🟡 MED + LOW×2
+## - [x] FIX-14 · Sync dokumentacji z rzeczywistością 🟡 MED + LOW×2 — DONE in this changeset
 
 - **Pliki:** `README.md:16` (mówi że daemon nie startuje), `pyproject.toml` (label „4.1 scaffold"), `docs/REVIEW_HANDOFF.md:74` (PTT jako backlog choć w HEAD), `docs/MASTER_PLAN.md:63` (nota CI)
 - **Fix:** przepisz README na stan post-A-H (daemon/panel/voice żywe); zbij wersję/opis pyproject z etykiety „scaffold"; zaktualizuj REVIEW_HANDOFF (PTT/listening dostarczone); dopisz notę o CI.
 - **Estymat:** ~1–2h · **Zależności:** rób po FIX-12 (żeby nota CI była prawdziwa).
 
+**DONE in this changeset (FIX-14, 2026-07-03):** README przepisany na stan post-A-H
+(`scripts/jarvisd`, `.venv/bin/jarvisd`, `scripts/jarvis-panel`, voice/PTT,
+approvals, tools, stream); `pyproject.toml` i `jarvis.__version__` zdjęte z
+etykiety scaffold i podbite do `4.2.0a0`; `REVIEW_HANDOFF.md` zaktualizowany
+na aktualny backlog (`FIXME.md`, PTT/listening dostarczone przez lease endpoints);
+`MASTER_PLAN.md` dostał jawny status CI: brak `.github/workflows`, FIX-12 nadal
+otwarty, egzekucja zielonych kroków jest lokalna/manualna do czasu FIX-12.
+
 ```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-14 z FIXME.md (doc drift). Najlepiej po FIX-12.
+Repo Jarvis v4.2 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-14 z FIXME.md (doc drift). Najlepiej po FIX-12.
 ZASADY: preflight tanio; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu commit + odhacz FIX-14. Zweryfikuj każdą tezę w docsach z realnym stanem kodu przed przepisaniem.
 PROBLEM (doc drift — front-door docs kłamią):
 - README.md ~16: mówi nowemu czytelnikowi, że daemon nie startuje — nieprawda po fazach A-H.
@@ -240,7 +248,7 @@ ZADANIE: Zweryfikuj stan kodu, potem: przepisz README na stan post-A-H (daemon/p
 - **Estymat:** audyt+decyzja ~2–3h; ew. odświeżenie v3 + audycja ~0,5 dnia · **Zależności:** decyzja Ozzy'ego (głos to rzecz zdekretowana §7.3).
 
 ```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-15 z FIXME.md (Supertonic v3 / audyt paczek).
+Repo Jarvis v4.2 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-15 z FIXME.md (Supertonic v3 / audyt paczek).
 ZASADY: preflight tanio; NIE podbijaj paczek pip (research potwierdził: WSZYSTKIE są już latest — supertonic 1.3.1, mlx-whisper 0.4.3, mlx-audio 0.4.4, pyobjc 12.2.1, onnxruntime 1.27.0, torch 2.12.1, numpy 2.4.6, httpx/sounddevice/soundfile/pytest latest; torch już załatany na CVE-2026-24747). NIE fan-outów bez zgody. Głos to rzecz ZDEKRETOWANA (MASTER_PLAN §7.3) — decyzje o zmianie modelu/głosu wymagają zgody Ozzy'ego, NIE zmieniaj samowolnie.
 KONTEKST: "Supertonic 3" to generacja MODELU (nie wersja pakietu). Pakiet supertonic 1.3.1 już implementuje model v3. v3: 31 języków (polski explicit), mniej repeat/skip na krótkich/długich zdaniach, tagi ekspresji, 10 wbudowanych głosów.
 ZADANIE (audyt + rekomendacja, minimum zmian): 1) Ustal, czy lokalna instalacja Supertonica używa assetów v3 czy starego v2 (znajdź cache modeli HF/lokalny, sprawdź co CLI `supertonic tts` faktycznie ładuje). 2) KRYTYCZNE: sprawdź czy głos "M1" z jarvis/config.py:143 (supertonic_voice="M1") istnieje w modelu v3 — rozstrzygnij czy M1 to wbudowany głos Supertonica czy osobny asset MLX (pamięć projektu wiąże M1 z ~2,4 GiB MLX). Jeśli M1 nie jest w v3 — NIE migruj, zgłoś Ozzy'emu. 3) Jeśli v3 bezpieczne dla M1: zaproponuj plan odświeżenia assetu + audycji polskiego (sprawdź czy workaround supertonic_short_sentence_speed z config.py:152 nadal potrzebny), oraz oceń `supertonic serve` (HTTP OpenAI-compatible) jako alternatywę dla shell-out CLI. Przedstaw ustalenia i rekomendację; wprowadzaj zmiany dopiero po akceptacji. Nie odpalaj pełnych smoke'ów bez potrzeby.

@@ -68,6 +68,12 @@ docs correction oddzielnie od implementation
 nie przytakiwać; fakt / przykład / wizja / decyzja / commitment rozdzielane jawnie
 ```
 
+**CI status (FIX-14, 2026-07-03):** repo nie ma jeszcze `.github/workflows`.
+Zasada "zielone po etapie" jest aktualnie egzekwowana lokalnie przez operatora
+sesji; minimalny GitHub Actions workflow dla `pytest`/`ruff`/smoke matrix jest
+osobnym otwartym długiem w `FIXME.md` jako FIX-12. Do czasu FIX-12 nie pisać,
+że CI automatycznie wymusza ten mandat.
+
 ---
 
 ## 3. Stan faktyczny repo (zweryfikowany 2026-07-02)
@@ -84,8 +90,9 @@ nie przytakiwać; fakt / przykład / wizja / decyzja / commitment rozdzielane ja
 > realpath containment, source-sensitivity, redakcja rozszerzona, token
 > transportowy). Orientacja dla reviewerów: `docs/REVIEW_HANDOFF.md`.
 > Backlog po-MVP: przeprojektowanie zawartości panelu pod operatora
-> (wybór modelu/effort, kontrolki głosu/PTT — wymagają nowych endpointów
-> daemona; feedback Ozzy'ego 2026-07-02).
+> (wybór modelu/effort/providera i głębsze ustawienia głosu wymagają nowych
+> endpointów daemona; PTT/nasłuch są już na istniejących lease endpoints;
+> feedback Ozzy'ego 2026-07-02).
 
 Działa i jest przetestowane (615 testów):
 
@@ -310,8 +317,9 @@ z PRO). Wchodzi PRZED G5 — nie czeka na voice-clone (dekret §7.8).
   narzędzia, czytelna Historia) + przełącznik „Zaawansowane" (API, Stan
   daemona, Pamięć, Narzędzia, Ustawienia, Zdarzenia, Runtime — z opisami).
   Backlog (feedback Ozzy'ego): wybór modelu/effort/providera i kontrolki
-  głosu (silnik/tempo/PTT/nasłuch) wymagają nowych endpointów daemona —
-  osobny etap, nie łatka w panelu.
+  głosu (silnik/tempo i inne ustawienia poza PTT/nasłuchem) wymagają nowych
+  endpointów daemona — osobny etap, nie łatka w panelu. PTT/nasłuch są już
+  obsługiwane przez istniejące endpointy lease.
 - **H2** — legacy DAN cleanup helpers (diagnose-only). **DONE 2026-07-02**:
   `scripts/jarvis-dan-report` (`jarvis/diagnostics/legacy_dan.py`) —
   inwentaryzacja procesów/LaunchAgentów/repo/tmp/HF cache/TTS z podziałem

@@ -78,7 +78,7 @@ def test_review_handoff_contains_required_orientation() -> None:
     handoff = (ROOT / "docs/REVIEW_HANDOFF.md").read_text(encoding="utf-8")
 
     required_snippets = (
-        "Jarvis v4.1 Reviewer Handoff",
+        "Jarvis v4.2 Reviewer Handoff",
         "JARVIS-V3-EXECUTION-ROADMAP.md is historical only",
         "read-only reference",
         "FAZY A–H",
