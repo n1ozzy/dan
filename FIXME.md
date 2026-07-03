@@ -113,7 +113,14 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 - **DoD:** brak deadlocka stdin; claim atomowy; kontekst ograniczony; risk niezależny od modelu.
 - **Estymat:** ~3–5h · **Zależności:** cap `input_text` łagodzi deadlock — zrób razem. Atomic claim spójny z FIX-03. **[PROMPT wykonany — przycięty przy DONE.]**
 
-## - [ ] FIX-08 · Redakcja sekretów i containment plików 🟡 MED×2 + LOW×2
+## - [x] FIX-08 · Redakcja sekretów i containment plików 🟡 MED×2 + LOW×2 — DONE `9fa6840`
+
+**DONE `9fa6840` (TDD, deterministyczne testy bez sprzętu; pełny pytest 1422 zielone):**
+- MED `registry._redact`: deleguje do wspólnych `redact_secrets()`/`is_sensitive_key()` z `security/redaction.py` (normalizacja separatorów — `api-key`/`API.KEY` maskowane jak `api_key`; stary substring je gubił); + `credential(s)` do shared `SENSITIVE_KEYS` żeby nie zregresować pokrycia.
+- MED `file_read` pełna treść — **DECYZJA: NIE ciąć treści dla modelu, ciąć dla durable store.** Model dostaje treść przez ulotny `ToolResult.output` (`redact_secrets`, bez capa → `file_read` zostaje użyteczny); persystencyjny `_redact` size-cap `PERSIST_MAX_STRING_CHARS=4096` (256 KB body nie ląduje w całości w tool_runs/events) + high-recall detektory w `redaction.py`: bloki PEM/PRIVATE KEY, poświadczenia w connection-stringach (`scheme://user:pass@host`), przypisania `sensitive-key=wartość` (.env/config). Entropia świadomie pominięta (deterministyczność; cap = backstop na nowy kształt sekretu).
+- LOW `ui_type`: guard control-char/newline na warstwie toola (mirror `validate_paste_text`) — „Enter zostaje przy człowieku" nie zależy od backendu.
+- LOW `file_write` TOCTOU: temp przez `dir_fd` + `O_NOFOLLOW|O_EXCL` (openat/renameat), symlink-swap rodzica po checku nie przekieruje zapisu poza root.
+- **[PROMPT wykonany — przycięty przy DONE.]**
 
 - **Pliki:** `jarvis/tools/file_tool.py:76` (file_read persystuje pełną treść, redakcja przecenia ochronę), `jarvis/tools/registry.py:837` (słabsza reguła redakcji niż `redaction.py`), `jarvis/tools/ui_tool.py:139` (brak bana control-char), `jarvis/tools/file_tool.py:120` (TOCTOU symlink na write)
 - **Problem:** `file_read` zapisuje pełną treść pliku do tool_runs/events, a redakcja łapie krótką listę kształtów tokenów → docstring „secret redaction applies" przecenia ochronę. `registry._redact` używa słabszego substring niż wspólne `is_sensitive_key` (bez normalizacji separatorów). `UiTypeTool` bez guardu newline (inwariant „Enter przy człowieku" zależy od backendu). `file_write` TOCTOU na symlinku rodzica.
@@ -121,17 +128,6 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 - **DECYZJA:** czy w ogóle persystować treść `file_read` — to model danych/prywatności (rozstrzygnij w tasku).
 - **Testy:** sekret w pliku nie ląduje w evencie; klucz z separatorem zamaskowany; newline w UiType odrzucony; symlink-swap nie wychodzi poza root.
 - **Estymat:** ~3–4h · **Zależności:** brak.
-
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-08 z FIXME.md (2× MED + 2× LOW, redakcja/containment).
-ZASADY: preflight tanio; TDD; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu pytest + commit + odhacz FIX-08.
-PROBLEMY:
-- file_tool.py ~76 (MED): file_read zwraca pełną treść pliku, która jest persystowana do tool_runs/events; jedyna redakcja (redaction.py SECRET_VALUE_PATTERNS) łapie krótką listę kształtów tokenów i mija większość sekretów — docstring "secret redaction applies" przecenia ochronę.
-- registry.py ~837 (MED): registry._redact używa any(part in lowered ...) na nienormalizowanym kluczu, więc klucze z separatorami nie są maskowane — rozjazd z redaction.py:is_sensitive_key, które normalizuje separatory.
-- ui_tool.py ~139 (LOW): UiTypeTool nie banuje control-char/newline (w przeciwieństwie do TerminalPasteTool), więc inwariant "Enter zostaje przy człowieku" zależy tylko od backendu.
-- file_tool.py ~120 (LOW): file_write realpath-then-write to TOCTOU — containment sprawdzany na ścieżce z czasu checku, ale open()/os.replace re-resolvuje symlink rodzica przy zapisie.
-ZADANIE: Zweryfikuj linie. DECYZJA do podjęcia i uzasadnienia: czy file_read w ogóle ma persystować pełną treść — rekomendacja: NIE (zapisuj hash/preview), albo dodaj high-recall detektory (bloki PEM, connection stringi, wysoka entropia) + niezależny size-cap na to co persystowane. Ujednolić: registry._redact ma wołać wspólne is_sensitive_key()/redact_secrets() z security/redaction.py. Dodaj guard control-char do UiTypeTool (mirror validate_paste_text — odrzuć/normalizuj newline). file_write: otwieraj rodzica z O_NOFOLLOW/openat i pisz relatywnie do zwalidowanego fd, albo re-waliduj finalną ścieżkę tuż przed os.replace. Testy dla każdego. pytest.
-```
 
 ## - [x] FIX-09 · Voice: refactor toru anulowania + anti-echo (z migracją DB) 🟡 MED×5 + LOW×2 — DONE `b1711da`
 
