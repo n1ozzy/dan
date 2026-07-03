@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from jarvis.config import JarvisConfig
+
+
+# Jarvis-owned state is single-user and may hold secrets (DB rows, logs); it is
+# created owner-only. Dirs 0700, files 0600 — mirrors security/transport.py and
+# macos/screen.py. Mode on mkdir is umask-subject, so we chmod explicitly too.
+RUNTIME_DIR_MODE = 0o700
+RUNTIME_FILE_MODE = 0o600
+
+
+def secure_path(path: Path | str, mode: int) -> None:
+    """Best-effort tighten permissions on a Jarvis-owned path.
+
+    A chmod that fails (unusual filesystem, a race) must not crash startup —
+    the bind is localhost-only and the parent dir is already owner-only."""
+
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
 
 
 @dataclass(frozen=True)
@@ -49,7 +69,9 @@ def ensure_runtime_dirs(paths: RuntimePaths) -> None:
     """Create only the Jarvis runtime directories needed before use."""
 
     for directory in (paths.home, paths.logs_dir, paths.runtime_dir):
-        directory.mkdir(parents=True, exist_ok=True)
+        directory.mkdir(mode=RUNTIME_DIR_MODE, parents=True, exist_ok=True)
+        # exist_ok dirs keep their old (possibly looser) mode; chmod fixes that.
+        secure_path(directory, RUNTIME_DIR_MODE)
 
 
 def paths_to_jsonable(paths: RuntimePaths) -> dict[str, Any]:

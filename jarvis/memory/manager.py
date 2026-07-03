@@ -167,13 +167,10 @@ class MemoryManager:
             else:
                 return []
 
+        if limit is not None and limit <= 0:
+            return []
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        blocks = self._read_blocks(where_sql, tuple(params))
-        if limit is not None:
-            if limit <= 0:
-                return []
-            return blocks[:limit]
-        return blocks
+        return self._read_blocks(where_sql, tuple(params), limit=limit)
 
     def update_block(
         self,
@@ -317,16 +314,30 @@ class MemoryManager:
             raise MemoryError(f"Could not update memory block {block_id}: {exc}") from exc
         return block
 
-    def _read_blocks(self, where_sql: str = "", params: tuple[Any, ...] = ()) -> list[MemoryBlock]:
+    def _read_blocks(
+        self,
+        where_sql: str = "",
+        params: tuple[Any, ...] = (),
+        *,
+        limit: int | None = None,
+    ) -> list[MemoryBlock]:
+        # LIMIT is bound in SQL, not applied by slicing in Python: a large
+        # memory table must not be fully materialized just to keep the top N.
+        limit_sql = ""
+        query_params: tuple[Any, ...] = params
+        if limit is not None:
+            limit_sql = "LIMIT ?"
+            query_params = (*params, limit)
         sql = f"""
             SELECT id, kind, title, body, priority, active, created_at, updated_at,
                    source_event_id, metadata_json
             FROM memory_blocks
             {where_sql}
             ORDER BY updated_at DESC, id ASC
+            {limit_sql}
         """
         try:
-            rows = self._conn.execute(sql, params).fetchall()
+            rows = self._conn.execute(sql, query_params).fetchall()
         except sqlite3.Error as exc:
             raise MemoryError(f"Could not read memory blocks: {exc}") from exc
 

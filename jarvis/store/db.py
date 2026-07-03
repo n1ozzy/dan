@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jarvis.paths import RUNTIME_FILE_MODE, secure_path
 from jarvis.store.migrations import ensure_schema, get_applied_schema_version
 
 
@@ -46,6 +47,9 @@ def initialize_database(path: str | Path) -> sqlite3.Connection:
     conn: sqlite3.Connection | None = None
     try:
         conn = connect_db(db_path)
+        # The DB may hold secrets in event/tool_run rows: owner-only, created
+        # world-readable by sqlite otherwise (mirrors security/transport.py).
+        secure_path(db_path, RUNTIME_FILE_MODE)
         ensure_schema(conn)
         return conn
     except Exception:

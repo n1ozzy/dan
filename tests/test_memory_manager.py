@@ -160,6 +160,76 @@ def test_active_blocks_for_context_respects_max_chars(conn: sqlite3.Connection) 
     assert [block.id for block in blocks] == [first.id]
 
 
+# --- FIX-10 #2: the limit is bound in SQL, not sliced in Python ---------------
+
+
+class _RecordingConn:
+    """Delegating sqlite3 proxy that records executed SQL statements."""
+
+    def __init__(self, inner: sqlite3.Connection) -> None:
+        self._inner = inner
+        self.sql: list[str] = []
+
+    def execute(self, sql: str, *args: object, **kwargs: object) -> sqlite3.Cursor:
+        self.sql.append(sql)
+        return self._inner.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+def test_list_blocks_binds_limit_in_sql(conn: sqlite3.Connection) -> None:
+    seed = MemoryManager(conn, now=fixed_now())
+    for index in range(5):
+        seed.create_block("fact", f"Title {index}", "body")
+    recording = _RecordingConn(conn)
+    manager = MemoryManager(recording, now=fixed_now())
+
+    result = manager.list_blocks(limit=2)
+
+    assert len(result) == 2
+    selects = [statement for statement in recording.sql if "FROM memory_blocks" in statement]
+    assert selects, "no memory_blocks SELECT was captured"
+    assert all("LIMIT" in statement for statement in selects), (
+        "list_blocks must bind LIMIT in SQL, not load the whole table and slice"
+    )
+
+
+def test_list_blocks_without_limit_does_not_emit_sql_limit(
+    conn: sqlite3.Connection,
+) -> None:
+    recording = _RecordingConn(conn)
+    manager = MemoryManager(recording, now=fixed_now())
+
+    manager.list_blocks()
+
+    selects = [statement for statement in recording.sql if "FROM memory_blocks" in statement]
+    assert selects
+    assert all("LIMIT" not in statement for statement in selects)
+
+
+# --- FIX-10 #3: state mutation and its audit event share one transaction ------
+
+
+def test_block_insert_rolls_back_when_audit_event_fails(
+    conn: sqlite3.Connection,
+) -> None:
+    # FIX-03 DoD, guarded here: the row insert and its audit event are one
+    # transaction, so a failed event append must roll the insert back — no
+    # orphan block persists without its event.
+    class _FailingEventStore:
+        def append(self, *args: object, **kwargs: object) -> None:
+            raise sqlite3.OperationalError("audit event append boom")
+
+    manager = MemoryManager(conn, event_store=_FailingEventStore(), now=fixed_now())
+
+    with pytest.raises(MemoryError):
+        manager.create_block("fact", "Atomic", "body")
+
+    reader = MemoryManager(conn, now=fixed_now())
+    assert reader.list_blocks() == []
+
+
 def test_to_brain_memory_blocks_converts_to_brain_memory_block(conn: sqlite3.Connection) -> None:
     manager = MemoryManager(conn, now=fixed_now())
     block = manager.create_block("summary", "Summary", "Useful summary", priority=4)

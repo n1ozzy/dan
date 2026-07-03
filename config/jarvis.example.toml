@@ -6,8 +6,6 @@ log_level = "INFO"
 
 [database]
 path = "~/.jarvis/jarvis.db"
-migrations = "manual"
-destroy_existing = false
 
 [brain]
 default_adapter = "mock"

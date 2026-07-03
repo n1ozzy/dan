@@ -209,6 +209,73 @@ def test_ensure_runtime_dirs_creates_only_expected_directories(
     assert not paths.pid_file.exists()
 
 
+# --- FIX-10: owner-only permissions on Jarvis-owned runtime state -------------
+
+
+def _mode(path: Path) -> int:
+    import stat
+
+    return stat.S_IMODE(os.stat(path).st_mode)
+
+
+def test_ensure_runtime_dirs_are_owner_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    paths = resolve_runtime_paths(load_config(write_config(tmp_path / "perm.toml")))
+
+    ensure_runtime_dirs(paths)
+
+    assert _mode(paths.home) == 0o700
+    assert _mode(paths.logs_dir) == 0o700
+    assert _mode(paths.runtime_dir) == 0o700
+
+
+def test_database_file_is_owner_only(tmp_path: Path) -> None:
+    from jarvis.store.db import close_quietly, initialize_database
+
+    db_path = tmp_path / "state.db"
+    conn = initialize_database(db_path)
+    try:
+        assert _mode(db_path) == 0o600
+    finally:
+        close_quietly(conn)
+
+
+def test_log_file_is_owner_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jarvis.logging import configure_logging
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config = load_config(write_config(tmp_path / "log.toml"))
+    paths = resolve_runtime_paths(config)
+
+    logger = configure_logging(config, paths)
+    try:
+        assert _mode(paths.log_file) == 0o600
+    finally:
+        for handler in list(logger.handlers):
+            handler.close()
+            logger.removeHandler(handler)
+
+
+def test_database_config_dropped_dead_legacy_flags(tmp_path: Path) -> None:
+    config = load_config(write_config(tmp_path / "db.toml"))
+
+    assert not hasattr(config.database, "migrations")
+    assert not hasattr(config.database, "destroy_existing")
+
+
+def test_config_with_legacy_database_flags_still_loads(tmp_path: Path) -> None:
+    # canonical_config still emits migrations/destroy_existing under [database];
+    # removing the fields must be backward compatible — _build_section drops
+    # unknown keys, so an old config keeps loading instead of erroring.
+    config = load_config(write_config(tmp_path / "legacy.toml"))
+
+    assert str(config.database.path)
+
+
 def test_cli_config_show_returns_valid_json(tmp_path: Path) -> None:
     config_path = write_config(tmp_path / "cli.toml", daemon_port=41999)
 

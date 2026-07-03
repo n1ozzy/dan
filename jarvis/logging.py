@@ -6,7 +6,13 @@ import logging as stdlib_logging
 import re
 
 from jarvis.config import JarvisConfig
-from jarvis.paths import RuntimePaths, ensure_runtime_dirs, resolve_runtime_paths
+from jarvis.paths import (
+    RUNTIME_FILE_MODE,
+    RuntimePaths,
+    ensure_runtime_dirs,
+    resolve_runtime_paths,
+    secure_path,
+)
 
 
 LOGGER_NAME = "jarvis"
@@ -46,6 +52,8 @@ def configure_logging(config: JarvisConfig, paths: RuntimePaths | None = None) -
     file_handler = stdlib_logging.FileHandler(runtime_paths.log_file, encoding="utf-8")
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
+    # Logs can carry redacted-but-sensitive context: owner-only, not 0644.
+    secure_path(runtime_paths.log_file, RUNTIME_FILE_MODE)
 
     return logger
 

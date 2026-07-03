@@ -41,8 +41,10 @@ class DaemonConfig:
 @dataclass(frozen=True)
 class DatabaseConfig:
     path: str = "~/.jarvis/jarvis.db"
-    migrations: str = "manual"
-    destroy_existing: bool = False
+    # Schema is always applied via ensure_schema at startup; there were dead
+    # `migrations`/`destroy_existing` flags here that nothing read. They are
+    # dropped (FIX-10). _build_section ignores unknown keys, so old configs
+    # that still set them keep loading.
 
 
 @dataclass(frozen=True)
