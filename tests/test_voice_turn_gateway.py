@@ -296,7 +296,7 @@ def test_daemon_wires_transcript_into_a_voice_turn(tmp_path: Path) -> None:
         app.close()
 
 
-def test_daemon_never_turns_an_echo_into_a_turn(tmp_path: Path) -> None:
+def test_daemon_echo_never_turns_or_cancels_active_speech(tmp_path: Path) -> None:
     from jarvis.voice.stt import MockSTTEngine
 
     app = voice_daemon_app(tmp_path)
@@ -310,6 +310,11 @@ def test_daemon_never_turns_an_echo_into_a_turn(tmp_path: Path) -> None:
         queue.claim_next()
         queue.mark_spoken(request.id)  # the broker stamps spoken_at at playback (FIX-09)
         queue.mark_done(request.id)
+        pending = queue.enqueue(
+            text="To ma zostać, bo echo nie jest barge-in.",
+            turn_id="turn-pending",
+            seq=0,
+        )
 
         app.voice_stt.accept_capture(voiced_wav())
         assert app.voice_stt.flush(timeout=15)
@@ -317,6 +322,15 @@ def test_daemon_never_turns_an_echo_into_a_turn(tmp_path: Path) -> None:
 
         rows = conn.execute("SELECT source FROM turns").fetchall()
         assert rows == []  # echo never became a turn — by construction
+        status = conn.execute(
+            "SELECT status FROM voice_queue WHERE id = ?",
+            (pending.id,),
+        ).fetchone()
+        assert status == ("queued",)
+        cancelled = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE type = 'voice.speak.cancelled'"
+        ).fetchone()[0]
+        assert cancelled == 0
     finally:
         app.close()
 

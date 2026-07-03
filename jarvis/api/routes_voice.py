@@ -51,8 +51,6 @@ def _source_from_request(payload: Any, default: str) -> str:
 def post_ptt_down(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
     _require_voice_enabled(app)
     source = _source_from_request(request_payload, "ptt")
-    if app.voice_cancellation is not None:
-        app.voice_cancellation.cancel_active_speech(reason="ptt_down")
     lease = app.acquire_listening_lease(mode="hold", source=source)
     return {"ok": True, "lease": _lease_payload(lease)}
 

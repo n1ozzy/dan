@@ -296,7 +296,7 @@ def test_ptt_lifecycle_through_the_api(tmp_path: Path) -> None:
         daemon_app.close()
 
 
-def test_ptt_down_cancels_pending_speech_immediately(tmp_path: Path) -> None:
+def test_ptt_down_acquires_hold_lease_without_cancelling_pending_speech(tmp_path: Path) -> None:
     from jarvis.voice.queue import VoiceQueue
     from tests.test_api_smoke import request_json, running_server
 
@@ -318,24 +318,25 @@ def test_ptt_down_cancels_pending_speech_immediately(tmp_path: Path) -> None:
             )
 
         assert status == 200, payload
+        assert payload["lease"]["mode"] == "hold"
+        assert payload["lease"]["source"] == "ptt"
         status_row = daemon_app.conn.execute(
             "SELECT status FROM voice_queue WHERE id = ?",
             (request.id,),
         ).fetchone()
-        assert status_row == ("cancelled",)
+        assert status_row == ("queued",)
         cancelled_events = daemon_app.conn.execute(
             "SELECT COUNT(*) FROM events WHERE type = 'voice.speak.cancelled'"
         ).fetchone()[0]
-        assert cancelled_events == 1
+        assert cancelled_events == 0
         event_types = [
             str(row[0])
             for row in daemon_app.conn.execute(
                 "SELECT type FROM events ORDER BY id"
             ).fetchall()
         ]
-        assert event_types.index("voice.speak.cancelled") < event_types.index(
-            "listening.lease.created"
-        )
+        assert "voice.speak.cancelled" not in event_types
+        assert "listening.lease.created" in event_types
     finally:
         daemon_app.close()
 
