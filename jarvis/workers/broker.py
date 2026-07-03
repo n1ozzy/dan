@@ -180,9 +180,14 @@ class WorkerBroker:
             raise UnknownWorkerKindError(f"Unknown worker kind: {job.worker_kind}")
 
         started_at = utc_now_iso()
-        self._update_job(
-            job.id, status=WorkerJobStatus.RUNNING.value, started_at=started_at
-        )
+        if not self._claim_job(job.id, started_at):
+            # Lost the race: another caller moved this job out of 'queued'
+            # between the read above and now. The atomic claim is what stops the
+            # same job from running twice (FIX-07) — the early check is only a
+            # fast fail for an obviously-finished job.
+            raise WorkerJobConflictError(
+                f"Worker job was already claimed: {job_id}"
+            )
         self._append_event(EventType.WORKER_JOB_STARTED, job, {})
 
         try:
@@ -233,6 +238,29 @@ class WorkerBroker:
             {"memory_candidate_id": candidate_id},
         )
         return self.get_job(job.id)  # type: ignore[return-value]
+
+    def _claim_job(self, job_id: str, started_at: str) -> bool:
+        """Atomically move a job from queued to running (FIX-07).
+
+        Returns True only for the caller that won the claim; a concurrent caller
+        gets False because the UPDATE's ``status='queued'`` guard no longer
+        matches once the job is running."""
+
+        try:
+            with self._conn:
+                cursor = self._conn.execute(
+                    "UPDATE worker_jobs SET status = ?, started_at = ? "
+                    "WHERE id = ? AND status = ?",
+                    (
+                        WorkerJobStatus.RUNNING.value,
+                        started_at,
+                        job_id,
+                        WorkerJobStatus.QUEUED.value,
+                    ),
+                )
+            return cursor.rowcount == 1
+        except sqlite3.Error as exc:
+            raise WorkerBrokerError(f"Could not claim worker job {job_id}: {exc}") from exc
 
     def _update_job(self, job_id: str, **fields: Any) -> None:
         assignments = ", ".join(f"{name} = ?" for name in fields)

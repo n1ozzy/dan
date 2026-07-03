@@ -114,9 +114,14 @@ def default_subprocess_runner(
 
 def default_stream_process_factory(command: list[str], prompt: str) -> subprocess.Popen[str]:
     """Spawn the CLI in its own process group so a barge-in kill takes the
-    whole tree (a node CLI may fork; an orphan must not hold the pipes)."""
+    whole tree (a node CLI may fork; an orphan must not hold the pipes).
 
-    proc = subprocess.Popen(
+    The prompt is deliberately NOT written here (FIX-07 HIGH): writing the whole
+    prompt to stdin before the watchdog is armed and stdout/stderr are drained
+    deadlocks on a large prompt. ``stream_cli_response`` writes it on its own
+    thread, concurrent with the stdout drain."""
+
+    return subprocess.Popen(
         command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -124,10 +129,6 @@ def default_stream_process_factory(command: list[str], prompt: str) -> subproces
         text=True,
         start_new_session=True,
     )
-    assert proc.stdin is not None
-    proc.stdin.write(prompt)
-    proc.stdin.close()
-    return proc
 
 
 def _signal_process(proc: Any, *, force: bool) -> None:
@@ -280,6 +281,11 @@ def stream_cli_response(
     parser = _StreamJsonParser(on_delta)
     stderr_lines: list[str] = []
     stderr_thread = _drain_stderr(proc, stderr_lines)
+    # Feed stdin on its own thread, concurrent with the stdout drain below
+    # (FIX-07 HIGH): a large prompt would otherwise fill the pipe and deadlock,
+    # and the watchdog (already armed) can now kill a stuck write instead of
+    # hanging forever.
+    stdin_thread = _write_stdin(proc, prompt)
     try:
         for line in proc.stdout:
             parser.feed_line(line)
@@ -288,6 +294,8 @@ def stream_cli_response(
         watchdog.cancel()
         if registered:
             generation_registry.unregister(request.turn_id)
+        if stdin_thread is not None:
+            stdin_thread.join(timeout=2)
         if stderr_thread is not None:
             stderr_thread.join(timeout=2)
 
@@ -346,6 +354,28 @@ def _drain_stderr(proc: Any, sink: list[str]) -> threading.Thread | None:
             pass
 
     thread = threading.Thread(target=drain, name="jarvis-cli-stderr", daemon=True)
+    thread.start()
+    return thread
+
+
+def _write_stdin(proc: Any, prompt: str) -> threading.Thread | None:
+    """Write the prompt to the child's stdin on a background thread (FIX-07
+    HIGH), so a full pipe never blocks the stdout drain. A broken/closed pipe
+    (the child already exited or was killed) is swallowed — the read loop and
+    the watchdog own the outcome."""
+
+    stdin = getattr(proc, "stdin", None)
+    if stdin is None:
+        return None
+
+    def write() -> None:
+        try:
+            stdin.write(prompt)
+            stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+    thread = threading.Thread(target=write, name="jarvis-cli-stdin", daemon=True)
     thread.start()
     return thread
 
@@ -535,7 +565,29 @@ def _required_text(value: str, label: str) -> str:
     return value.strip()
 
 
+# Allowlist of CLI flags the adapter legitimately uses (FIX-07). A denylist on
+# one token missed equivalent spellings (the permission-skip flag with a value
+# attached, an --allow-… alias, and so on); an allowlist fails closed on
+# anything unexpected — including permission-bypass flags — while non-flag
+# tokens (the binary, values like 'stream-json', a model name) are never
+# treated as flags.
+_ALLOWED_CLI_FLAGS = frozenset(
+    {
+        "-p",
+        "--print",
+        "--output-format",
+        "--input-format",
+        "--verbose",
+        "--include-partial-messages",
+        "--model",
+    }
+)
+
+
 def _reject_unsafe_args(command: list[str]) -> None:
-    forbidden = "".join(("--", "dangerously", "-skip-permissions"))
-    if forbidden in command:
-        raise BrainAdapterError("unsafe CLI argument is not allowed")
+    for token in command:
+        if not token.startswith("-"):
+            continue  # the binary and flag values are not flags
+        flag = token.split("=", 1)[0]
+        if flag not in _ALLOWED_CLI_FLAGS:
+            raise BrainAdapterError(f"unsafe CLI argument is not allowed: {flag}")

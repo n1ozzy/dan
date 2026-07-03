@@ -202,6 +202,58 @@ def test_execute_is_single_shot(app: DaemonApp) -> None:
     assert len(candidates) == 1
 
 
+def test_concurrent_execute_runs_the_worker_at_most_once(app: DaemonApp) -> None:
+    # FIX-07: read-check-then-update let two callers both see 'queued' and both
+    # run the worker. The claim is now one conditional UPDATE, so exactly one
+    # caller wins and the job runs at most once even under a race.
+    import threading
+
+    runs: list[str] = []
+    runs_lock = threading.Lock()
+
+    class CountingWorker:
+        kind = "counting"
+
+        def run(self, job: WorkerJob) -> WorkerResult:
+            with runs_lock:
+                runs.append(job.id)
+            time.sleep(0.05)  # widen the claim window so the old race would fire
+            return WorkerResult(summary="counted")
+
+    broker = WorkerBroker(
+        app.conn,
+        event_store=app.event_store,
+        memory_manager=app.memory_manager,
+        workers=[CountingWorker()],
+        require_candidate_promotion=True,
+    )
+    job = broker.enqueue(worker_kind="counting", prompt="race", requested_by="ozzy")
+
+    n = 12
+    barrier = threading.Barrier(n)
+    conflicts: list[Exception] = []
+    conflicts_lock = threading.Lock()
+
+    def attempt() -> None:
+        barrier.wait(timeout=5)  # all threads reach execute together
+        try:
+            broker.execute(job.id)
+        except WorkerBrokerError as exc:  # conflict is a WorkerBrokerError subclass
+            with conflicts_lock:
+                conflicts.append(exc)
+
+    threads = [threading.Thread(target=attempt) for _ in range(n)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert len(runs) == 1  # the worker ran exactly once
+    assert len(conflicts) == n - 1  # every loser was rejected, none double-ran
+    started = _event_rows(app, "worker.job.started")
+    assert len(started) == 1
+
+
 def test_execute_unknown_job_raises(app: DaemonApp) -> None:
     broker = make_broker(app)
     with pytest.raises(WorkerBrokerError):

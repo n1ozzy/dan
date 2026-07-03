@@ -18,6 +18,11 @@ TOOL_CALL_PATTERN = re.compile(
     re.DOTALL,
 )
 FALLBACK_TOOL_REQUEST_TEXT = "Jarvis requested tool approval."
+# The fail-safe risk stamped on every parsed call (FIX-07): the model cannot
+# declare its own risk, and the real one is derived from the registered spec
+# downstream. "destructive" is the most restrictive level, so a value that ever
+# leaked into a decision would block, never permit.
+_UNTRUSTED_TOOL_CALL_RISK = "destructive"
 
 
 @dataclass(frozen=True)
@@ -87,16 +92,17 @@ def _parse_single_block(payload_text: str, block_index: int) -> tuple[BrainToolC
     if error is not None:
         return None, error
 
-    risk, error = _optional_text(payload, "risk", "safe_read", block_index)
-    if error is not None:
-        return None, error
-
+    # The model does NOT get to declare its own call's risk (FIX-07): a
+    # `"risk"` field in the payload is ignored and we fail safe. The
+    # authoritative risk is derived downstream from the registered tool spec by
+    # name (ToolRegistry.evaluate_permission), so a call whose tool is unknown
+    # or dangerous can never be smuggled in as "safe_read".
     return (
         BrainToolCall(
             id=call_id,
             name=name.strip(),
             arguments=dict(arguments),
-            risk=risk,
+            risk=_UNTRUSTED_TOOL_CALL_RISK,
         ),
         None,
     )

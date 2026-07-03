@@ -241,8 +241,22 @@ def test_parser_extracts_one_valid_tool_call_block() -> None:
     assert len(parsed.tool_calls) == 1
     assert parsed.tool_calls[0].name == "approval_probe"
     assert parsed.tool_calls[0].arguments == {"reason": "demo"}
-    assert parsed.tool_calls[0].risk == "safe_read"
+    # FIX-07: the parser does not trust a model-declared risk; it fails safe and
+    # the authoritative risk is derived downstream from the registered spec.
+    assert parsed.tool_calls[0].risk == "destructive"
     assert parsed.parse_errors == []
+
+
+def test_parser_ignores_model_declared_risk_and_fails_safe() -> None:
+    # FIX-07: a model claiming a permissive risk for its own call must NOT set
+    # it — the parser drops the field and fails safe (most restrictive).
+    parsed = parse_tool_call_blocks(
+        '<jarvis_tool_call>{"name":"file_read","arguments":{"path":"/etc/x"},'
+        '"risk":"safe_read"}</jarvis_tool_call>'
+    )
+
+    assert len(parsed.tool_calls) == 1
+    assert parsed.tool_calls[0].risk == "destructive"  # the model's "safe_read" is ignored
 
 
 def test_parser_extracts_multiple_valid_tool_call_blocks() -> None:
@@ -261,7 +275,8 @@ def test_parser_extracts_multiple_valid_tool_call_blocks() -> None:
         {"reason": "two"},
     ]
     assert parsed.tool_calls[1].id == "call-2"
-    assert parsed.tool_calls[1].risk == "shell_read"
+    # FIX-07: the model's declared "shell_read" is ignored; the parser fails safe.
+    assert parsed.tool_calls[1].risk == "destructive"
     assert parsed.text == "Jarvis requested tool approval."
 
 
@@ -534,6 +549,33 @@ def test_adapter_rejects_configured_dangerous_permission_flag_before_running() -
         ClaudeCliAdapter(args=[DANGEROUS_PERMISSION_FLAG], runner=runner).generate(make_request())
 
     assert runner.calls == []
+
+
+def test_adapter_rejects_equivalent_dangerous_flag_spellings() -> None:
+    # FIX-07: a one-token denylist missed equivalent spellings. The allowlist
+    # fails closed on any unexpected flag, including value-attached forms and
+    # unknown flags.
+    runner = FakeRunner()
+    for bad in (
+        "--dangerously-skip-permissions=1",
+        "--allow-dangerously-skip-permissions",
+        "--some-unexpected-flag",
+    ):
+        with pytest.raises(BrainAdapterError, match="unsafe CLI argument"):
+            ClaudeCliAdapter(args=["-p", bad], runner=runner).generate(make_request())
+    assert runner.calls == []
+
+
+def test_adapter_allows_the_known_safe_flags() -> None:
+    # The legitimate flag set (print + streaming) is not rejected.
+    runner = FakeRunner(stdout="ok\n")
+    adapter = ClaudeCliAdapter(
+        args=["-p", "--output-format", "text", "--model", "claude-x"], runner=runner
+    )
+
+    response = adapter.generate(make_request())
+
+    assert response.text == "ok"
 
 
 def test_adapters_do_not_require_real_provider_cli_when_runner_is_injected() -> None:

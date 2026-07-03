@@ -452,6 +452,68 @@ def test_barge_in_cancel_mid_stream_fails_the_generation() -> None:
     assert registry.active_count() == 0
 
 
+def test_streaming_writes_stdin_on_its_own_thread_without_deadlock() -> None:
+    # FIX-07 HIGH: the full prompt was written to the child's stdin BEFORE the
+    # watchdog was armed and stdout/stderr drained. A large prompt fills the
+    # pipe → the parent blocks on write, the child blocks on unread stdout →
+    # deadlock with no timeout. The write must run on its own thread, concurrent
+    # with the stdout drain. This fake's stdin.write blocks until stdout is read.
+    class BlockingStdinProcess:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = lines
+            self.returncode: int | None = None
+            self.stderr = io.StringIO("")
+            self.pid = 0
+            self.terminated = 0
+            self.killed = 0
+            self._stdout_reading = threading.Event()
+            self.stdin_written: list[str] = []
+            outer = self
+
+            class _Stdin:
+                def write(self, data: str) -> None:
+                    # A real pipe blocks here until the child reads stdin, and a
+                    # CLI only reads while it produces stdout. Writing before the
+                    # stdout drain starts would therefore deadlock.
+                    if not outer._stdout_reading.wait(timeout=5):
+                        raise AssertionError("stdin write deadlocked: stdout never drained")
+                    outer.stdin_written.append(data)
+
+                def close(self) -> None:
+                    pass
+
+            self.stdin = _Stdin()
+
+        @property
+        def stdout(self):
+            self._stdout_reading.set()
+            yield from self._lines
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.returncode = 0
+            return 0
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated += 1
+
+        def kill(self) -> None:
+            self.killed += 1
+
+    proc = BlockingStdinProcess([result("Odpowiedź po zapisie stdin.")])
+    adapter, _ = streaming_adapter(proc)
+
+    response = adapter.generate(make_request(), on_delta=lambda _: None)
+
+    assert response.text == "Odpowiedź po zapisie stdin."
+    # The prompt was written to the child's stdin (concurrently — the blocking
+    # fake would have raised otherwise), not swallowed by the factory.
+    assert proc.stdin_written
+    assert "Opowiedz o pogodzie" in proc.stdin_written[0]
+
+
 def test_barge_in_cancel_raises_generation_cancelled_not_failure() -> None:
     # Operator-priority fix (FIX-09): a cancel (barge-in leg 1) that kills the
     # CLI must be DISTINGUISHABLE from a real failure. rc=143/-15 after our own
