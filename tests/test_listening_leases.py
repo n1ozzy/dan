@@ -296,6 +296,50 @@ def test_ptt_lifecycle_through_the_api(tmp_path: Path) -> None:
         daemon_app.close()
 
 
+def test_ptt_down_cancels_pending_speech_immediately(tmp_path: Path) -> None:
+    from jarvis.voice.queue import VoiceQueue
+    from tests.test_api_smoke import request_json, running_server
+
+    daemon_app = _daemon(tmp_path, voice_enabled=True)
+    try:
+        assert daemon_app.conn is not None
+        queue = VoiceQueue(daemon_app.conn)
+        request = queue.enqueue(
+            text="Nie powinno doczekać się VAD ani STT.",
+            turn_id="turn-before-ptt",
+            seq=0,
+        )
+
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/voice/ptt/down",
+                {"source": "ptt"},
+            )
+
+        assert status == 200, payload
+        status_row = daemon_app.conn.execute(
+            "SELECT status FROM voice_queue WHERE id = ?",
+            (request.id,),
+        ).fetchone()
+        assert status_row == ("cancelled",)
+        cancelled_events = daemon_app.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE type = 'voice.speak.cancelled'"
+        ).fetchone()[0]
+        assert cancelled_events == 1
+        event_types = [
+            str(row[0])
+            for row in daemon_app.conn.execute(
+                "SELECT type FROM events ORDER BY id"
+            ).fetchall()
+        ]
+        assert event_types.index("voice.speak.cancelled") < event_types.index(
+            "listening.lease.created"
+        )
+    finally:
+        daemon_app.close()
+
+
 def test_ptt_unknown_source_is_bad_request(tmp_path: Path) -> None:
     # An unknown `source` is bad client input, not a server fault: the
     # ListeningLeaseError acquire() raises must map to 400, not 500 (FIX-17).

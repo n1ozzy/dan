@@ -65,9 +65,10 @@ class SpeechStreamSession:
 
     `feed()` is called from whatever thread runs the adapter; each completed
     sentence is enqueued immediately (G0 §5) and the filler is disarmed the
-    moment the first real sentence is queued (G0 §6). Speaking is best
-    effort by contract: any queue failure disables the session with a log
-    and must never fail the turn. `finalize(final_text)` closes the stream —
+    moment the first meaningful delta arrives (G0 §6), before a full sentence
+    is required. Speaking is best effort by contract: any queue failure disables
+    the session with a log and must never fail the turn. `finalize(final_text)`
+    closes the stream —
     if no delta ever arrived (a non-streaming adapter), the canonical text
     is chunked after the fact, which is exactly the old speak_text path.
     """
@@ -87,11 +88,14 @@ class SpeechStreamSession:
         self._filler_timer = filler_timer
         self._enabled = enabled
         self._fed_any = False
+        self._filler_disarmed = False
         self._seq = 0
 
     def feed(self, delta: str) -> None:
         if not self._enabled or not isinstance(delta, str) or not delta:
             return
+        if delta.strip():
+            self._disarm_filler()
         self._fed_any = True
         try:
             self._enqueue(self._chunker.feed(delta))
@@ -135,9 +139,13 @@ class SpeechStreamSession:
                 self._seq += 1
         finally:
             close_quietly(conn)
-        if self._filler_timer is not None:
-            # G0 §6: never a filler after the first real sentence.
+        self._disarm_filler()
+
+    def _disarm_filler(self) -> None:
+        if self._filler_timer is not None and not self._filler_disarmed:
+            # G0 §6: once real stream output exists, filler must stay out.
             self._filler_timer.disarm()
+            self._filler_disarmed = True
 
 
 class SpeechPipeline:

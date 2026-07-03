@@ -148,12 +148,21 @@ def test_deltas_are_not_persisted_anywhere(db_path: Path) -> None:
 # --- filler interlock (G0 §6: never after the first real sentence) -------------
 
 
-def test_filler_is_disarmed_the_moment_the_first_sentence_is_queued(db_path: Path) -> None:
+def test_filler_is_disarmed_by_first_meaningful_delta_before_sentence(db_path: Path) -> None:
+    timer = FakeFillerTimer()
+    session = pipeline_for(db_path).start_stream(turn_id="turn-1", filler_timer=timer)
+
+    session.feed("Pierwsza delta bez kropki")
+
+    assert timer.disarmed == 1
+    assert queued_rows(db_path) == []
+
+
+def test_filler_disarm_is_idempotent_after_more_deltas(db_path: Path) -> None:
     timer = FakeFillerTimer()
     session = pipeline_for(db_path).start_stream(turn_id="turn-1", filler_timer=timer)
 
     session.feed("Nic jeszcze nie ma")
-    assert timer.disarmed == 0
     session.feed(" pełnego. Pierwsze pełne zdanie. A dalej")
 
     assert timer.disarmed == 1
