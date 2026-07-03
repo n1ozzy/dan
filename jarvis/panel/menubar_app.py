@@ -178,6 +178,25 @@ class MenuBarApp:
 
     def _build_popover(self, AppKit, WebKit):  # noqa: N803 - ObjC module names
         configuration = WebKit.WKWebViewConfiguration.alloc().init()
+        # The panel is a trusted local shell loaded from file:// — its Origin
+        # is "null", which the daemon's CORS allowlist deliberately rejects
+        # (FIX-01: a malicious file:// page must not read jarvisd). Let THIS
+        # WebView bypass CORS for its own XHRs to 127.0.0.1; the daemon stays
+        # strict, so real browsers are still blocked. KVC because PyObjC has no
+        # typed setter; guarded because the keys are version-dependent.
+        try:
+            configuration.preferences().setValue_forKey_(
+                True, "allowFileAccessFromFileURLs"
+            )
+            configuration.setValue_forKey_(
+                True, "allowUniversalAccessFromFileURLs"
+            )
+        except Exception:  # noqa: BLE001 - missing key must not break the panel
+            print(
+                "panel: nie udalo sie wlaczyc dostepu file:// -> daemon; "
+                "panel moze nie ladowac danych (CORS).",
+                file=sys.stderr,
+            )
         bootstrap = token_bootstrap_script(self._settings.api_token)
         if bootstrap is not None:
             script = WebKit.WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
