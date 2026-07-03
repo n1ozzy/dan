@@ -12,6 +12,15 @@ stderr, minimalne zarządzanie cyklem życia. Dowód latencji, nie produkcja.
 Osobny plik obok `claude_cli_adapter.py` — celowo, żeby NIE kolidować z
 FIX-07 (stdin deadlock) robionym równolegle w tamtym pliku. Docelowa wersja:
 osobny task z TDD + lifecycle (health, timeout, restart-with-backoff).
+
+Barge-in (FIX-09): choć proces jest współdzielony między turami, cancel musi
+przerwać TYLKO bieżącą generację i NIE zostawić persistent procesu w złym
+stanie. Realizacja = zabij + zrecykluj sesję: handle cancela z rejestru
+sygnalizuje bieżący proces (odblokowuje wiszący readline), a odczyt kończy się
+`BrainGenerationCancelled` (nie generyczny błąd) — więc orchestrator znaczy
+turę CANCELLED, nie FAILED. Następny `generate` startuje świeży proces
+(`_ensure_proc`). Handle NIE bierze `self._lock` (generate trzyma go przez całą
+turę), więc sygnalizacja z wątku barge-in nie zakleszcza się.
 """
 
 from __future__ import annotations
@@ -22,8 +31,17 @@ import threading
 from collections.abc import Sequence
 from typing import Any, Callable
 
-from jarvis.brain.base import BrainAdapterError, BrainRequest, BrainResponse
-from jarvis.brain.claude_cli_adapter import _StreamJsonParser, format_cli_prompt
+from jarvis.brain.base import (
+    BrainAdapterError,
+    BrainGenerationCancelled,
+    BrainRequest,
+    BrainResponse,
+)
+from jarvis.brain.claude_cli_adapter import (
+    _signal_process,
+    _StreamJsonParser,
+    format_cli_prompt,
+)
 from jarvis.brain.tool_call_parser import parse_tool_call_blocks
 from jarvis.logging import get_logger
 
@@ -40,6 +58,23 @@ _WARM_STREAM_ARGS = (
 )
 
 
+def _default_warm_process_factory(command: list[str]) -> subprocess.Popen[str]:
+    """Spawn the persistent CLI in its own session so a barge-in kill takes the
+    whole tree — the warm process is a long-lived node CLI that may fork, and an
+    orphan must not survive the cancel holding the pipes (mirrors the streaming
+    factory's rationale)."""
+
+    return subprocess.Popen(  # noqa: S603 - fixed command from config
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+
+
 class ClaudeCliWarmAdapter:
     name = "claude_cli_warm"
 
@@ -50,6 +85,8 @@ class ClaudeCliWarmAdapter:
         args: Sequence[str] | None = None,
         model: str = "",
         timeout_seconds: float = 120,
+        process_factory: Callable[[list[str]], Any] | None = None,
+        generation_registry: Any | None = None,
     ) -> None:
         base = list(args) if args else ["-p"]
         if "-p" not in base and "--print" not in base:
@@ -57,8 +94,10 @@ class ClaudeCliWarmAdapter:
         self._command = [command, *base, *_WARM_STREAM_ARGS]
         self.default_model = model.strip() or "claude-cli-warm"
         self.timeout_seconds = float(timeout_seconds)
-        self._proc: subprocess.Popen[str] | None = None
+        self._proc: Any | None = None
         self._lock = threading.Lock()
+        self._process_factory = process_factory or _default_warm_process_factory
+        self._generation_registry = generation_registry
 
     def available_models(self) -> list[str]:
         return [self.default_model]
@@ -69,14 +108,7 @@ class ClaudeCliWarmAdapter:
         if self._proc is not None and self._proc.poll() is None:
             return
         logger.info("warm claude: spawning persistent process")
-        self._proc = subprocess.Popen(  # noqa: S603 - fixed command from config
-            self._command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
+        self._proc = self._process_factory(self._command)
 
     def _kill(self) -> None:
         proc, self._proc = self._proc, None
@@ -122,43 +154,75 @@ class ClaudeCliWarmAdapter:
                 }
             )
             parser = _StreamJsonParser(on_delta or (lambda _text: None))
-            try:
-                proc.stdin.write(message + "\n")
-                proc.stdin.flush()
-                while True:
-                    line = proc.stdout.readline()
-                    if not line:  # EOF = proces padł między turami
-                        self._kill()
-                        raise BrainAdapterError(
-                            "warm claude closed stdout (process died)"
-                        )
-                    parser.feed_line(line)
-                    try:
-                        if json.loads(line).get("type") == "result":
-                            break
-                    except ValueError:
-                        pass
-            except (BrokenPipeError, OSError) as exc:
-                self._kill()
-                raise BrainAdapterError(f"warm claude io error: {exc}") from exc
 
-            if parser.result_is_error:
-                self._kill()  # zła sesja — następny generate wystartuje świeżą
-                raise BrainAdapterError("warm claude returned error result")
+            cancelled = threading.Event()
 
-            text = parser.result_text or ""
-            parsed = parse_tool_call_blocks(text)
-            return BrainResponse(
-                text=parsed.text,
-                tool_calls=parsed.tool_calls,
-                model=self.default_model,
-                raw_metadata={
-                    "adapter": self.name,
-                    "warm": True,
-                    "stateless": True,
-                    "parsed_tool_call_count": len(parsed.tool_calls),
-                },
+            def _cancel() -> None:
+                # Barge-in leg 1 (§7): terminate THIS turn's process so the
+                # blocked readline below unblocks with EOF; the flag lets that
+                # EOF be told apart from a real crash. No self._lock here —
+                # generate holds it for the whole turn, so taking it would
+                # deadlock the cancelling thread.
+                cancelled.set()
+                _signal_process(proc, force=False)
+
+            registered = bool(
+                self._generation_registry is not None and request.turn_id
             )
+            if registered:
+                self._generation_registry.register(request.turn_id, _cancel)
+
+            try:
+                try:
+                    proc.stdin.write(message + "\n")
+                    proc.stdin.flush()
+                    while True:
+                        line = proc.stdout.readline()
+                        if not line:  # EOF: cancelled, or the process just died
+                            self._kill()
+                            if cancelled.is_set():
+                                raise BrainGenerationCancelled(
+                                    "warm claude generation cancelled (barge-in)"
+                                )
+                            raise BrainAdapterError(
+                                "warm claude closed stdout (process died)"
+                            )
+                        parser.feed_line(line)
+                        try:
+                            if json.loads(line).get("type") == "result":
+                                break
+                        except ValueError:
+                            pass
+                except (BrokenPipeError, OSError) as exc:
+                    self._kill()
+                    if cancelled.is_set():
+                        raise BrainGenerationCancelled(
+                            "warm claude generation cancelled (barge-in)"
+                        ) from exc
+                    raise BrainAdapterError(
+                        f"warm claude io error: {exc}"
+                    ) from exc
+
+                if parser.result_is_error:
+                    self._kill()  # zła sesja — następny generate wystartuje świeżą
+                    raise BrainAdapterError("warm claude returned error result")
+
+                text = parser.result_text or ""
+                parsed = parse_tool_call_blocks(text)
+                return BrainResponse(
+                    text=parsed.text,
+                    tool_calls=parsed.tool_calls,
+                    model=self.default_model,
+                    raw_metadata={
+                        "adapter": self.name,
+                        "warm": True,
+                        "stateless": True,
+                        "parsed_tool_call_count": len(parsed.tool_calls),
+                    },
+                )
+            finally:
+                if registered:
+                    self._generation_registry.unregister(request.turn_id)
 
 
 __all__ = ["ClaudeCliWarmAdapter"]

@@ -67,6 +67,7 @@ class BrainManager:
                     args=getattr(claude_config, "args", ["-p"]),
                     model=getattr(claude_config, "model", ""),
                     timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
+                    generation_registry=generation_registry,
                 )
             )
 
