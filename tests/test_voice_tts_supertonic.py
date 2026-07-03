@@ -422,9 +422,15 @@ def test_stop_playback_kills_the_player_process(tmp_path: Path) -> None:
 
     binary, _ = fake_supertonic(tmp_path)
     marker = tmp_path / "player-started.txt"
+    # `exec` replaces the shell in place, so the player is ONE process — like the
+    # real sox `play`. With a plain `sleep 30`, bash forks a child: under load,
+    # stop_playback()'s killpg could fire between the marker write and that fork,
+    # leaving the sleep orphaned outside the killed group, holding the stdout
+    # pipe open so play()'s communicate() blocks ~30s and the thread outlives
+    # join(timeout=5) — the flaky failure. One process closes that race.
     player = write_script(
         tmp_path / "slow-player",
-        f'echo "started $$" > {marker}\nsleep 30\nexit 0\n',
+        f'echo "started $$" > {marker}\nexec sleep 30\n',
     )
     engine = build_tts_engine("supertonic", config=full_config(tmp_path, binary, player))
     chunk = engine.synthesize("Długi chunk przerwany barge-inem.")
