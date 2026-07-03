@@ -20,6 +20,11 @@
 ## Current state (2026-07-02, FAZY A–H closed)
 
 - **1322 tests, 22/22 smoke scripts green** (`scripts/smoke-*.sh`).
+- **Security/robustness hardening in progress** — `FIXME.md` is the source of
+  truth. Done: FIX-01..06 (CORS `null`, git-config RCE, per-thread SQLite,
+  hot-mic/broker survivability, turn/orchestrator state consistency, API
+  hardening + transport token on private-data GETs). Suite now **1350 tests**.
+  Next: FIX-07 (brain/workers). Full `pytest` runs only after big tasks.
 - FAZY A–F closed: hardening (fail-closed roots, realpath containment,
   transport token), permission model, real file/shell tools behind the
   approval loop, operator adapters, WebSocket `/stream`, brain switch,
@@ -72,10 +77,10 @@
 ## Known open items / review priorities
 
 - **Panel content redesign (post-MVP backlog):** Ozzy's 2026-07-02 review —
-  the operator wants model/provider/effort switching and voice controls
-  (engine/tempo/PTT/listening toggle) in the panel; these need new daemon
-  endpoints and a scoped design, not panel-side hacks. The basic/advanced
-  split is v1 of that redesign.
+  the operator wants model/provider/effort switching and voice controls in the
+  panel. PTT/listening already ride existing lease endpoints (G2); model/effort
+  switching needs new daemon endpoints and a scoped design, not panel-side
+  hacks. The basic/advanced split is v1 of that redesign.
 - Gate G review §7 optional follow-ups (only with Ozzy's green light;
   retention is CLOSED as option A): recorder-vs-lease health check, dead
   `LISTENING_LEASE_CANCELLED` type, degenerate rule for 3+ letters.

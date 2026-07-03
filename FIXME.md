@@ -39,13 +39,6 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 - **DoD:** `null` niedozwolony, test zielony, reszta CORS bez regresji.
 - **Estymat:** ~20–30 min · **Zależności:** brak.
 
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-01 z FIXME.md.
-ZASADY: preflight tanio (git log -1 + git status, bez pełnych smoke'ów); TDD (test przed fixem); NIE podbijaj paczek; NIE odpalaj workflow/fan-outów bez zgody; po skończeniu pełny pytest + commit + odhacz FIX-01 w FIXME.md.
-PROBLEM (bezpieczeństwo, HIGH): w jarvis/daemon/lifecycle.py stała ALLOWED_CORS_ORIGINS zawiera "null". Endpointy GET nie są tokenowane (token-gate tylko dla POST/PATCH/DELETE). Skutek: lokalna strona file:// (origin "null") może przez CORS odczytać /conversations, /memory, /settings i wyeksfiltrować dane. Test tests/test_api_cors.py obecnie UTRWALA "null" jako dozwolony.
-ZADANIE: Zweryfikuj aktualną linię (mogła się przesunąć). Napisz najpierw test, że żądanie z Origin: null NIE dostaje nagłówka Access-Control-Allow-Origin: null. Potem usuń "null" z allowlisty i popraw istniejący test tak, by asertował odrzucenie. Nie ruszaj dozwolonych originów 127.0.0.1/localhost. Uruchom pytest dla API/CORS. Zaproponuj (ale nie wprowadzaj bez pytania) dołożenie tokenu na GET-ach jako osobny task.
-```
-
 ## - [x] FIX-02 · git-config RCE mimo approval-gate 🟠 HIGH — DONE `78a58b4`
 
 - **Pliki:** `jarvis/tools/shell_tool.py:46` (`_SCRUBBED_ENV`) i wywołanie `subprocess.run` (~l.95)
@@ -54,13 +47,6 @@ ZADANIE: Zweryfikuj aktualną linię (mogła się przesunąć). Napisz najpierw 
 - **Testy:** test z tymczasowym repo mającym `fsmonitor`/hook wskazujący na plik-sentinel; asercja że sentinel NIE został wykonany.
 - **DoD:** git odporny na repo-local config, test zielony, whitelist git nadal działa dla legit repo.
 - **Estymat:** ~30–45 min · **Zależności:** brak.
-
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-02 z FIXME.md.
-ZASADY: preflight tanio; TDD; NIE podbijaj paczek; NIE odpalaj workflow/fan-outów bez zgody; po skończeniu pytest + commit + odhacz FIX-02.
-PROBLEM (bezpieczeństwo, HIGH — RCE): jarvis/tools/shell_tool.py uruchamia whitelistowane komendy git (git status/log/diff) przez subprocess.run w cwd sterowanym przez model, ze scrubowanym env (_SCRUBBED_ENV ~linia 46), które NIE ustawia GIT_CONFIG_NOSYSTEM ani GIT_CONFIG_GLOBAL. git honoruje repo-local .git/config, więc repo z [core] fsmonitor=/ścieżka/do/skryptu wykona ten skrypt przy git status — omijając approval-gate (operator widzi tylko "git status --short").
-ZADANIE: Zweryfikuj linie. Napisz test: utwórz tymczasowe repo git z .git/config ustawiającym core.fsmonitor (lub core.hooksPath) na skrypt tworzący plik-sentinel; wywołaj ShellReadTool na "git status" w tym cwd; asertuj, że sentinel NIE powstał. Potem wprowadź hardening: przy komendach git dołóż do env GIT_CONFIG_NOSYSTEM=1 i GIT_CONFIG_GLOBAL=/dev/null oraz flagi -c core.fsmonitor= -c core.hooksPath=/dev/null -c protocol.ext.allow=never. Upewnij się że legalne `git status --short` w normalnym repo nadal działa. pytest.
-```
 
 ## - [x] FIX-03 · CRITICAL: współdzielone połączenie SQLite przez wątki 🔴 — DONE `b61f537` (opcja A: ThreadLocalConnection)
 
@@ -74,13 +60,6 @@ ZADANIE: Zweryfikuj linie. Napisz test: utwórz tymczasowe repo git z .git/confi
 - **DoD:** brak współdzielenia jednego Connection do zapisów między wątkami; test współbieżności zielony; przy okazji domknij `app.py:596` (join/drain workerów na shutdown) i `memory/manager.py:315` (zmiana+event w jednej transakcji).
 - **Estymat:** ~0,5–1 dzień · **Zależności:** wykonać PRZED pełnym domknięciem workerów (FIX-07 część) i store (FIX-10).
 
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-03 z FIXME.md (CRITICAL).
-ZASADY: preflight tanio; TDD; NIE podbijaj paczek; NIE odpalaj workflow/fan-outów bez zgody; testy współbieżności są upierdliwe — pisz je deterministycznie (bariery/eventy, nie sleepy). Po skończeniu pełny pytest + smoke + commit + odhacz FIX-03. To zmiana fundamentu — rozważ osobny branch.
-PROBLEM (CRITICAL, integralność danych): jarvis/daemon/app.py otwiera jedno sqlite3 connection z check_same_thread=False (~linia 130/1130) i przekazuje je do TurnRepository, EventStore, ApprovalGate, ToolRunRecorder. ThreadingHTTPServer serwuje żądania równolegle; są też wątki workerów (app.py ~596). Wszystkie robią zapisy przez `with self._conn:` na TYM SAMYM connection, chronione dwiema rozłącznymi blokadami (text_turn_lock, tool_execution_lock), które się nie pokrywają. Efekt: bloki `with conn` różnych wątków dzielą jedną transakcję — rollback jednego wyrzuca niezacommitowany append-only event drugiego (ciche gubienie zdarzeń) lub rzuca sqlite3.ProgrammingError/OperationalError. WAL tego NIE naprawia (to single-connection interleaving, nie lock contention między connection).
-ZADANIE: 1) Napisz deterministyczny test współbieżności odtwarzający zgubiony event / błąd transakcji (kilka wątków równolegle: append eventów + zapis tur). 2) Wybierz i uzasadnij strategię: A) connection-per-wątek/tura (rekomendowana, WAL wspiera multi-writer) — factory krótkotrwałych połączeń; albo B) jeden proces-wide write-lock na wszystkie zapisy self.conn. 3) Przejdź po WSZYSTKICH konsumentach self.conn i zastosuj strategię. 4) Przy okazji: dołóż tracking + join/drain (z timeoutem) wątków workerów w stop() przed appendem daemon.stopped, oraz opakuj w memory/manager.py zmianę bloku i jej memory-event w JEDNĄ transakcję. Uruchom pełny pytest + smoke. Jeśli decyzja A vs B jest niejednoznaczna — zarekomenduj i wykonaj lepszą jakościowo, nie odbijaj do usera.
-```
-
 ## - [x] FIX-04 · Voice: „gorący mikrofon" + przeżywalność brokera 🟠 HIGH (×4) — DONE `00a42be` (4/4 potwierdzone testami deterministycznymi, bez sprzętu)
 
 - **Pliki:** `jarvis/daemon/app.py:225` (stop bez `voice_recorder.stop()`), `jarvis/voice/listening.py:139` (brak timera lease'u), `jarvis/voice/broker.py:63` (broker umiera na nie-TTS wyjątku), `jarvis/voice/broker.py:57` (`stop()` nie zatrzymuje brokera)
@@ -90,18 +69,6 @@ ZADANIE: 1) Napisz deterministyczny test współbieżności odtwarzający zgubio
 - **Testy:** stop() zatrzymuje recorder; wygasły lease bez klienta zatrzymuje recorder przez sweeper; wyjątek DB w brokerze nie ubija wątku; stop() brokera realnie kończy pętlę.
 - **DoD:** brak osieroconego sox po stop/restart; lease samoegzekwuje się bez klienta; broker przeżywa wyjątek DB i daje się zatrzymać. Potwierdzenie na żywo udokumentowane.
 - **Estymat:** ~0,5–1 dzień (w tym potwierdzenie na sprzęcie) · **Zależności:** brak; refactor anti-echo/cancel to osobny FIX-09.
-
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-04 z FIXME.md (4× HIGH, prywatność/„gorący mikrofon").
-ZASADY: preflight tanio; TDD; NIE podbijaj paczek; NIE odpalaj workflow/fan-outów bez zgody; głos jest wyłączony na co dzień, ale kod ma być poprawny. Po skończeniu pytest + smoke głosowy + commit + odhacz FIX-04.
-UWAGA: te 4 findingi były NIEZWERYFIKOWANE (adwersaryjna weryfikacja została ubita). NAJPIERW potwierdź każdy na żywo (mikrofon, sox) albo deterministycznym testem z mockiem, ZANIM naprawisz. Jeśli któryś okaże się fałszywy — udokumentuj i pomiń.
-PROBLEMY:
-(a) jarvis/daemon/app.py ~225: stop() nie woła self.voice_recorder.stop() (tylko broker/stt/gateway) → po restarcie in-process stary sox nagrywa dalej bez właściciela (hot mic + rosnący WAV).
-(b) jarvis/voice/listening.py ~139: TTL lease'u sprawdzany tylko wewnątrz acquire/release/active — brak timera po stronie daemona. Crash panelu przed button-up → sox nagrywa godzinami po TTL.
-(c) jarvis/voice/broker.py ~63: _run nie ma catch-all — nie-TTSEngineError (np. sqlite "database is locked", OSError zniknionego binarnego supertonic) zabija wątek brokera → Jarvis trwale niemy, kolejka rośnie bez sygnału.
-(d) jarvis/voice/broker.py ~57: stop() nie działa — drain loop ignoruje _stop, join(timeout=5) cicho się poddaje, _executor nigdy nie ubity.
-ZADANIE: Dla każdego: test odtwarzający → fix. (a) stop() woła voice_recorder.stop() PRZED voice_stt.stop(), potem voice_recorder=None. (b) mały sweeper daemon-side (threading.Timer lub pętla brokera) cyklicznie wołający active()/_expire_stale. (c) try/except Exception wokół drain w _run z logowaniem + backoff; catch Exception (nie tylko TTSEngineError) wokół syntezy. (d) stop() sprawdza _stop.is_set() w pętli, woła engine.stop_playback() i _executor.shutdown(cancel_futures=True), start() odmawia gdy stary wątek żyje. pytest + smoke.
-```
 
 ---
 
@@ -116,18 +83,6 @@ ZADANIE: Dla każdego: test odtwarzający → fix. (a) stop() woła voice_record
 - **DoD:** żadne przejście nie przeklasyfikowuje skończonej tury; brak stanów-pułapek; state machine atomowa.
 - **Estymat:** ~0,5 dnia · **Zależności:** miło po FIX-03 (spójność locków), ale niezależne.
 
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-05 z FIXME.md (1× HIGH potwierdzony + 3× MED + 1 LOW).
-ZASADY: preflight tanio; TDD; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu pytest + commit + odhacz FIX-05.
-PROBLEM (spójny root: przejścia stanu nie tolerują ścieżek terminalnych/błędnych):
-- app.py ~254 (HIGH, potwierdzony): stop() przechodzi w STOPPING bez text_turn_lock; turn w locie kończy się, wypowiada odpowiedź, potem transition(IDLE) rzuca StateTransitionError (STOPPING terminalny) → recovery przepisuje SKOŃCZONY turn na FAILED i emituje TURN_FAILED.
-- orchestrator.py ~427: dowolny wyjątek po _turns.finish() przeklasyfikowuje FINISHED na FAILED.
-- orchestrator.py ~516: nieudana kontynuacja tool-result zostawia turn na zawsze w AWAITING_APPROVAL.
-- orchestrator.py ~1150: _recover_runtime_after_failure potrafi trwale zablokować runtime w nie-IDLE, gdy append eventu recovery padnie.
-- state_machine.py ~100: transition() robi check-then-append-then-set na współdzielonym _state bez locka.
-ZADANIE: Zweryfikuj linie. Napisz testy odtwarzające każdy przypadek. Fixy: ogranicz failure-handler do fazy generacji (sprawdzaj status tury przed fail() — nie ruszaj FINISHED/AWAITING_APPROVAL); stop() bierze text_turn_lock+tool_execution_lock przed STOPPING LUB terminalne IDLE toleruje STOPPING bez failowania tury (wybierz czystszą opcję); nieudana kontynuacja → FAILED lub re-runnable; recovery resetuje _state=IDLE in-memory nawet gdy persist eventu padnie; dodaj lock na transition() (validate+append+assign atomowo). pytest.
-```
-
 ## - [x] FIX-06 · API hardening: DNS rebinding, slowloris, WS cap 🟡 MED×3 + LOW — DONE `9c79ea6` (4 obrony: Host-walidacja 403+close / socket timeout 10s / cap 8 sesji WS 503 / 401 Connection:close; TDD raw-socket) + FOLLOW-UP token na GET DONE `5406421` (GET /conversations,/turns,/memory,/settings wymagają X-Jarvis-Token; panel+CLI ślą token na każdym żądaniu; status/mechanizm GET zostają otwarte)
 
 - **Pliki:** `jarvis/daemon/lifecycle.py:209` (brak walidacji Host-header), `:622` (brak socket timeout), `:508` (brak capa na sesje WS), `:218` (401 nie drenuje body)
@@ -137,17 +92,6 @@ ZADANIE: Zweryfikuj linie. Napisz testy odtwarzające każdy przypadek. Fixy: og
 - **Testy:** obcy Host odrzucony; wolne body nie blokuje w nieskończoność; N+1 sesja WS odrzucona; 401 nie desynca.
 - **DoD:** cztery obrony na miejscu, testy zielone.
 - **Estymat:** ~2–3h · **Zależności:** brak.
-
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-06 z FIXME.md (API hardening: 3× MED + 1 LOW).
-ZASADY: preflight tanio; TDD; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu pytest + commit + odhacz FIX-06.
-PROBLEM (jarvis/daemon/lifecycle.py):
-- ~209: brak walidacji nagłówka Host — localhost binding to jedyna obrona nietokenowanych GET-ów, którą DNS rebinding pokonuje.
-- ~622: ThreadingHTTPServer handler bez socket timeout + _read_json_body robi blocking rfile.read(Content-Length) → klient trzyma wątek w nieskończoność (slowloris).
-- ~508: brak capa na równoległe sesje WS /stream; każda otwiera własne SQLite i trzyma wątek na czas życia.
-- ~218: żądanie mutujące odrzucone 401 (zły/brak token) nie drenuje body → desync keep-alive.
-ZADANIE: Zweryfikuj linie. Testy + fixy: odrzucaj żądania z Host spoza {127.0.0.1, localhost, ::1}:<port> przed dispatch; ustaw handler.timeout (np. 10s) i/lub deadline na read, zamykaj wolne/częściowe body; ogranicz liczbę jednoczesnych sesji /stream i odrzucaj ponad cap (close/503); przy 401 drenuj body lub ustaw Connection: close. pytest.
-```
 
 ## - [ ] FIX-07 · Brain/workers: stdin deadlock, atomic claim, cap kontekstu 🟠 HIGH + MED×3 + LOW×3
 
