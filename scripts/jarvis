@@ -1,0 +1,129 @@
+#!/bin/sh
+# Jarvis dev lifecycle: start / stop / restart / status (one command for both
+# the daemon and the menu-bar panel). This is a HUMAN convenience wrapper for
+# hand-running Jarvis from the repo — NOT the launchd supervisor (ADR-007: the
+# RuntimeSupervisor only reports, never kills). Use scripts/install-launchd.sh
+# for the always-on, login-managed agent instead.
+#
+#   scripts/jarvis start     # bring up daemon (waits for /health), then panel
+#   scripts/jarvis stop      # SIGTERM both
+#   scripts/jarvis restart   # stop, then start
+#   scripts/jarvis status    # health + which processes are alive
+set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+JARVIS_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+export JARVIS_REPO
+
+PYTHON="$JARVIS_REPO/.venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+  PYTHON="$(command -v python3)"
+fi
+
+LOG_DIR="$HOME/.jarvis/logs"
+mkdir -p "$LOG_DIR"
+
+# Unambiguous process signatures — narrow enough that pkill never touches this
+# wrapper, an editor, or an unrelated python.
+DAEMON_PAT="jarvis.cli daemon run"
+PANEL_PAT="jarvis.panel.menubar_app"
+
+# Resolve host:port from the same config the daemon uses; fall back to defaults.
+HOST_PORT="$(
+  "$PYTHON" - <<'PY' 2>/dev/null || true
+import os
+from jarvis.config import load_config
+user = os.path.expanduser("~/.jarvis/jarvis.toml")
+path = os.environ.get("JARVIS_CONFIG") or (user if os.path.exists(user) else "config/jarvis.example.toml")
+cfg = load_config(path)
+print(f"{cfg.daemon.host} {cfg.daemon.port}")
+PY
+)"
+HOST="${HOST_PORT%% *}"; PORT="${HOST_PORT##* }"
+[ -n "${HOST:-}" ] || HOST="127.0.0.1"
+[ -n "${PORT:-}" ] || PORT="41741"
+BASE="http://$HOST:$PORT"
+
+daemon_healthy() { curl -fs -m 2 "$BASE/health" >/dev/null 2>&1; }
+proc_alive()     { pgrep -f "$1" >/dev/null 2>&1; }
+
+start_daemon() {
+  if daemon_healthy; then
+    echo "daemon: already healthy at $BASE"
+    return 0
+  fi
+  if proc_alive "$DAEMON_PAT"; then
+    echo "daemon: process alive but not yet healthy — waiting"
+  else
+    echo "daemon: starting -> $LOG_DIR/jarvisd-console.log"
+    nohup "$SCRIPT_DIR/jarvisd" >>"$LOG_DIR/jarvisd-console.log" 2>&1 &
+  fi
+  i=0
+  while [ "$i" -lt 30 ]; do          # up to ~15s
+    daemon_healthy && { echo "daemon: healthy at $BASE"; return 0; }
+    i=$((i + 1)); sleep 0.5
+  done
+  echo "daemon: FAILED to become healthy in 15s — last log lines:" >&2
+  tail -n 15 "$LOG_DIR/jarvisd-console.log" >&2 2>/dev/null || true
+  return 1
+}
+
+start_panel() {
+  if proc_alive "$PANEL_PAT"; then
+    echo "panel: already running"
+    return 0
+  fi
+  echo "panel: starting -> $LOG_DIR/panel-console.log"
+  nohup "$SCRIPT_DIR/jarvis-panel" >>"$LOG_DIR/panel-console.log" 2>&1 &
+  sleep 1
+  if proc_alive "$PANEL_PAT"; then
+    echo "panel: up (menu-bar icon should appear)"
+  else
+    echo "panel: did NOT stay up — check $LOG_DIR/panel-console.log" >&2
+    echo "       (needs the panel extra: .venv/bin/pip install -e '.[panel]')" >&2
+    tail -n 15 "$LOG_DIR/panel-console.log" >&2 2>/dev/null || true
+  fi
+}
+
+stop_one() {  # name, pattern
+  if proc_alive "$2"; then
+    pkill -TERM -f "$2" || true
+    echo "$1: SIGTERM sent"
+  else
+    echo "$1: not running"
+  fi
+}
+
+cmd_start() { start_daemon && start_panel; }
+
+cmd_stop() {
+  stop_one "panel" "$PANEL_PAT"
+  stop_one "daemon" "$DAEMON_PAT"
+}
+
+cmd_status() {
+  if daemon_healthy; then
+    state="$(curl -fs -m 2 "$BASE/health" 2>/dev/null || true)"
+    echo "daemon: HEALTHY $BASE  $state"
+  elif proc_alive "$DAEMON_PAT"; then
+    echo "daemon: process alive but /health not responding at $BASE"
+  else
+    echo "daemon: down"
+  fi
+  if proc_alive "$PANEL_PAT"; then
+    echo "panel:  running (pid $(pgrep -f "$PANEL_PAT" | tr '\n' ' '))"
+  else
+    echo "panel:  down"
+  fi
+}
+
+case "${1:-}" in
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  restart) cmd_stop; sleep 1; cmd_start ;;
+  status)  cmd_status ;;
+  *)
+    echo "usage: scripts/jarvis {start|stop|restart|status}" >&2
+    exit 2
+    ;;
+esac
