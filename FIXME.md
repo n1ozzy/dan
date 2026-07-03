@@ -107,7 +107,7 @@ ZADANIE: Dla każdego: test odtwarzający → fix. (a) stop() woła voice_record
 
 # TIER 2 — POWINNO (≈ 2–3 dni) — rób sukcesywnie
 
-## - [ ] FIX-05 · Stany tury / orchestrator: udany turn jako FAILED + utknięcia 🟠 HIGH + 🟡 MED×3
+## - [x] FIX-05 · Stany tury / orchestrator: udany turn jako FAILED + utknięcia 🟠 HIGH + 🟡 MED×3 — DONE `8cc2ebd` (5/5 przypadków, TDD; STOPPING tolerowany zamiast locków w stop(); continuation → FAILED; lock+force_idle w state_machine; 1343 testy)
 
 - **Pliki:** `jarvis/daemon/app.py:254` (stop race — HIGH, POTWIERDZONY), `jarvis/turns/orchestrator.py:427` (FINISHED→FAILED), `:516` (stuck AWAITING_APPROVAL), `:1150` (wedge non-IDLE), `jarvis/daemon/state_machine.py:100` (brak locka)
 - **Problem:** wspólny root — przejścia stanu nie tolerują terminalnych/błędnych ścieżek. `stop()`→STOPPING bez `text_turn_lock` → udany, wypowiedziany turn zapisany jako FAILED. Wyjątek po `_turns.finish()` przepisuje skończony turn na FAILED. Nieudana kontynuacja zostawia turn na zawsze w AWAITING_APPROVAL. Recovery potrafi zablokować runtime w nie-IDLE. State machine bez locka.
