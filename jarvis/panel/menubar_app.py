@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jarvis.config import JarvisConfig, load_config
+from jarvis.panel.hotkey import HotkeyEdgeDetector, PttHotkeyClient, parse_hotkey
 from jarvis.paths import resolve_runtime_paths
 from jarvis.security.transport import load_api_token
 
@@ -50,6 +51,7 @@ class ShellSettings:
     index_path: Path
     width: int
     height: int
+    ptt_hotkey: str = ""
 
 
 def resolve_shell_settings(config: JarvisConfig) -> ShellSettings:
@@ -60,6 +62,7 @@ def resolve_shell_settings(config: JarvisConfig) -> ShellSettings:
         index_path=ASSETS_DIR / "index.html",
         width=int(config.panel.width),
         height=int(config.panel.height),
+        ptt_hotkey=str(config.voice.ptt_hotkey),
     )
 
 
@@ -110,6 +113,7 @@ class MenuBarApp:
         self._status_item = None
         self._popover = None
         self._controller = None
+        self._hotkey_monitors: list = []
 
     def run(self) -> None:
         AppKit, WebKit = _import_gui_modules()
@@ -125,8 +129,52 @@ class MenuBarApp:
         self._popover = self._build_popover(AppKit, WebKit)
         self._controller = self._build_controller(AppKit)
         self._status_item = self._build_status_item(AppKit, self._controller)
+        self._install_hotkey_monitors(AppKit)
 
         app.run()
+
+    def _install_hotkey_monitors(self, AppKit):  # noqa: N803 - ObjC module name
+        """Watch a held modifier combo anywhere and drive PTT down/up.
+
+        A flagsChanged monitor (global = other apps focused, local = our
+        popover focused) feeds NSEvent.modifierFlags() — masked to the low 16
+        device-dependent bits so left/right are distinguished — through the
+        edge detector. Needs macOS Accessibility permission; without it the
+        global monitor silently sees nothing (the local one still works while
+        the panel is focused). A blank/zero hotkey installs nothing.
+        """
+
+        mask = parse_hotkey(self._settings.ptt_hotkey)
+        if mask == 0:
+            return
+        detector = HotkeyEdgeDetector(mask)
+        client = PttHotkeyClient(
+            self._settings.api_base_url, self._settings.api_token
+        )
+
+        def handler(event):
+            device_flags = int(event.modifierFlags()) & 0xFFFF
+            client.dispatch(detector.update(device_flags))
+            return event  # local monitor forwards the event; global ignores it
+
+        flags_changed = AppKit.NSEventMaskFlagsChanged
+        self._hotkey_monitors.append(
+            AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                flags_changed, handler
+            )
+        )
+        self._hotkey_monitors.append(
+            AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                flags_changed, handler
+            )
+        )
+        print(
+            f"panel: globalny PTT hotkey aktywny ({self._settings.ptt_hotkey}). "
+            "Jesli trzymanie skrotu nie wlacza nasluchu: Ustawienia systemowe > "
+            "Prywatnosc i ochrona > Dostepnosc — wlacz aplikacje uruchamiajaca "
+            "panel (Terminal/Python), potem zrestartuj panel.",
+            file=sys.stderr,
+        )
 
     def _build_popover(self, AppKit, WebKit):  # noqa: N803 - ObjC module names
         configuration = WebKit.WKWebViewConfiguration.alloc().init()
