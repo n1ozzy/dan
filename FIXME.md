@@ -93,29 +93,25 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 - **DoD:** cztery obrony na miejscu, testy zielone.
 - **Estymat:** ~2–3h · **Zależności:** brak.
 
-## - [ ] FIX-07 · Brain/workers: stdin deadlock, atomic claim, cap kontekstu 🟠 HIGH + MED×3 + LOW×3
+## - [x] FIX-07 · Brain/workers: stdin deadlock, atomic claim, cap kontekstu 🟠 HIGH + MED×3 + LOW×3 — DONE `82cde12` (7/8; H odroczony)
+
+**DONE `82cde12` (TDD, deterministyczne mocki bez sprzętu; suite 1398 zielone):**
+- **HIGH stdin deadlock:** `default_stream_process_factory` NIE pisze już stdin; `stream_cli_response` karmi stdin z osobnego wątku (`_write_stdin`) współbieżnie z drenażem stdout, pod już-uzbrojonym watchdogiem → wielki prompt nie zablokuje pipe'a.
+- **MED atomic claim:** `WorkerBroker.execute` używa `_claim_job` = jeden warunkowy `UPDATE ... WHERE status='queued'`, działa tylko przy `rowcount==1`; przegrany dostaje conflict → job odpalony co najwyżej raz (double-run odtworzony barierą w teście przed fixem).
+- **MED cap input_text:** `_cap_input_text` przycina input do budżetu z widocznym markerem (był nieograniczony mimo `context_budget_chars` — karmił deadlock).
+- **MED parser risk:** `tool_call_parser` fail-safe `destructive`, NIE czyta `risk` od modelu; autorytatywny risk derywowany downstream z `tool.risk` zarejestrowanego speca (`registry.evaluate_permission`).
+- **LOW worker-job prompt:** rola `user` + framing „untrusted" + cytowanie (był `system` = prompt-injection surface).
+- **LOW settings DoS:** zły JSON w jednym wierszu settings → skip+log zamiast abortu całej budowy tury; ważne wiersze nadal ładowane.
+- **LOW allowlist flag CLI:** `_reject_unsafe_args` = allowlist znanych bezpiecznych flag (mija bypassy typu flaga-z-wartością/aliasy), non-flag tokeny nietykane.
+- **H ODROCZONY (LOW):** cancel handle dla BLOCKING generate. Zerowy trigger praktyczny — voice ZAWSZE streamuje (`on_delta`), więc blocking+barge-in nigdy nie współwystępują; dodanie kolidowałoby z jawną decyzją `test_blocking_path_never_touches_the_registry`. Do rozważenia jeśli kiedyś powstanie blocking-barge-in use case.
+- **DoD FIX-07 (stdin deadlock / atomic claim / kontekst ograniczony / risk niezależny) SPEŁNIONY w całości.**
 
 - **Pliki:** `jarvis/brain/claude_cli_adapter.py:121` (stdin deadlock — HIGH), `jarvis/workers/broker.py:174` (double-run job), `jarvis/brain/context_builder.py:419` (input_text nieograniczony), `:351` (prompt-injection labeling), `:213` (zły settings row = DoS tury), `jarvis/brain/tool_call_parser.py:90` (ufa `risk` od modelu), `jarvis/brain/claude_cli_adapter.py:521` (denylist flag), `:351` (blocking bez cancel)
 - **Problem:** streaming zapisuje cały prompt na stdin ZANIM uzbroi watchdog i zacznie drenować stdout/stderr → duży prompt (a `_fit_budget` nie tnie `input_text`) deadlockuje bez timeoutu. Job QUEUED→RUNNING nieatomowo → odpalany dwa razy. Parser ufa polu `risk` od modelu. Denylist flag mija równoważne bypassy. Blocking-generate bez barge-in.
 - **Fix:** uzbrój watchdog + drainy PRZED zapisem stdin, stdin z osobnego wątku; atomic claim (`UPDATE ... WHERE status='queued'`, działaj przy rowcount==1); utnij `input_text` wg budżetu; risk z `BrainToolSpec` nie od modelu; allowlist flag; worker-job prompt jako oznaczone dane untrusted; zły settings row skip+default zamiast abort; blocking-generate dostaje uchwyt cancel.
 - **Testy:** duży prompt nie deadlockuje; job nie odpalony dwa razy; risk brany ze speca; nadmiarowy input przycięty.
 - **DoD:** brak deadlocka stdin; claim atomowy; kontekst ograniczony; risk niezależny od modelu.
-- **Estymat:** ~3–5h · **Zależności:** cap `input_text` łagodzi deadlock — zrób razem. Atomic claim spójny z FIX-03.
-
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-07 z FIXME.md (1× HIGH + 3× MED + 3× LOW, brain/workers).
-ZASADY: preflight tanio; TDD; NIE podbijaj paczek (adaptery muszą umieć konsumować stream-json — zachowaj to); NIE fan-outów bez zgody; po skończeniu pytest + commit + odhacz FIX-07.
-PROBLEMY:
-- claude_cli_adapter.py ~121 (HIGH): streaming zapisuje CAŁY prompt na stdin dziecka PRZED uzbrojeniem watchdoga i PRZED drenażem stdout/stderr. Duży prompt (osiągalny, bo context_builder._fit_budget nie tnie input_text) → parent blokuje na stdin.write gdy pipe się zapełni, dziecko blokuje na niedrenowanym stdout/stderr → trwały deadlock bez timeoutu, wyciek dziecka.
-- workers/broker.py ~174 (MED): nieatomowy read-check-then-update QUEUED→RUNNING → ten sam job odpalony dwa razy.
-- context_builder.py ~419 (MED): _fit_budget nie tnie input_text → prompt/stdin nieograniczony mimo context_budget_chars.
-- tool_call_parser.py ~90 (MED): parser ufa polu 'risk' (i nazwie narzędzia) od modelu zamiast brać z zarejestrowanego speca.
-- context_builder.py ~351 (LOW): surowy user-text worker-joba wstrzyknięty jako system-role = prompt-injection surface.
-- context_builder.py ~213 (LOW): jeden zły wiersz settings / zły config int wywala całą budowę tury.
-- claude_cli_adapter.py ~521 (LOW): _reject_unsafe_args to denylist na jeden token, mija równoważne flagi bypass.
-- claude_cli_adapter.py ~351 (LOW): blocking generate bez uchwytu cancel — nie da się barge-inować.
-ZADANIE: Zweryfikuj linie. Testy + fixy: uzbrój watchdog i uruchom drenaż stdout/stderr PRZED zapisem stdin, pisz stdin z osobnego wątku (żaden etap nie jest nietimeoutowany/niedrenowany); atomic claim UPDATE worker_jobs SET status='running' WHERE id=? AND status='queued', działaj tylko przy rowcount==1; utnij input_text wg budżetu (z markerem) lub odrzuć powyżej twardego limitu; bierz risk z pasującego BrainToolSpec, odrzucaj nazwy spoza oferty; podawaj worker-job prompt jako oznaczone dane untrusted (rola user/tool, cytowane); zły settings row skip+log+default zamiast abort; allowlist bezpiecznych flag zamiast denylisty; przekaż generation_registry do blocking-generate. Zachowaj obsługę stream-json. pytest.
-```
+- **Estymat:** ~3–5h · **Zależności:** cap `input_text` łagodzi deadlock — zrób razem. Atomic claim spójny z FIX-03. **[PROMPT wykonany — przycięty przy DONE.]**
 
 ## - [ ] FIX-08 · Redakcja sekretów i containment plików 🟡 MED×2 + LOW×2
 
