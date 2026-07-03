@@ -113,21 +113,48 @@ def test_cockpit_is_single_view_app_with_tabbar() -> None:
 
 
 def test_cockpit_state_signals_are_quiet_structure() -> None:
-    # Stan systemu bez ozdób: pill stanu + klasy na <body> (offline wygasza
-    # kompozytor, has-pending barwi sygnały zgód). Żadnych neonowych ramek
-    # ani dekoracyjnych animacji dookoła panelu.
+    # Stan systemu: pill stanu + klasy na <body> (offline wygasza kompozytor,
+    # has-pending barwi sygnały zgód) + żywa ramka stanu (patrz osobny test).
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
-    assert "statusline" not in markup
-    assert "conic-gradient" not in styles
     assert "state-pill" in markup
     assert "state-pill" in styles
     assert "offline-hero" in script
     assert "offline" in script
     assert "has-pending" in script
     assert "has-pending" in styles
+
+
+def test_state_frame_is_animated_and_driven_by_live_state() -> None:
+    # Sygnatura panelu: neonowa ramka na krawędzi karty, która OBIEGA dookoła,
+    # gdy Jarvis pracuje (THINKING/SPEAKING/LISTENING) i barwi się stanem
+    # (teal online, bursztyn gdy czekają zgody, czerwień offline). Ruch niesie
+    # informację o trwającym procesie — nie jest dekoracją; spoczynek (IDLE)
+    # zostawia ramkę statyczną. Renderuje ją CSS w webview, sterowany realnym
+    # stanem z JS — jedna geometria, bez malowania natywnej warstwy co klatkę.
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    # Element ramki w dokumencie, dekoracyjny (aria-hidden), poza tab-orderem.
+    assert "state-frame" in markup
+    assert "state-frame" in styles
+
+    # Obiegające światło = conic-gradient obracany przez animowany kąt.
+    assert "conic-gradient" in styles
+    assert "@keyframes" in styles
+    # Obrót zatrzymuje się przy ograniczonym ruchu — ramka wtedy tylko barwi.
+    assert "prefers-reduced-motion" in styles
+
+    # JS steruje ramką realnym stunem: online/offline, liczba zgód i to, czy
+    # daemon właśnie pracuje. Stany daemona z RuntimeState (state_machine.py).
+    assert "applyStateFrame" in script
+    for runtime_state in ("THINKING", "SPEAKING", "LISTENING"):
+        assert runtime_state in script, runtime_state
+    # Ramka reaguje na strumień: state.changed przełącza pracę/spoczynek.
+    assert "runtimeState" in script
 
 
 def test_history_click_scrolls_chat_pane_not_page() -> None:

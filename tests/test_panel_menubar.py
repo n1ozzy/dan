@@ -1,7 +1,7 @@
-"""H1 MenuBar shell: native NSStatusItem + NSPopover + WKWebView hosting
-the SAME cockpit assets (PANEL_CONTRACT §5). Thin client — the shell adds
-zero authority: it renders assets and injects the transport token the CLI
-already reads; every intent still travels the cockpit's HTTP/WS routes.
+"""H1 MenuBar shell: native NSStatusItem + borderless NSPanel + WKWebView
+hosting the SAME cockpit assets (PANEL_CONTRACT §5). Thin client — the shell
+adds zero authority: it renders assets and injects the transport token the
+CLI already reads; every intent still travels the cockpit's HTTP/WS routes.
 """
 
 from __future__ import annotations
@@ -134,13 +134,13 @@ class TestProbe:
         assert menubar_app.probe(settings) == 2
 
 
-class TestPopoverAppearance:
-    """The cockpit is dark-only (`color-scheme: dark`); the popover chrome
-    must follow, or the light-mode arrow/flash clashes with the content.
+class TestPanelAppearance:
+    """The cockpit is dark-only (`color-scheme: dark`); the widget chrome
+    must follow, or a light-mode flash clashes with the content.
     GUI construction needs a display, so this is a source contract, same
     idiom as the lazy-import guard above."""
 
-    def test_popover_forces_dark_appearance(self) -> None:
+    def test_panel_forces_dark_appearance(self) -> None:
         source = (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
 
         assert "NSAppearanceNameDarkAqua" in source
@@ -152,47 +152,90 @@ class TestPopoverAppearance:
         assert "setUnderPageBackgroundColor_" in source
 
 
+class TestWidgetPanel:
+    """Karta widżetu = własny borderless NSPanel, nie NSPopover. Popover
+    dokładał systemowy bąbel (druga krawędź, strzałka, mismatch promieni)
+    pod naszą ramką stanu; własny panel ma JEDNĄ geometrię: warstwa webview
+    z cornerRadius + 2pt borderem stanu, cień od okna, zero strzałki."""
+
+    def _source(self) -> str:
+        return (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+
+    def test_shell_hosts_borderless_nonactivating_panel_not_popover(self) -> None:
+        source = self._source()
+
+        assert "NSPopover" not in source
+        assert "NSWindowStyleMaskBorderless" in source
+        assert "NSWindowStyleMaskNonactivatingPanel" in source
+        assert "NSStatusWindowLevel" in source
+        assert "setHasShadow_" in source
+
+    def test_panel_card_owns_single_border_geometry(self) -> None:
+        source = self._source()
+
+        assert "PANEL_CORNER_RADIUS = 12.0" in source
+        assert "setCornerRadius_" in source
+        assert "setMasksToBounds_" in source
+        # Przezroczyste okno: ramkę i promień rysuje wyłącznie warstwa karty.
+        assert "setOpaque_(False)" in source
+        assert "clearColor" in source
+
+    def test_panel_can_take_keyboard_focus(self) -> None:
+        # Borderless okna domyślnie nie mogą być key — bez tego override
+        # textarea kompozytora nie przyjmie ani jednego znaku.
+        assert "canBecomeKeyWindow" in self._source()
+
+    def test_panel_hides_on_outside_click_and_resign_key(self) -> None:
+        source = self._source()
+
+        assert "NSEventMaskLeftMouseDown" in source
+        assert "windowDidResignKey" in source
+
+    def test_panel_positions_under_status_item(self) -> None:
+        # Pozycja z ekranu ikony (frame okna przycisku status itemu),
+        # wycentrowana pod ikoną i przypięta pod paskiem menu.
+        assert "visibleFrame" in self._source()
+
+
 class TestStateBorder:
-    """Neonowa ramka stanu żyje na KARCIE WIDŻETU (warstwa WKWebView),
-    nie w HTML-u cockpitu — powłoka rysuje chrome, dokument zostaje czysty.
-    Poller /health mapuje: nieosiągalny -> offline (czerwień), czekające
-    zgody -> pending (bursztyn), zdrowy -> online (teal)."""
+    """Żywa ramka stanu OBIEGA dookoła, gdy Jarvis pracuje, i barwi się
+    stanem — a to wymaga gradientu maskowanego do obrysu, którego płaski
+    `CALayer.border` nie potrafi. Więc ramkę rysuje CSS w webview (sterowany
+    realnym stanem z JS, który cockpit i tak pobiera), a natywna warstwa robi
+    tylko zaokrąglony clip i cień okna. Powłoka nie odpytuje /health o kolor —
+    jedno źródło stanu (JS cockpitu), jedna warstwa renderingu."""
 
-    def test_classify_daemon_state_maps_health_to_border_state(self) -> None:
-        assert menubar_app.classify_daemon_state(None) == "offline"
-        assert menubar_app.classify_daemon_state({}) == "online"
-        assert menubar_app.classify_daemon_state({"pending_approval_count": 0}) == "online"
-        assert menubar_app.classify_daemon_state({"pending_approval_count": 3}) == "pending"
-        assert menubar_app.classify_daemon_state({"pending_approval_count": "junk"}) == "online"
+    def _source(self) -> str:
+        return (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
 
-    def test_border_colors_cover_every_state(self) -> None:
-        assert set(menubar_app.BORDER_STATE_COLORS) == {"online", "pending", "offline"}
-        for rgba in menubar_app.BORDER_STATE_COLORS.values():
-            assert len(rgba) == 4
-            assert all(0.0 <= channel <= 1.0 for channel in rgba)
+    def test_native_layer_only_clips_it_does_not_paint_state_color(self) -> None:
+        source = self._source()
 
-    def test_fetch_daemon_status_unreachable_returns_none(self) -> None:
-        # Port 9 na loopbacku nie nasłuchuje — natychmiastowy connection
-        # refused, bez sieci na zewnątrz.
-        assert (
-            menubar_app.fetch_daemon_status("http://127.0.0.1:9", None, timeout=0.2)
-            is None
-        )
+        assert "setCornerRadius_" in source
+        assert "setMasksToBounds_" in source
+        # Kolor/animacja ramki żyją w CSS, nie na natywnej warstwie.
+        assert "setBorderColor_" not in source
+        assert "BORDER_STATE_COLORS" not in source
 
-    def test_border_is_drawn_on_native_layer_not_in_cockpit_dom(self) -> None:
-        source = (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
-        markup = (
-            ROOT / "jarvis" / "panel" / "assets" / "index.html"
-        ).read_text(encoding="utf-8")
+    def test_shell_does_not_poll_health_for_border_color(self) -> None:
+        source = self._source()
+
+        # Poller /health -> kolor warstwy zniknął; stan bierze JS z danych,
+        # które cockpit i tak pobiera (/health, /state, /voice, /stream).
+        assert "classify_daemon_state" not in source
+        assert "fetch_daemon_status" not in source
+        assert "urllib" not in source
+
+    def test_state_frame_lives_in_cockpit_css_not_native_layer(self) -> None:
         styles = (
             ROOT / "jarvis" / "panel" / "assets" / "styles.css"
         ).read_text(encoding="utf-8")
+        markup = (
+            ROOT / "jarvis" / "panel" / "assets" / "index.html"
+        ).read_text(encoding="utf-8")
 
-        assert "setBorderWidth_" in source
-        assert "setBorderColor_" in source
-        assert "NSOperationQueue" in source  # malowanie tylko z głównego wątku
-        assert "statusline" not in markup
-        assert "conic-gradient" not in styles
+        assert "state-frame" in markup
+        assert "conic-gradient" in styles
 
 
 class TestStatusIcon:

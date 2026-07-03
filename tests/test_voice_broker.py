@@ -198,6 +198,62 @@ def test_broker_never_plays_a_row_cancelled_after_claim(db_path: Path) -> None:
     close_quietly(conn)
 
 
+def test_broker_interrupts_filler_when_sentence_arrives_for_same_turn(db_path: Path) -> None:
+    conn = connect(db_path)
+    queue = VoiceQueue(conn)
+    filler = "Filler tylko do przerwania."
+    sentence = "Prawdziwe zdanie ma grać dalej."
+    queue.enqueue(
+        text=filler,
+        turn_id="turn-filler",
+        kind="filler",
+        seq=-1,
+        interrupt_policy="interruptible",
+    )
+
+    gate = threading.Event()
+    engine = MockTTSEngine(play_gate=gate)
+    broker = VoiceBroker(lambda: connect(db_path), config=voice_config(), engine=engine)
+
+    thread = threading.Thread(target=broker.drain_all, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if getattr(engine, "_current_interrupt") is not None:
+            break
+        time.sleep(0.01)
+    else:
+        gate.set()
+        thread.join(timeout=5)
+        pytest.fail(f"filler playback never started: {engine.log}")
+
+    queue.enqueue(text=sentence, turn_id="turn-filler", kind="sentence", seq=0)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        filler_status = conn.execute(
+            "SELECT status FROM voice_queue WHERE text = ?", (filler,)
+        ).fetchone()[0]
+        if filler_status == "cancelled":
+            break
+        time.sleep(0.01)
+    else:
+        gate.set()
+        thread.join(timeout=5)
+        pytest.fail(f"filler was not interrupted: {engine.log}")
+
+    gate.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    statuses = dict(conn.execute("SELECT text, status FROM voice_queue").fetchall())
+    assert statuses[filler] == "cancelled"
+    assert statuses[sentence] == "done"
+    assert ("play_interrupted", filler) in engine.log
+    assert ("play", filler) not in engine.log
+    assert ("play", sentence) in engine.log
+    close_quietly(conn)
+
+
 def test_broker_stamps_spoken_at_only_on_rows_it_actually_played(db_path: Path) -> None:
     # FIX-09: the anti-echo corpus reads spoken_at, so the broker must stamp it
     # for every chunk it plays — and only those. A synthesis failure (never

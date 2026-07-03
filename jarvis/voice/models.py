@@ -25,6 +25,7 @@ class VoiceRequest:
     text: str
     priority: int
     status: str = VoiceRequestStatus.QUEUED.value
+    interrupt_policy: str = "no_interrupt"
     turn_id: str | None = None
     correlation_id: str | None = None
     engine: str | None = None

@@ -1,10 +1,10 @@
 """macOS menu-bar shell for the cockpit (PANEL_CONTRACT §5, H1).
 
-NSStatusItem + NSPopover + WKWebView rendering the SAME static cockpit
-assets the browser uses. The shell owns no state and adds no authority:
-it loads `jarvis/panel/assets/index.html` and seeds the transport token
-the CLI already reads — every intent still travels the cockpit's own
-HTTP/WS routes (thin client, ADR-002).
+NSStatusItem + borderless NSPanel + WKWebView rendering the SAME static
+cockpit assets the browser uses. The shell owns no state and adds no
+authority: it loads `jarvis/panel/assets/index.html` and seeds the
+transport token the CLI already reads — every intent still travels the
+cockpit's own HTTP/WS routes (thin client, ADR-002).
 
 AppKit/WebKit imports are lazy: the module must import (and the test
 suite must run) without PyObjC installed. Install the GUI extra with
@@ -16,10 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import threading
 import time
-import urllib.request
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,54 +33,21 @@ COCKPIT_TOKEN_STORAGE_KEY = "jarvis-api-token"
 # Menu-bar display height in points; the PNG carries 2x pixels for retina.
 STATUS_ICON_HEIGHT = 40.0
 
-# --- Ramka stanu na karcie widżetu -----------------------------------------
-# Neonowa obwódka stanu żyje na NATYWNEJ warstwie WKWebView (chrome widżetu),
-# nie w HTML-u cockpitu — dokument zostaje czysty, powłoka rysuje ramkę.
-# Kolory lustrzane z tokenów cockpitu: teal online, bursztyn gdy czekają
-# zgody, czerwień offline.
-BORDER_WIDTH_POINTS = 2.0
-BORDER_CORNER_RADIUS = 10.0
-STATUS_POLL_SECONDS = 3.0
-STATUS_FETCH_TIMEOUT_SECONDS = 1.5
-
-BORDER_STATE_COLORS: dict[str, tuple[float, float, float, float]] = {
-    "online": (0x2D / 255, 0xD4 / 255, 0xBF / 255, 0.90),
-    "pending": (0xFB / 255, 0xBF / 255, 0x24 / 255, 0.95),
-    "offline": (0xF8 / 255, 0x71 / 255, 0x71 / 255, 0.95),
-}
-
-
-def classify_daemon_state(payload: object) -> str:
-    """None (daemon nieosiągalny) -> offline; czekające zgody -> pending;
-    reszta -> online. Śmieciowy payload liczy się jak zero zgód."""
-
-    if payload is None:
-        return "offline"
-    pending = 0
-    if isinstance(payload, dict):
-        try:
-            pending = int(payload.get("pending_approval_count") or 0)
-        except (TypeError, ValueError):
-            pending = 0
-    return "pending" if pending > 0 else "online"
-
-
-def fetch_daemon_status(
-    api_base_url: str,
-    api_token: str | None,
-    timeout: float = STATUS_FETCH_TIMEOUT_SECONDS,
-) -> dict | None:
-    """GET /health dla pollera ramki; None przy dowolnym błędzie = offline."""
-
-    request = urllib.request.Request(f"{api_base_url.rstrip('/')}/health")
-    if api_token:
-        request.add_header("X-Jarvis-Token", api_token)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except Exception:  # noqa: BLE001 - każdy błąd transportu znaczy offline
-        return None
-    return payload if isinstance(payload, dict) else {}
+# --- Karta widżetu ----------------------------------------------------------
+# Karta to własny borderless NSPanel: przezroczyste okno z systemowym cieniem,
+# którego warstwa webview robi zaokrąglony clip (JEDNA geometria, bez
+# systemowego bąbla popovera — druga krawędź, strzałka, szczelina). Żywą
+# ramkę stanu — neon, który OBIEGA dookoła, gdy Jarvis myśli/pracuje, i barwi
+# się stanem — rysuje CSS w webview, sterowany realnym stanem z JS (cockpit
+# i tak pobiera /health, /state, /voice, /stream). Płaski CALayer.border nie
+# potrafiłby ani biegnącego światła, ani gradientu; powłoka nie maluje koloru.
+PANEL_CORNER_RADIUS = 12.0
+# Odstęp karty od dołu paska menu, w punktach.
+PANEL_TOP_GAP = 6.0
+# Klik w ikonę przy otwartym panelu: mousedown potrafi najpierw zdjąć key
+# z panelu (chowamy), a mouseup odpala togglePanel — bez tego okna czasowego
+# panel zamykałby się i natychmiast otwierał z powrotem.
+PANEL_REOPEN_SUPPRESS_SECONDS = 0.3
 
 
 def status_icon_path() -> Path:
@@ -164,11 +128,12 @@ class MenuBarApp:
         self._settings = settings
         # Strong references so ObjC objects outlive the setup calls.
         self._status_item = None
-        self._popover = None
+        self._panel = None
         self._controller = None
         self._webview = None
-        self._border_state: str | None = None
         self._hotkey_monitors: list = []
+        self._outside_click_monitor = None
+        self._hidden_at = 0.0
 
     def run(self) -> None:
         AppKit, WebKit = _import_gui_modules()
@@ -181,12 +146,11 @@ class MenuBarApp:
         # Accessory: menu-bar only, no Dock icon, no app switcher entry.
         app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
 
-        self._popover = self._build_popover(AppKit, WebKit)
         self._controller = self._build_controller(AppKit)
+        self._panel = self._build_panel(AppKit, WebKit)
         self._status_item = self._build_status_item(AppKit, self._controller)
         self._install_hotkey_monitors(AppKit)
-        self._apply_border_state(AppKit, "offline")
-        self._start_border_poller(AppKit)
+        self._install_outside_click_monitor(AppKit)
 
         app.run()
 
@@ -194,7 +158,7 @@ class MenuBarApp:
         """Watch a held modifier combo anywhere and drive PTT down/up.
 
         A flagsChanged monitor (global = other apps focused, local = our
-        popover focused) feeds NSEvent.modifierFlags() — masked to the low 16
+        panel focused) feeds NSEvent.modifierFlags() — masked to the low 16
         device-dependent bits so left/right are distinguished — through the
         edge detector. Needs macOS Accessibility permission; without it the
         global monitor silently sees nothing (the local one still works while
@@ -233,7 +197,22 @@ class MenuBarApp:
             file=sys.stderr,
         )
 
-    def _build_popover(self, AppKit, WebKit):  # noqa: N803 - ObjC module names
+    def _install_outside_click_monitor(self, AppKit):  # noqa: N803
+        """Klik poza panelem (w inną aplikację) chowa kartę. Globalny monitor
+        nie widzi zdarzeń własnej apki, więc klik w panel ani w ikonę
+        menubara go nie odpala — toggle zostaje przy togglePanel:."""
+
+        mask = AppKit.NSEventMaskLeftMouseDown | AppKit.NSEventMaskRightMouseDown
+
+        def handler(_event):
+            if self._panel is not None and self._panel.isVisible():
+                self._hide_panel()
+
+        self._outside_click_monitor = (
+            AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(mask, handler)
+        )
+
+    def _build_panel(self, AppKit, WebKit):  # noqa: N803 - ObjC module names
         configuration = WebKit.WKWebViewConfiguration.alloc().init()
         # The panel is a trusted local shell loaded from file:// — its Origin
         # is "null", which the daemon's CORS allowlist deliberately rejects
@@ -276,32 +255,54 @@ class MenuBarApp:
         assets_url = AppKit.NSURL.fileURLWithPath_(str(self._settings.index_path.parent))
         webview.loadFileURL_allowingReadAccessToURL_(index_url, assets_url)
 
-        # Chrome widżetu: ramka stanu na warstwie natywnej, nie w DOM-ie
-        # cockpitu. Kolor ustawia poller (_apply_border_state).
+        # Warstwa webview robi tylko zaokrąglony clip karty (żeby okno miało
+        # miękkie rogi i pasujący cień). Ramkę stanu — kolor i animację —
+        # rysuje CSS w webview, nie ta warstwa: jedna geometria, jedno źródło.
         webview.setWantsLayer_(True)
         layer = webview.layer()
         if layer is not None:
-            layer.setBorderWidth_(BORDER_WIDTH_POINTS)
-            layer.setCornerRadius_(BORDER_CORNER_RADIUS)
+            layer.setCornerRadius_(PANEL_CORNER_RADIUS)
             layer.setMasksToBounds_(True)
         self._webview = webview
 
-        view_controller = AppKit.NSViewController.alloc().init()
-        view_controller.setView_(webview)
+        shell = self
 
-        popover = AppKit.NSPopover.alloc().init()
-        popover.setContentViewController_(view_controller)
-        popover.setContentSize_(
-            AppKit.NSMakeSize(self._settings.width, self._settings.height)
+        class JarvisWidgetPanel(AppKit.NSPanel):
+            def canBecomeKeyWindow(self):  # noqa: N802 - ObjC selector
+                # Borderless okna domyślnie odmawiają key — bez tego textarea
+                # kompozytora nie przyjmie ani jednego znaku.
+                return True
+
+            def windowDidResignKey_(self, _notification):  # noqa: N802
+                shell._note_resign_key()
+
+        panel = JarvisWidgetPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame,
+            AppKit.NSWindowStyleMaskBorderless
+            | AppKit.NSWindowStyleMaskNonactivatingPanel,
+            AppKit.NSBackingStoreBuffered,
+            False,
         )
-        popover.setBehavior_(AppKit.NSPopoverBehaviorTransient)
-        # The cockpit is dark-only (`color-scheme: dark`); pin the popover
-        # chrome (arrow, edges) to dark so a light-mode menu bar does not
-        # frame the dark content in white.
-        popover.setAppearance_(
+        # Okno jest przezroczyste: promień i ramkę rysuje wyłącznie warstwa
+        # webview (jedna geometria), okno dokłada tylko systemowy cień.
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(AppKit.NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setLevel_(AppKit.NSStatusWindowLevel)
+        panel.setReleasedWhenClosed_(False)
+        panel.setHidesOnDeactivate_(False)
+        panel.setCollectionBehavior_(
+            AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+        )
+        # The cockpit is dark-only (`color-scheme: dark`); pin the panel
+        # chrome to dark so a light-mode desktop does not tint the card.
+        panel.setAppearance_(
             AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameDarkAqua)
         )
-        return popover
+        panel.setContentView_(webview)
+        panel.setDelegate_(panel)
+        return panel
 
     def _build_controller(self, AppKit):  # noqa: N803
         shell = self
@@ -312,7 +313,7 @@ class MenuBarApp:
                 if event is not None and event.type() == AppKit.NSEventTypeRightMouseUp:
                     shell._show_quit_menu(AppKit)
                     return
-                shell._toggle_popover(AppKit)
+                shell._toggle_panel(AppKit)
 
         return JarvisPanelController.alloc().init()
 
@@ -347,52 +348,51 @@ class MenuBarApp:
         image.setTemplate_(True)
         return image
 
-    def _start_border_poller(self, AppKit):  # noqa: N803 - ObjC module name
-        """Wątek-daemon odpytuje /health i maluje ramkę widżetu na głównym
-        wątku (AppKit wymaga main). Padnięty daemon = czerwona ramka, zgody
-        w kolejce = bursztyn, zdrowy = teal."""
-
-        def loop() -> None:
-            while True:
-                payload = fetch_daemon_status(
-                    self._settings.api_base_url, self._settings.api_token
-                )
-                state = classify_daemon_state(payload)
-
-                def apply(state: str = state) -> None:
-                    self._apply_border_state(AppKit, state)
-
-                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
-                time.sleep(STATUS_POLL_SECONDS)
-
-        threading.Thread(target=loop, name="panel-border-status", daemon=True).start()
-
-    def _apply_border_state(self, AppKit, state: str) -> None:  # noqa: N803
-        if state == self._border_state or self._webview is None:
+    def _toggle_panel(self, AppKit):  # noqa: N803
+        if self._panel.isVisible():
+            self._hide_panel()
             return
-        layer = self._webview.layer()
-        if layer is None:
+        if time.monotonic() - self._hidden_at < PANEL_REOPEN_SUPPRESS_SECONDS:
+            # Ten sam klik, który właśnie schował panel (resignKey na
+            # mousedown) — nie otwieraj go z powrotem na mouseup.
             return
-        red, green, blue, alpha = BORDER_STATE_COLORS.get(
-            state, BORDER_STATE_COLORS["offline"]
-        )
-        color = AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(red, green, blue, alpha)
-        with warnings.catch_warnings():
-            # NSColor.CGColor() zwraca nietypowany wskaźnik -> PyObjC sypie
-            # ObjCPointerWarning do logu przy każdej zmianie koloru; typowana
-            # alternatywa wymagałaby paczki Quartz, której celowo nie dodajemy.
-            warnings.simplefilter("ignore")
-            layer.setBorderColor_(color.CGColor())
-        self._border_state = state
+        self._show_panel(AppKit)
 
-    def _toggle_popover(self, AppKit):  # noqa: N803
+    def _show_panel(self, AppKit):  # noqa: N803
+        """Karta ląduje wycentrowana pod ikoną menubara, przypięta pod
+        paskiem menu, przycięta do widocznej krawędzi ekranu."""
+
         button = self._status_item.button()
-        if self._popover.isShown():
-            self._popover.performClose_(None)
-            return
-        self._popover.showRelativeToRect_ofView_preferredEdge_(
-            button.bounds(), button, AppKit.NSRectEdgeMinY
+        button_window = button.window()
+        anchor = button_window.frame()
+        width = float(self._settings.width)
+        height = float(self._settings.height)
+
+        x = anchor.origin.x + anchor.size.width / 2.0 - width / 2.0
+        y = anchor.origin.y - PANEL_TOP_GAP - height
+
+        screen = button_window.screen() or AppKit.NSScreen.mainScreen()
+        if screen is not None:
+            visible = screen.visibleFrame()
+            min_x = visible.origin.x + PANEL_TOP_GAP
+            max_x = visible.origin.x + visible.size.width - width - PANEL_TOP_GAP
+            x = max(min_x, min(x, max_x))
+
+        self._panel.setFrame_display_(
+            AppKit.NSMakeRect(x, y, width, height), True
         )
+        self._panel.makeKeyAndOrderFront_(None)
+        self._panel.orderFrontRegardless()
+
+    def _hide_panel(self) -> None:
+        self._hidden_at = time.monotonic()
+        self._panel.orderOut_(None)
+
+    def _note_resign_key(self) -> None:
+        # Utrata fokusu (np. mousedown gdzie indziej w naszej apce) chowa
+        # kartę — kliknięcia w innych apkach łapie globalny monitor.
+        if self._panel is not None and self._panel.isVisible():
+            self._hide_panel()
 
     def _show_quit_menu(self, AppKit):  # noqa: N803
         menu = AppKit.NSMenu.alloc().init()
@@ -401,7 +401,7 @@ class MenuBarApp:
         )
         menu.addItem_(quit_item)
         # Non-deprecated popup trick: attach the menu, synthesize a click so
-        # AppKit opens it, then detach so left-click keeps toggling the popover.
+        # AppKit opens it, then detach so left-click keeps toggling the panel.
         self._status_item.setMenu_(menu)
         self._status_item.button().performClick_(None)
         self._status_item.setMenu_(None)

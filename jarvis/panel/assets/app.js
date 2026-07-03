@@ -11,6 +11,9 @@ const cockpit = {
   // cache po id rozmowy, bo pierwsza tura się nie zmienia.
   conversationTitles: new Map(),
   pendingApprovalCount: 0,
+  // Ostatni znany stan pracy daemona (RuntimeState: IDLE/LISTENING/THINKING/
+  // SPEAKING) — steruje żywą ramką: praca => neon obiega, spoczynek => spokój.
+  runtimeState: "IDLE",
   // Tryb "nowa rozmowa": nie auto-wybieraj najnowszej rozmowy przy refreshu,
   // dopóki operator nie wyśle pierwszej wiadomości.
   composingNew: false,
@@ -271,6 +274,8 @@ function renderVoice() {
   setText(el.voiceStatusText, status);
   // Fala przy statusie ożywa tylko, gdy mikrofon naprawdę zbiera.
   el.voiceStatus.classList.toggle("live", cockpit.voice.listening);
+  // Zbierający mikrofon to też „praca” — ramka ma wtedy obiegać.
+  applyStateFrame();
 }
 
 // Panel ustawia TRYB słuchania (PTT vs ciągły nasłuch); samo trzymanie PTT
@@ -319,6 +324,10 @@ async function refreshHealthAndState() {
 
     const merged = { ...health, ...statePayload };
     setText(el.stateLabel, merged.state || "unknown");
+    if (merged.state) {
+      cockpit.runtimeState = merged.state;
+    }
+    applyStateFrame();
     syncPendingApprovals(merged.pending_approval_count);
     renderKeyValues(el.healthStateList, [
       ["service", merged.service],
@@ -733,6 +742,35 @@ function syncPendingApprovals(rawCount) {
   setPendingBadge(count);
 }
 
+// Żywa ramka stanu: jeden atrybut body[data-state] steruje neonem na krawędzi
+// karty. Priorytet od najważniejszego: brak łącza (offline) > czekająca zgoda
+// (pending) > daemon pracuje (busy: myśli/mówi/słucha) > spoczynek (online).
+// Ruch (obieganie) tylko przy busy/pending — czyli gdy coś naprawdę trwa.
+function applyStateFrame() {
+  let state = "offline";
+  if (cockpit.online) {
+    if (cockpit.pendingApprovalCount > 0) {
+      state = "pending";
+    } else if (isDaemonBusy()) {
+      state = "busy";
+    } else {
+      state = "online";
+    }
+  }
+  document.body.dataset.state = state;
+}
+
+// Daemon "pracuje", gdy jego RuntimeState wyszedł ze spoczynku (myśli, mówi,
+// słucha) albo mikrofon właśnie zbiera dźwięk. IDLE i wszystko nieznane =
+// spoczynek, żeby ramka nie kręciła się bez powodu.
+function isDaemonBusy() {
+  const state = String(cockpit.runtimeState || "").toUpperCase();
+  if (state === "THINKING" || state === "SPEAKING" || state === "LISTENING") {
+    return true;
+  }
+  return cockpit.voice.listening === true;
+}
+
 // Jeden widok naraz: zakładki przełączają panele, stan widoku żyje tylko
 // w DOM (thin client — żadnej persystencji poza tokenem API).
 function switchView(view) {
@@ -754,6 +792,7 @@ function switchView(view) {
 function setPendingBadge(count) {
   cockpit.pendingApprovalCount = count;
   document.body.classList.toggle("has-pending", count > 0);
+  applyStateFrame();
   updateApprovalSignals();
 }
 
@@ -1181,6 +1220,10 @@ function handleStreamMessage(raw) {
   const type = String(event.type || "");
   if (type === "state.changed" && event.payload && event.payload.new_state) {
     setText(el.stateLabel, event.payload.new_state);
+    // Stan pracy prosto ze strumienia — ramka reaguje natychmiast, bez
+    // czekania na następny heartbeat /state.
+    cockpit.runtimeState = event.payload.new_state;
+    applyStateFrame();
   }
   if (type.startsWith("approval.") || type.startsWith("tool.")) {
     scheduleApprovalsRefresh();
@@ -1395,9 +1438,10 @@ function apiBase() {
 
 function setOnline(online) {
   cockpit.online = online;
-  // Animowana ramka panelu czyta stan z <body> — to ona jest wskaźnikiem
-  // online/offline (zielona/czerwona), nie osobna sekcja statusu.
+  // Żywa ramka karty jest wskaźnikiem online/offline (teal/czerwień) — nie ma
+  // osobnej sekcji statusu; body.offline dodatkowo wygasza kompozytor.
   document.body.classList.toggle("offline", !online);
+  applyStateFrame();
   setInteractiveEnabled(online);
 }
 

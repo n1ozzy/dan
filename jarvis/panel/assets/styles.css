@@ -26,6 +26,12 @@
   --user-bubble: #14425c;
   --jarvis-bubble: #161f2c;
 
+  /* Żywa ramka stanu: obrys bazowy (przygaszony, zawsze) + gorący punkt,
+     który obiega, gdy Jarvis pracuje. Barwa = stan; ruch = trwający proces. */
+  --frame-base: rgba(45, 212, 191, 0.5);
+  --frame-hot: transparent;
+  --frame-glow: transparent;
+
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 
@@ -37,6 +43,85 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* Animowany kąt obiegającego światła. Zadeklarowany przez @property, żeby
+   WebKit interpolował go płynnie w keyframes (surowy custom prop nie animuje). */
+@property --frame-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+/* --- Żywa ramka stanu --------------------------------------------------------
+   Neon na krawędzi karty: bazowy obrys barwi się stanem, a gorący punkt
+   obiega dookoła, gdy Jarvis myśli/mówi/słucha albo czeka zgoda. Technika:
+   conic-gradient (punkt) na jednolitej bazie, wszystko przycięte maską do
+   samego 2px obrysu; drop-shadow dokłada neonową poświatę tylko przy pracy.
+   JS ustawia body[data-state] — offline > pending > busy > online. */
+.state-frame {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  padding: 2px;
+  border-radius: 13px;
+  pointer-events: none;
+  background:
+    conic-gradient(
+      from var(--frame-angle),
+      transparent 0deg,
+      var(--frame-hot) 22deg,
+      transparent 64deg,
+      transparent 360deg
+    ),
+    var(--frame-base);
+  /* Pokaż tylko obrys (obszar paddingu): wytnij content-box z pełnego boxa. */
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  filter: drop-shadow(0 0 3px var(--frame-glow));
+  transition: filter 0.4s ease;
+}
+
+@keyframes state-frame-spin {
+  to {
+    --frame-angle: 360deg;
+  }
+}
+
+/* Ruch tylko dla rzeczy, które trwają: praca daemona i czekająca decyzja. */
+body[data-state="busy"] .state-frame,
+body[data-state="pending"] .state-frame {
+  animation: state-frame-spin 2.6s linear infinite;
+}
+
+body[data-state="online"] {
+  --frame-base: rgba(45, 212, 191, 0.42);
+  --frame-hot: transparent;
+  --frame-glow: transparent;
+}
+
+body[data-state="busy"] {
+  --frame-base: rgba(45, 212, 191, 0.55);
+  --frame-hot: #99f6e4;
+  --frame-glow: rgba(45, 212, 191, 0.55);
+}
+
+body[data-state="pending"] {
+  --frame-base: rgba(251, 191, 36, 0.5);
+  --frame-hot: #fde68a;
+  --frame-glow: rgba(251, 191, 36, 0.5);
+}
+
+body[data-state="offline"] {
+  --frame-base: rgba(248, 113, 113, 0.55);
+  --frame-hot: transparent;
+  --frame-glow: transparent;
 }
 
 body {
@@ -841,6 +926,24 @@ details.card.collapsible[open] summary::after {
   .approvals-badge,
   .hud-item.live .wave i {
     animation: none;
+  }
+
+  /* Bez obiegania: ramka nie kręci się, tylko barwi. Gorący punkt gaśnie
+     (zamrożony sektor wyglądałby jak wgniecenie), a obrys jaśnieje, więc
+     „pracuje” dalej czytać na kolor i poświatę. */
+  body[data-state="busy"] .state-frame,
+  body[data-state="pending"] .state-frame {
+    animation: none;
+  }
+
+  body[data-state="busy"] {
+    --frame-base: rgba(45, 212, 191, 0.85);
+    --frame-hot: transparent;
+  }
+
+  body[data-state="pending"] {
+    --frame-base: rgba(251, 191, 36, 0.85);
+    --frame-hot: transparent;
   }
 
   .hud-item.live .wave i {

@@ -24,6 +24,7 @@ from jarvis.voice.tts import PlaybackCancelled, SynthesizedChunk
 _LOGGER = get_logger("voice.broker")
 
 DEFAULT_POLL_INTERVAL_SECONDS = 0.25
+INTERRUPT_WATCH_INTERVAL_SECONDS = 0.01
 
 
 class VoiceBroker:
@@ -60,12 +61,7 @@ class VoiceBroker:
         self._stop.set()
         # Interrupt the current playback so a blocked play() cannot outlive
         # the join timeout (FIX-04d).
-        try:
-            stop_playback = getattr(self._engine, "stop_playback", None)
-            if callable(stop_playback):
-                stop_playback()
-        except Exception:
-            _LOGGER.exception("stop_playback failed during broker stop.")
+        self._stop_playback("broker stop")
         if self._thread is not None:
             self._thread.join(timeout=5)
             if self._thread.is_alive():
@@ -140,6 +136,8 @@ class VoiceBroker:
             # the anti-echo corpus counts it even if the player is killed
             # mid-play (a partial that still put audio in the air — FIX-09).
             self._mark_spoken(current)
+            watcher = self._start_interrupt_watcher(current)
+            interrupted = False
             try:
                 # should_play is re-checked inside the engine under its player
                 # lock, right before spawning — closes the barge-in TOCTOU the
@@ -148,12 +146,22 @@ class VoiceBroker:
             except PlaybackCancelled:
                 # Cancelled in the check->spawn gap: the row is already
                 # 'cancelled' (leg 2), so skip cleanly — no done, no failure.
-                pass
+                interrupted = True
             except Exception as exc:  # playback must never kill the loop
-                self._mark_failed(current, f"playback failed: {exc}")
+                if self._still_speaking(current):
+                    self._mark_failed(current, f"playback failed: {exc}")
+                else:
+                    interrupted = True
             else:
-                self._mark_done(current)
-                played += 1
+                if self._still_speaking(current):
+                    self._mark_done(current)
+                    played += 1
+                else:
+                    interrupted = True
+            finally:
+                self._stop_interrupt_watcher(watcher)
+            if interrupted and next_request is None:
+                next_request = self._claim()
             current = next_request
         return played
 
@@ -184,6 +192,73 @@ class VoiceBroker:
     def _mark_failed(self, request: VoiceRequest, error: str) -> None:
         _LOGGER.warning("Voice request %s failed: %s", request.id, error)
         self._with_queue(lambda queue: queue.mark_failed(request.id, error=error))
+
+    def _cancel_request(self, request: VoiceRequest) -> bool:
+        return bool(self._with_queue(lambda queue: queue.cancel_request(request.id)))
+
+    def _start_interrupt_watcher(
+        self, request: VoiceRequest
+    ) -> tuple[threading.Event, threading.Thread] | None:
+        if request.interrupt_policy != "interruptible" or not request.turn_id:
+            return None
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=self._watch_interruptible_request,
+            args=(request, stop),
+            name=f"jarvis-voice-interrupt-{request.id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return stop, thread
+
+    def _stop_interrupt_watcher(
+        self, watcher: tuple[threading.Event, threading.Thread] | None
+    ) -> None:
+        if watcher is None:
+            return
+        stop, thread = watcher
+        stop.set()
+        thread.join(timeout=1)
+
+    def _watch_interruptible_request(
+        self, request: VoiceRequest, stop: threading.Event
+    ) -> None:
+        while not stop.is_set() and not self._stop.is_set():
+            if not self._still_speaking(request):
+                return
+            if self._same_turn_sentence_waiting(request):
+                if self._cancel_request(request):
+                    self._stop_playback("interruptible filler")
+                return
+            stop.wait(INTERRUPT_WATCH_INTERVAL_SECONDS)
+
+    def _same_turn_sentence_waiting(self, request: VoiceRequest) -> bool:
+        if not request.turn_id:
+            return False
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                """
+                SELECT 1 FROM voice_queue
+                WHERE turn_id = ?
+                  AND id != ?
+                  AND status IN ('queued', 'speaking')
+                  AND json_extract(metadata_json, '$.kind') = 'sentence'
+                LIMIT 1
+                """,
+                (request.turn_id, request.id),
+            ).fetchone()
+            return row is not None
+        finally:
+            close_quietly(conn)
+
+    def _stop_playback(self, reason: str) -> None:
+        try:
+            stop_playback = getattr(self._engine, "stop_playback", None)
+            if callable(stop_playback):
+                stop_playback()
+        except Exception:
+            _LOGGER.exception("stop_playback failed during %s.", reason)
 
     def _with_queue(self, action: Callable[[VoiceQueue], Any]) -> Any:
         conn = self._connect()

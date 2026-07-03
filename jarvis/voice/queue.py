@@ -169,6 +169,29 @@ class VoiceQueue:
             )
         return len(rows)
 
+    def cancel_request(self, request_id: str) -> bool:
+        """Cancel exactly one unfinished request without touching its turn."""
+
+        row = self._conn.execute(
+            "SELECT turn_id FROM voice_queue WHERE id = ? AND status IN ('queued', 'speaking')",
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        now = self._now()
+        with self._conn:
+            updated = self._conn.execute(
+                "UPDATE voice_queue SET status = 'cancelled', updated_at = ? WHERE id = ?",
+                (now, request_id),
+            ).rowcount
+        if updated != 1:
+            return False
+        self._append_event(
+            EventType.VOICE_SPEAK_CANCELLED,
+            {"request_id": request_id, "turn_id": str(row[0]) if row[0] else None},
+        )
+        return True
+
     def tombstone_turns(self, turn_ids: Iterable[str]) -> int:
         """Mark turns as cancelled so enqueue refuses new rows for them.
 
@@ -237,7 +260,7 @@ class VoiceQueue:
     def _by_id(self, request_id: str) -> VoiceRequest:
         row = self._conn.execute(
             """
-            SELECT id, text, priority, status, turn_id, voice_id, created_at
+            SELECT id, text, priority, status, interrupt_policy, turn_id, voice_id, created_at
             FROM voice_queue WHERE id = ?
             """,
             (request_id,),
@@ -249,9 +272,10 @@ class VoiceQueue:
             text=str(row[1]),
             priority=int(row[2]),
             status=str(row[3]),
-            turn_id=str(row[4]) if row[4] else None,
-            voice=str(row[5]) if row[5] else None,
-            created_at=str(row[6]),
+            interrupt_policy=str(row[4]),
+            turn_id=str(row[5]) if row[5] else None,
+            voice=str(row[6]) if row[6] else None,
+            created_at=str(row[7]),
         )
 
     def _append_event(self, event_type: EventType, payload: dict[str, Any]) -> None:

@@ -1,9 +1,9 @@
 # Jarvis menu-bar panel (H1 shell)
 
 Native macOS shell for the cockpit: `NSStatusItem` ("J" in the menu bar)
-opening an `NSPopover` with a `WKWebView` that renders the SAME static
-cockpit assets the browser uses (`jarvis/panel/assets/`). Shape frozen by
-PANEL_CONTRACT §5.
+opening a borderless `NSPanel` (widget card) with a `WKWebView` that
+renders the SAME static cockpit assets the browser uses
+(`jarvis/panel/assets/`). Shape frozen by PANEL_CONTRACT §5.
 
 The shell is a **thin client** (ADR-002) and adds **zero authority**:
 
@@ -36,14 +36,17 @@ scripts/jarvis-panel            # config resolution mirrors scripts/jarvisd
 scripts/jarvis-panel --probe    # exit 0 = PyObjC + assets OK, 2 = not
 ```
 
-- **Left-click** the "J" status item: toggle the cockpit popover
-  (size from `[panel] width/height`, default 480×760).
+- **Left-click** the "J" status item: toggle the widget card
+  (size from `[panel] width/height`, default 480×760). The card hides on
+  a click outside (global mouse-down monitor) and when it loses key focus.
 - **Right-click**: menu with **Quit Jarvis Panel** (⌘Q also works while
-  the popover has focus).
+  the panel has focus).
 
 ## State border (widget chrome)
 
-The popover's WKWebView layer carries a 2pt state border drawn by the
+The card is a borderless, non-activating `NSPanel` (no system popover
+bubble, no arrow): a transparent window whose WKWebView layer carries the
+whole geometry — corner radius 12 plus a 2pt state border drawn by the
 shell, NOT by the cockpit HTML/CSS: teal = daemon online, amber = approvals
 pending, red = daemon unreachable. A daemon thread polls `GET /health`
 every ~3 s (`STATUS_POLL_SECONDS`) and repaints the layer on the main

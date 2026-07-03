@@ -6,7 +6,11 @@
     <title>Jarvis Cockpit</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body data-view="chat">
+  <body data-view="chat" data-state="offline">
+    <!-- Żywa ramka stanu: neon obiega krawędź karty, gdy Jarvis pracuje,
+         i barwi się stanem. Dekoracyjna (aria-hidden) — treść niosą pill
+         stanu, hero offline i licznik zgód; JS ustawia body[data-state]. -->
+    <div class="state-frame" aria-hidden="true"></div>
     <main class="cockpit" aria-label="Jarvis cockpit">
       <div class="views">
         <!-- CZAT: jedyny widok domyślny — rozmowa na całej powierzchni. -->
