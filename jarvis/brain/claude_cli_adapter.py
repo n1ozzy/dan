@@ -580,6 +580,7 @@ _ALLOWED_CLI_FLAGS = frozenset(
         "--verbose",
         "--include-partial-messages",
         "--model",
+        "--effort",
     }
 )
 

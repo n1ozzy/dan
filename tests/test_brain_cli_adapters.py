@@ -578,6 +578,22 @@ def test_adapter_allows_the_known_safe_flags() -> None:
     assert response.text == "ok"
 
 
+def test_adapter_allows_the_effort_flag() -> None:
+    # The FIX-07 allowlist omitted --effort, so a config with
+    # args = [-p, --model, sonnet, --effort, low] failed EVERY turn with
+    # "unsafe CLI argument: --effort". --effort is a safe claude flag (session
+    # effort level, value low/medium/high; see `claude --help`), so it must be
+    # allowed like --model. Streaming path exercised via on_delta.
+    runner = FakeRunner(stdout="ok\n")
+    adapter = ClaudeCliAdapter(
+        args=["-p", "--model", "sonnet", "--effort", "low"], runner=runner
+    )
+
+    response = adapter.generate(make_request())
+
+    assert response.text == "ok"
+
+
 def test_adapters_do_not_require_real_provider_cli_when_runner_is_injected() -> None:
     runner = FakeRunner(stdout="works without executable\n")
 
