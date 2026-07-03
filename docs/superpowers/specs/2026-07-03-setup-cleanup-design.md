@@ -71,6 +71,25 @@ Adaptacja: tap/swipe ADB → macOS (`osascript`/scroll eventy/PageUp/PageDown); 
 4. Test PTT: przytrzymanie/wyzwolenie dyktowania w Claude Code — działa albo raport z przyczyną.
 5. `git status` w repo jarvis: zmiany tylko w `.claude/launch.json` (+ ewentualnie `.gitignore`), katalog `tts_diag_out` nie istnieje.
 
+## Status wykonania (2026-07-03)
+
+Zrealizowane wg planu `docs/superpowers/plans/2026-07-03-setup-cleanup.md` (wykonanie inline).
+Weryfikacja: skille = jedna pozycja screen-* (`screen-control` + zarchiwizowany loud-thinking);
+`discover-agents.sh` exit 0; `read-agent.sh claude-cli` czyta transkrypt z dysku (pozycja --since
+działa, exit 1 przy braku nowego); `read-agent.sh codex-cli` znajduje sesje w archived_sessions;
+`ocr-window.py` czyta PNG i żywe okno Terminala; `--stitch` na oknie Terminala złożył 114 linii
+(więcej niż jeden ekran — początek i koniec treści); `wait-for-agent.sh` timeout → exit 75;
+`coop-loop.sh` (1 min) loguje `new-content` z pełną treścią partnera — na żywo wyłapał treść
+równoległej sesji FIX-06. `launch.json` = 41801 (2 wystąpienia; plik lokalny, `.claude/` w
+.gitignore repo — bez commitu); `tts_diag_out` skasowany (kod go nie tworzył — bez wpisu w
+.gitignore). Backup klonów: `~/.claude/backups/skills-consolidation-2026-07-03.tar.gz`.
+
+PTT: `voiceEnabled` (legacy, martwy wg claude-code-guide) usunięty z `~/.claude/settings.json`
+(backup: `settings.json.bak-przed-ptt-fix`); kanoniczny `voice: {enabled: true, mode: "hold"}`
+zostaje. Wg dokumentacji voice input = funkcja CLI w terminalu (hold SPACJA przy pustym
+composerze), desktop-GUI jej nie ma; mikrofon w macOS musi mieć aplikacja TERMINALA. Test ręczny
+po stronie Ozzy'ego (instrukcja w raporcie sesji); jeśli hold nie łapie — `/voice tap`.
+
 ## Ryzyka i odwracalność
 
 - Stare skille: pełny backup w tar.gz — przywrócenie w 10 s.
