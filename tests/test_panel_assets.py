@@ -73,7 +73,35 @@ def test_app_previews_approval_arguments() -> None:
     script = APP_JS.read_text(encoding="utf-8")
 
     assert "payload.arguments" in script
-    assert "argument-line" in script
+    assert "approval-arg" in script
+
+
+def test_approvals_view_reads_at_a_glance() -> None:
+    # Redesign zad. 4: pusty stan jest spokojnym komunikatem (nie ramką-
+    # inputem), a karta zgody czyta się na rzut oka — ludzka nazwa narzędzia,
+    # chip ryzyka po polsku z kolorem wg wagi, argumenty jako tabelka,
+    # jednoznaczne przyciski.
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    # Pusty stan: wycentrowany znak ✓, nie wiersz wyglądający jak formularz.
+    assert "empty-state" in script
+    assert "empty-state" in styles
+    assert "Nic nie czeka" in script
+
+    # Ludzkie nazwy narzędzi i etykiety ryzyka (mapa PL, współdzielona z LOGI).
+    assert "TOOL_LABELS" in script
+    assert "toolLabel" in script
+    assert "riskLabel" in script
+    assert "riskTier" in script
+
+    # Chip ryzyka barwiony wagą: odczyt / zapis / destructive.
+    assert "risk-chip" in script
+    assert "risk-chip" in styles
+
+    # Decyzja jednoznaczna.
+    assert "Zatwierdź" in script
+    assert "Odrzuć" in script
 
 
 def test_app_fetches_turns_newest_first() -> None:

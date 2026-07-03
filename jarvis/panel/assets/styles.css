@@ -794,9 +794,147 @@ details.card.collapsible[open] summary::after {
   font-size: 11px;
 }
 
-.approval-row {
+/* --- Widok Zgody: pusty stan + karta decyzji --------------------------------- */
+
+/* Pusty stan: spokojny znak, nie wyszarzony formularz. */
+.empty-state {
+  margin: auto;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  max-width: 260px;
+  padding: 24px 12px;
+  text-align: center;
+}
+
+.empty-state-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1.5px solid var(--accent-line);
+  border-radius: 50%;
+  color: var(--accent);
+}
+
+.empty-state-mark::after {
+  /* \2713 = ✓ ; escape, bo statyczny serwer potrafi podać CSS bez charsetu. */
+  content: "\2713";
+  font-size: 20px;
+  line-height: 1;
+}
+
+.empty-state-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.empty-state-hint {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.approval-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.approval-card.pending {
   border-color: var(--amber-deep);
-  background: rgba(180, 83, 9, 0.07);
+}
+
+.approval-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.approval-tool {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* Chip ryzyka barwiony wagą: odczyt spokojny, zapis uważny, destructive alarm. */
+.risk-chip {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.risk-chip.read {
+  border: 1px solid var(--line-strong);
+  background: rgba(139, 155, 176, 0.14);
+  color: var(--text-dim);
+}
+
+.risk-chip.write {
+  border: 1px solid var(--amber-deep);
+  background: rgba(180, 83, 9, 0.16);
+  color: var(--amber);
+}
+
+.risk-chip.destructive {
+  border: 1px solid #7f2a2a;
+  background: rgba(248, 113, 113, 0.12);
+  color: var(--red);
+}
+
+.approval-args {
+  display: grid;
+  grid-template-columns: minmax(64px, auto) 1fr;
+  gap: 3px 10px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.approval-args dt {
+  color: var(--text-dim);
+}
+
+.approval-args dd.approval-arg {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.approval-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Odrzuć: czerwony outline (waga niższa niż pełny akcent Zatwierdź). */
+.small-button.reject {
+  border-color: #70404a;
+  background: transparent;
+  color: #fda4af;
+}
+
+.small-button.reject:hover:not(:disabled),
+.small-button.reject:focus-visible {
+  background: #3a1d26;
 }
 
 .row-actions {

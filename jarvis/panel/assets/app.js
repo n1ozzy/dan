@@ -48,6 +48,94 @@ const HEALTH_RETRY_MS = 2000;
 // under a live panel. On a fresh reconnect it triggers a full refreshAll().
 const HEALTH_POLL_MS = 3000;
 
+// Ludzkie nazwy narzędzi (rejestr daemona) — używane w kartach zgód i w
+// sekcji „Możliwości Jarvisa”. Fallback dla rodzin ui_/screen_/terminal_,
+// a na końcu surowa nazwa, żeby nowe narzędzie nigdy nie zniknęło z widoku.
+const TOOL_LABELS = {
+  file_read: "Odczyt pliku",
+  file_write: "Zapis pliku",
+  memory_save: "Zapis do pamięci",
+  shell_read: "Polecenie w terminalu",
+  screen_read_window: "Odczyt okna ekranu",
+  screen_ocr_region: "Odczyt ekranu (OCR)",
+  system_status: "Stan systemu",
+  ui_active_app: "Sterowanie UI: aktywna aplikacja",
+  ui_read_window: "Sterowanie UI: odczyt okna",
+  ui_click: "Sterowanie UI: kliknięcie",
+  ui_type: "Sterowanie UI: pisanie",
+  ui_focus_app: "Sterowanie UI: fokus aplikacji",
+  terminal_read_screen: "Odczyt ekranu terminala",
+  terminal_paste: "Wklejenie do terminala",
+  echo: "Echo (test)",
+  approval_probe: "Sonda zgód (demo)",
+};
+
+function toolLabel(name) {
+  const key = typeof name === "string" ? name : "";
+  if (TOOL_LABELS[key]) {
+    return TOOL_LABELS[key];
+  }
+  const humanTail = (prefix, lead) =>
+    `${lead}: ${key.slice(prefix.length).replace(/_/g, " ")}`;
+  if (key.startsWith("ui_")) {
+    return humanTail("ui_", "Sterowanie UI");
+  }
+  if (key.startsWith("screen_")) {
+    return humanTail("screen_", "Ekran");
+  }
+  if (key.startsWith("terminal_")) {
+    return humanTail("terminal_", "Terminal");
+  }
+  return key || "narzędzie";
+}
+
+// Etykiety klas ryzyka po polsku (PermissionClass w daemonie).
+const RISK_LABELS = {
+  safe_read: "bezpieczny odczyt",
+  safe_status: "odczyt stanu",
+  file_read: "czyta pliki",
+  file_write: "pisze pliki",
+  shell_read: "czyta przez terminal",
+  shell_write: "pisze przez terminal",
+  network: "sieć",
+  destructive: "destrukcyjne — zawsze pyta",
+  ui_read: "czyta interfejs",
+  ui_act: "steruje interfejsem",
+  screen_read: "czyta ekran",
+  terminal_read: "czyta terminal",
+  terminal_write: "pisze do terminala",
+  memory_write: "zapis do pamięci",
+};
+
+function riskLabel(risk) {
+  const key = typeof risk === "string" ? risk : "";
+  return RISK_LABELS[key] || key || "nieznane";
+}
+
+// Waga ryzyka dla koloru chipa: odczyty spokojne (szarość), zapisy uważne
+// (bursztyn), destructive alarmowe (czerwień). Nieznane traktuj jak zapis.
+const RISK_TIERS = {
+  safe_read: "read",
+  safe_status: "read",
+  file_read: "read",
+  shell_read: "read",
+  ui_read: "read",
+  screen_read: "read",
+  terminal_read: "read",
+  network: "read",
+  file_write: "write",
+  shell_write: "write",
+  ui_act: "write",
+  terminal_write: "write",
+  memory_write: "write",
+  destructive: "destructive",
+};
+
+function riskTier(risk) {
+  const key = typeof risk === "string" ? risk : "";
+  return RISK_TIERS[key] || "write";
+}
+
 const el = {};
 
 // Relative labels ("2 min temu") drift while the panel sits open; refresh
@@ -859,7 +947,7 @@ function renderApprovals(pendingApprovals) {
 
   const approved = Array.from(cockpit.approvedApprovals.values());
   if (pendingApprovals.length === 0 && approved.length === 0) {
-    renderEmpty(el.approvalList, "Nic nie czeka na zgodę");
+    renderApprovalsEmpty();
     return;
   }
 
@@ -871,27 +959,81 @@ function renderApprovals(pendingApprovals) {
   }
 }
 
+// Pusty stan zgód: spokojny, wycentrowany znak ✓ + jedno zdanie, co się tu
+// pojawi — a nie wiersz, który wygląda jak wyszarzony formularz.
+function renderApprovalsEmpty() {
+  clearNode(el.approvalList);
+  const box = document.createElement("div");
+  box.className = "empty-state";
+
+  const mark = document.createElement("div");
+  mark.className = "empty-state-mark";
+  mark.setAttribute("aria-hidden", "true");
+
+  const title = document.createElement("p");
+  title.className = "empty-state-title";
+  setText(title, "Nic nie czeka");
+
+  const hint = document.createElement("p");
+  hint.className = "empty-state-hint muted";
+  setText(hint, "Gdy Jarvis poprosi o użycie narzędzia, decyzja pojawi się tutaj.");
+
+  box.append(mark, title, hint);
+  el.approvalList.appendChild(box);
+}
+
+// Karta zgody czytelna na rzut oka: CO (ludzka nazwa narzędzia) + JAK
+// ryzykowne (chip barwiony wagą) na górze, JAKIE argumenty (tabelka
+// klucz→wartość), meta (id · kto prosi · kiedy) najmniej ważną linijką na
+// dole, i jednoznaczne przyciski w prawym dolnym rogu.
 function approvalCard(approval, mode) {
-  const row = document.createElement("article");
-  row.className = "list-row approval-row";
+  const card = document.createElement("article");
+  card.className = `approval-card ${mode}`;
   const payload = approval.payload || {};
-  const title = payload.tool_name || approval.action_type || approval.id;
-  const modeLabel = mode === "pending" ? "czeka na zgodę" : "zatwierdzona";
-  appendLine(row, `${title} - ${approval.risk || "unknown"} - ${modeLabel}`, "input-line");
-  appendLine(row, `id ${shortId(approval.id)} - ${approval.requested_by || "unknown"}`, "muted");
-  for (const [key, value] of Object.entries(payload.arguments || {})) {
-    appendLine(row, `${key}: ${argumentPreview(value)}`, "argument-line muted");
+
+  const head = document.createElement("div");
+  head.className = "approval-head";
+  const name = document.createElement("span");
+  name.className = "approval-tool";
+  setText(name, toolLabel(payload.tool_name || approval.action_type));
+  const chip = document.createElement("span");
+  chip.className = `risk-chip ${riskTier(approval.risk)}`;
+  setText(chip, riskLabel(approval.risk));
+  head.append(name, chip);
+  card.appendChild(head);
+
+  const args = Object.entries(payload.arguments || {});
+  if (args.length > 0) {
+    const table = document.createElement("dl");
+    table.className = "approval-args";
+    for (const [key, value] of args) {
+      const dt = document.createElement("dt");
+      setText(dt, key);
+      const dd = document.createElement("dd");
+      dd.className = "approval-arg";
+      setText(dd, argumentPreview(value));
+      table.append(dt, dd);
+    }
+    card.appendChild(table);
   }
+
+  const meta = document.createElement("p");
+  meta.className = "approval-meta";
+  const modeLabel = mode === "pending" ? "czeka na decyzję" : "zatwierdzona";
+  const who = requesterLabel(approval.requested_by);
+  const metaText = document.createElement("span");
+  setText(metaText, `${shortId(approval.id)} · ${who} · ${modeLabel} · `);
+  meta.append(metaText, timeNode(approval.created_at || approval.requested_at));
+  card.appendChild(meta);
 
   const actions = document.createElement("div");
   actions.className = "row-actions";
-
   if (mode === "pending") {
     const approveButton = smallButton("Zatwierdź");
     approveButton.classList.add("strong");
     approveButton.addEventListener("click", () => decideApproval(approval.id, "approve", approveButton));
     const rejectButton = smallButton("Odrzuć");
-    rejectButton.classList.add("danger");
+    rejectButton.classList.add("reject");
     rejectButton.addEventListener("click", () => decideApproval(approval.id, "reject", rejectButton));
     actions.append(approveButton, rejectButton);
   } else {
@@ -900,9 +1042,21 @@ function approvalCard(approval, mode) {
     executeButton.addEventListener("click", () => executeApproval(approval.id, executeButton));
     actions.appendChild(executeButton);
   }
+  card.appendChild(actions);
+  return card;
+}
 
-  row.appendChild(actions);
-  return row;
+// Kto prosi o zgodę — po ludzku, bez surowego identyfikatora źródła.
+function requesterLabel(requestedBy) {
+  const map = {
+    brain: "model",
+    model: "model",
+    panel: "panel",
+    voice: "głos",
+    worker: "worker",
+  };
+  const key = typeof requestedBy === "string" ? requestedBy : "";
+  return map[key] || key || "nieznane źródło";
 }
 
 async function decideApproval(approvalId, action, button) {
