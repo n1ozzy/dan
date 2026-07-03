@@ -194,6 +194,7 @@ dl {
 /* Widoki listowe przewijają się wewnętrznie; czat zarządza scrollem sam. */
 #view-approvals.view,
 #view-memory.view,
+#view-logs.view,
 #view-system.view {
   overflow-y: auto;
   padding-bottom: 2px;
@@ -204,8 +205,8 @@ dl {
 .tabbar {
   flex-shrink: 0;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 4px;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 3px;
   padding: 5px;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -919,10 +920,32 @@ details.card.collapsible[open] summary::after {
   overflow-wrap: anywhere;
 }
 
-.approval-meta {
+.approval-meta,
+.event-meta {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-faint);
+}
+
+/* Filtr dziennika: label „Pokaż” + select w jednej wąskiej linijce. */
+.log-filter {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.log-filter > select {
+  width: auto;
+}
+
+/* Sekcja System (płaska): nagłówek + treść jak karta, bez zwijania. */
+.sys-section {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
 }
 
 /* Odrzuć: czerwony outline (waga niższa niż pełny akcent Zatwierdź). */

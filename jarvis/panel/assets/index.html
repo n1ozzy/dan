@@ -104,39 +104,43 @@
           <pre id="memoryError" class="error-box" hidden></pre>
         </section>
 
-        <!-- SYSTEM: hydraulika — narzędzia, zdarzenia, głos, ustawienia, daemon. -->
+        <!-- LOGI: dziennik zdarzeń po ludzku — co Jarvis robi na bieżąco. -->
+        <section id="view-logs" class="view" aria-labelledby="logsHeading">
+          <div class="section-head">
+            <h2 id="logsHeading">Dziennik</h2>
+            <button id="refreshEventsButton" type="button" class="ghost">Odśwież</button>
+          </div>
+          <p class="muted section-desc">
+            Co Jarvis robi na bieżąco — tury, głos, zgody i narzędzia.
+            Najnowsze na górze.
+          </p>
+          <label class="field-label log-filter">
+            <span>Pokaż</span>
+            <select id="logFilter">
+              <option value="all">Wszystko</option>
+              <option value="turns">Tury</option>
+              <option value="voice">Głos</option>
+              <option value="approvals">Zgody</option>
+              <option value="tools">Narzędzia</option>
+            </select>
+          </label>
+          <div id="eventList" class="list"></div>
+          <pre id="eventsError" class="error-box" hidden></pre>
+        </section>
+
+        <!-- SYSTEM: możliwości, głos, ustawienia, daemon. -->
         <section id="view-system" class="view" aria-label="System">
-          <details class="card collapsible" aria-labelledby="toolsHeading">
-            <summary>
-              <h2 id="toolsHeading">Narzędzia</h2>
-              <span class="summary-hint muted">rejestr i polityka zgód</span>
-            </summary>
-            <p class="muted section-desc">
-              Narzędzia zarejestrowane w daemonie i ich polityka zgód (co wolno
-              bez pytania, co wymaga zatwierdzenia).
-            </p>
-            <div class="section-tools">
+          <div class="sys-section" aria-labelledby="toolsHeading">
+            <div class="section-head">
+              <h2 id="toolsHeading">Możliwości Jarvisa</h2>
               <button id="refreshToolsButton" type="button" class="ghost">Odśwież</button>
             </div>
-            <div id="toolList" class="list compact-list"></div>
-            <pre id="toolsError" class="error-box" hidden></pre>
-          </details>
-
-          <details class="card collapsible" aria-labelledby="eventsHeading">
-            <summary>
-              <h2 id="eventsHeading">Zdarzenia</h2>
-              <span id="streamStatus" class="muted" aria-live="polite">stream off</span>
-            </summary>
             <p class="muted section-desc">
-              Surowy strumień zdarzeń daemona (debug/audyt), na żywo przez
-              WebSocket.
+              Co Jarvis potrafi i o co musi zapytać, zanim tego użyje.
             </p>
-            <div class="section-tools">
-              <button id="refreshEventsButton" type="button" class="ghost">Odśwież</button>
-            </div>
-            <div id="eventList" class="list compact-list"></div>
-            <pre id="eventsError" class="error-box" hidden></pre>
-          </details>
+            <div id="toolList" class="list"></div>
+            <pre id="toolsError" class="error-box" hidden></pre>
+          </div>
 
           <details class="card collapsible" aria-labelledby="advancedHeading">
             <summary>
@@ -220,6 +224,9 @@
         </button>
         <button type="button" class="tab-button" data-view="memory" aria-selected="false">
           Pamięć
+        </button>
+        <button type="button" class="tab-button" data-view="logs" aria-selected="false">
+          Logi
         </button>
         <button type="button" class="tab-button" data-view="system" aria-selected="false">
           System

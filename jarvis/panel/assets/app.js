@@ -14,6 +14,10 @@ const cockpit = {
   // Ostatni znany stan pracy daemona (RuntimeState: IDLE/LISTENING/THINKING/
   // SPEAKING) — steruje żywą ramką: praca => neon obiega, spoczynek => spokój.
   runtimeState: "IDLE",
+  // Zakładka LOGI: aktywny filtr + ostatnia partia zdarzeń, żeby zmiana
+  // filtra przerysowała dziennik bez ponownego strzału do daemona.
+  logFilter: "all",
+  lastEvents: [],
   // Tryb "nowa rozmowa": nie auto-wybieraj najnowszej rozmowy przy refreshu,
   // dopóki operator nie wyśle pierwszej wiadomości.
   composingNew: false,
@@ -151,6 +155,104 @@ function memoryKindLabel(kind) {
   return MEMORY_KIND_LABELS[key] || key || "notatka";
 }
 
+// Typy zdarzeń daemona po ludzku (EventType). Fallback po rodzinie, na końcu
+// surowy typ — dziennik nigdy nie gubi wiersza, ale prawie zawsze mówi po
+// polsku. Nazwy krótkie i operatorskie („Nasłuch: początek”, nie techniczne
+// „listening.lease.created”).
+const EVENT_LABELS = {
+  "daemon.started": "Daemon: start",
+  "daemon.stopped": "Daemon: zatrzymany",
+  "daemon.failed": "Daemon: błąd",
+  "state.changed": "Zmiana stanu",
+  "input.text.received": "Wiadomość tekstowa",
+  "input.voice.transcribed": "Głos rozpoznany",
+  "input.rejected": "Wejście odrzucone",
+  "turn.started": "Tura: start",
+  "turn.context.built": "Tura: kontekst gotowy",
+  "turn.finished": "Tura: koniec",
+  "turn.failed": "Tura: błąd",
+  "turn.cancelled": "Tura: przerwana",
+  "brain.requested": "Model: zapytanie",
+  "brain.responded": "Model: odpowiedź",
+  "brain.failed": "Model: błąd",
+  "brain.cancelled": "Model: przerwane",
+  "brain.switched": "Model: przełączony",
+  "voice.speak.queued": "Mowa: w kolejce",
+  "voice.speak.started": "Mowa: start",
+  "voice.speak.finished": "Wypowiedź zakończona",
+  "voice.speak.cancelled": "Mowa: przerwana",
+  "voice.speak.failed": "Mowa: błąd",
+  "audio.devices.snapshot": "Audio: urządzenia",
+  "listening.lease.created": "Nasłuch: początek",
+  "listening.lease.released": "Nasłuch: koniec",
+  "listening.lease.expired": "Nasłuch: wygasł",
+  "listening.lease.cancelled": "Nasłuch: anulowany",
+  "memory.updated": "Pamięć: zaktualizowana",
+  "memory.disabled": "Pamięć: notatka wyłączona",
+  "memory.candidate.created": "Pamięć: propozycja",
+  "memory.candidate.promoted": "Pamięć: zatwierdzona",
+  "approval.created": "Zgoda: prośba",
+  "approval.approved": "Zgoda: zatwierdzona",
+  "approval.rejected": "Zgoda: odrzucona",
+  "approval.expired": "Zgoda: wygasła",
+  "tool.requested": "Narzędzie: prośba",
+  "tool.approval.required": "Narzędzie: wymaga zgody",
+  "tool.approved": "Narzędzie: dopuszczone",
+  "tool.rejected": "Narzędzie: odrzucone",
+  "tool.started": "Narzędzie: start",
+  "tool.finished": "Narzędzie: koniec",
+  "tool.failed": "Narzędzie: błąd",
+  "error.raised": "Błąd",
+  "worker.job.created": "Zadanie w tle: utworzone",
+  "worker.job.progress": "Zadanie w tle: postęp",
+  "worker.job.finished": "Zadanie w tle: koniec",
+  "worker.job.failed": "Zadanie w tle: błąd",
+  "worker.job.cancelled": "Zadanie w tle: przerwane",
+  "runtime.legacy.conflict.detected": "Runtime: konflikt legacy",
+  "runtime.process.observed": "Runtime: proces",
+};
+
+function eventLabel(type) {
+  const key = typeof type === "string" ? type : "";
+  if (EVENT_LABELS[key]) {
+    return EVENT_LABELS[key];
+  }
+  if (key.startsWith("turn.")) return "Tura: …";
+  if (key.startsWith("voice.")) return "Mowa: …";
+  if (key.startsWith("listening.")) return "Nasłuch: …";
+  if (key.startsWith("approval.")) return "Zgoda: …";
+  if (key.startsWith("tool.")) return "Narzędzie: …";
+  if (key.startsWith("memory.")) return "Pamięć: …";
+  if (key.startsWith("brain.")) return "Model: …";
+  return key || "zdarzenie";
+}
+
+// Filtr dziennika wg rodziny typu: tury / głos / zgody / narzędzia.
+function eventMatchesFilter(type, filter) {
+  if (!filter || filter === "all") {
+    return true;
+  }
+  const key = typeof type === "string" ? type : "";
+  if (filter === "turns") {
+    return key.startsWith("turn.");
+  }
+  if (filter === "voice") {
+    return (
+      key.startsWith("voice.") ||
+      key.startsWith("listening.") ||
+      key.startsWith("audio.") ||
+      key === "input.voice.transcribed"
+    );
+  }
+  if (filter === "approvals") {
+    return key.startsWith("approval.");
+  }
+  if (filter === "tools") {
+    return key.startsWith("tool.");
+  }
+  return true;
+}
+
 const el = {};
 
 // Relative labels ("2 min temu") drift while the panel sits open; refresh
@@ -218,7 +320,7 @@ function bindElements() {
     "settingsList",
     "settingsError",
     "refreshEventsButton",
-    "streamStatus",
+    "logFilter",
     "eventList",
     "eventsError",
     "refreshRuntimeButton",
@@ -260,6 +362,10 @@ function bindEvents() {
   el.switchBrainButton.addEventListener("click", switchBrain);
   el.settingsForm.addEventListener("submit", saveSetting);
   el.refreshEventsButton.addEventListener("click", refreshEvents);
+  el.logFilter.addEventListener("change", () => {
+    cockpit.logFilter = el.logFilter.value || "all";
+    renderEvents(cockpit.lastEvents);
+  });
   el.refreshRuntimeButton.addEventListener("click", refreshRuntime);
   el.textForm.addEventListener("submit", sendTextInput);
   el.textInput.addEventListener("keydown", (event) => {
@@ -977,8 +1083,23 @@ function renderTools(tools) {
   for (const tool of tools) {
     const row = document.createElement("div");
     row.className = "list-row";
-    appendLine(row, `${tool.name || "tool"} - ${tool.risk || "unknown"}`, "input-line");
-    appendLine(row, tool.description || "", "muted");
+
+    // Ludzka nazwa + chip polityki zgód po polsku (nigdy „file_read -
+    // file_read”): CO to umie i z jaką wagą pyta o zgodę.
+    const head = document.createElement("div");
+    head.className = "approval-head";
+    const name = document.createElement("span");
+    name.className = "approval-tool";
+    setText(name, toolLabel(tool.name));
+    const chip = document.createElement("span");
+    chip.className = `risk-chip ${riskTier(tool.risk)}`;
+    setText(chip, riskLabel(tool.risk));
+    head.append(name, chip);
+    row.appendChild(head);
+
+    if (tool.description) {
+      appendLine(row, tool.description, "muted");
+    }
     el.toolList.appendChild(row);
   }
 }
@@ -1287,24 +1408,39 @@ async function refreshEvents() {
 }
 
 function renderEvents(events) {
+  const rows = Array.isArray(events) ? events : [];
+  cockpit.lastEvents = rows;
   clearNode(el.eventList);
 
-  if (events.length === 0) {
-    renderEmpty(el.eventList, "Brak zdarzeń");
+  const filter = cockpit.logFilter || "all";
+  const shown = rows.filter((event) => eventMatchesFilter(event.type, filter));
+  if (shown.length === 0) {
+    renderEmpty(
+      el.eventList,
+      filter === "all" ? "Brak zdarzeń" : "Brak zdarzeń w tym filtrze",
+    );
     return;
   }
 
-  const latestFirst = [...events].reverse();
+  const latestFirst = [...shown].reverse();
   for (const event of latestFirst) {
     el.eventList.appendChild(eventRow(event));
   }
 }
 
+// Wiersz dziennika po ludzku: ludzka etykieta zdarzenia + meta
+// #id · źródło · czas względny (mono, najmniej ważna linijka).
 function eventRow(event) {
   const row = document.createElement("div");
   row.className = "list-row";
-  appendLine(row, `#${event.id} - ${event.type || "event"}`, "input-line");
-  appendLine(row, event.source || event.created_at || "", "muted");
+  appendLine(row, eventLabel(event.type), "input-line");
+
+  const meta = document.createElement("p");
+  meta.className = "event-meta";
+  const metaText = document.createElement("span");
+  setText(metaText, `#${event.id} · ${event.source || "system"} · `);
+  meta.append(metaText, timeNode(event.created_at));
+  row.appendChild(meta);
   return row;
 }
 
@@ -1460,6 +1596,16 @@ function scheduleVoiceRefresh() {
 }
 
 function prependLiveEvent(event) {
+  if (Array.isArray(cockpit.lastEvents)) {
+    cockpit.lastEvents.push(event);
+    if (cockpit.lastEvents.length > MAX_LIVE_EVENT_ROWS * 2) {
+      cockpit.lastEvents.shift();
+    }
+  }
+  // Aktywny filtr obowiązuje też live-append — inaczej dziennik „przecieka”.
+  if (!eventMatchesFilter(event.type, cockpit.logFilter || "all")) {
+    return;
+  }
   const emptyRow = el.eventList.querySelector(".empty-row");
   if (emptyRow) {
     emptyRow.remove();

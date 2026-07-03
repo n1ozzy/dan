@@ -124,7 +124,7 @@ def test_cockpit_is_single_view_app_with_tabbar() -> None:
     assert "tabbar" in markup
     assert "tab-button" in markup
     assert 'data-view="chat"' in markup
-    for view_id in ("view-chat", "view-approvals", "view-memory", "view-system"):
+    for view_id in ("view-chat", "view-approvals", "view-memory", "view-logs", "view-system"):
         assert view_id in markup, view_id
     assert "chat-toolbar" in markup
     assert "conversationSelect" in markup
@@ -275,12 +275,17 @@ def test_index_splits_basic_and_collapsible_views() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
-    # Operator-first: czat/kompozytor/zgody/rozmowy zawsze widoczne; pamięć,
-    # narzędzia, zdarzenia i "Zaawansowane" (API/health/ustawienia/runtime)
-    # to natywnie zwijane <details>, domyślnie zwinięte.
+    # Operator-first: czat/kompozytor/zgody/rozmowy zawsze widoczne. Zdarzenia
+    # przeniesione do własnej zakładki LOGI, narzędzia do płaskiej sekcji
+    # System („Możliwości Jarvisa”) — żadne z nich nie jest już zwijane.
+    # Surowa diagnostyka (API/health/ustawienia/runtime) zostaje w <details>.
     assert "<details" in markup
     assert "<summary" in markup
     assert "<details open" not in markup
+
+    # Zdarzenia nie są już zwijaną sekcją — mają zakładkę.
+    assert "eventsHeading" not in markup
+    assert "view-logs" in markup
 
     first_details = markup.index("<details")
     for basic_marker in (
@@ -292,8 +297,6 @@ def test_index_splits_basic_and_collapsible_views() -> None:
     ):
         assert markup.index(basic_marker) < first_details, basic_marker
     for collapsible_heading in (
-        "toolsHeading",
-        "eventsHeading",
         "advancedHeading",
         "apiHeading",
         "healthHeading",
@@ -390,6 +393,48 @@ def test_memory_view_is_obvious_on_arrival() -> None:
     # Ludzkie nazwy rodzaju + pochodzenie po polsku na blokach listy.
     assert "MEMORY_KIND_LABELS" in script
     assert "zaproponował" in script
+
+
+def test_logs_tab_reads_like_a_polish_diary() -> None:
+    # Zad. 6: LOGI to własna zakładka — strumień zdarzeń po ludzku (mapa
+    # typów na polskie etykiety), z prostym filtrem i metą #id · źródło · czas.
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert 'data-view="logs"' in markup
+    assert "logFilter" in markup
+
+    # Mapa typów zdarzeń na polskie etykiety + fallback po rodzinie.
+    assert "EVENT_LABELS" in script
+    assert "eventLabel" in script
+    for pair in ('"turn.finished"', '"listening.lease.created"', '"memory.updated"'):
+        assert pair in script, pair
+
+    # Filtr grupuje strumień (tury / głos / zgody / narzędzia).
+    assert "eventMatchesFilter" in script
+
+
+def test_tools_live_in_system_as_capabilities() -> None:
+    # Zad. 6: narzędzia to rejestr możliwości, nie log — płaska sekcja w
+    # System z ludzką nazwą, opisem i etykietą polityki zgód po polsku.
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "toolList" in markup
+    # renderowane przez wspólne mapy PL (nie surowe „file_read - file_read”).
+    assert "toolLabel" in script
+    assert "riskLabel" in script
+    # Sekcja narzędzi opisana jako możliwości.
+    assert "Możliwości" in markup
+
+
+def test_stream_status_indicator_is_gone() -> None:
+    # Zad. 7: wskaźnik „live/stream off” zniknął z UI — o życiu łącza mówi
+    # ramka stanu. Reconnect streamu zostaje (setStreamStatus jako no-op).
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+
+    assert "streamStatus" not in markup
+    assert "stream off" not in markup
 
 
 def test_composer_has_voice_mode_switch() -> None:
