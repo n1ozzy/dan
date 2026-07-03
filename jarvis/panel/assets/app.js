@@ -7,6 +7,7 @@ const cockpit = {
   online: false,
   selectedConversationId: null,
   approvedApprovals: new Map(),
+  healthRetryTimer: null,
   voice: {
     enabled: false,
     listening: false,
@@ -29,6 +30,10 @@ const STREAM_SUBPROTOCOL = "jarvis.v1";
 const STREAM_TOKEN_SUBPROTOCOL_PREFIX = "jarvis-token.";
 const STREAM_MAX_RETRY_MS = 15000;
 const MAX_LIVE_EVENT_ROWS = 50;
+// When the daemon is unreachable at load (e.g. panel started before the daemon
+// finished booting), re-poll health on this interval so the panel recovers on
+// its own instead of getting stuck on "unknown"/"offline" until a manual click.
+const HEALTH_RETRY_MS = 2000;
 
 const el = {};
 
@@ -163,8 +168,10 @@ async function refreshAll() {
   if (!healthOk) {
     clearDynamicSections();
     disconnectStream("daemon offline");
+    scheduleHealthRetry();
     return;
   }
+  cancelHealthRetry();
 
   await Promise.all([
     refreshVoice(),
@@ -176,6 +183,26 @@ async function refreshAll() {
     refreshRuntime(),
   ]);
   connectStream();
+}
+
+// Keep re-polling health while the daemon is unreachable so the panel heals
+// itself once the daemon comes up (order-of-startup no longer matters). A
+// successful refreshAll() cancels the pending retry.
+function scheduleHealthRetry() {
+  if (cockpit.healthRetryTimer) {
+    return;
+  }
+  cockpit.healthRetryTimer = window.setTimeout(() => {
+    cockpit.healthRetryTimer = null;
+    refreshAll();
+  }, HEALTH_RETRY_MS);
+}
+
+function cancelHealthRetry() {
+  if (cockpit.healthRetryTimer) {
+    window.clearTimeout(cockpit.healthRetryTimer);
+    cockpit.healthRetryTimer = null;
+  }
 }
 
 async function refreshVoice() {
