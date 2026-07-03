@@ -45,20 +45,15 @@
   box-sizing: border-box;
 }
 
-/* Animowany kąt obiegającego światła. Zadeklarowany przez @property, żeby
-   WebKit interpolował go płynnie w keyframes (surowy custom prop nie animuje). */
-@property --frame-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
-}
-
 /* --- Żywa ramka stanu --------------------------------------------------------
    Neon na krawędzi karty: bazowy obrys barwi się stanem, a gorący punkt
-   obiega dookoła, gdy Jarvis myśli/mówi/słucha albo czeka zgoda. Technika:
-   conic-gradient (punkt) na jednolitej bazie, wszystko przycięte maską do
-   samego 2px obrysu; drop-shadow dokłada neonową poświatę tylko przy pracy.
-   JS ustawia body[data-state] — offline > pending > busy > online. */
+   obiega dookoła, gdy Jarvis myśli/mówi/słucha albo czeka zgoda. Technika,
+   która działa w WebKit (animacja kąta conic-gradientu przez @property NIE
+   repaintuje): stały obrys to tło .state-frame, a obiegające światło to
+   OBRACANY kwadrat z conic-gradientem w ::before — maska rodzica przycina go
+   do samego 2px obrysu, więc jasny sektor wędruje po krawędzi. drop-shadow
+   dokłada poświatę tylko przy pracy. JS: body[data-state] —
+   offline > pending > busy > online. */
 .state-frame {
   position: fixed;
   inset: 0;
@@ -66,15 +61,8 @@
   padding: 2px;
   border-radius: 13px;
   pointer-events: none;
-  background:
-    conic-gradient(
-      from var(--frame-angle),
-      transparent 0deg,
-      var(--frame-hot) 22deg,
-      transparent 64deg,
-      transparent 360deg
-    ),
-    var(--frame-base);
+  overflow: hidden;
+  background: var(--frame-base);
   /* Pokaż tylko obrys (obszar paddingu): wytnij content-box z pełnego boxa. */
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
@@ -88,15 +76,34 @@
   transition: filter 0.4s ease;
 }
 
+/* Obiegające światło: kwadrat większy niż przekątna karty, wyśrodkowany,
+   z jednym jasnym sektorem conic. Obrót przenosi sektor po całym obwodzie. */
+.state-frame::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 240%;
+  aspect-ratio: 1 / 1;
+  transform: translate(-50%, -50%) rotate(0deg);
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    var(--frame-hot) 26deg,
+    transparent 72deg,
+    transparent 360deg
+  );
+}
+
 @keyframes state-frame-spin {
   to {
-    --frame-angle: 360deg;
+    transform: translate(-50%, -50%) rotate(360deg);
   }
 }
 
 /* Ruch tylko dla rzeczy, które trwają: praca daemona i czekająca decyzja. */
-body[data-state="busy"] .state-frame,
-body[data-state="pending"] .state-frame {
+body[data-state="busy"] .state-frame::before,
+body[data-state="pending"] .state-frame::before {
   animation: state-frame-spin 2.6s linear infinite;
 }
 
@@ -931,8 +938,8 @@ details.card.collapsible[open] summary::after {
   /* Bez obiegania: ramka nie kręci się, tylko barwi. Gorący punkt gaśnie
      (zamrożony sektor wyglądałby jak wgniecenie), a obrys jaśnieje, więc
      „pracuje” dalej czytać na kolor i poświatę. */
-  body[data-state="busy"] .state-frame,
-  body[data-state="pending"] .state-frame {
+  body[data-state="busy"] .state-frame::before,
+  body[data-state="pending"] .state-frame::before {
     animation: none;
   }
 

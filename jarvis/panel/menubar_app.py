@@ -134,6 +134,7 @@ class MenuBarApp:
         self._hotkey_monitors: list = []
         self._outside_click_monitor = None
         self._hidden_at = 0.0
+        self._shown_at = 0.0
 
     def run(self) -> None:
         AppKit, WebKit = _import_gui_modules()
@@ -381,6 +382,11 @@ class MenuBarApp:
         self._panel.setFrame_display_(
             AppKit.NSMakeRect(x, y, width, height), True
         )
+        # Accessory + nonactivating panel nie dostaje sam fokusu klawiatury,
+        # a bez key-window textarea kompozytora nie przyjmie znaku. Aktywujemy
+        # apkę (bez Docka/menu — jesteśmy accessory), potem czynimy panel key.
+        self._shown_at = time.monotonic()
+        AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self._panel.makeKeyAndOrderFront_(None)
         self._panel.orderFrontRegardless()
 
@@ -389,10 +395,14 @@ class MenuBarApp:
         self._panel.orderOut_(None)
 
     def _note_resign_key(self) -> None:
-        # Utrata fokusu (np. mousedown gdzie indziej w naszej apce) chowa
-        # kartę — kliknięcia w innych apkach łapie globalny monitor.
-        if self._panel is not None and self._panel.isVisible():
-            self._hide_panel()
+        # Utrata key-window chowa kartę (klik w inną apkę). Ale świeżo pokazany
+        # panel potrafi raz zrezygnować z key, zanim aktywacja się ustabilizuje
+        # — bez tego okna karta zamykałaby się natychmiast po otwarciu.
+        if self._panel is None or not self._panel.isVisible():
+            return
+        if time.monotonic() - self._shown_at < PANEL_REOPEN_SUPPRESS_SECONDS:
+            return
+        self._hide_panel()
 
     def _show_quit_menu(self, AppKit):  # noqa: N803
         menu = AppKit.NSMenu.alloc().init()
