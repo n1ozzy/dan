@@ -283,6 +283,7 @@ function bindElements() {
     "stateLabel",
     "refreshAllButton",
     "apiBaseInput",
+    "healthHumanList",
     "healthStateList",
     "healthError",
     "textForm",
@@ -541,6 +542,7 @@ async function refreshHealthAndState() {
     }
     applyStateFrame();
     syncPendingApprovals(merged.pending_approval_count);
+    renderHealthHuman(merged);
     renderKeyValues(el.healthStateList, [
       ["service", merged.service],
       ["state", merged.state],
@@ -554,10 +556,21 @@ async function refreshHealthAndState() {
   } catch (error) {
     setOnline(false);
     setText(el.stateLabel, "offline");
+    clearNode(el.healthHumanList);
     clearNode(el.healthStateList);
     renderError(el.healthError, error);
     return false;
   }
+}
+
+// Ludzki stan daemona w sekcji Połączenie: 3–4 pozycje po polsku zamiast
+// surowej kv-listy (ta zostaje w „Diagnostyka (surowe)”).
+function renderHealthHuman(merged) {
+  renderKeyValues(el.healthHumanList, [
+    ["Działa od", merged.started ? formatRelative(merged.started) : "n/a"],
+    ["Wersja schematu", merged.schema_version],
+    ["Głos", merged.voice_enabled ? "włączony" : "wyłączony"],
+  ]);
 }
 
 async function sendTextInput(event) {
@@ -1297,7 +1310,7 @@ function renderBrainAdapters(payload) {
   }
   setText(
     el.brainAdapterLabel,
-    `current ${payload.current || "n/a"} - default ${payload.default || "n/a"}`,
+    `aktywny: ${payload.current || "n/a"} · domyślny: ${payload.default || "n/a"}`,
   );
 }
 
@@ -1840,6 +1853,7 @@ function clearDynamicSections() {
   clearNode(el.conversationSelect);
   clearNode(el.turnList);
   clearNode(el.memoryList);
+  clearNode(el.healthHumanList);
   clearNode(el.toolList);
   clearNode(el.approvalList);
   clearNode(el.settingsList);

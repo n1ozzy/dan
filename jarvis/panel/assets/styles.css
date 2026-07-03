@@ -661,13 +661,31 @@ h2 {
   color: var(--text-dim);
 }
 
-h3 {
+h3,
+h4 {
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-dim);
+}
+
+/* Ludzki stan daemona: etykieta + wartość, czytelniej niż mono kv. */
+.health-human {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  font-size: 12px;
+}
+
+.health-human dt {
+  color: var(--text-dim);
+}
+
+.health-human dd {
+  margin: 0;
+  color: var(--text);
 }
 
 .section-head {

@@ -34,10 +34,6 @@
               <button id="sendButton" type="submit" class="primary">Wyślij</button>
             </div>
             <div class="composer-status">
-              <div class="voice-mode" role="group" aria-label="Tryb słuchania">
-                <button id="pttModeButton" type="button" class="mode-button" title="Push-to-talk: przytrzymaj globalny hotkey">PTT</button>
-                <button id="listenToggle" type="button" class="mode-button" title="Ciągły nasłuch mikrofonu">Nasłuch</button>
-              </div>
               <span id="voiceStatus" class="hud-item" aria-live="polite">
                 <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
                 <span id="voiceStatusText">…</span>
@@ -128,8 +124,97 @@
           <pre id="eventsError" class="error-box" hidden></pre>
         </section>
 
-        <!-- SYSTEM: możliwości, głos, ustawienia, daemon. -->
+        <!-- SYSTEM: mózg, głos, połączenie, ustawienia surowe, możliwości. -->
         <section id="view-system" class="view" aria-label="System">
+          <div class="sys-section" aria-labelledby="brainHeading">
+            <h2 id="brainHeading">Mózg</h2>
+            <p class="muted section-desc">
+              Model, który odpowiada za myślenie Jarvisa.
+            </p>
+            <div class="brain-switch-line">
+              <label class="inline-field brain-field">
+                <span>Model</span>
+                <select id="brainAdapterSelect" aria-label="Model mózgu"></select>
+              </label>
+              <button id="switchBrainButton" type="button">Przełącz</button>
+            </div>
+            <p id="brainAdapterLabel" class="muted"></p>
+          </div>
+
+          <div class="sys-section" aria-labelledby="voiceHeading">
+            <h2 id="voiceHeading">Głos</h2>
+            <p class="muted section-desc">
+              Jak Jarvis Cię słucha. PTT: mówisz, trzymając globalny skrót
+              (lewy ⌘ + lewy ⇧). Nasłuch: mikrofon słucha cały czas, dopóki go
+              nie wyłączysz.
+            </p>
+            <div class="voice-mode" role="group" aria-label="Tryb słuchania">
+              <button id="pttModeButton" type="button" class="mode-button" title="Push-to-talk: przytrzymaj globalny hotkey">PTT</button>
+              <button id="listenToggle" type="button" class="mode-button" title="Ciągły nasłuch mikrofonu">Nasłuch</button>
+            </div>
+          </div>
+
+          <div class="sys-section" aria-labelledby="connectionHeading">
+            <h2 id="connectionHeading">Połączenie</h2>
+            <dl id="healthHumanList" class="health-human"></dl>
+            <label class="inline-field">
+              <span id="apiHeading">Adres daemona</span>
+              <input id="apiBaseInput" type="url" inputmode="url" autocomplete="off" />
+            </label>
+            <p class="muted section-desc">
+              Adres daemona. Zmieniaj tylko, jeśli wiesz po co.
+            </p>
+            <details class="card collapsible" aria-labelledby="advancedHeading">
+              <summary>
+                <h3 id="advancedHeading">Diagnostyka (surowe)</h3>
+                <span class="summary-hint muted">stan · runtime</span>
+              </summary>
+              <div class="subsection" aria-labelledby="healthHeading">
+                <h4 id="healthHeading">Surowy stan</h4>
+                <p class="muted section-desc">
+                  Pełny <code>/health</code> i <code>/state</code>, bez upiększeń.
+                </p>
+                <dl id="healthStateList" class="kv-list"></dl>
+                <pre id="healthError" class="error-box" hidden></pre>
+              </div>
+              <div class="subsection" aria-labelledby="runtimeHeading">
+                <div class="section-head">
+                  <h4 id="runtimeHeading">Runtime</h4>
+                  <button id="refreshRuntimeButton" type="button" class="ghost">Odśwież</button>
+                </div>
+                <p class="muted section-desc">
+                  Proces jarvisd i wykryte konflikty z legacy. Tylko odczyt.
+                </p>
+                <dl id="runtimeList" class="kv-list"></dl>
+                <div id="runtimeObservationList" class="list compact-list"></div>
+                <pre id="runtimeError" class="error-box" hidden></pre>
+              </div>
+            </details>
+          </div>
+
+          <div class="sys-section" aria-labelledby="settingsHeading">
+            <div class="section-head">
+              <h2 id="settingsHeading">Ustawienia surowe</h2>
+              <button id="refreshSettingsButton" type="button" class="ghost">Odśwież</button>
+            </div>
+            <p class="muted section-desc">
+              Pary klucz → wartość zapisywane prosto do bazy daemona. Dla
+              zaawansowanych.
+            </p>
+            <form id="settingsForm" class="settings-form">
+              <input id="settingKey" type="text" placeholder="klucz" aria-label="Klucz ustawienia" />
+              <input
+                id="settingValue"
+                type="text"
+                placeholder='wartość JSON, np. true albo "tekst"'
+                aria-label="Wartość ustawienia (JSON)"
+              />
+              <button id="saveSettingButton" type="submit">Zapisz</button>
+            </form>
+            <div id="settingsList" class="list compact-list"></div>
+            <pre id="settingsError" class="error-box" hidden></pre>
+          </div>
+
           <div class="sys-section" aria-labelledby="toolsHeading">
             <div class="section-head">
               <h2 id="toolsHeading">Możliwości Jarvisa</h2>
@@ -141,75 +226,6 @@
             <div id="toolList" class="list"></div>
             <pre id="toolsError" class="error-box" hidden></pre>
           </div>
-
-          <details class="card collapsible" aria-labelledby="advancedHeading">
-            <summary>
-              <h2 id="advancedHeading">Zaawansowane</h2>
-              <span class="summary-hint muted">ustawienia · daemon</span>
-            </summary>
-
-            <div class="subsection" aria-labelledby="settingsHeading">
-              <div class="section-head">
-                <h3 id="settingsHeading">Ustawienia</h3>
-                <button id="refreshSettingsButton" type="button" class="ghost">Odśwież</button>
-              </div>
-              <p class="muted section-desc">
-                Przełącznik mózgu oraz wszystkie ustawienia daemona jako pary
-                klucz → wartość JSON (Edytuj podstawia parę do formularza).
-              </p>
-              <div class="brain-switch-line">
-                <label class="inline-field brain-field">
-                  <span>Mózg</span>
-                  <select id="brainAdapterSelect" aria-label="Adapter mózgu"></select>
-                </label>
-                <button id="switchBrainButton" type="button">Przełącz</button>
-              </div>
-              <p id="brainAdapterLabel" class="muted"></p>
-              <form id="settingsForm" class="settings-form">
-                <input id="settingKey" type="text" placeholder="klucz" aria-label="Klucz ustawienia" />
-                <input
-                  id="settingValue"
-                  type="text"
-                  placeholder='wartość JSON, np. true albo "tekst"'
-                  aria-label="Wartość ustawienia (JSON)"
-                />
-                <button id="saveSettingButton" type="submit">Zapisz</button>
-              </form>
-              <div id="settingsList" class="list compact-list"></div>
-              <pre id="settingsError" class="error-box" hidden></pre>
-            </div>
-
-            <div class="subsection" aria-labelledby="apiHeading">
-              <h3 id="apiHeading">API</h3>
-              <label class="inline-field">
-                <span>Base</span>
-                <input id="apiBaseInput" type="url" inputmode="url" autocomplete="off" />
-              </label>
-            </div>
-
-            <div class="subsection" aria-labelledby="healthHeading">
-              <h3 id="healthHeading">Stan daemona</h3>
-              <p class="muted section-desc">
-                Surowy stan jarvisd z <code>/health</code> i <code>/state</code>.
-              </p>
-              <dl id="healthStateList" class="kv-list"></dl>
-              <pre id="healthError" class="error-box" hidden></pre>
-            </div>
-
-            <div class="subsection" aria-labelledby="runtimeHeading">
-              <div class="section-head">
-                <h3 id="runtimeHeading">Runtime</h3>
-                <button id="refreshRuntimeButton" type="button" class="ghost">Odśwież</button>
-              </div>
-              <p class="muted section-desc">
-                Diagnostyka procesu jarvisd oraz wykryte konflikty z legacy.
-                Tylko odczyt.
-              </p>
-              <dl id="runtimeList" class="kv-list"></dl>
-              <div id="runtimeObservationList" class="list compact-list"></div>
-              <pre id="runtimeError" class="error-box" hidden></pre>
-            </div>
-          </details>
         </section>
       </div>
 

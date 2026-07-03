@@ -437,24 +437,53 @@ def test_stream_status_indicator_is_gone() -> None:
     assert "stream off" not in markup
 
 
-def test_composer_has_voice_mode_switch() -> None:
+def test_voice_mode_lives_in_system_status_in_composer() -> None:
+    # Zad. 1: wybór TRYBU słuchania (PTT | Nasłuch) przeniesiony do sekcji
+    # „Głos” w System (nie hold-button — trzymanie PTT robi globalny hotkey
+    # w menubar_app). W kompozytorze zostaje SAM status mikrofonu z falą
+    # aktywną tylko przy zbieraniu. Live refresh jedzie na listening.* ze
+    # streamu.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
-    # Głos w kompozytorze: segmenty PTT | Nasłuch obok siebie jako wybór
-    # TRYBU słuchania (nie hold-button — trzymanie PTT robi globalny hotkey
-    # w menubar_app), plus status mikrofonu z falą aktywną tylko przy
-    # zbieraniu. Live refresh jedzie na listening.* ze streamu.
+    # Segmenty trybu żyją w sekcji Głos (System), obok opisu z hotkeyem.
+    assert "voiceHeading" in markup
+    assert markup.index("voiceHeading") < markup.index("pttModeButton")
+    assert markup.index("pttModeButton") < markup.index("listenToggle")
+
+    # Status mikrofonu zostaje w kompozytorze (przed pierwszym <details>).
     first_details = markup.index("<details")
-    for element_id in ("pttModeButton", "listenToggle", "voiceStatus"):
-        assert element_id in markup, element_id
-        assert markup.index(element_id) < first_details, element_id
+    assert markup.index("voiceStatus") < first_details
+
     assert "voice-mode" in markup
     assert "voice-mode" in styles
     assert "setVoiceMode" in script
     assert "hud-item.live .wave" in styles
     assert 'startsWith("listening.")' in script
+
+
+def test_system_view_is_human_readable() -> None:
+    # Zad. 8: System rozbity na płaskie, opisane sekcje (Mózg / Głos /
+    # Połączenie / Ustawienia surowe / Możliwości); surowizna schowana w
+    # „Diagnostyka (surowe)”. Stan daemona po ludzku, model aktywny/domyślny.
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    for heading in ("brainHeading", "voiceHeading", "connectionHeading", "settingsHeading"):
+        assert heading in markup, heading
+
+    # Ludzki stan daemona zamiast surowej kv-listy na wierzchu.
+    assert "healthHumanList" in markup
+    assert "renderHealthHuman" in script
+    assert "Działa od" in script
+
+    # Model po ludzku (aktywny / domyślny), nie „current - default”.
+    assert "aktywny:" in script
+    assert "domyślny:" in script
+
+    # Surowa diagnostyka pod jednym rozwijanym „Diagnostyka (surowe)”.
+    assert "Diagnostyka (surowe)" in markup
 
 
 def test_composer_sends_beside_the_field() -> None:
