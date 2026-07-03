@@ -1,8 +1,8 @@
-/* Jarvis Cockpit — operator HUD, popover-first.
-   Całość mieści się w oknie bez scrollowania strony: czat wypełnia wolną
-   wysokość, kolumna ops przewija się wewnętrznie. Sygnatura: animowana
-   ramka wokół panelu niosąca stan systemu (teal online, bursztyn gdy czekają
-   zgody, czerwień offline) — zastępuje osobną sekcję statusu. */
+/* Jarvis Cockpit — aplikacja jednowidokowa w popoverze.
+   Architektura: jeden widok naraz (Czat / Zgody / Pamięć / System) +
+   dolny pasek zakładek; zero scrolla strony, widoki przewijają się
+   wewnętrznie. Sygnatura: animowana ramka wokół panelu niosąca stan
+   systemu (teal online, bursztyn gdy czekają zgody, czerwień offline). */
 
 :root {
   color-scheme: dark;
@@ -57,7 +57,7 @@ dl {
   margin: 0;
 }
 
-/* --- Animowana ramka stanu (sygnatura cockpitu) --------------------------- */
+/* --- Animowana ramka stanu (sygnatura) ------------------------------------ */
 
 @property --edge-spin {
   syntax: "<angle>";
@@ -109,128 +109,113 @@ body.has-pending:not(.offline) .statusline {
   }
 }
 
-/* --- Szkielet: czat + ops, zero scrolla strony ----------------------------- */
+/* --- Szkielet aplikacji ----------------------------------------------------- */
 
 .cockpit {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   height: 100vh;
   padding: 12px;
   overflow: hidden;
 }
 
-.chat-zone {
+/* Szersze okno przeglądarki: panel trzyma proporcje apki, wycentrowany. */
+@media (min-width: 760px) {
+  .cockpit {
+    width: 100%;
+    max-width: 680px;
+    margin: 0 auto;
+  }
+}
+
+.views {
   flex: 1;
   min-height: 0;
   display: flex;
+}
+
+.view {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   flex-direction: column;
   gap: 8px;
-  padding: 10px;
+}
+
+.view.active {
+  display: flex;
+}
+
+/* Widoki listowe przewijają się wewnętrznie; czat zarządza scrollem sam. */
+#view-approvals.view,
+#view-memory.view,
+#view-system.view {
+  overflow-y: auto;
+  padding-bottom: 2px;
+}
+
+/* --- Pasek zakładek ---------------------------------------------------------- */
+
+.tabbar {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 5px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel);
 }
 
-.ops-column {
-  flex-shrink: 0;
-  max-height: 44vh;
-  overflow-y: auto;
-  display: grid;
-  gap: 8px;
-  align-content: start;
-}
-
-/* Tablet/wide okno przeglądarki: ops w dwóch kolumnach pod czatem. */
-@media (min-width: 760px) {
-  .ops-column {
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  }
-}
-
-/* Desktop: czat po lewej, ops jako prawa kolumna pełnej wysokości. */
-@media (min-width: 1100px) {
-  .cockpit {
-    flex-direction: row;
-  }
-
-  .ops-column {
-    width: 360px;
-    max-height: none;
-    grid-template-columns: 1fr;
-  }
-}
-
-/* --- Pasek czatu (toolbar) -------------------------------------------------- */
-
-.chat-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.chat-toolbar select {
-  flex: 1;
-  min-width: 0;
-  min-height: 30px;
-  font-size: 13px;
-}
-
-.state-pill {
-  max-width: 110px;
-  overflow: hidden;
-  padding: 3px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--accent);
-  background: var(--accent-soft);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-body.offline .state-pill {
-  color: var(--red);
-  background: rgba(248, 113, 113, 0.1);
-}
-
-.hud-item {
-  font-family: var(--font-mono);
-  font-size: 10px;
+.tab-button {
+  position: relative;
+  min-height: 34px;
+  padding: 8px 4px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
   color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
 }
 
-.hud-item.live {
+.tab-button:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.tab-button.active {
+  background: var(--accent-soft);
   color: var(--accent);
 }
 
-/* --- Badge zgód -------------------------------------------------------------- */
+.tab-button:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+}
 
+/* Licznik zgód na zakładce. */
 .approvals-badge {
-  min-height: 26px;
-  padding: 3px 12px;
+  position: absolute;
+  top: -6px;
+  right: 8px;
+  min-width: 18px;
+  padding: 2px 6px;
   border: 1px solid var(--amber-deep);
   border-radius: 999px;
-  background: rgba(180, 83, 9, 0.18);
+  background: #451a03;
   color: var(--amber);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 700;
-  white-space: nowrap;
-  cursor: pointer;
+  letter-spacing: 0;
   animation: badge-pulse 1.8s ease-out infinite;
-}
-
-.approvals-badge:hover,
-.approvals-badge:focus-visible {
-  border-color: var(--amber);
-  background: rgba(180, 83, 9, 0.32);
 }
 
 @keyframes badge-pulse {
@@ -238,8 +223,27 @@ body.offline .state-pill {
     box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.4);
   }
   100% {
-    box-shadow: 0 0 0 9px rgba(251, 191, 36, 0);
+    box-shadow: 0 0 0 8px rgba(251, 191, 36, 0);
   }
+}
+
+/* Przerywnik w czacie: zgoda czeka — jeden klik prowadzi do decyzji. */
+.approval-nudge {
+  border: 1px solid var(--amber-deep);
+  border-radius: 8px;
+  background: rgba(180, 83, 9, 0.14);
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.approval-nudge:hover,
+.approval-nudge:focus-visible {
+  background: rgba(180, 83, 9, 0.28);
+  border-color: var(--amber);
 }
 
 /* --- Kontrolki bazowe --------------------------------------------------------- */
@@ -336,7 +340,54 @@ textarea {
   resize: vertical;
 }
 
-/* --- Czat ---------------------------------------------------------------------- */
+/* --- Widok: czat ---------------------------------------------------------------- */
+
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-toolbar select {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  font-size: 13px;
+}
+
+.state-pill {
+  max-width: 110px;
+  overflow: hidden;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.offline .state-pill {
+  color: var(--red);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.hud-item {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-item.live {
+  color: var(--accent);
+}
 
 .chat-log {
   flex: 1;
@@ -351,16 +402,16 @@ textarea {
   background: var(--panel-2);
 }
 
-.chat-turn {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
 /* Kotwica dołu: gdy przebieg nie wypełnia logu, dosuwa rozmowę do dołu jak
    w komunikatorze; przy przepełnieniu normalny scroll. */
 .chat-log > :first-child {
   margin-top: auto;
+}
+
+.chat-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .chat-bubble {
@@ -413,7 +464,6 @@ textarea {
   color: #f0a3ad;
 }
 
-/* Kompozytor. */
 .composer {
   display: grid;
   gap: 8px;
@@ -516,36 +566,7 @@ body.offline .composer {
   color: var(--red);
 }
 
-/* --- Karty ops -------------------------------------------------------------------- */
-
-.card {
-  display: grid;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
-}
-
-body.has-pending #approvalsCard {
-  border-color: var(--amber-deep);
-}
-
-.section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.section-desc {
-  line-height: 1.4;
-}
-
-.section-tools {
-  display: flex;
-  justify-content: flex-end;
-}
+/* --- Nagłówki i sekcje ------------------------------------------------------------ */
 
 h2 {
   font-family: var(--font-mono);
@@ -565,7 +586,32 @@ h3 {
   color: var(--text-dim);
 }
 
-/* Zwijane sekcje: natywne <details>, domyślnie zwinięte. */
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.section-desc {
+  line-height: 1.4;
+}
+
+.section-tools {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.card {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+/* Zwijane sekcje (widok System): natywne <details>, domyślnie zwinięte. */
 details.card.collapsible summary {
   display: flex;
   align-items: center;
@@ -793,20 +839,20 @@ details.card.collapsible[open] summary::after {
 
 /* Dyskretne scrollbary wewnętrznych stref. */
 .chat-log::-webkit-scrollbar,
-.ops-column::-webkit-scrollbar,
+.view::-webkit-scrollbar,
 .compact-list::-webkit-scrollbar {
   width: 6px;
 }
 
 .chat-log::-webkit-scrollbar-thumb,
-.ops-column::-webkit-scrollbar-thumb,
+.view::-webkit-scrollbar-thumb,
 .compact-list::-webkit-scrollbar-thumb {
   border-radius: 3px;
   background: var(--line-strong);
 }
 
 .chat-log::-webkit-scrollbar-track,
-.ops-column::-webkit-scrollbar-track,
+.view::-webkit-scrollbar-track,
 .compact-list::-webkit-scrollbar-track {
   background: transparent;
 }
@@ -833,7 +879,7 @@ details.card.collapsible[open] summary::after {
 @media (max-width: 480px) {
   .cockpit {
     padding: 9px;
-    gap: 8px;
+    gap: 7px;
   }
 
   .memory-form,

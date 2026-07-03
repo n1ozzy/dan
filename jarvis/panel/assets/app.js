@@ -99,8 +99,8 @@ function bindElements() {
     "toolList",
     "approvalList",
     "approvalsError",
-    "approvalsCard",
     "approvalsBadge",
+    "approvalNudge",
     "toolsError",
     "refreshSettingsButton",
     "brainAdapterSelect",
@@ -163,10 +163,10 @@ function bindEvents() {
       el.textForm.requestSubmit();
     }
   });
-  el.approvalsBadge.addEventListener("click", () => {
-    // Badge to sygnał; klik prowadzi prosto do kart zgód.
-    el.approvalsCard.scrollIntoView({ behavior: "smooth", block: "start" });
-  });
+  for (const tab of document.querySelectorAll(".tab-button")) {
+    tab.addEventListener("click", () => switchView(tab.dataset.view));
+  }
+  el.approvalNudge.addEventListener("click", () => switchView("approvals"));
   el.newConversationButton.addEventListener("click", () => {
     cockpit.selectedConversationId = null;
     cockpit.composingNew = true;
@@ -769,15 +769,44 @@ function syncPendingApprovals(rawCount) {
   setPendingBadge(count);
 }
 
+// Jeden widok naraz: zakładki przełączają panele, stan widoku żyje tylko
+// w DOM (thin client — żadnej persystencji poza tokenem API).
+function switchView(view) {
+  document.body.dataset.view = view;
+  for (const tab of document.querySelectorAll(".tab-button")) {
+    const active = tab.dataset.view === view;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  for (const panel of document.querySelectorAll(".view")) {
+    panel.classList.toggle("active", panel.id === `view-${view}`);
+  }
+  if (view === "chat") {
+    scrollChatToBottom();
+  }
+  updateApprovalSignals();
+}
+
 function setPendingBadge(count) {
   cockpit.pendingApprovalCount = count;
   document.body.classList.toggle("has-pending", count > 0);
-  if (!el.approvalsBadge) {
-    return;
+  updateApprovalSignals();
+}
+
+// Dwa sygnały zgód: licznik na zakładce (zawsze) i bursztynowy przerywnik
+// w czacie (tylko poza widokiem zgód) — przerwanie ma być nie do przegapienia.
+function updateApprovalSignals() {
+  const count = cockpit.pendingApprovalCount;
+  if (el.approvalsBadge) {
+    el.approvalsBadge.hidden = count === 0;
+    setText(el.approvalsBadge, String(count));
   }
-  el.approvalsBadge.hidden = count === 0;
-  setText(el.approvalsBadge, `${count} ${approvalLabel(count)}`);
-  el.approvalsBadge.title = `Czeka na zgodę: ${count} — kliknij, żeby przejść do kart zgód`;
+  if (el.approvalNudge) {
+    const onApprovalsView = document.body.dataset.view === "approvals";
+    el.approvalNudge.hidden = count === 0 || onApprovalsView;
+    const verb = count === 1 ? "czeka" : approvalLabel(count) === "zgody" ? "czekają" : "czeka";
+    setText(el.approvalNudge, `${count} ${approvalLabel(count)} ${verb} na decyzję — pokaż`);
+  }
 }
 
 function approvalLabel(count) {

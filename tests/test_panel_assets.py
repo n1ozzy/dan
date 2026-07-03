@@ -84,25 +84,29 @@ def test_app_fetches_turns_newest_first() -> None:
     assert "newest_first=true" in script
 
 
-def test_cockpit_has_zone_layout_with_chat_core() -> None:
-    # Cockpit operatorski, popover-first: czat z kompozytorem i dropdownem
-    # rozmów w toolbarze + kolumna ops (zgody + sekcje zwijane). Czat = dymki
-    # user/jarvis z metą; strona się nie scrolluje, strefy przewijają się
+def test_cockpit_is_single_view_app_with_tabbar() -> None:
+    # Architektura popover-first: jeden widok naraz (Czat / Zgody / Pamięć /
+    # System) + dolny pasek zakładek. Czat = pełna powierzchnia, dymki
+    # user/jarvis z metą; strona się nie scrolluje, widoki przewijają się
     # wewnętrznie.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
+    assert "tabbar" in markup
+    assert "tab-button" in markup
+    assert 'data-view="chat"' in markup
+    for view_id in ("view-chat", "view-approvals", "view-memory", "view-system"):
+        assert view_id in markup, view_id
     assert "chat-toolbar" in markup
     assert "conversationSelect" in markup
     assert "newConversationButton" in markup
-    assert "chat-zone" in markup
-    assert "ops-column" in markup
     assert "composer" in markup
     assert "chat-log" in markup
-    assert "chat-zone" in styles
-    assert "ops-column" in styles
+    assert "tabbar" in styles
+    assert "tab-button" in styles
     assert "chat-bubble" in styles
+    assert "switchView" in script
     assert "chat-bubble user" in script
     assert "chat-bubble jarvis" in script
     assert "chat-meta" in script
@@ -222,10 +226,15 @@ def test_index_splits_basic_and_collapsible_views() -> None:
     assert "<details open" not in markup
 
     first_details = markup.index("<details")
-    for basic_marker in ("composer", "approvalsHeading", "conversationSelect", "chat-log"):
+    for basic_marker in (
+        "composer",
+        "approvalsHeading",
+        "conversationSelect",
+        "chat-log",
+        "memoryHeading",
+    ):
         assert markup.index(basic_marker) < first_details, basic_marker
     for collapsible_heading in (
-        "memoryHeading",
         "toolsHeading",
         "eventsHeading",
         "advancedHeading",
@@ -240,17 +249,21 @@ def test_index_splits_basic_and_collapsible_views() -> None:
     assert "summary" in styles
 
 
-def test_topbar_shows_pending_approvals_badge() -> None:
-    # Sticky topbar sygnalizuje czekające zgody licznikiem — dziś zgodę łatwo
-    # przegapić, bo żyje dopiero w karcie niżej.
+def test_pending_approvals_have_badge_and_chat_nudge() -> None:
+    # Zgody sygnalizowane dwukanałowo: licznik na zakładce Zgody oraz
+    # bursztynowy przerywnik w czacie (poza widokiem zgód) — decyzji nie
+    # wolno przegapić.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
     assert "approvalsBadge" in markup
+    assert "approvalNudge" in markup
     assert "approvals-badge" in styles
+    assert "approval-nudge" in styles
     assert "prefers-reduced-motion" in styles
     assert "setPendingBadge" in script
+    assert "updateApprovalSignals" in script
 
 
 def test_approvals_refresh_rides_stream_with_heartbeat_fallback() -> None:
