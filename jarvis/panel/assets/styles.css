@@ -451,6 +451,11 @@ body.offline .state-pill {
   color: var(--accent);
 }
 
+/* Jawne display na .hud-item nadpisuje user-agentowe [hidden] — przywróć. */
+.hud-item[hidden] {
+  display: none;
+}
+
 .chat-log {
   flex: 1;
   min-height: 120px;
@@ -531,11 +536,11 @@ body.offline .state-pill {
   gap: 6px;
 }
 
-/* Rząd komunikatorowy: pole rośnie, „Wyślij” siedzi po prawej przy dole. */
+/* Rząd komunikatorowy: pole rośnie, „Wyślij” po prawej na pełną wysokość pola. */
 .composer-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  align-items: stretch;
   gap: 8px;
 }
 

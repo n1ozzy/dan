@@ -487,6 +487,9 @@ function renderVoice() {
   setText(el.voiceStatusText, status);
   // Fala przy statusie ożywa tylko, gdy mikrofon naprawdę zbiera.
   el.voiceStatus.classList.toggle("live", cockpit.voice.listening);
+  // Status pokazujemy tylko, gdy mikrofon faktycznie słucha — cisza/spoczynek
+  // nie ma po co zajmować miejsca „cisza — przytrzymaj hotkey" pod polem.
+  el.voiceStatus.hidden = !cockpit.voice.listening;
   // Zbierający mikrofon to też „praca” — ramka ma wtedy obiegać.
   applyStateFrame();
 }
@@ -587,9 +590,11 @@ async function sendTextInput(event) {
     body.conversation_id = cockpit.selectedConversationId;
   }
 
-  // Optymistyczny dymek: wysłana wiadomość od razu ląduje w czacie, żeby
-  // kompozytor zachowywał się jak czat, a nie formularz z osobnym wynikiem.
+  // Optymistyczny dymek: wysłana wiadomość od razu ląduje w czacie i pole
+  // się czyści (jak w komunikatorze), a nie dopiero po odpowiedzi daemona.
   appendPendingUserBubble(text);
+  el.textInput.value = "";
+  el.textInput.style.height = "";
 
   setBusy(el.sendButton, true);
   try {
@@ -597,8 +602,6 @@ async function sendTextInput(event) {
       method: "POST",
       body,
     });
-    el.textInput.value = "";
-    el.textInput.style.height = "";
     cockpit.selectedConversationId = payload.conversation_id || cockpit.selectedConversationId;
     cockpit.composingNew = false;
     await Promise.all([refreshHistory(), refreshEvents(), refreshToolsAndApprovals()]);

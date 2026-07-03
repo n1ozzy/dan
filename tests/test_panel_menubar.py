@@ -151,6 +151,14 @@ class TestPanelAppearance:
 
         assert "setUnderPageBackgroundColor_" in source
 
+    def test_edit_menu_wires_standard_shortcuts(self) -> None:
+        # Bez menu Edit macOS nie routuje ⌘A/⌘C/⌘V/⌘X do pól webview.
+        source = (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+
+        assert "setMainMenu_" in source
+        for selector in ('"copy:"', '"paste:"', '"cut:"', '"selectAll:"'):
+            assert selector in source, selector
+
 
 class TestWidgetPanel:
     """Karta widżetu = własny borderless NSPanel, nie NSPopover. Popover

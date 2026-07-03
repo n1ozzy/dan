@@ -147,6 +147,7 @@ class MenuBarApp:
         # Accessory: menu-bar only, no Dock icon, no app switcher entry.
         app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
 
+        self._install_edit_menu(AppKit, app)
         self._controller = self._build_controller(AppKit)
         self._panel = self._build_panel(AppKit, WebKit)
         self._status_item = self._build_status_item(AppKit, self._controller)
@@ -197,6 +198,42 @@ class MenuBarApp:
             "panel (Terminal/Python), potem zrestartuj panel.",
             file=sys.stderr,
         )
+
+    def _install_edit_menu(self, AppKit, app):  # noqa: N803 - ObjC module name
+        """Standardowe skróty edycji (⌘A/⌘C/⌘V/⌘X/⌘Z) w polach webview.
+
+        Bez menu głównego z pozycją Edit macOS nie routuje tych keyEquivalentów
+        do first respondera (textarea kompozytora), więc kopiuj/wklej/zaznacz
+        nie działają. Accessory app nie pokazuje paska menu, ale mainMenu i tak
+        przetwarza skróty, gdy karta ma fokus — akcje trafiają do WKWebView,
+        który implementuje copy:/paste:/selectAll:. """
+
+        main_menu = AppKit.NSMenu.alloc().init()
+        edit_container = AppKit.NSMenuItem.alloc().init()
+        main_menu.addItem_(edit_container)
+        edit_menu = AppKit.NSMenu.alloc().initWithTitle_("Edytuj")
+        edit_container.setSubmenu_(edit_menu)
+
+        # (tytuł, selektor, klawisz) — wielka litera implikuje ⇧ (Redo).
+        entries = [
+            ("Cofnij", "undo:", "z"),
+            ("Ponów", "redo:", "Z"),
+            (None, None, None),
+            ("Wytnij", "cut:", "x"),
+            ("Kopiuj", "copy:", "c"),
+            ("Wklej", "paste:", "v"),
+            ("Zaznacz wszystko", "selectAll:", "a"),
+        ]
+        for title, action, key in entries:
+            if title is None:
+                edit_menu.addItem_(AppKit.NSMenuItem.separatorItem())
+                continue
+            item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                title, action, key
+            )
+            edit_menu.addItem_(item)
+
+        app.setMainMenu_(main_menu)
 
     def _install_outside_click_monitor(self, AppKit):  # noqa: N803
         """Klik poza panelem (w inną aplikację) chowa kartę. Globalny monitor
