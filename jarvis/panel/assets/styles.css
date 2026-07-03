@@ -1,40 +1,43 @@
-/* Jarvis Cockpit — aplikacja jednowidokowa w popoverze.
-   Architektura: jeden widok naraz (Czat / Zgody / Pamięć / System) +
+/* Jarvis Cockpit — aplikacja jednowidokowa w popoverze, w stylistyce
+   HUD-u JARVIS-a ze Starka: głęboka czerń-granat, holograficzny arc-reactor
+   blue, złoto Starka dla uwagi, czerwień Iron Mana dla alarmów; cienkie
+   świecące linie. Jeden widok naraz (Czat / Zgody / Pamięć / Logi / System) +
    dolny pasek zakładek; zero scrolla strony, widoki przewijają się
-   wewnętrznie. Sygnatura: animowana ramka wokół panelu niosąca stan
-   systemu (teal online, bursztyn gdy czekają zgody, czerwień offline). */
+   wewnętrznie. Sygnatura: animowana ramka wokół karty niosąca stan (holo-
+   błękit online, złoto gdy czekają zgody, czerwień offline). */
 
 :root {
   color-scheme: dark;
 
-  /* Paleta „mosiądz i atrament”: ciepły grafit (fiolet-brąz podton, nie
-     zimny granat), mosiądz jako główny akcent, lawenda dla rzeczy czekających
-     na Ciebie, rdza dla martwych. Celowo NIE near-black + teal. */
-  --bg: #16121a;
-  --panel: #201a26;
-  --panel-2: #1a141f;
-  --line: #322838;
-  --line-strong: #463a50;
-  --text: #f0e8ea;
-  --text-dim: #b6a6b0;
-  --text-faint: #9a8896;
+  /* Paleta „JARVIS / Stark HUD”: głęboka czerń-granat jak wnętrze hełmu,
+     holograficzny arc-reactor blue jako główny akcent, złoto Starka dla
+     rzeczy wymagających uwagi, czerwień Iron Mana dla alarmów. Tekst
+     chromowo-srebrny. Cienkie świecące linie, techniczny sznyt. */
+  --bg: #080b12;
+  --panel: #0e1420;
+  --panel-2: #0a0f18;
+  --line: #1a2942;
+  --line-strong: #294061;
+  --text: #e9f0f8;
+  --text-dim: #8fa4c0;
+  --text-faint: #6d829e;
 
-  /* Mosiądz — akcent podstawowy (zdrowy/aktywny stan, akcje). */
-  --accent: #d99a4e;
-  --accent-soft: rgba(217, 154, 78, 0.14);
-  --accent-line: #c1842f;
-  /* Lawenda — „czeka na Twoją decyzję” (nazwa --amber została, kolor nowy). */
-  --amber: #b98cf0;
-  --amber-deep: #6b4a9e;
-  /* Rdza — offline / destrukcyjne. */
-  --red: #d0644a;
+  /* Holo-błękit HUD (arc reactor) — akcent podstawowy. */
+  --accent: #45b6ff;
+  --accent-soft: rgba(69, 182, 255, 0.14);
+  --accent-line: #2e9de8;
+  /* Złoto Starka — „czeka na Twoją decyzję” (nazwa --amber została). */
+  --amber: #f0b445;
+  --amber-deep: #8a6118;
+  /* Czerwień Iron Mana — offline / destrukcyjne. */
+  --red: #ff5555;
 
-  --user-bubble: #3a2c48;
-  --jarvis-bubble: #241b2a;
+  --user-bubble: #133150;
+  --jarvis-bubble: #0f1a2a;
 
   /* Żywa ramka stanu: obrys bazowy (przygaszony, zawsze) + gorący punkt,
      który obiega, gdy Jarvis pracuje. Barwa = stan; ruch = trwający proces. */
-  --frame-base: rgba(217, 154, 78, 0.5);
+  --frame-base: rgba(69, 182, 255, 0.5);
   --frame-hot: transparent;
   --frame-glow: transparent;
 
@@ -78,7 +81,8 @@
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   mask-composite: exclude;
-  filter: drop-shadow(0 0 3px var(--frame-glow));
+  /* Holo-poświata ramki — wyraźniejsza przy pracy/oczekiwaniu (glow ≠ 0). */
+  filter: drop-shadow(0 0 5px var(--frame-glow));
   transition: filter 0.4s ease;
 }
 
@@ -114,25 +118,25 @@ body[data-state="pending"] .state-frame::before {
 }
 
 body[data-state="online"] {
-  --frame-base: rgba(217, 154, 78, 0.42);
+  --frame-base: rgba(69, 182, 255, 0.42);
   --frame-hot: transparent;
   --frame-glow: transparent;
 }
 
 body[data-state="busy"] {
-  --frame-base: rgba(217, 154, 78, 0.55);
-  --frame-hot: #f4dcae;
-  --frame-glow: rgba(217, 154, 78, 0.55);
+  --frame-base: rgba(69, 182, 255, 0.55);
+  --frame-hot: #a5d8ff;
+  --frame-glow: rgba(69, 182, 255, 0.55);
 }
 
 body[data-state="pending"] {
-  --frame-base: rgba(185, 140, 240, 0.5);
-  --frame-hot: #e0cbf6;
-  --frame-glow: rgba(185, 140, 240, 0.5);
+  --frame-base: rgba(240, 180, 69, 0.5);
+  --frame-hot: #f7dc96;
+  --frame-glow: rgba(240, 180, 69, 0.5);
 }
 
 body[data-state="offline"] {
-  --frame-base: rgba(208, 100, 74, 0.55);
+  --frame-base: rgba(255, 85, 85, 0.55);
   --frame-hot: transparent;
   --frame-glow: transparent;
 }
@@ -142,7 +146,7 @@ body {
   height: 100vh;
   overflow: hidden;
   background:
-    radial-gradient(1200px 500px at 70% -10%, rgba(217, 154, 78, 0.05), transparent 60%),
+    radial-gradient(1200px 500px at 70% -10%, rgba(69, 182, 255, 0.05), transparent 60%),
     var(--bg);
 }
 
@@ -248,6 +252,8 @@ body.has-pending .tab-button[data-view="approvals"]:not(.active) {
 .tab-button.active {
   background: var(--accent-soft);
   color: var(--accent);
+  /* Holo-świecenie aktywnej zakładki — subtelny HUD-owy blask. */
+  text-shadow: 0 0 10px rgba(69, 182, 255, 0.55);
 }
 
 .tab-button:focus-visible {
@@ -264,7 +270,7 @@ body.has-pending .tab-button[data-view="approvals"]:not(.active) {
   padding: 2px 6px;
   border: 1px solid var(--amber-deep);
   border-radius: 999px;
-  background: #2a1d3e;
+  background: #2b220e;
   color: var(--amber);
   font-family: var(--font-mono);
   font-size: 10px;
@@ -275,10 +281,10 @@ body.has-pending .tab-button[data-view="approvals"]:not(.active) {
 
 @keyframes badge-pulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(185, 140, 240, 0.4);
+    box-shadow: 0 0 0 0 rgba(240, 180, 69, 0.4);
   }
   100% {
-    box-shadow: 0 0 0 8px rgba(185, 140, 240, 0);
+    box-shadow: 0 0 0 8px rgba(240, 180, 69, 0);
   }
 }
 
@@ -286,7 +292,7 @@ body.has-pending .tab-button[data-view="approvals"]:not(.active) {
 .approval-nudge {
   border: 1px solid var(--amber-deep);
   border-radius: 8px;
-  background: rgba(107, 74, 158, 0.14);
+  background: rgba(138, 97, 24, 0.14);
   color: var(--amber);
   font-family: var(--font-mono);
   font-size: 11px;
@@ -297,7 +303,7 @@ body.has-pending .tab-button[data-view="approvals"]:not(.active) {
 
 .approval-nudge:hover,
 .approval-nudge:focus-visible {
-  background: rgba(107, 74, 158, 0.28);
+  background: rgba(138, 97, 24, 0.28);
   border-color: var(--amber);
 }
 
@@ -342,7 +348,7 @@ summary:focus-visible {
 }
 
 ::selection {
-  background: rgba(217, 154, 78, 0.28);
+  background: rgba(69, 182, 255, 0.28);
 }
 
 button.ghost {
@@ -360,14 +366,17 @@ button.ghost:focus-visible {
 
 button.primary {
   border-color: var(--accent-line);
-  background: #3d2f14;
-  color: #f4dcae;
+  background: #0c2a45;
+  color: #a5d8ff;
   font-weight: 650;
+  /* Holo-kontur: cienki błękitny blask jak podświetlony przycisk HUD. */
+  box-shadow: 0 0 12px rgba(69, 182, 255, 0.16);
 }
 
 button.primary:hover:not(:disabled),
 button.primary:focus-visible {
-  background: #4f3d1a;
+  background: #103a5c;
+  box-shadow: 0 0 16px rgba(69, 182, 255, 0.28);
 }
 
 #listenToggle.active {
@@ -431,7 +440,7 @@ textarea {
 
 body.offline .state-pill {
   color: var(--red);
-  background: rgba(208, 100, 74, 0.1);
+  background: rgba(255, 85, 85, 0.1);
 }
 
 .hud-item {
@@ -503,7 +512,7 @@ body.offline .state-pill {
   border-bottom-left-radius: 4px;
   border: 1px solid var(--line);
   /* Kręgosłup w kolorze Jarvisa: dymki asystenta mają jego barwę. */
-  border-left: 2px solid rgba(217, 154, 78, 0.4);
+  border-left: 2px solid rgba(69, 182, 255, 0.4);
   background: var(--jarvis-bubble);
   color: #d9e2ee;
 }
@@ -514,9 +523,9 @@ body.offline .state-pill {
 }
 
 .chat-turn.failed .chat-bubble.jarvis {
-  border-color: #6e3a2e;
-  background: #2a1512;
-  color: #f0c8b8;
+  border-color: #5a2530;
+  background: #1a0e12;
+  color: #ffc0c0;
 }
 
 .chat-meta {
@@ -939,19 +948,19 @@ details.card.collapsible[open] summary::after {
 
 .risk-chip.read {
   border: 1px solid var(--line-strong);
-  background: rgba(182, 166, 176, 0.14);
+  background: rgba(143, 164, 192, 0.14);
   color: var(--text-dim);
 }
 
 .risk-chip.write {
   border: 1px solid var(--amber-deep);
-  background: rgba(107, 74, 158, 0.16);
+  background: rgba(138, 97, 24, 0.16);
   color: var(--amber);
 }
 
 .risk-chip.destructive {
-  border: 1px solid #8a3a26;
-  background: rgba(208, 100, 74, 0.12);
+  border: 1px solid #7a2a2a;
+  background: rgba(255, 85, 85, 0.12);
   color: var(--red);
 }
 
@@ -1002,12 +1011,13 @@ details.card.collapsible[open] summary::after {
 .approval-card .small-button.strong {
   border-color: var(--accent-line);
   background: var(--accent);
-  color: #2a1c08;
+  color: #04121f;
+  box-shadow: 0 0 14px rgba(69, 182, 255, 0.3);
 }
 
 .approval-card .small-button.strong:hover:not(:disabled),
 .approval-card .small-button.strong:focus-visible {
-  background: #e8ab5e;
+  background: #63c4ff;
 }
 
 .approval-card .small-button.reject {
@@ -1018,7 +1028,7 @@ details.card.collapsible[open] summary::after {
 
 .approval-card .small-button.reject:hover:not(:disabled),
 .approval-card .small-button.reject:focus-visible {
-  background: rgba(208, 100, 74, 0.16);
+  background: rgba(255, 85, 85, 0.16);
 }
 
 /* Filtr dziennika: label „Pokaż” + select w jednej wąskiej linijce. */
@@ -1044,14 +1054,14 @@ details.card.collapsible[open] summary::after {
 
 /* Odrzuć: czerwony outline (waga niższa niż pełny akcent Zatwierdź). */
 .small-button.reject {
-  border-color: #7a4a3a;
+  border-color: #6a3038;
   background: transparent;
-  color: #f0a88e;
+  color: #ff9a9a;
 }
 
 .small-button.reject:hover:not(:disabled),
 .small-button.reject:focus-visible {
-  background: #331c14;
+  background: #241012;
 }
 
 .row-actions {
@@ -1071,14 +1081,14 @@ details.card.collapsible[open] summary::after {
 
 .small-button.strong {
   border-color: var(--accent-line);
-  background: #3d2f14;
-  color: #f4dcae;
+  background: #0c2a45;
+  color: #a5d8ff;
 }
 
 .small-button.danger {
-  border-color: #7a4a3a;
-  background: #331c14;
-  color: #f0a88e;
+  border-color: #6a3038;
+  background: #241012;
+  color: #ff9a9a;
 }
 
 .priority-input {
@@ -1181,7 +1191,7 @@ details.card.collapsible[open] summary::after {
   padding: 2px 8px;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
-  background: rgba(182, 166, 176, 0.12);
+  background: rgba(143, 164, 192, 0.12);
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.03em;
@@ -1215,9 +1225,9 @@ details.card.collapsible[open] summary::after {
   overflow: auto;
   border-radius: 8px;
   padding: 8px;
-  border: 1px solid #6e3a2e;
-  color: #f0c8b8;
-  background: #2a1512;
+  border: 1px solid #5a2530;
+  color: #ffc0c0;
+  background: #1a0e12;
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.4;
@@ -1270,12 +1280,12 @@ details.card.collapsible[open] summary::after {
   }
 
   body[data-state="busy"] {
-    --frame-base: rgba(217, 154, 78, 0.85);
+    --frame-base: rgba(69, 182, 255, 0.85);
     --frame-hot: transparent;
   }
 
   body[data-state="pending"] {
-    --frame-base: rgba(185, 140, 240, 0.85);
+    --frame-base: rgba(240, 180, 69, 0.85);
     --frame-hot: transparent;
   }
 
