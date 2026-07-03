@@ -255,21 +255,17 @@ ZADANIE (audyt + rekomendacja, minimum zmian): 1) Ustal, czy lokalna instalacja 
 - **Fix (zrobiony):** `allowUniversalAccessFromFileURLs` + `allowFileAccessFromFileURLs` na `WKWebViewConfiguration` (KVC, guarded) — ten JEDEN zaufany WebView omija CORS lokalnie; daemon `ALLOWED_CORS_ORIGINS` **zostaje szczelny** (prawdziwe przeglądarki dalej blokowane). NIE dotyka lifecycle.py.
 - **DoD:** panel z `file://` dostaje dane z daemona; CORS daemona bez zmian; testy panelu zielone (33). Weryfikacja finalna = wizualna (WKWebView runtime, nie z bash).
 
-## - [ ] FIX-17 · Zły `source`/`mode` w /voice/* → 500 zamiast 400 🟡 MED
+## - [x] FIX-17 · Zły `source`/`mode` w /voice/* → 500 zamiast 400 🟡 MED — DONE `7959e7b`
 
-- **Pliki:** `jarvis/daemon/lifecycle.py` (blok `except`, ~l.484-509), `jarvis/voice/listening.py` (`ListeningLeaseError`)
-- **Problem (znalezione 2026-07-03):** `POST /voice/ptt/down` z nieznanym `source` (np. `"panel-test"`) albo `mode` rzuca `ListeningLeaseError` z `ListeningLeaseManager.acquire`. Ten wyjątek **nie jest** w liście `except` w `handle_request` (lifecycle.py) → leci jako niezłapany → **500 Internal Server Error** zamiast **400 Bad Request**. Zły input klienta nie powinien wyglądać jak awaria serwera. Panel wysyła poprawny `source="ptt"`, więc go nie dotyka — ale to defekt kontraktu API.
-- **Fix:** dodać `except ListeningLeaseError as exc: _write_json(handler, 400, {"error": str(exc), "status": 400})` (import z `jarvis.voice.listening`). Uwaga: `lifecycle.py` bywa gorącym plikiem (FIX-06/07) — zrób na czystym drzewie.
-- **Testy:** POST /voice/ptt/down z `source="nope"` → 400 (nie 500); poprawny `source="ptt"` → 200 bez regresji.
-- **DoD:** zły source/mode → 400 z czytelnym błędem; poprawny → 200; test celowany zielony.
-- **Estymat:** ~15–20 min · **Zależności:** brak (czyste drzewo lifecycle.py).
+**DONE `7959e7b` (TDD, celowany test API bez sprzętu; test_listening_leases 15 zielone):**
+- **Weryfikacja:** `ListeningLeaseError` (z `acquire()` przy `source` spoza `ALLOWED_SOURCES = (ptt, global_hotkey, lock)` lub nieznanym `mode`) nie był w liście `except` w `handle_request` → wpadał w `except Exception` → **500**. RED potwierdzony testem: `{'error': 'Internal server error', 'status': 500}`.
+- **Fix:** `except ListeningLeaseError as exc: _write_json(handler, 400, {"error": str(exc), "status": 400})` wstawiony po `except VoiceDisabledError` (grupa voice-domain). Import `from jarvis.voice.listening import ListeningLeaseError` na końcu bloku importów domenowych (nie rozbija grupy `jarvis.api.*`). Bez cyklu importów (test create_daemon_app przechodzi).
+- **Test:** `tests/test_listening_leases.py::test_ptt_unknown_source_is_bad_request` — `source="nope"` → 400 z „nope" w błędzie; `source="ptt"` → 200 (brak regresji). Cały plik 15 zielone.
+- **[PROMPT wykonany — przycięty przy DONE.]**
 
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz FIX-17 z FIXME.md.
-ZASADY: preflight tanio; TDD (test przed fixem); NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu celowany test + commit + odhacz FIX-17.
-PROBLEM (kontrakt API, MED): POST /voice/ptt/{down,up} i /voice/listen/{lock,unlock} z nieznanym source (nie w ALLOWED_SOURCES = ptt/global_hotkey/lock) albo mode rzuca ListeningLeaseError (jarvis/voice/listening.py) w app.acquire_listening_lease -> ListeningLeaseManager.acquire. Ten wyjątek NIE jest łapany w handle_request w jarvis/daemon/lifecycle.py (blok except ~l.484-509) -> niezłapany -> 500 zamiast 400.
-ZADANIE: Zweryfikuj aktualną linię (mogła się przesunąć). Napisz test: POST /voice/ptt/down z source="nope" -> 400 (obecnie 500). Potem dodaj `except ListeningLeaseError` mapujący na 400 z {"error": str(exc), "status": 400} (import ListeningLeaseError z jarvis.voice.listening), w spójnej kolejności z innymi except. Potwierdź że poprawny source="ptt" -> 200 bez regresji. Celowany test API/voice, bez pełnej matrycy.
-```
+- **Pliki:** `jarvis/daemon/lifecycle.py` (blok `except` w `handle_request`), `jarvis/voice/listening.py` (`ListeningLeaseError`)
+- **Problem (znalezione 2026-07-03):** `POST /voice/ptt/down` z nieznanym `source`/`mode` rzucał `ListeningLeaseError` niełapany → 500 zamiast 400. Zły input klienta nie powinien wyglądać jak awaria serwera.
+- **Estymat:** ~15–20 min · **Zależności:** brak.
 
 ---
 
