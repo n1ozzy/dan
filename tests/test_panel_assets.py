@@ -358,6 +358,29 @@ def test_composer_has_voice_mode_switch() -> None:
     assert 'startsWith("listening.")' in script
 
 
+def test_composer_sends_beside_the_field() -> None:
+    # Układ komunikatorowy: pole i „Wyślij” w JEDNYM rzędzie (przycisk po
+    # prawej, wyrównany do dołu), a status mikrofonu jako dyskretna linijka
+    # POD polem — nie rząd kontrolek pod textareą jak wcześniej.
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "composer-row" in markup
+    assert "composer-row" in styles
+
+    # textarea i przycisk Wyślij żyją w tym samym rzędzie composer-row,
+    # w tej kolejności (pole, potem przycisk po prawej).
+    row = markup.index("composer-row")
+    send = markup.index("sendButton")
+    textarea = markup.index("textInput")
+    status = markup.index("composer-status")
+    assert row < textarea < send, "textarea przed Wyślij w rzędzie"
+    assert send < status, "status mikrofonu pod rzędem pola, nie w nim"
+
+    # Rząd to grid z elastycznym polem i przyciskiem przy dole.
+    assert "composer-status" in styles
+
+
 def test_app_sends_text_input_on_enter() -> None:
     script = APP_JS.read_text(encoding="utf-8")
 

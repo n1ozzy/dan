@@ -24,13 +24,16 @@
           <button id="approvalNudge" type="button" class="approval-nudge" hidden></button>
           <div id="turnList" class="chat-log" aria-label="Przebieg rozmowy"></div>
           <form id="textForm" class="composer">
-            <textarea
-              id="textInput"
-              rows="2"
-              placeholder="Napisz do Jarvisa…"
-              title="Enter wysyła • Shift+Enter = nowa linia"
-            ></textarea>
-            <div class="composer-actions">
+            <div class="composer-row">
+              <textarea
+                id="textInput"
+                rows="2"
+                placeholder="Napisz do Jarvisa…"
+                title="Enter wysyła • Shift+Enter = nowa linia"
+              ></textarea>
+              <button id="sendButton" type="submit" class="primary">Wyślij</button>
+            </div>
+            <div class="composer-status">
               <div class="voice-mode" role="group" aria-label="Tryb słuchania">
                 <button id="pttModeButton" type="button" class="mode-button" title="Push-to-talk: przytrzymaj globalny hotkey">PTT</button>
                 <button id="listenToggle" type="button" class="mode-button" title="Ciągły nasłuch mikrofonu">Nasłuch</button>
@@ -39,7 +42,6 @@
                 <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
                 <span id="voiceStatusText">…</span>
               </span>
-              <button id="sendButton" type="submit" class="primary">Wyślij</button>
             </div>
           </form>
           <pre id="historyError" class="error-box" hidden></pre>

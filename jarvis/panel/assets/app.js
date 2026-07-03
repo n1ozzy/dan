@@ -166,6 +166,9 @@ function bindEvents() {
       el.textForm.requestSubmit();
     }
   });
+  // Pole rośnie z treścią (2 → ~5 rzędów), potem przewija się wewnątrz —
+  // komunikatorowy composer bez ręcznego ciągnięcia uchwytu.
+  el.textInput.addEventListener("input", autoGrowComposer);
   for (const tab of document.querySelectorAll(".tab-button")) {
     tab.addEventListener("click", () => switchView(tab.dataset.view));
   }
@@ -373,6 +376,7 @@ async function sendTextInput(event) {
       body,
     });
     el.textInput.value = "";
+    el.textInput.style.height = "";
     cockpit.selectedConversationId = payload.conversation_id || cockpit.selectedConversationId;
     cockpit.composingNew = false;
     await Promise.all([refreshHistory(), refreshEvents(), refreshToolsAndApprovals()]);
@@ -381,6 +385,14 @@ async function sendTextInput(event) {
   } finally {
     setBusy(el.sendButton, false);
   }
+}
+
+// Wysokość pola śledzi treść aż do limitu z CSS (max-height), potem scroll.
+// Reset (pusta wartość) wraca do bazowych dwóch rzędów.
+function autoGrowComposer() {
+  const field = el.textInput;
+  field.style.height = "auto";
+  field.style.height = `${field.scrollHeight}px`;
 }
 
 function appendPendingUserBubble(text) {

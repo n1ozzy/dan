@@ -518,18 +518,31 @@ body.offline .state-pill {
 
 .composer {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
-.composer textarea {
-  min-height: 52px;
-}
-
-.composer-actions {
+/* Rząd komunikatorowy: pole rośnie, „Wyślij” siedzi po prawej przy dole. */
+.composer-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
   gap: 8px;
+}
+
+.composer-row textarea {
+  min-height: 44px;
+  max-height: 132px;
+  overflow-y: auto;
+  resize: none;
+}
+
+/* Status mikrofonu i wybór trybu jako dyskretna linijka pod polem, z lewej. */
+.composer-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 2px;
 }
 
 /* Tryb słuchania: segmenty PTT | Nasłuch obok siebie — przełącznik trybu,
