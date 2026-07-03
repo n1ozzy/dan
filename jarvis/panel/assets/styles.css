@@ -302,6 +302,9 @@ input,
 select,
 textarea {
   font: inherit;
+  /* Jedna skala kontrolek (13px) — mniejsza niż treść czatu (13.5px), ale
+     spójna między polami, selectami i przyciskami akcji. */
+  font-size: 13px;
 }
 
 button {
@@ -707,7 +710,7 @@ h4 {
 .card {
   display: grid;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel);
@@ -1039,8 +1042,10 @@ details.card.collapsible[open] summary::after {
 }
 
 .inline-field span {
+  flex-shrink: 0;
   color: var(--text-dim);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 /* Nowa notatka schowana za rozwijanym „+ Nowa notatka”; lista + przycisk
