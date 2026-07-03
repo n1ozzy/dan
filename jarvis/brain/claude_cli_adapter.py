@@ -21,7 +21,7 @@ import os
 import signal
 import subprocess
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from jarvis.brain.base import (
@@ -543,7 +543,45 @@ def _format_tools(request: BrainRequest) -> list[str]:
         risk = _clean_text(tool.risk)
         description = _clean_text(tool.description)
         lines.append(f"- {name} [{risk}]: {description} (unavailable; pending approval)")
+        args_line = _format_tool_args(tool.input_schema)
+        if args_line:
+            lines.append(f"  args: {args_line}")
     return lines
+
+
+def _format_tool_args(input_schema: Mapping[str, Any] | None) -> str:
+    """Compact argument signature so the model does not guess field names.
+
+    Without it the model invents shapes (live case: memory_save received
+    {"key","value"} instead of kind/title/body and the approved execution
+    failed validation).
+    """
+
+    if not isinstance(input_schema, Mapping):
+        return ""
+    properties = input_schema.get("properties")
+    if not isinstance(properties, Mapping) or not properties:
+        return ""
+    required = input_schema.get("required")
+    required_names = {str(item) for item in required} if isinstance(required, list) else set()
+
+    parts: list[str] = []
+    for field_name, field_schema in properties.items():
+        details: list[str] = []
+        schema = field_schema if isinstance(field_schema, Mapping) else {}
+        field_type = schema.get("type")
+        if isinstance(field_type, str):
+            details.append(field_type)
+        if str(field_name) in required_names:
+            details.append("required")
+        enum_values = schema.get("enum")
+        if isinstance(enum_values, list) and enum_values:
+            details.append("one of: " + "|".join(str(value) for value in enum_values))
+        rendered = _clean_text(str(field_name))
+        if details:
+            rendered += " (" + ", ".join(details) + ")"
+        parts.append(rendered)
+    return ", ".join(parts)
 
 
 def _stderr_preview(stderr: str | None) -> str:

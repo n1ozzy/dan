@@ -348,6 +348,42 @@ def test_prompt_formatter_includes_recent_context_messages() -> None:
     assert "Previous answer" in prompt
 
 
+def test_prompt_formatter_renders_tool_argument_schema() -> None:
+    # Bez schematu w prompcie model zgaduje kształt argumentów (żywy przypadek:
+    # memory_save dostał {"key","value"} zamiast kind/title/body) — lista
+    # narzędzi musi nieść nazwy pól, typy, enumy i które pola są wymagane.
+    request = make_request()
+    request.available_tools = [
+        BrainToolSpec(
+            name="memory_save",
+            description="Save one durable memory block.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["fact", "identity"]},
+                    "title": {"type": "string"},
+                    "priority": {"type": "integer"},
+                },
+                "required": ["kind", "title"],
+            },
+            risk="memory_write",
+        )
+    ]
+
+    prompt = format_cli_prompt(request)
+
+    assert "kind (string, required, one of: fact|identity)" in prompt
+    assert "title (string, required)" in prompt
+    assert "priority (integer)" in prompt
+
+
+def test_prompt_formatter_tool_without_properties_renders_no_args() -> None:
+    prompt = format_cli_prompt(make_request())  # narzędzie "shell" ma pusty schemat
+
+    assert "- shell [write]: Run a shell command" in prompt
+    assert "args:" not in prompt.split("Available tools:")[1].split("Current user input:")[0]
+
+
 def test_prompt_formatter_includes_user_input() -> None:
     prompt = format_cli_prompt(make_request())
 
