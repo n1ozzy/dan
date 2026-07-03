@@ -401,7 +401,9 @@ async function refreshHistory() {
 }
 
 async function refreshTurns(conversationId) {
-  const query = `/turns?conversation_id=${encodeURIComponent(conversationId)}&limit=20`;
+  // Najnowsza wymiana ma być widoczna od razu na górze; oldest-first z limitem
+  // ucinało świeże tury w długich rozmowach i chowało resztę na dole listy.
+  const query = `/turns?conversation_id=${encodeURIComponent(conversationId)}&limit=20&newest_first=true`;
   const payload = await requestJson(query);
   const turns = Array.isArray(payload.turns) ? payload.turns : [];
   renderTurns(turns);
@@ -430,6 +432,9 @@ function renderConversations(conversations) {
       clearError(el.historyError);
       try {
         await refreshTurns(conversation.id);
+        // Lista tur leży pod kafelkami rozmów; bez przewinięcia przebieg
+        // rozmowy ląduje poza ekranem i klik wygląda jak brak reakcji.
+        el.turnList.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch (error) {
         clearNode(el.turnList);
         renderError(el.historyError, error);
@@ -601,6 +606,9 @@ function approvalCard(approval, mode) {
   const title = payload.tool_name || approval.action_type || approval.id;
   appendLine(row, `${title} - ${approval.risk || "unknown"} - ${mode}`, "input-line");
   appendLine(row, `id ${shortId(approval.id)} - ${approval.requested_by || "unknown"}`, "muted");
+  for (const [key, value] of Object.entries(payload.arguments || {})) {
+    appendLine(row, `${key}: ${argumentPreview(value)}`, "argument-line muted");
+  }
 
   const actions = document.createElement("div");
   actions.className = "row-actions";
@@ -1261,6 +1269,14 @@ function appendLine(parent, value, className) {
   node.className = className;
   setText(node, value);
   parent.appendChild(node);
+}
+
+function argumentPreview(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (typeof text !== "string") {
+    return String(value);
+  }
+  return text.length > 220 ? `${text.slice(0, 220)}…` : text;
 }
 
 function smallButton(label) {

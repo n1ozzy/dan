@@ -67,6 +67,31 @@ def test_index_references_static_js_and_css() -> None:
     assert "./styles.css" in markup
 
 
+def test_app_previews_approval_arguments() -> None:
+    # Karta zgody musi pokazywać CO model chce zrobić (argumenty wywołania),
+    # nie tylko nazwę narzędzia i id — inaczej człowiek zatwierdza w ciemno.
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "payload.arguments" in script
+    assert "argument-line" in script
+
+
+def test_app_fetches_turns_newest_first() -> None:
+    # Kliknięta rozmowa ma od razu pokazywać najnowszą wymianę na górze;
+    # domyślne oldest-first + limit ucinało świeże tury i chowało je na dole.
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "newest_first=true" in script
+
+
+def test_app_scrolls_to_turns_after_conversation_click() -> None:
+    # Lista tur leży pod kafelkami rozmów — bez przewinięcia klik "pokazuje
+    # chat na samym dole" i użytkownik musi scrollować przez całą listę.
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "scrollIntoView" in script
+
+
 def test_app_references_required_daemon_routes() -> None:
     script = APP_JS.read_text(encoding="utf-8")
 
