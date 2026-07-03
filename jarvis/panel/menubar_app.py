@@ -30,7 +30,7 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 COCKPIT_TOKEN_STORAGE_KEY = "jarvis-api-token"
 
 # Menu-bar display height in points; the PNG carries 2x pixels for retina.
-STATUS_ICON_HEIGHT = 18.0
+STATUS_ICON_HEIGHT = 40.0
 
 
 def status_icon_path() -> Path:

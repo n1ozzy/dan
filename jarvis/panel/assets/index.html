@@ -13,7 +13,7 @@
           <span id="onlineDot" class="status-dot" aria-hidden="true"></span>
           <div>
             <h1>Jarvis</h1>
-            <p id="onlineLabel" class="muted">offline</p>
+            <!-- <p id="onlineLabel" class="muted">offline</p> -->
           </div>
         </div>
         <div class="state-line">
@@ -30,8 +30,8 @@
         <form id="textForm" class="stack">
           <textarea
             id="textInput"
-            rows="2"
-            placeholder="Napisz do Jarvisa… (Enter wysyła, Shift+Enter to nowa linia)"
+            rows="4"
+            placeholder="Napisz do Jarvisa…"
           ></textarea>
           <button id="sendButton" type="submit">Wyślij</button>
         </form>
@@ -46,15 +46,10 @@
         </div>
         <div class="voice-controls">
           <button id="pttButton" type="button" class="ptt-button">
-            Trzymaj i mów (PTT)
+            Push To Talk
           </button>
-          <button id="listenToggle" type="button">Włącz nasłuch</button>
+          <button id="listenToggle" type="button">Nasłuch</button>
         </div>
-        <p class="muted section-desc">
-          PTT: trzymasz — słucha, puszczasz — przetwarza. Nasłuch ciągły
-          słucha do wyłączenia (albo wygaśnięcia); bez żadnego z nich
-          mikrofon jest martwy.
-        </p>
         <pre id="voiceError" class="error-box" hidden></pre>
       </section>
 
@@ -186,8 +181,7 @@
           <button id="refreshRuntimeButton" type="button">Odśwież</button>
         </div>
         <p class="muted section-desc">
-          Diagnostyka procesu jarvisd oraz wykryte konflikty z legacy
-          (stare procesy/agenty DAN). Tylko odczyt.
+          Diagnostyka procesu jarvisd oraz wykryte konflikty z legacy. Tylko odczyt.
         </p>
         <dl id="runtimeList" class="kv-list"></dl>
         <div id="runtimeObservationList" class="list compact-list"></div>
