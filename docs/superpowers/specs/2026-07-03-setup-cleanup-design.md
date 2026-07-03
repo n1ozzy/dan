@@ -24,11 +24,29 @@ Data: 2026-07-03 · Autor: Klaudiusz (Fable 5) + akceptacja Ozzy · Status: zaak
 - Skasować `~/.claude/skills/agent-screen-chat/` i `~/.claude/skills/coxed-claude-hermes/` w całości.
 - Kryterium: lista skilli zawiera dokładnie jeden skill screen-* (`screen-control`); `discover-agents.sh` działa po zmianach.
 
-### 2. Twarde zasady interakcji w screen-control
-Nowa sekcja w `SKILL.md` (+ ewentualne poprawki w skryptach, jeśli diff pokaże, że zasady da się wymusić kodem):
-- Przed scrollem/klikiem: ustal, co ma focus; scroll wykonuj nad środkiem obszaru TREŚCI okna, nigdy przy focusie w composerze.
-- Scroll myszą nie działa → PageUp/PageDown; zakaz klikania w input "żeby scrollować".
-- Brak odpowiedzi agenta → `watch-state.sh` z limitem czasu i raport do Ozzy'ego; zakaz głuchego czekania.
+### 2. screen-control "porządnie" — pilnowanie, czytanie całości, zero udawania (wymaganie Ozzy'ego 2026-07-03)
+
+Cel: agent ma NA PEWNO wiedzieć, co partner (Codex/Claude/inny) napisał — nie zgadywać z jednego zrzutu — i sensownie reagować.
+
+**a) Transkrypty z logów jako pierwsze źródło prawdy.** Dla agentów CLI okno to tylko podgląd — pełna treść leży na dysku (Claude Code: `~/.claude/projects/<projekt>/*.jsonl`; Codex CLI: katalog sesji `~/.codex/`; per-agent ścieżka konfigurowalna w `agents.conf`). Watch/odczyt najpierw czyta transkrypt (tail od ostatniej znanej pozycji), OCR ekranu służy do potwierdzenia "gdzie jest UI" i do agentów bez logów. Koniec z regresem "przeczytał pół okna i udaje".
+
+**b) Doczytywanie całości scrollem (gdy logów brak).** Import działających wzorców z wos-bota (`/Users/n1_ozzy/Desktop/dana rzeczy /wos-bot-runs-codex/codexBOT.py`, `HermesBOT.py` — Ozzy potwierdza: działają):
+- `screencap_when_stable` — czytaj dopiero, gdy ekran przestał się zmieniać;
+- `perceptual_hash` — wykrywanie zmiany ekranu i KOŃCA scrolla (hash bez zmian = koniec treści);
+- kalibrowany scroll (`_measure_actual_scroll_px` + adaptacyjny krok) — bez gubienia/dublowania linii;
+- scroll-and-stitch z deduplikacją nakładek (wzorzec `capture_members` + `same_scrolled_tile`/fuzzy-match) → jeden pełny odczyt okna;
+- `find_text` z normalizacją/fuzzy — szukanie fraz w obserwacjach OCR;
+- OCR: Apple Vision przez gotową binarkę `bin/wos_ocr` (Mach-O arm64, pl/en/es, ~50–200 ms/klatkę) — skopiować do `screen-control/bin/`;
+- dowody: znacznik miejsca kliknięcia (wzorzec `annotate_tap`) + zapis klatek do katalogu roboczego — Ozzy widzi, co zrobiono;
+- weryfikacja stanu PO każdej akcji (wzorzec `classify_screen`/`navigate_*`: akcja → zrzut → sprawdzenie oczekiwanego stanu → dopiero dalej).
+Adaptacja: tap/swipe ADB → macOS (`osascript`/scroll eventy/PageUp/PageDown); reszta logiki przenosi się wprost.
+
+**c) Watch-loop, który pilnuje i reaguje.** `watch-state.sh`/`coop-loop.sh` rozbudowane: pętla obserwuje transkrypt/ekran, wykrywa NOWĄ treść od partnera (pozycja w logu albo perceptual hash), czyta CAŁOŚĆ nowej treści (a nie ostatni ekran), reaguje wg protokołu współpracy; limit czasu → raport do Ozzy'ego zamiast głuchego wiszenia.
+
+**d) Twarde zasady interakcji** (do `SKILL.md` + wymuszone w skryptach, gdzie się da):
+- przed scrollem/klikiem ustal focus; scroll nad środkiem obszaru TREŚCI, nigdy przy focusie w composerze;
+- scroll myszą nie działa → PageUp/PageDown; zakaz klikania w input "żeby scrollować";
+- zero deklaracji "przeczytałem" bez dowodu (transkrypt/stitch/hash stabilny).
 
 ### 3. launch.json
 - `cockpit-static`: port 41800 → **41801** (sam serwer statyczny; panel do API łączy się z 41800 daemona niezależnie od portu serwowania).
@@ -47,6 +65,8 @@ Nowa sekcja w `SKILL.md` (+ ewentualne poprawki w skryptach, jeśli diff pokaże
 
 1. Lista skilli: jedna pozycja screen-*.
 2. `screen-control/scripts/discover-agents.sh` przechodzi (wykrywa agentów lub czysto raportuje ich brak).
+2a. Odczyt "całości": test na realnym oknie z treścią dłuższą niż ekran — wynik zawiera początek I koniec treści (stitch/transkrypt), nie tylko ostatni ekran.
+2b. Watch: nowa wiadomość od agenta wykryta i przeczytana w całości z logu (Claude/Codex) bez OCR; `wos_ocr` odpala się i zwraca JSON na testowym zrzucie.
 3. `preview_start` cockpit-static wstaje na 41801 przy żywym daemonie na 41800.
 4. Test PTT: przytrzymanie/wyzwolenie dyktowania w Claude Code — działa albo raport z przyczyną.
 5. `git status` w repo jarvis: zmiany tylko w `.claude/launch.json` (+ ewentualnie `.gitignore`), katalog `tts_diag_out` nie istnieje.
