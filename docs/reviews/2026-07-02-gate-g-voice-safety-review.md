@@ -115,7 +115,7 @@ Stan faktyczny:
 | Transkrypty STT (pełny tekst) | `events.payload_json` przy `input.voice.transcribed` (`transcription.py:144`) | bez limitu |
 | Teksty TTS (pełny tekst) | `voice_queue.text` (`schema.sql`, wpisy `done/cancelled/failed` zostają) | bez limitu |
 | Surowe audio WAV (STT/TTS/playback) | `~/.jarvis/runtime/voice/*.wav`, `0600` | sekundy — `unlink` w `finally` (`stt.py:109`, `tts.py:206,243`) |
-| Odrzucone transkrypty (junk) | logi `~/.jarvis/logs/` — `transcription.py:121` loguje pełny tekst | wg rotacji logów |
+| Odrzucone transkrypty (junk) | logi `~/.jarvis/logs/` — `transcription.py:121` loguje pełny tekst | rotacja `jarvisd.log` (FIX-11: `SecureRotatingFileHandler`, `daemon.log_max_bytes`/`log_backup_count`, domyślnie ~60 MiB; runbook `docs/runbooks/LAUNCHD.md`) |
 
 - Event store redaguje sekrety w payloadach przed INSERT; **logi Pythona
   nie mają redakcji** — junk transcript idzie do pliku logu verbatim.

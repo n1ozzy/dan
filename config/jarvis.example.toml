@@ -3,6 +3,12 @@ name = "jarvisd"
 host = "127.0.0.1"
 port = 41741
 log_level = "INFO"
+# jarvisd.log rotation (FIX-11). Caps the always-on daemon log at
+# log_max_bytes per file, keeping log_backup_count rotated files.
+# Default ceiling ≈ 60 MiB (1 active + 5 backups × 10 MiB).
+# Set log_max_bytes = 0 to disable rotation.
+log_max_bytes = 10485760
+log_backup_count = 5
 
 [database]
 path = "~/.jarvis/jarvis.db"

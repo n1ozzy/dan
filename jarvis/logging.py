@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging as stdlib_logging
 import re
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from typing import IO
 
 from jarvis.config import JarvisConfig
 from jarvis.paths import (
@@ -32,6 +35,22 @@ class RedactingFormatter(stdlib_logging.Formatter):
         return redact_secrets(rendered)
 
 
+class SecureRotatingFileHandler(RotatingFileHandler):
+    """`RotatingFileHandler` that keeps every log file owner-only (0600).
+
+    FIX-10 secured `jarvisd.log` to 0600, but a plain rotation reopens the base
+    file with umask perms (0644 on macOS) — leaking log bodies that carry
+    unredacted junk transcripts (Gate G review §6). Rotated backups are renamed
+    from the already-0600 active file so they inherit 0600; the only file that
+    needs re-securing is the freshly opened base file, done here on every open.
+    """
+
+    def _open(self) -> IO[str]:
+        stream = super()._open()
+        secure_path(Path(self.baseFilename), RUNTIME_FILE_MODE)
+        return stream
+
+
 def configure_logging(config: JarvisConfig, paths: RuntimePaths | None = None) -> stdlib_logging.Logger:
     """Configure Jarvis console and file logging without starting runtime services."""
 
@@ -49,11 +68,17 @@ def configure_logging(config: JarvisConfig, paths: RuntimePaths | None = None) -
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    file_handler = stdlib_logging.FileHandler(runtime_paths.log_file, encoding="utf-8")
+    # Rotate the always-on daemon log so it can't grow without bound (FIX-11).
+    # Logs can carry redacted-but-sensitive context, so the handler keeps every
+    # file owner-only (0600) across rotation — see SecureRotatingFileHandler.
+    file_handler = SecureRotatingFileHandler(
+        runtime_paths.log_file,
+        maxBytes=config.daemon.log_max_bytes,
+        backupCount=config.daemon.log_backup_count,
+        encoding="utf-8",
+    )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
-    # Logs can carry redacted-but-sensitive context: owner-only, not 0644.
-    secure_path(runtime_paths.log_file, RUNTIME_FILE_MODE)
 
     return logger
 

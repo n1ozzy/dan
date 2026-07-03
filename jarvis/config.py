@@ -36,6 +36,11 @@ class DaemonConfig:
     host: str = "127.0.0.1"
     port: int = 41741
     log_level: str = "INFO"
+    # jarvisd.log rotation (FIX-11): the daemon is always-on (launchd RunAtLoad)
+    # so a plain FileHandler would grow without bound. Defaults cap the log at
+    # ~60 MiB (1 active + 5 rotated × 10 MiB). max_bytes=0 disables rotation.
+    log_max_bytes: int = 10 * 1024 * 1024
+    log_backup_count: int = 5
 
 
 @dataclass(frozen=True)
