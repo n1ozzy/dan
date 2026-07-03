@@ -1277,6 +1277,12 @@ function setBusy(button, busy) {
 }
 
 function setText(node, value) {
+  // A missing/commented-out element (getElementById -> null) must NOT throw and
+  // abort the whole status refresh — that once left the state pill stuck on
+  // "unknown" while the daemon was healthy. Optional UI stays optional.
+  if (!node) {
+    return;
+  }
   node.textContent = displayValue(value);
 }
 
