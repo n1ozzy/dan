@@ -335,17 +335,18 @@ def test_one_input_creates_one_persisted_turn_and_final_text_survives_reload(
     assert app.conn is not None
     assert table_count(app.conn, "turns") == 1
     turn_id = str(payload["turn_id"])
-    close_quietly(app.conn)
-    app.conn = sqlite3.connect(app.paths.db_path)
-    app.conn.row_factory = sqlite3.Row
-
-    row = app.conn.execute(
-        "SELECT id, final_text, brain_adapter, brain_model FROM turns WHERE id = ?",
-        (turn_id,),
-    ).fetchone()
-    assert row["final_text"] == "Jarvis mock response: Persist me"
-    assert row["brain_adapter"] == "mock"
-    assert row["brain_model"] == "mock-local"
+    reload_conn = sqlite3.connect(app.paths.db_path)
+    reload_conn.row_factory = sqlite3.Row
+    try:
+        row = reload_conn.execute(
+            "SELECT id, final_text, brain_adapter, brain_model FROM turns WHERE id = ?",
+            (turn_id,),
+        ).fetchone()
+        assert row["final_text"] == "Jarvis mock response: Persist me"
+        assert row["brain_adapter"] == "mock"
+        assert row["brain_model"] == "mock-local"
+    finally:
+        close_quietly(reload_conn)
 
 
 def test_conversation_is_created_when_omitted_and_existing_id_is_reused(app: DaemonApp) -> None:
