@@ -85,6 +85,7 @@ from jarvis.memory import MemoryError
 from jarvis.tools.registry import ToolRegistryError
 from jarvis.turns.models import ConversationRepositoryError, TurnRepositoryError
 from jarvis.turns.orchestrator import TurnOrchestratorBusyError, TurnOrchestratorError
+from jarvis.voice.listening import ListeningLeaseError
 
 
 MAX_REQUEST_BODY_BYTES = 1_048_576
@@ -493,6 +494,9 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         _write_json(handler, 400, {"error": str(exc), "status": 400})
     except VoiceDisabledError as exc:
         _write_json(handler, 409, {"error": str(exc), "status": 409})
+    except ListeningLeaseError as exc:
+        # Unknown listening source/mode is bad client input, not a fault (FIX-17).
+        _write_json(handler, 400, {"error": str(exc), "status": 400})
     except DaemonAppNotStartedError as exc:
         _write_json(handler, 503, {"error": str(exc), "status": 503})
     except DaemonAppBusyError as exc:

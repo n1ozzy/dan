@@ -296,5 +296,30 @@ def test_ptt_lifecycle_through_the_api(tmp_path: Path) -> None:
         daemon_app.close()
 
 
+def test_ptt_unknown_source_is_bad_request(tmp_path: Path) -> None:
+    # An unknown `source` is bad client input, not a server fault: the
+    # ListeningLeaseError acquire() raises must map to 400, not 500 (FIX-17).
+    from tests.test_api_smoke import request_json, running_server
+
+    daemon_app = _daemon(tmp_path, voice_enabled=True)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/voice/ptt/down",
+                {"source": "nope"},
+            )
+            assert status == 400, payload
+            assert "nope" in payload["error"]
+
+            # A valid source still succeeds — no regression.
+            status, ok = request_json(
+                "POST", f"{base_url}/voice/ptt/down", {"source": "ptt"}
+            )
+            assert status == 200, ok
+    finally:
+        daemon_app.close()
+
+
 def test_schema_and_migrations_are_unchanged() -> None:
     assert_schema_and_migrations_unchanged(ROOT)
