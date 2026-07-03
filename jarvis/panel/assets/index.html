@@ -66,16 +66,40 @@
             <button id="refreshMemoryButton" type="button" class="ghost">Odśwież</button>
           </div>
           <p class="muted section-desc">
-            Aktywne bloki trafiają do kontekstu mózgu przy każdej turze; tutaj
-            je tworzysz, zmieniasz im priorytet i wyłączasz.
+            Pamięć to notatki, które Jarvis czyta na starcie każdej rozmowy.
+            Wyższy priorytet = notatka ważniejsza (wchodzi do kontekstu przed
+            innymi). Wyłączona notatka zostaje w bazie, ale Jarvis jej nie widzi.
           </p>
-          <form id="memoryForm" class="memory-form">
-            <input id="memoryKind" type="text" value="fact" aria-label="Rodzaj bloku pamięci" />
-            <input id="memoryTitle" type="text" placeholder="Tytuł" aria-label="Tytuł bloku pamięci" />
-            <input id="memoryPriority" type="number" value="0" aria-label="Priorytet bloku pamięci" />
-            <textarea id="memoryBody" rows="2" placeholder="Treść" aria-label="Treść bloku pamięci"></textarea>
-            <button id="createMemoryButton" type="submit">Utwórz</button>
-          </form>
+          <details class="memory-new">
+            <summary>+ Nowa notatka</summary>
+            <form id="memoryForm" class="memory-form">
+              <label class="field-label">
+                <span>Rodzaj</span>
+                <select id="memoryKind">
+                  <option value="fact">Fakt</option>
+                  <option value="user_preference">Preferencja</option>
+                  <option value="project">Projekt</option>
+                  <option value="identity">Tożsamość</option>
+                  <option value="summary">Podsumowanie</option>
+                  <option value="temporary">Tymczasowe</option>
+                </select>
+              </label>
+              <label class="field-label">
+                <span>Tytuł</span>
+                <input id="memoryTitle" type="text" placeholder="krótka nazwa, po której poznasz notatkę" />
+              </label>
+              <label class="field-label">
+                <span>Treść</span>
+                <textarea id="memoryBody" rows="3" placeholder="to dokładnie przeczyta model"></textarea>
+              </label>
+              <label class="field-label">
+                <span>Priorytet</span>
+                <input id="memoryPriority" type="number" value="0" />
+                <small class="field-hint">0 = zwykła; wyżej = ważniejsza</small>
+              </label>
+              <button id="createMemoryButton" type="submit" class="primary">Utwórz notatkę</button>
+            </form>
+          </details>
           <div id="memoryList" class="list"></div>
           <pre id="memoryError" class="error-box" hidden></pre>
         </section>

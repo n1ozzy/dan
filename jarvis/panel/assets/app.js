@@ -136,6 +136,21 @@ function riskTier(risk) {
   return RISK_TIERS[key] || "write";
 }
 
+// Rodzaje bloków pamięci po polsku (MEMORY_KINDS w daemonie).
+const MEMORY_KIND_LABELS = {
+  identity: "Tożsamość",
+  user_preference: "Preferencja",
+  project: "Projekt",
+  fact: "Fakt",
+  summary: "Podsumowanie",
+  temporary: "Tymczasowe",
+};
+
+function memoryKindLabel(kind) {
+  const key = typeof kind === "string" ? kind : "";
+  return MEMORY_KIND_LABELS[key] || key || "notatka";
+}
+
 const el = {};
 
 // Relative labels ("2 min temu") drift while the panel sits open; refresh
@@ -737,19 +752,29 @@ function renderMemory(blocks) {
   for (const block of blocks) {
     const row = document.createElement("article");
     row.className = "list-row";
-    appendLine(row, `${block.kind || "memory"} - priorytet ${block.priority ?? 0}`, "muted");
-    appendLine(row, block.title || shortId(block.id), "input-line");
-    appendLine(row, block.body || "", "final-line");
 
-    // Pochodzenie bloku: kto zaproponował i kto promował (auto-pamięć przez
-    // approvals) — bez tego nie widać, które notatki wpisał model.
+    appendLine(row, block.title || shortId(block.id), "input-line");
+    if (block.body) {
+      appendLine(row, block.body, "final-line");
+    }
+
+    // Chipy: rodzaj po ludzku + priorytet — na jedno spojrzenie widać wagę.
+    const chips = document.createElement("div");
+    chips.className = "mem-chips";
+    const kindChip = document.createElement("span");
+    kindChip.className = "mem-chip";
+    setText(kindChip, memoryKindLabel(block.kind));
+    const priorityChip = document.createElement("span");
+    priorityChip.className = "mem-chip";
+    setText(priorityChip, `priorytet ${block.priority ?? 0}`);
+    chips.append(kindChip, priorityChip);
+    row.appendChild(chips);
+
+    // Pochodzenie bloku po ludzku: kto zaproponował i kto zatwierdził
+    // (auto-pamięć przez zgody) — bez tego nie widać, które notatki wpisał model.
     const metadata = block.metadata || {};
     if (metadata.proposed_by || metadata.promoted_by) {
-      appendLine(
-        row,
-        `proposed_by: ${metadata.proposed_by || "n/a"} · promoted_by: ${metadata.promoted_by || "n/a"}`,
-        "muted",
-      );
+      appendLine(row, memorySourceLine(metadata), "muted");
     }
 
     const actions = document.createElement("div");
@@ -800,6 +825,23 @@ function renderMemory(blocks) {
     row.appendChild(actions);
     el.memoryList.appendChild(row);
   }
+}
+
+// Pochodzenie notatki po ludzku: „zaproponował: model · zatwierdził:
+// zatwierdzenie w panelu” zamiast surowego proposed_by/promoted_by.
+function memorySourceLine(metadata) {
+  const parts = [];
+  if (metadata.proposed_by) {
+    parts.push(`zaproponował: ${requesterLabel(metadata.proposed_by)}`);
+  }
+  if (metadata.promoted_by) {
+    const who =
+      metadata.promoted_by === "approval"
+        ? "zgoda w panelu"
+        : requesterLabel(metadata.promoted_by);
+    parts.push(`zatwierdził: ${who}`);
+  }
+  return parts.join(" · ");
 }
 
 async function refreshToolsAndApprovals() {

@@ -1002,15 +1002,71 @@ details.card.collapsible[open] summary::after {
   font-size: 12px;
 }
 
+/* Nowa notatka schowana za rozwijanym „+ Nowa notatka”; lista + przycisk
+   widoczne od razu, formularz na żądanie. */
+.memory-new {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.memory-new summary {
+  padding: 9px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.memory-new summary::-webkit-details-marker {
+  display: none;
+}
+
+.memory-new[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+
 .memory-form {
   display: grid;
-  grid-template-columns: 1fr 1fr 62px;
+  gap: 8px;
+  padding: 12px;
+}
+
+/* Pola z widocznymi labelami nad inputem — nie gołe placeholdery. */
+.field-label {
+  display: grid;
+  gap: 4px;
+}
+
+.field-label > span {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Chipy bloku pamięci: rodzaj + priorytet, spokojna szarość. */
+.mem-chips {
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
-.memory-form textarea,
-.memory-form button {
-  grid-column: 1 / -1;
+.mem-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(139, 155, 176, 0.12);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
 }
 
 .brain-switch-line {

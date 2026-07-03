@@ -366,6 +366,32 @@ def test_memory_rows_expose_priority_and_disable_actions() -> None:
     assert "Wyłącz" in script
 
 
+def test_memory_view_is_obvious_on_arrival() -> None:
+    # Redesign zad. 5: człowiek pierwszy raz na zakładce wie, co to jest i co
+    # wpisać. Formularz schowany za „+ Nowa notatka”; pola mają labele; rodzaj
+    # to select ze znanymi wartościami (MEMORY_KINDS), nie gołe pole.
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    # Formularz w rozwijanym <details> — domyślnie widać listę + przycisk.
+    assert "memory-new" in markup
+    assert "Nowa notatka" in markup
+
+    # Rodzaj jako select z realnymi wartościami z daemona (MEMORY_KINDS).
+    assert "<select id=\"memoryKind\"" in markup
+    for kind in ("identity", "user_preference", "project", "fact", "summary", "temporary"):
+        assert f'value="{kind}"' in markup, kind
+
+    # Pola mają widoczne labele, nie tylko placeholdery.
+    assert "field-label" in markup
+    assert "field-label" in styles
+
+    # Ludzkie nazwy rodzaju + pochodzenie po polsku na blokach listy.
+    assert "MEMORY_KIND_LABELS" in script
+    assert "zaproponował" in script
+
+
 def test_composer_has_voice_mode_switch() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
