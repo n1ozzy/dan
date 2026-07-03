@@ -261,6 +261,31 @@ ZADANIE (audyt + rekomendacja, minimum zmian): 1) Ustal, czy lokalna instalacja 
 
 ---
 
+## - [x] FIX-16 · Panel file:// odcięty od daemona przez CORS (regresja FIX-01) 🟠 HIGH — DONE `79fa80a`
+
+- **Pliki:** `jarvis/panel/menubar_app.py` (`_build_popover`), przyczyna w `jarvis/daemon/lifecycle.py:92` (`ALLOWED_CORS_ORIGINS`)
+- **Problem (znalezione 2026-07-03, live):** natywny panel to WKWebView ładowany z `file://` → `Origin: null`. FIX-01 (`884d500`) usunął `null` z `ALLOWED_CORS_ORIGINS` (słusznie — złośliwa strona `file://` nie ma czytać jarvisd), ale **panel też jest `file://`** → wszystkie jego fetche do 41741 CORS-blocked → panel ładuje się, ale ślepy na dane („panel jest, ale nie działa"). Dowód: `curl -H "Origin: null" .../state` = brak `Access-Control-Allow-Origin`; origin `41800` (dev-preview) = dostaje. **Panel nie działał dla nikogo od czasu FIX-01.**
+- **Fix (zrobiony):** `allowUniversalAccessFromFileURLs` + `allowFileAccessFromFileURLs` na `WKWebViewConfiguration` (KVC, guarded) — ten JEDEN zaufany WebView omija CORS lokalnie; daemon `ALLOWED_CORS_ORIGINS` **zostaje szczelny** (prawdziwe przeglądarki dalej blokowane). NIE dotyka lifecycle.py.
+- **DoD:** panel z `file://` dostaje dane z daemona; CORS daemona bez zmian; testy panelu zielone (33). Weryfikacja finalna = wizualna (WKWebView runtime, nie z bash).
+
+## - [ ] FIX-17 · Zły `source`/`mode` w /voice/* → 500 zamiast 400 🟡 MED
+
+- **Pliki:** `jarvis/daemon/lifecycle.py` (blok `except`, ~l.484-509), `jarvis/voice/listening.py` (`ListeningLeaseError`)
+- **Problem (znalezione 2026-07-03):** `POST /voice/ptt/down` z nieznanym `source` (np. `"panel-test"`) albo `mode` rzuca `ListeningLeaseError` z `ListeningLeaseManager.acquire`. Ten wyjątek **nie jest** w liście `except` w `handle_request` (lifecycle.py) → leci jako niezłapany → **500 Internal Server Error** zamiast **400 Bad Request**. Zły input klienta nie powinien wyglądać jak awaria serwera. Panel wysyła poprawny `source="ptt"`, więc go nie dotyka — ale to defekt kontraktu API.
+- **Fix:** dodać `except ListeningLeaseError as exc: _write_json(handler, 400, {"error": str(exc), "status": 400})` (import z `jarvis.voice.listening`). Uwaga: `lifecycle.py` bywa gorącym plikiem (FIX-06/07) — zrób na czystym drzewie.
+- **Testy:** POST /voice/ptt/down z `source="nope"` → 400 (nie 500); poprawny `source="ptt"` → 200 bez regresji.
+- **DoD:** zły source/mode → 400 z czytelnym błędem; poprawny → 200; test celowany zielony.
+- **Estymat:** ~15–20 min · **Zależności:** brak (czyste drzewo lifecycle.py).
+
+```text
+Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz FIX-17 z FIXME.md.
+ZASADY: preflight tanio; TDD (test przed fixem); NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu celowany test + commit + odhacz FIX-17.
+PROBLEM (kontrakt API, MED): POST /voice/ptt/{down,up} i /voice/listen/{lock,unlock} z nieznanym source (nie w ALLOWED_SOURCES = ptt/global_hotkey/lock) albo mode rzuca ListeningLeaseError (jarvis/voice/listening.py) w app.acquire_listening_lease -> ListeningLeaseManager.acquire. Ten wyjątek NIE jest łapany w handle_request w jarvis/daemon/lifecycle.py (blok except ~l.484-509) -> niezłapany -> 500 zamiast 400.
+ZADANIE: Zweryfikuj aktualną linię (mogła się przesunąć). Napisz test: POST /voice/ptt/down z source="nope" -> 400 (obecnie 500). Potem dodaj `except ListeningLeaseError` mapujący na 400 z {"error": str(exc), "status": 400} (import ListeningLeaseError z jarvis.voice.listening), w spójnej kolejności z innymi except. Potwierdź że poprawny source="ptt" -> 200 bez regresji. Celowany test API/voice, bez pełnej matrycy.
+```
+
+---
+
 ## Podsumowanie pokrycia
 
 | Tier | Taski | Findingi | Estymat |
