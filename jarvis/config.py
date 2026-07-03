@@ -89,6 +89,13 @@ class VoiceConfig:
     default_tts: str = "mock"
     default_stt: str = "mock"
     ptt_mode: str = "hold"
+    # Global push-to-talk hotkey held anywhere on the desktop (source
+    # "global_hotkey"). Empty = no global hotkey (panel button still works).
+    # Spec is a "+"-joined set of side-qualified modifiers, e.g.
+    # "left_cmd+left_shift" (see jarvis/panel/hotkey.py). The panel's native
+    # shell watches these keys and drives /voice/ptt/{down,up}; it needs
+    # macOS Accessibility permission to observe keys outside its own window.
+    ptt_hotkey: str = ""
     queue_persisted: bool = True
     recorder: str = "mock"
     # sox recorder (G4a): leases decide WHEN it runs, the AudioDeviceManager
