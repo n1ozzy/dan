@@ -24,10 +24,10 @@ textarea {
 }
 
 button {
-  min-height: 30px;
+  min-height: 24px;
   border: 1px solid #3f4b5c;
-  border-radius: 6px;
-  padding: 5px 9px;
+  border-radius: 8px;
+  padding: 6px 12px;
   background: #202a36;
   color: #f4f7fb;
   cursor: pointer;
@@ -49,18 +49,18 @@ select,
 textarea {
   width: 100%;
   border: 1px solid #344253;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 6px 8px;
   background: #101722;
   color: #edf1f7;
 }
 
 select {
-  min-height: 30px;
+  min-height: 32px;
 }
 
 textarea {
-  min-height: 52px;
+  min-height: 64px;
   resize: vertical;
 }
 
@@ -69,10 +69,10 @@ textarea {
   min-height: min(100vh, 760px);
   max-height: 100vh;
   margin: 0 auto;
-  padding: 10px;
+  padding: 12px;
   overflow-y: auto;
   display: grid;
-  gap: 8px;
+  gap: 12px;
   background: #121821;
   border-inline: 1px solid #263241;
 }
@@ -87,7 +87,7 @@ textarea {
   gap: 8px;
   padding: 8px;
   border: 1px solid #2b394a;
-  border-radius: 8px;
+  border-radius:12px;
   background: #151d28;
 }
 
@@ -168,10 +168,10 @@ h2 {
 
 .card {
   display: grid;
-  gap: 7px;
-  padding: 8px;
+  gap: 6px;
+  padding: 12px;
   border: 1px solid #273446;
-  border-radius: 8px;
+  border-radius: 12px;
   background: #151d28;
 }
 
@@ -200,7 +200,7 @@ body.show-advanced .card.advanced {
 }
 
 .ptt-button {
-  min-height: 54px;
+  min-height: 32px;
   font-weight: 650;
   touch-action: none;
   user-select: none;
@@ -305,10 +305,10 @@ body.show-advanced .card.advanced {
   width: 100%;
   min-width: 0;
   display: grid;
-  gap: 3px;
-  padding: 7px;
+  gap: 4px;
+  padding: 8px;
   border: 1px solid #263445;
-  border-radius: 7px;
+  border-radius: 8px;
   background: #101722;
   color: #edf1f7;
   text-align: left;
@@ -352,8 +352,8 @@ button.list-row {
 }
 
 .small-button {
-  min-height: 28px;
-  padding: 4px 7px;
+  min-height: 24px;
+  padding: 4px 8px;
   font-size: 12px;
 }
 
@@ -371,8 +371,8 @@ button.list-row {
 .error-box {
   max-height: 130px;
   overflow: auto;
-  border-radius: 7px;
-  padding: 7px;
+  border-radius: 8px;
+  padding: 8px;
   font-size: 12px;
   line-height: 1.35;
   white-space: pre-wrap;

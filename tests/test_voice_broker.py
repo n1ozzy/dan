@@ -51,7 +51,7 @@ def voice_config(**overrides) -> SimpleNamespace:
         "speak_responses": True,
         "broker_enabled": True,
         "default_tts": "mock",
-        "fillers": ["Już sprawdzam.", "Chwila."],
+        "fillers": ["A spierdalaj...","Już sprawdzam.", "Chwila."],
         "filler_after_ms": 50,
         "min_sentence_chars": 12,
     }
@@ -360,7 +360,7 @@ def test_filler_fires_once_when_generation_is_slow(db_path: Path) -> None:
     ).fetchall()
     close_quietly(conn)
     assert len(rows) == 1
-    assert rows[0][0] in ("Już sprawdzam.", "Chwila.")
+    assert rows[0][0] in ("A spierdalaj...","Już sprawdzam.")
     assert '"kind": "filler"' in rows[0][1]
     assert rows[0][2] == "interruptible"
 

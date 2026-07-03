@@ -37,7 +37,7 @@ def voice_config(**overrides) -> SimpleNamespace:
         "enabled": True,
         "speak_responses": True,
         "broker_enabled": False,
-        "fillers": ["Już sprawdzam."],
+        "fillers": ["A spierdalaj..."],
         "filler_after_ms": 50,
         "min_sentence_chars": 12,
     }

@@ -118,9 +118,8 @@ When generation is slow, silence is the enemy. Fillers are the compromise —
 short canned utterances that buy time without pretending to be an answer:
 
 - Trigger: no first sentence chunk within `voice.filler_after_ms` (default
-  1200) of `brain.requested` for a turn that will be spoken.
-- Pool: `voice.fillers` config list (Polish, persona-neutral, e.g. "Już
-  sprawdzam.", "Chwila."). Data, not code; Ozzy tunes it in TOML.
+  800) of `brain.requested` for a turn that will be spoken.
+- Pool: `voice.fillers` config list (Polish, persona-neutral, e.g. "A spierdalaj...", "Chwila."). Data, not code; Ozzy tunes it in TOML.
 - Hard limits: **at most one** filler per turn; never after the first real
   sentence was queued; never when voice is disabled; never for worker jobs
   (workers are silent — ADR-009); never for turns that immediately park in

@@ -66,7 +66,7 @@ def voice_config(**overrides) -> SimpleNamespace:
         "enabled": True,
         "speak_responses": True,
         "broker_enabled": False,
-        "fillers": ["Już sprawdzam."],
+        "fillers": ["A spierdalaj..."],
         "filler_after_ms": 60_000,  # never fires unless a test wants it
         "min_sentence_chars": 12,
     }

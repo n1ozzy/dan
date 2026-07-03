@@ -184,11 +184,11 @@ def test_claim_next_plays_a_filler_before_its_turns_sentences(conn) -> None:
     # AFTER the first sentence by rowid — but seq keeps it first within its turn.
     q = queue(conn)
     q.enqueue(text="Pierwsze prawdziwe zdanie.", turn_id="turn-a", seq=0)
-    q.enqueue(text="Już sprawdzam.", turn_id="turn-a", kind="filler", seq=-1)
+    q.enqueue(text="A spierdalaj...", turn_id="turn-a", kind="filler", seq=-1)
 
     first = q.claim_next()
 
-    assert first.text == "Już sprawdzam."
+    assert first.text == "A spierdalaj..."
 
 
 def test_enqueue_refuses_a_tombstoned_turn(conn) -> None:

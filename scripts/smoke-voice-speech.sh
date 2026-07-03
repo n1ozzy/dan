@@ -132,7 +132,7 @@ ptt_mode = "hold"
 queue_persisted = true
 recorder = "mock"
 filler_after_ms = 800
-fillers = ["Już sprawdzam."]
+fillers = ["A spierdalaj."]
 
 [audio]
 enabled = false

@@ -162,8 +162,8 @@ class VoiceConfig:
     # Daemon-side lease TTL enforcement (FIX-04b): how often the sweeper
     # expires stale leases when the client never calls release().
     lease_sweep_interval_seconds: float = 5.0
-    fillers: tuple[str, ...] = ("Już sprawdzam.", "Chwila.")
-    filler_after_ms: int = 1200
+    fillers: tuple[str, ...] = ("A spierdalaj...","Już sprawdzam.", "Chwila.")
+    filler_after_ms: int = 800
     min_sentence_chars: int = 12
     # Supertonic (decree §7.3; defaults from Ozzy's audition + live inventory
     # 2026-07-02). Empty binary = auto-detect (venv bin next to python, PATH).

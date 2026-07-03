@@ -26,8 +26,8 @@ from jarvis.voice.queue import VoiceQueue
 
 _LOGGER = get_logger("voice.speech")
 
-DEFAULT_FILLER_AFTER_MS = 1200
-DEFAULT_FILLERS = ("Już sprawdzam.", "Chwila.")
+DEFAULT_FILLER_AFTER_MS = 800
+DEFAULT_FILLERS = ("A spierdalaj...","Już sprawdzam.", "Chwila.")
 
 
 class FillerTimer:
