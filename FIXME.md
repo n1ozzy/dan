@@ -168,19 +168,19 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 
 # TIER 3 — MIŁO MIEĆ (≈ 1–2 dni) — dług operacyjny, rób przy okazji
 
-## - [ ] FIX-11 · Rotacja logów 🟡 MED
+## - [x] FIX-11 · Rotacja logów 🟡 MED — DONE `e9533e4`
 
-- **Pliki:** `jarvis/logging.py:46`
-- **Problem:** brak rotacji dla always-on (`RunAtLoad`) daemona; gate review powołuje się na rotację, której nie ma.
-- **Fix:** `RotatingFileHandler`/`TimedRotatingFileHandler` (maxBytes+backupCount) dla `jarvisd.log`; udokumentuj rotację stdout/stderr launchd (newsyslog); popraw referencję w Gate G review.
+**DONE `e9533e4` (TDD, deterministyczne testy bez sprzętu; celowane zielone: test_logging_rotation 3 + logging/config/redakcja 51):**
+- **Weryfikacja linii:** finding wskazywał `jarvis/logging.py:46`, ale to `RedactingFormatter` — realny brak rotacji był na `:52` (goły `FileHandler`). Referencja poprawiona.
+- **Rotacja:** `SecureRotatingFileHandler` (podklasa `RotatingFileHandler`) na `jarvisd.log`, sterowany knobami `daemon.log_max_bytes` (10 MiB) / `log_backup_count` (5) → sufit ~60 MiB; `max_bytes=0` wyłącza rotację. To in-process cap jest realnym ogranicznikiem dysku, bo daemon jest `RunAtLoad` i nie restartuje się sam.
+- **Perms (regresja FIX-10):** goła rotacja reotwierałaby plik bazowy z umask (0644) → wyciek ciała logu (junk transcripts bez redakcji, Gate G §6). Handler re-aplikuje `RUNTIME_FILE_MODE` (0600) w `_open` na każdym otwarciu; backupy dziedziczą 0600 po rename z już-0600 aktywnego. Usunięty redundantny zewnętrzny `secure_path` (jedno źródło prawdy dla permów logu). Test wymusza rollover i asertuje 0600 na `.1` + aktywnym.
+- **Dokumentacja:** `docs/runbooks/LAUNCHD.md` — sekcja „Log rotation": tabela 3 plików, `jarvisd.log` in-process (nasz handler), `jarvisd.{out,err}.log` (launchd StandardOut/ErrorPath) opcjonalnie przez newsyslog + caveat o otwartym fd launchd (rename nie odpina fd bez `kickstart -k`); te out/err rosną minimalnie (tylko stray stdout/pre-logging traceback). Gate G review linia retencji uściślona. Knoby w `config/jarvis.example.toml`.
+- **[PROMPT wykonany — przycięty przy DONE.]**
+
+- **Pliki:** `jarvis/logging.py:52` (goły `FileHandler` — brak rotacji), `jarvis/config.py` (`DaemonConfig` knoby)
+- **Problem:** brak rotacji dla always-on (`RunAtLoad`) daemona; gate review powoływał się na rotację, której nie było.
+- **Fix:** `RotatingFileHandler` (maxBytes+backupCount) dla `jarvisd.log`; udokumentowana rotacja stdout/stderr launchd (newsyslog); poprawiona referencja w Gate G review.
 - **Estymat:** ~1h.
-
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-11 z FIXME.md (MED, rotacja logów).
-ZASADY: preflight tanio; TDD; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu pytest + commit + odhacz FIX-11.
-PROBLEM: jarvis/logging.py ~46 — brak jakiejkolwiek rotacji logów dla always-on daemona (launchd RunAtLoad); dodatkowo gate review powołuje się na rotację, która nie istnieje → log rośnie bez ograniczeń.
-ZADANIE: Zweryfikuj linię. Test + fix: dodaj RotatingFileHandler lub TimedRotatingFileHandler (maxBytes + backupCount) dla jarvisd.log; udokumentuj rotację stdout/stderr launchd (newsyslog lub krok rotate); popraw/uściślij referencję do rotacji w Gate G review (docs/). pytest.
-```
 
 ## - [ ] FIX-12 · Minimalne CI 🟡 (dług, brak egzekucji „zielone co krok")
 
