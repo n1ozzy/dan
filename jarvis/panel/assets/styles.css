@@ -14,7 +14,7 @@
   --line-strong: #2a3a4d;
   --text: #e6edf5;
   --text-dim: #8b9bb0;
-  --text-faint: #64748b;
+  --text-faint: #7b8aa0;
 
   --accent: #2dd4bf;
   --accent-soft: rgba(45, 212, 191, 0.12);
@@ -272,6 +272,17 @@ button:disabled {
   opacity: 0.45;
 }
 
+/* Widoczny fokus z klawiatury — zmiana obrysu przycisku to za mało. */
+button:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+}
+
+::selection {
+  background: rgba(45, 212, 191, 0.28);
+}
+
 button.ghost {
   background: transparent;
   border-color: var(--line);
@@ -373,6 +384,8 @@ textarea {
   align-self: flex-start;
   border-bottom-left-radius: 4px;
   border: 1px solid var(--line);
+  /* Kręgosłup w kolorze Jarvisa: dymki asystenta mają jego barwę. */
+  border-left: 2px solid rgba(45, 212, 191, 0.4);
   background: var(--jarvis-bubble);
   color: #d9e2ee;
 }
@@ -418,6 +431,10 @@ textarea {
 }
 
 .ptt-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   min-height: 32px;
   font-weight: 650;
   touch-action: none;
@@ -430,6 +447,73 @@ textarea {
   background: #0e3a34;
   color: #99f6e4;
   box-shadow: 0 0 14px rgba(45, 212, 191, 0.35);
+}
+
+/* Fala głosu: słupki ożywają tylko, gdy mikrofon naprawdę zbiera (hold). */
+.wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+
+.wave i {
+  display: block;
+  width: 2px;
+  height: 5px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.85;
+}
+
+.ptt-button.talking .wave i {
+  animation: wave-bounce 0.9s ease-in-out infinite;
+}
+
+.ptt-button.talking .wave i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.ptt-button.talking .wave i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.ptt-button.talking .wave i:nth-child(4) {
+  animation-delay: 0.45s;
+}
+
+@keyframes wave-bounce {
+  0%,
+  100% {
+    height: 5px;
+  }
+  50% {
+    height: 14px;
+  }
+}
+
+/* Offline: kompozytor wyraźnie wygaszony — kontrolki i tak są disabled. */
+body.offline .composer {
+  opacity: 0.55;
+}
+
+/* Jeden komunikat offline z akcją, wycentrowany w pustym logu czatu. */
+.offline-hero {
+  margin: auto;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  max-width: 280px;
+  text-align: center;
+}
+
+.offline-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--red);
 }
 
 /* --- Karty ops -------------------------------------------------------------------- */
@@ -684,30 +768,60 @@ details.card.collapsible[open] summary::after {
   color: var(--accent);
 }
 
-.result-box,
 .error-box {
   max-height: 130px;
   overflow: auto;
   border-radius: 8px;
   padding: 8px;
+  border: 1px solid #67333b;
+  color: #fecdd3;
+  background: #241117;
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.4;
   white-space: pre-wrap;
 }
 
-.error-box {
-  border: 1px solid #67333b;
-  color: #fecdd3;
-  background: #241117;
+/* Dane liczbowe (czasy, liczniki) w mono z cyframi tabelarycznymi. */
+.hud-item,
+.chat-meta,
+.kv-list,
+.state-pill,
+.approvals-badge {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dyskretne scrollbary wewnętrznych stref. */
+.chat-log::-webkit-scrollbar,
+.ops-column::-webkit-scrollbar,
+.compact-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-log::-webkit-scrollbar-thumb,
+.ops-column::-webkit-scrollbar-thumb,
+.compact-list::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--line-strong);
+}
+
+.chat-log::-webkit-scrollbar-track,
+.ops-column::-webkit-scrollbar-track,
+.compact-list::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* --- Ruch i wąskie okna ------------------------------------------------------------------ */
 
 @media (prefers-reduced-motion: reduce) {
   .approvals-badge,
-  .statusline {
+  .statusline,
+  .ptt-button.talking .wave i {
     animation: none;
+  }
+
+  .ptt-button.talking .wave i {
+    height: 12px;
   }
 
   details.card.collapsible summary::after {

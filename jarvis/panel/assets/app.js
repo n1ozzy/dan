@@ -443,7 +443,7 @@ async function refreshHistory() {
       await refreshTurns(cockpit.selectedConversationId);
       renderConversations(conversations);
     } else if (!cockpit.composingNew) {
-      renderEmpty(el.turnList, "Brak tur");
+      renderEmpty(el.turnList, "Napisz coś poniżej albo przytrzymaj Push To Talk.");
     }
   } catch (error) {
     clearNode(el.conversationSelect);
@@ -540,7 +540,7 @@ function renderTurns(turns) {
   clearNode(el.turnList);
 
   if (turns.length === 0) {
-    renderEmpty(el.turnList, "Brak tur");
+    renderEmpty(el.turnList, "Pusta rozmowa — napisz coś poniżej.");
     return;
   }
 
@@ -1431,6 +1431,21 @@ function setInteractiveEnabled(enabled) {
 
 function clearDynamicSections() {
   setPendingBadge(0);
+  // Nieaktualne błędy sekcji nie mogą wisieć pod świeżym stanem offline —
+  // jedyną diagnozą pozostaje healthError w Zaawansowane → Stan daemona.
+  for (const box of [
+    el.historyError,
+    el.inputError,
+    el.voiceError,
+    el.approvalsError,
+    el.memoryError,
+    el.toolsError,
+    el.settingsError,
+    el.eventsError,
+    el.runtimeError,
+  ]) {
+    clearError(box);
+  }
   clearNode(el.conversationSelect);
   clearNode(el.turnList);
   clearNode(el.memoryList);
@@ -1451,12 +1466,32 @@ function clearDynamicSections() {
   offlineOption.value = "";
   setText(offlineOption, "daemon offline");
   el.conversationSelect.appendChild(offlineOption);
-  renderEmpty(el.turnList, "Daemon offline");
-  renderEmpty(el.memoryList, "Daemon offline");
-  renderEmpty(el.toolList, "Daemon offline");
-  renderEmpty(el.settingsList, "Daemon offline");
-  renderEmpty(el.eventList, "Daemon offline");
-  renderEmpty(el.runtimeObservationList, "Daemon offline");
+  // Jeden mocny komunikat offline z akcją zamiast szarego "Daemon offline"
+  // powtórzonego w każdej sekcji — czerwona ramka i pill niosą resztę.
+  renderOfflineHero();
+  renderEmpty(el.approvalList, "Podgląd zgód niedostępny, dopóki daemon nie wstanie.");
+}
+
+function renderOfflineHero() {
+  clearNode(el.turnList);
+  const hero = document.createElement("div");
+  hero.className = "offline-hero";
+
+  const title = document.createElement("p");
+  title.className = "offline-title";
+  setText(title, "Daemon nie odpowiada");
+
+  const hint = document.createElement("p");
+  hint.className = "offline-hint muted";
+  setText(hint, "Uruchom go w terminalu: jarvis start — panel połączy się sam.");
+
+  const retry = document.createElement("button");
+  retry.type = "button";
+  setText(retry, "Spróbuj teraz");
+  retry.addEventListener("click", refreshAll);
+
+  hero.append(title, hint, retry);
+  el.turnList.appendChild(hero);
 }
 
 function renderKeyValues(node, rows) {
@@ -1630,14 +1665,3 @@ function formatClock(iso) {
   return `${day} ${clock}`;
 }
 
-function turnLabel(count) {
-  if (count === 1) {
-    return "tura";
-  }
-  const lastDigit = count % 10;
-  const lastTwo = count % 100;
-  if (lastDigit >= 2 && lastDigit <= 4 && (lastTwo < 12 || lastTwo > 14)) {
-    return "tury";
-  }
-  return "tur";
-}
