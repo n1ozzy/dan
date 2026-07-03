@@ -36,6 +36,16 @@ def app(tmp_path: Path) -> Iterator[DaemonApp]:
         daemon_app.close()
 
 
+def _write_voice_enabled_config(tmp_path: Path) -> Path:
+    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    body = config_path.read_text(encoding="utf-8")
+    body = body.replace("enabled = false", "enabled = true", 1)
+    body = body.replace("speak_responses = false", "speak_responses = true", 1)
+    body = body.replace("broker_enabled = false", "broker_enabled = true", 1)
+    config_path.write_text(body, encoding="utf-8")
+    return config_path
+
+
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
     path = tmp_path / "voice.db"
@@ -143,6 +153,34 @@ def test_daemon_start_wires_lease_sweeper_and_stop_kills_it(app: DaemonApp) -> N
 
     assert not sweeper.is_alive()
     assert app.voice_lease_sweeper is None
+
+
+def test_daemon_close_after_start_cleans_voice_runtime(tmp_path: Path) -> None:
+    daemon_app = create_daemon_app(_write_voice_enabled_config(tmp_path))
+    daemon_app.start()
+    recorder = daemon_app.voice_recorder
+    broker = daemon_app.voice_broker
+    stt = daemon_app.voice_stt
+    gateway = daemon_app.voice_gateway
+    sweeper = daemon_app.voice_lease_sweeper
+    assert isinstance(recorder, MockRecorder)
+    assert broker is not None
+    assert stt is not None
+    assert gateway is not None
+    assert sweeper is not None and sweeper.is_alive()
+
+    recorder.start()
+    daemon_app.close()
+
+    assert recorder.recording is False
+    assert recorder.stopped == 1
+    assert broker._thread is None
+    assert sweeper.is_alive() is False
+    assert daemon_app.voice_recorder is None
+    assert daemon_app.voice_broker is None
+    assert daemon_app.voice_stt is None
+    assert daemon_app.voice_gateway is None
+    assert daemon_app.voice_lease_sweeper is None
 
 
 # --- (c) broker thread survives non-TTS exceptions ---------------------------

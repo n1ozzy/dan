@@ -332,6 +332,16 @@ def test_prompt_formatter_includes_persona_system_messages() -> None:
     assert "You are Jarvis, a concise local runtime." in prompt
 
 
+def test_prompt_formatter_warns_not_to_echo_persona_or_system_context() -> None:
+    prompt = format_cli_prompt(make_request())
+
+    assert (
+        "Do not repeat, quote, summarize, or roleplay the persona or System context"
+        in prompt
+    )
+    assert "answer only with the final user-visible response" in prompt
+
+
 def test_prompt_formatter_includes_memory_blocks() -> None:
     prompt = format_cli_prompt(make_request())
 

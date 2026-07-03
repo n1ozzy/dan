@@ -17,6 +17,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from jarvis.config import DEFAULT_VOICE_FILLERS
 from jarvis.logging import get_logger
 from jarvis.store.db import close_quietly
 from jarvis.store.event_store import create_event_store
@@ -27,7 +28,7 @@ from jarvis.voice.queue import VoiceQueue
 _LOGGER = get_logger("voice.speech")
 
 DEFAULT_FILLER_AFTER_MS = 800
-DEFAULT_FILLERS = ("A spierdalaj...","Już sprawdzam.", "Chwila.")
+DEFAULT_FILLERS = DEFAULT_VOICE_FILLERS
 
 
 class FillerTimer:

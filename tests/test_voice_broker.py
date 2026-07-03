@@ -421,6 +421,25 @@ def test_filler_fires_once_when_generation_is_slow(db_path: Path) -> None:
     assert rows[0][2] == "interruptible"
 
 
+def test_filler_delay_uses_milliseconds(monkeypatch: pytest.MonkeyPatch, db_path: Path) -> None:
+    delays: list[float] = []
+
+    class FakeFillerTimer:
+        def __init__(self, fire, delay_seconds: float) -> None:
+            self._fire = fire
+            delays.append(delay_seconds)
+
+        def disarm(self) -> None:
+            return None
+
+    monkeypatch.setattr("jarvis.voice.speech.FillerTimer", FakeFillerTimer)
+    pipeline = SpeechPipeline(lambda: connect(db_path), config=voice_config(filler_after_ms=150))
+
+    pipeline.arm_filler(turn_id="turn-delay")
+
+    assert delays == [0.15]
+
+
 def test_filler_does_not_fire_when_disarmed_in_time(db_path: Path) -> None:
     pipeline = SpeechPipeline(
         lambda: connect(db_path), config=voice_config(filler_after_ms=5000)

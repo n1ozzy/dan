@@ -125,6 +125,87 @@ def test_loads_example_config(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.launchd.label == "com.ozzy.jarvisd"
 
 
+def test_default_voice_fillers_have_enough_variation(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jarvis.voice.speech import DEFAULT_FILLERS
+
+    monkeypatch.delenv("JARVIS_CONFIG", raising=False)
+
+    fillers = load_config().voice.fillers
+
+    assert fillers == DEFAULT_FILLERS
+    assert len(fillers) >= 40
+    selected_fillers = {
+        "Panie, robi się.",
+        "No i cyk, analiza.",
+        "Co tu się odjaniepawla...",
+        "Będzie pan zadowolony.",
+        "To się zaraz wyklepie.",
+        "Daj pan chwilę.",
+        "Nie no, pięknie.",
+        "Kto to panu tak zrobił?",
+        "Robi się, szefie.",
+        "Chwila, zaraz to ogarnę.",
+        "Ale urwał loga.",
+        "Janusz debugowania wchodzi.",
+        "Nosacz odpala analizę.",
+        "Cyk, cyk, debug.",
+        "Oj będzie grzebane.",
+        "Panie, to nie takie hop-siup.",
+        "Zaraz będzie gitara.",
+        "Spokojnie, kontrolowany chaos.",
+        "Dobra, tryb szwagra odpalony.",
+        "Jeszcze sekunda i będzie elegancko.",
+        "Jakoś to będzie, ale sprawdzę.",
+        "Nie dotykać, samo się psuje.",
+        "Dobra, tu trzeba sposobem.",
+        "Kurwa, moment.",
+        "No dobra, lecimy z tym bigosem.",
+        "Pięknie, system robi fikołka.",
+        "Kurwa, ale tu chlew.",
+        "Dobra, kto to spierdolił?",
+        "Sekunda, zaraz to zwyzywam.",
+        "Dobra, gaszę ten burdel.",
+        "Czekaj, robię sekcję zwłok.",
+        "Ten stack sam się prosi o liścia.",
+        "Moment, odklejam ten syf.",
+        "No i mamy techniczne disco polo.",
+        "Czekaj, system dostał z liścia.",
+        "Kurwa, znowu magia z dupy.",
+        "Ten kod brzmi jak krzyk o pomoc.",
+        "Moment, szukam winnego klauna.",
+        "Spokojnie, zaraz będzie egzekucja.",
+        "Dobra, łamię ten error przez kolano.",
+        "Kurwa, ale tu pachnie legacy.",
+        "Czekaj, backend robi fikołka.",
+        "No dobra, wchodzę w ten bajzel.",
+        "Dobra, odpalam tryb chamstwa.",
+        "Czekaj, logi zaraz zaczną śpiewać.",
+    }
+    assert selected_fillers.issubset(set(fillers))
+    assert "Już sprawdzam." not in fillers
+    assert len(set(fillers)) == len(fillers)
+    dan_markers = (
+        "kurwa",
+        "spierdal",
+        "jeb",
+        "bajzel",
+        "crash",
+        "backend",
+        "zjeb",
+        "pustostan",
+        "error 500",
+        "mielę",
+        "tnę",
+    )
+    assert sum(
+        1 for filler in fillers if any(marker in filler.lower() for marker in dan_markers)
+    ) >= 8
+    rejected_markers = ("sram", "kibel", "pierdzi", "biegunk", "papier")
+    assert not any(
+        marker in filler.lower() for filler in fillers for marker in rejected_markers
+    )
+
+
 def test_explicit_config_path_overrides_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

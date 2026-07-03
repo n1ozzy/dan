@@ -55,6 +55,14 @@ def test_abbreviations_do_not_cut() -> None:
     assert chunks == ["Weź np. ten przypadek i sprawdź go dokładnie.", "Potem wróć."]
 
 
+def test_comma_is_not_a_sentence_cut_point() -> None:
+    chunker = SentenceChunker()
+
+    assert chunker.feed("To jest bardzo długi wstęp, ") == []
+    assert chunker.feed("a to nadal jedno zdanie po przecinku.") == []
+    assert chunker.flush() == ["To jest bardzo długi wstęp, a to nadal jedno zdanie po przecinku."]
+
+
 def test_newline_is_a_cut_point() -> None:
     chunks = collect(SentenceChunker(), ["Pierwsza linia bez kropki\nDruga linia tutaj."])
 

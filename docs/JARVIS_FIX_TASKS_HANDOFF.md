@@ -2,6 +2,26 @@
 
 Cel: robic kazdy task w osobnej sesji. Nie mieszac zmian.
 
+## Aktualny stan po sesji Task 5-7 + DAN fillery
+
+Commit tej sesji powinien zawierac:
+- Task 5 DONE: formatter CLI dopisuje guard, zeby model nie powtarzal persona/System context i odpowiadal tylko finalna trescia.
+- Task 5 regresja: prompt zawiera jasny zakaz echo persona/System context.
+- Task 6 DONE: regresje pilnuja, ze przecinek nie jest globalnym terminatorem zdania i `filler_after_ms` jest liczony w milisekundach (`/ 1000.0`). Produkcyjny kod byl juz zgodny z tym kontraktem.
+- Task 7 DONE: `DaemonApp.close()` sprzata wystartowany voice runtime przez `stop(reason="close")` przed zamknieciem DB.
+- Task 7 regresja: `app.start(); app.close()` zatrzymuje recorder/broker/STT/gateway/sweeper.
+- Voice filler cleanup: domyslne fillery sa wspolna pula `DEFAULT_VOICE_FILLERS`, bez robotycznego `Już sprawdzam.`, z wybranymi polskimi/memicznymi/DANowymi tekstami.
+
+Weryfikacja wykonana w trakcie sesji przed finalnym wyborem fillerow:
+- `.venv/bin/python -m pytest -q tests/test_brain_cli_adapters.py`
+- `.venv/bin/python -m pytest -q tests/test_config.py::test_default_voice_fillers_have_enough_variation`
+- `.venv/bin/python -m pytest -q tests/test_voice_broker.py::test_filler_fires_once_when_generation_is_slow tests/test_voice_broker.py::test_filler_delay_uses_milliseconds`
+- `.venv/bin/python -m pytest -q tests/test_sentence_chunker.py tests/test_voice_broker.py`
+- `.venv/bin/python -m pytest -q tests/test_voice_fix04.py tests/test_daemon_sigterm.py`
+- `git diff --check`
+
+Uwaga: po ostatnim finalnym wyborze fillerow testy celowo NIE byly uruchamiane, bo user powiedzial: "nie odpalaj testow" i ze odpali je nowa sesja po tasku.
+
 ## Aktualny stan po sesji Task 1-2
 
 Commit tej sesji powinien zawierac:
@@ -20,17 +40,25 @@ Weryfikacja wykonana przed commitem:
 ```text
 Pracujesz w /Users/n1_ozzy/Documents/dev/jarvis.
 
-Najpierw przeczytaj docs/JARVIS_FIX_TASKS_HANDOFF.md. Wykonaj TYLKO Task 3 - Implement Interruptible Filler. Nie ruszaj pozostalych taskow.
+Najpierw przeczytaj docs/JARVIS_FIX_TASKS_HANDOFF.md i sprawdz git status.
+
+Poprzednia sesja dodala Task 5, Task 6 regresje, Task 7 oraz finalna pule DANowych voice fillerow, ale na prosbe usera NIE odpalala testow po ostatniej edycji fillerow.
+
+Twoje zadanie: tylko zweryfikuj ostatni commit i raportuj wynik. Nie zmieniaj kodu, chyba ze testy realnie failuja i user wyraznie kaze naprawiac.
 
 Zasady:
 - sprawdz git status przed zmianami
 - nie cofaj cudzych zmian
-- pracuj test-first albo dodaj regresje przed fixem
-- trzymaj scope wylacznie Task 3
-- po zmianie uruchom testy wskazane w handoffie
-- na koncu daj krotki raport: co zmienione, testy, git status
+- nie ruszaj panelu ani nowych zadan przy okazji
+- uruchom tylko focused testy zwiazane z ostatnim commitem:
+  - `.venv/bin/python -m pytest -q tests/test_brain_cli_adapters.py`
+  - `.venv/bin/python -m pytest -q tests/test_config.py::test_default_voice_fillers_have_enough_variation`
+  - `.venv/bin/python -m pytest -q tests/test_sentence_chunker.py tests/test_voice_broker.py`
+  - `.venv/bin/python -m pytest -q tests/test_voice_fix04.py tests/test_daemon_sigterm.py`
+  - `git diff --check`
+- na koncu daj krotki raport: commit hash, testy, git status
 
-Task 1 i Task 2 sa juz zrobione w poprzednim commicie. Nie poprawiaj ich przy okazji.
+Jesli wszystko przejdzie, raportuj tylko wynik weryfikacji. Jesli cos failuje, pokaz konkretny failure i czekaj na decyzje usera.
 ```
 
 ## Task 1 - PTT Instant Cancel [DONE]

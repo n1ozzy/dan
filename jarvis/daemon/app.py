@@ -829,7 +829,11 @@ class DaemonApp:
             close_quietly(conn)
 
     def close(self) -> None:
-        close_quietly(self.conn)
+        try:
+            if self.started:
+                self.stop(reason="close")
+        finally:
+            close_quietly(self.conn)
         self.conn = None
         self.event_store = None
         self.state_machine = None

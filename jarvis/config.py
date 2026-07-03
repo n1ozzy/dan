@@ -24,6 +24,65 @@ REQUIRED_SECTIONS = (
     "runtime",
     "launchd",
 )
+DEFAULT_VOICE_FILLERS: tuple[str, ...] = (
+    "A spierdalaj...",
+    "Kurwa, grzebię.",
+    "Sekunda, tnę bajzel.",
+    "Moment, mielę crash log.",
+    "Czekaj, backend po wypadku gada.",
+    "Dobra, error 500 się spowiada.",
+    "Zaraz, kroję ten zjebany problem.",
+    "Pustostan logiki się ładuje.",
+    "Daj sekundę, jadę po faktach.",
+    "Spokojnie, ten stack zaraz klęknie.",
+    "Patrzę, bo to śmierdzi gównem.",
+    "Dobra, rozbrajam kompromitację.",
+    "Panie, robi się.",
+    "No i cyk, analiza.",
+    "Co tu się odjaniepawla...",
+    "Będzie pan zadowolony.",
+    "To się zaraz wyklepie.",
+    "Daj pan chwilę.",
+    "Nie no, pięknie.",
+    "Kto to panu tak zrobił?",
+    "Robi się, szefie.",
+    "Chwila, zaraz to ogarnę.",
+    "Ale urwał loga.",
+    "Janusz debugowania wchodzi.",
+    "Nosacz odpala analizę.",
+    "Cyk, cyk, debug.",
+    "Oj będzie grzebane.",
+    "Panie, to nie takie hop-siup.",
+    "Zaraz będzie gitara.",
+    "Spokojnie, kontrolowany chaos.",
+    "Dobra, tryb szwagra odpalony.",
+    "Jeszcze sekunda i będzie elegancko.",
+    "Jakoś to będzie, ale sprawdzę.",
+    "Nie dotykać, samo się psuje.",
+    "Dobra, tu trzeba sposobem.",
+    "Kurwa, moment.",
+    "No dobra, lecimy z tym bigosem.",
+    "Pięknie, system robi fikołka.",
+    "Kurwa, ale tu chlew.",
+    "Dobra, kto to spierdolił?",
+    "Sekunda, zaraz to zwyzywam.",
+    "Dobra, gaszę ten burdel.",
+    "Czekaj, robię sekcję zwłok.",
+    "Ten stack sam się prosi o liścia.",
+    "Moment, odklejam ten syf.",
+    "No i mamy techniczne disco polo.",
+    "Czekaj, system dostał z liścia.",
+    "Kurwa, znowu magia z dupy.",
+    "Ten kod brzmi jak krzyk o pomoc.",
+    "Moment, szukam winnego klauna.",
+    "Spokojnie, zaraz będzie egzekucja.",
+    "Dobra, łamię ten error przez kolano.",
+    "Kurwa, ale tu pachnie legacy.",
+    "Czekaj, backend robi fikołka.",
+    "No dobra, wchodzę w ten bajzel.",
+    "Dobra, odpalam tryb chamstwa.",
+    "Czekaj, logi zaraz zaczną śpiewać.",
+)
 
 
 class ConfigError(RuntimeError):
@@ -162,7 +221,7 @@ class VoiceConfig:
     # Daemon-side lease TTL enforcement (FIX-04b): how often the sweeper
     # expires stale leases when the client never calls release().
     lease_sweep_interval_seconds: float = 5.0
-    fillers: tuple[str, ...] = ("A spierdalaj...","Już sprawdzam.", "Chwila.")
+    fillers: tuple[str, ...] = DEFAULT_VOICE_FILLERS
     filler_after_ms: int = 800
     min_sentence_chars: int = 12
     # Supertonic (decree §7.3; defaults from Ozzy's audition + live inventory
