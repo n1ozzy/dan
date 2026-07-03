@@ -141,14 +141,14 @@ def test_cockpit_is_single_view_app_with_tabbar() -> None:
 
 
 def test_cockpit_state_signals_are_quiet_structure() -> None:
-    # Stan systemu: pill stanu + klasy na <body> (offline wygasza kompozytor,
-    # has-pending barwi sygnały zgód) + żywa ramka stanu (patrz osobny test).
+    # Stan systemu: żywa ramka (patrz osobny test) + klasy na <body> (offline
+    # wygasza kompozytor, has-pending barwi sygnały zgód). Osobny pill stanu
+    # usunięty — ramka niesie stan, redundantny wskaźnik zbędny.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
-    assert "state-pill" in markup
-    assert "state-pill" in styles
+    assert "state-pill" not in markup
     assert "offline-hero" in script
     assert "offline" in script
     assert "has-pending" in script
@@ -290,7 +290,7 @@ def test_index_splits_basic_and_collapsible_views() -> None:
     first_details = markup.index("<details")
     for basic_marker in (
         "composer",
-        "approvalsHeading",
+        "view-approvals",
         "conversationSelect",
         "chat-log",
         "memoryHeading",

@@ -18,7 +18,6 @@
           <header class="chat-toolbar">
             <select id="conversationSelect" aria-label="Rozmowa"></select>
             <button id="newConversationButton" type="button" class="ghost" title="Nowa rozmowa">+</button>
-            <span id="stateLabel" class="state-pill">unknown</span>
             <button id="refreshAllButton" type="button" class="ghost" title="Odśwież wszystko">&#8635;</button>
           </header>
           <button id="approvalNudge" type="button" class="approval-nudge" hidden></button>
@@ -46,11 +45,7 @@
         </section>
 
         <!-- ZGODY: pełnoekranowy widok przerywnika — tu zapadają decyzje. -->
-        <section id="view-approvals" class="view" aria-labelledby="approvalsHeading">
-          <h2 id="approvalsHeading">Zgody na narzędzia</h2>
-          <p class="muted section-desc">
-            Zatwierdzenie nie wykonuje — wykonanie to osobny klik.
-          </p>
+        <section id="view-approvals" class="view" aria-label="Zgody na narzędzia">
           <div id="approvalList" class="list"></div>
           <pre id="approvalsError" class="error-box" hidden></pre>
         </section>

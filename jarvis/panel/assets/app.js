@@ -1154,7 +1154,11 @@ function renderApprovalsEmpty() {
   hint.className = "empty-state-hint muted";
   setText(hint, "Gdy Jarvis poprosi o użycie narzędzia, decyzja pojawi się tutaj.");
 
-  box.append(mark, title, hint);
+  const note = document.createElement("p");
+  note.className = "empty-state-note muted";
+  setText(note, "Zatwierdzenie nie wykonuje — wykonanie to osobny klik.");
+
+  box.append(mark, title, hint, note);
   el.approvalList.appendChild(box);
 }
 
@@ -1166,6 +1170,14 @@ function approvalCard(approval, mode) {
   const card = document.createElement("article");
   card.className = `approval-card ${mode}`;
   const payload = approval.payload || {};
+
+  // Eyebrow: jednoznaczny kontekst, że to prośba czekająca na Twoją decyzję
+  // (albo już zatwierdzona, gotowa do wykonania) — żeby wiadomo było, co się
+  // dzieje, zanim spojrzysz na przyciski.
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "approval-eyebrow";
+  setText(eyebrow, mode === "pending" ? "Jarvis prosi o zgodę na:" : "Zatwierdzone — gotowe do wykonania:");
+  card.appendChild(eyebrow);
 
   const head = document.createElement("div");
   head.className = "approval-head";
