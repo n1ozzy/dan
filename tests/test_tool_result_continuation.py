@@ -339,7 +339,10 @@ def test_continuation_failure_keeps_tool_run_and_records_predictable_metadata(tm
         continuation = stored["metadata"]["tool_result_continuation"]
         assert executed["ok"] is True
         assert executed["continuation"]["status"] == "failed"
-        assert stored["status"] == TurnStatus.AWAITING_APPROVAL
+        # FIX-05 (case 3): a failed continuation drives the turn to a terminal
+        # status instead of dangling forever in AWAITING_APPROVAL. The approval
+        # was already executed, so there is nothing left to wait for.
+        assert stored["status"] == TurnStatus.FAILED
         assert continuation["status"] == "failed"
         assert continuation["continuation_eligible"] is True
         assert "continuation brain failed" in continuation["error"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,7 @@ from jarvis.daemon.state_machine import (
 from jarvis.events.bus import EventBus
 from jarvis.events.models import Event
 from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import EventStore, create_event_store
+from jarvis.store.event_store import EventStore, EventStoreError, create_event_store
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -317,6 +318,119 @@ def test_can_transition_uses_the_same_policy_as_transition(store: EventStore) ->
 
     assert state_machine.can_transition("LISTENING") is True
     assert state_machine.can_transition("SPEAKING") is False
+
+
+class _GatedFakeEventStore:
+    """Thread-safe in-memory stand-in for EventStore (real SQLite is
+    single-thread). The FIRST append blocks inside the critical section until
+    released, letting a second thread try to enter transition() concurrently.
+    Deterministic: the second appender signals arrival, so the test never
+    depends on sleeps, and no cross-thread SQLite handle is touched."""
+
+    class _Event:
+        def __init__(self, event_id: int, payload: dict[str, Any]) -> None:
+            self.id = event_id
+            self.type = "state.changed"
+            self.payload = payload
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._append_calls = 0
+        self.appended: list[_GatedFakeEventStore._Event] = []
+        self.first_entered = threading.Event()
+        self.second_entered = threading.Event()
+        self.release = threading.Event()
+
+    def append(
+        self,
+        event_type: Any,
+        source: str,
+        payload: dict[str, Any],
+        *,
+        correlation_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> "_GatedFakeEventStore._Event":
+        with self._lock:
+            self._append_calls += 1
+            is_first = self._append_calls == 1
+        if is_first:
+            self.first_entered.set()
+            # Safety fallback so a wrongly-locked run cannot hang forever.
+            self.release.wait(timeout=5.0)
+        else:
+            self.second_entered.set()
+        with self._lock:
+            event = _GatedFakeEventStore._Event(len(self.appended) + 1, dict(payload))
+            self.appended.append(event)
+        return event
+
+
+def test_concurrent_transition_from_same_state_appends_single_event() -> None:
+    # FIX-05 (case 5): transition() must validate+append+assign atomically.
+    # Two threads racing from IDLE must yield exactly ONE IDLE-origin
+    # transition, not two — otherwise the check-then-act is unsynchronized.
+    gated = _GatedFakeEventStore()
+    state_machine = RuntimeStateMachine(gated, initial_state=RuntimeState.IDLE)
+    errors: list[StateTransitionError] = []
+
+    def attempt(target: RuntimeState) -> None:
+        try:
+            state_machine.transition(target)
+        except StateTransitionError as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=attempt, args=(RuntimeState.THINKING,))
+    second = threading.Thread(target=attempt, args=(RuntimeState.LISTENING,))
+
+    first.start()
+    assert gated.first_entered.wait(2.0), "first transition never reached append"
+    second.start()
+    # With a lock, the second thread blocks on acquire and never reaches append
+    # before release; without it, it slips into the critical section.
+    gated.second_entered.wait(1.0)
+    gated.release.set()
+    first.join(3.0)
+    second.join(3.0)
+    assert not first.is_alive()
+    assert not second.is_alive()
+
+    idle_origin = [
+        event for event in gated.appended if event.payload["old_state"] == "IDLE"
+    ]
+    assert len(idle_origin) == 1
+    assert len(errors) == 1
+
+
+def test_force_idle_resets_in_memory_even_when_append_fails(store: EventStore) -> None:
+    # FIX-05 (case 4): recovery must not strand the runtime outside IDLE when the
+    # state.changed event cannot be persisted.
+    class _FailingAppendStore:
+        def __init__(self, real: EventStore) -> None:
+            self._real = real
+
+        def append(self, *args: Any, **kwargs: Any) -> Any:
+            raise EventStoreError("cannot persist")
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real, name)
+
+    state_machine = RuntimeStateMachine(
+        _FailingAppendStore(store), initial_state=RuntimeState.THINKING
+    )
+
+    state_machine.force_idle(reason="recovered")
+
+    assert state_machine.state is RuntimeState.IDLE
+
+
+def test_force_idle_is_noop_when_stopping(store: EventStore) -> None:
+    # STOPPING is terminal shutdown; force_idle must never resurrect it.
+    state_machine = machine(store, initial_state=RuntimeState.THINKING)
+    state_machine.transition(RuntimeState.STOPPING)
+
+    state_machine.force_idle(reason="should be ignored")
+
+    assert state_machine.state is RuntimeState.STOPPING
 
 
 def test_sqlite_schema_and_migrations_are_not_modified() -> None:

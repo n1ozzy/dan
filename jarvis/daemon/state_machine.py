@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -70,6 +71,10 @@ class RuntimeStateMachine:
         self._event_bus = event_bus
         self._state = _coerce_state(initial_state)
         self._source = source
+        # Serializes validate+append+assign so concurrent turns/workers cannot
+        # both pass the guard from the same old_state and double-append
+        # state.changed events (FIX-05 case 5).
+        self._lock = threading.Lock()
 
     @property
     def state(self) -> RuntimeState:
@@ -97,40 +102,84 @@ class RuntimeStateMachine:
         metadata: Mapping[str, Any] | None = None,
     ) -> StateTransition:
         target_state = _coerce_state(target)
-        old_state = self._state
-        if target_state is old_state:
-            raise StateTransitionError(f"Cannot transition from {old_state.value} to same state.")
-        if old_state is RuntimeState.STOPPING:
-            raise StateTransitionError("STOPPING is terminal; no outgoing transitions are allowed.")
-        if target_state not in self.allowed_targets(old_state):
-            raise StateTransitionError(
-                f"Transition from {old_state.value} to {target_state.value} is not allowed."
+        with self._lock:
+            old_state = self._state
+            if target_state is old_state:
+                raise StateTransitionError(
+                    f"Cannot transition from {old_state.value} to same state."
+                )
+            if old_state is RuntimeState.STOPPING:
+                raise StateTransitionError(
+                    "STOPPING is terminal; no outgoing transitions are allowed."
+                )
+            if target_state not in self.allowed_targets(old_state):
+                raise StateTransitionError(
+                    f"Transition from {old_state.value} to {target_state.value} is not allowed."
+                )
+
+            event = self._append_state_changed_event(
+                old_state,
+                target_state,
+                reason=reason,
+                correlation_id=correlation_id,
+                turn_id=turn_id,
+                metadata=metadata,
             )
 
-        event = self._append_state_changed_event(
-            old_state,
-            target_state,
-            reason=reason,
-            correlation_id=correlation_id,
-            turn_id=turn_id,
-            metadata=metadata,
-        )
+            self._state = target_state
+            if self._event_bus is not None:
+                try:
+                    self._event_bus.publish(event)
+                except Exception:
+                    pass
 
-        self._state = target_state
-        if self._event_bus is not None:
+            return StateTransition(
+                old_state=old_state,
+                new_state=target_state,
+                event_id=event.id,
+                reason=reason,
+                correlation_id=correlation_id,
+                turn_id=turn_id,
+            )
+
+    def force_idle(
+        self,
+        *,
+        reason: str | None = None,
+        correlation_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        """Last-resort in-memory reset to IDLE for failure recovery (FIX-05).
+
+        Used only when a normal transition to IDLE cannot be persisted (e.g. the
+        state.changed event append fails). Best-effort: it tries to append the
+        event but NEVER raises, and always leaves the runtime in IDLE so it is
+        not stranded outside IDLE after a failed turn. STOPPING is terminal
+        shutdown and is never resurrected; an already-IDLE runtime is a no-op.
+        """
+
+        with self._lock:
+            old_state = self._state
+            if old_state is RuntimeState.IDLE or old_state is RuntimeState.STOPPING:
+                return
+            event = None
             try:
-                self._event_bus.publish(event)
+                event = self._append_state_changed_event(
+                    old_state,
+                    RuntimeState.IDLE,
+                    reason=reason,
+                    correlation_id=correlation_id,
+                    turn_id=turn_id,
+                    metadata={"forced": True},
+                )
             except Exception:
-                pass
-
-        return StateTransition(
-            old_state=old_state,
-            new_state=target_state,
-            event_id=event.id,
-            reason=reason,
-            correlation_id=correlation_id,
-            turn_id=turn_id,
-        )
+                event = None
+            self._state = RuntimeState.IDLE
+            if event is not None and self._event_bus is not None:
+                try:
+                    self._event_bus.publish(event)
+                except Exception:
+                    pass
 
     def transition_to(
         self, next_state: RuntimeState | str, reason: str | None = None

@@ -81,6 +81,13 @@ class ToolResultContinuationResult:
         return payload
 
 
+# A turn in one of these statuses has reached a terminal outcome; a later
+# post-completion error must never reclassify it (FIX-05).
+_TERMINAL_TURN_STATUSES = frozenset(
+    {TurnStatus.FINISHED.value, TurnStatus.FAILED.value, TurnStatus.CANCELLED.value}
+)
+
+
 class TurnOrchestrator:
     def __init__(
         self,
@@ -377,40 +384,11 @@ class TurnOrchestrator:
                     brain_model=response_model,
                     metadata=finish_metadata,
                 )
-            self._append_event(
-                EventType.TURN_FINISHED,
-                {
-                    "turn_id": turn.id,
-                    "conversation_id": conversation.id,
-                    "final_text_length": len(final_text),
-                    "brain_adapter": adapter_name,
-                    "brain_model": response_model,
-                    "turn_status": turn.status,
-                    "pending_approval_count": pending_approval_count,
-                },
-                event_ids,
-                correlation_id=correlation_id,
-                turn_id=turn.id,
-            )
-            # Speak the raw model text: the chunker strips tool-call blocks,
-            # and an awaiting_approval turn speaks only its safe prefix (G0 §4).
-            # A streaming session already queued its sentences live; this
-            # only flushes the tail (or chunks everything when no delta came).
-            self._finish_speech(speech_session, turn.id, response.text)
-            event_ids.append(
-                self._state_machine.transition(
-                    RuntimeState.IDLE,
-                    reason=(
-                        "text turn awaiting approval"
-                        if pending_approval_count
-                        else "text turn finished"
-                    ),
-                    correlation_id=correlation_id,
-                    turn_id=turn.id,
-                ).event_id
-            )
-
-            return TextTurnResult(
+            # The turn has reached its terminal/awaiting outcome. Everything
+            # below is post-completion finalization and must NEVER reclassify
+            # the turn as FAILED nor strand the runtime — even if the daemon is
+            # shutting down (STOPPING) or an event append fails (FIX-05 1-2).
+            result = TextTurnResult(
                 conversation_id=conversation.id,
                 turn_id=turn.id,
                 input_text=normalized_text,
@@ -422,6 +400,36 @@ class TurnOrchestrator:
                 tool_calls=capture.tool_calls,
                 approvals=capture.approvals,
             )
+            try:
+                self._append_event(
+                    EventType.TURN_FINISHED,
+                    {
+                        "turn_id": turn.id,
+                        "conversation_id": conversation.id,
+                        "final_text_length": len(final_text),
+                        "brain_adapter": adapter_name,
+                        "brain_model": response_model,
+                        "turn_status": turn.status,
+                        "pending_approval_count": pending_approval_count,
+                    },
+                    event_ids,
+                    correlation_id=correlation_id,
+                    turn_id=turn.id,
+                )
+            except Exception:
+                pass  # audit event is best effort; the turn already finished
+            # Speak the raw model text: the chunker strips tool-call blocks,
+            # and an awaiting_approval turn speaks only its safe prefix (G0 §4).
+            # A streaming session already queued its sentences live; this
+            # only flushes the tail (or chunks everything when no delta came).
+            self._finish_speech(speech_session, turn.id, response.text)
+            self._settle_runtime_idle_after_completion(
+                pending_approval=bool(pending_approval_count),
+                correlation_id=correlation_id,
+                turn_id=turn.id,
+                event_ids=event_ids,
+            )
+            return result
         except TurnOrchestratorError:
             raise
         except Exception as exc:
@@ -433,6 +441,43 @@ class TurnOrchestrator:
                 correlation_id=correlation_id,
             )
             raise TurnOrchestratorError(f"text turn failed: {exc}") from exc
+
+    def _settle_runtime_idle_after_completion(
+        self,
+        *,
+        pending_approval: bool,
+        correlation_id: str,
+        turn_id: str,
+        event_ids: list[int],
+    ) -> None:
+        """Return the runtime to IDLE after a completed turn.
+
+        Post-completion and best effort: a shutdown race (STOPPING) or a persist
+        failure must never fail the already-finished turn (FIX-05 cases 1-2).
+        STOPPING is left terminal (the daemon is shutting down); any other
+        non-IDLE state is reset in-memory so the runtime is not stranded.
+        """
+
+        if self._state_machine.state is RuntimeState.IDLE:
+            return
+        reason = "text turn awaiting approval" if pending_approval else "text turn finished"
+        try:
+            event_ids.append(
+                self._state_machine.transition(
+                    RuntimeState.IDLE,
+                    reason=reason,
+                    correlation_id=correlation_id,
+                    turn_id=turn_id,
+                ).event_id
+            )
+        except Exception:
+            if self._state_machine.state is RuntimeState.STOPPING:
+                return
+            self._state_machine.force_idle(
+                reason=reason,
+                correlation_id=correlation_id,
+                turn_id=turn_id,
+            )
 
     def continue_after_tool_result(
         self,
@@ -1045,6 +1090,10 @@ class TurnOrchestrator:
             correlation_id=correlation_id,
             turn_id=turn.id,
         )
+        # A failed continuation must not leave the turn dangling in
+        # AWAITING_APPROVAL forever — drive it to a terminal status (FIX-05
+        # case 3). The approval was already executed; there is nothing to retry.
+        self._fail_turn(turn, message, kind="continuation")
         self._turns.merge_metadata(
             turn.id,
             {"tool_result_continuation": failure_metadata},
@@ -1124,6 +1173,17 @@ class TurnOrchestrator:
             append_error()
 
     def _fail_turn(self, turn: Turn, error: str, *, kind: str) -> None:
+        # Never reclassify a turn that already reached a terminal outcome: a
+        # post-completion error (a late transition, a failed audit append) must
+        # not rewrite a FINISHED turn as FAILED (FIX-05 cases 1-2). AWAITING is
+        # intentionally NOT terminal here — a failed continuation still fails it.
+        try:
+            current = self._turns.get(turn.id)
+        except Exception:
+            current = None
+        status = current.status if current is not None else turn.status
+        if status in _TERMINAL_TURN_STATUSES:
+            return
         try:
             self._turns.fail(turn.id, error=error, metadata={"failure_kind": kind})
         except Exception:
@@ -1136,6 +1196,10 @@ class TurnOrchestrator:
         correlation_id: str,
         turn_id: str,
     ) -> None:
+        # Shutdown in progress: STOPPING is terminal and must not be disturbed.
+        if self._state_machine.state is RuntimeState.STOPPING:
+            return
+
         if self._state_machine.state is not RuntimeState.ERROR:
             try:
                 event_ids.append(
@@ -1147,6 +1211,14 @@ class TurnOrchestrator:
                     ).event_id
                 )
             except Exception:
+                # Could not persist the ERROR transition: never strand the
+                # runtime outside IDLE — reset in-memory as a last resort so the
+                # next turn is not permanently rejected as busy (FIX-05 case 4).
+                self._state_machine.force_idle(
+                    reason="text turn failure recovered",
+                    correlation_id=correlation_id,
+                    turn_id=turn_id,
+                )
                 return
 
         if self._state_machine.state is RuntimeState.ERROR:
@@ -1160,7 +1232,11 @@ class TurnOrchestrator:
                     ).event_id
                 )
             except Exception:
-                pass
+                self._state_machine.force_idle(
+                    reason="text turn failure recovered",
+                    correlation_id=correlation_id,
+                    turn_id=turn_id,
+                )
 
 
 @dataclass
