@@ -7,7 +7,6 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body data-view="chat">
-    <div class="statusline" aria-hidden="true"></div>
     <main class="cockpit" aria-label="Jarvis cockpit">
       <div class="views">
         <!-- CZAT: jedyny widok domyślny — rozmowa na całej powierzchni. -->
@@ -24,14 +23,18 @@
             <textarea
               id="textInput"
               rows="2"
-              placeholder="Napisz do Jarvisa… (Enter wysyła, Shift+Enter = nowa linia)"
+              placeholder="Napisz do Jarvisa…"
+              title="Enter wysyła • Shift+Enter = nowa linia"
             ></textarea>
             <div class="composer-actions">
-              <button id="pttButton" type="button" class="ptt-button">
+              <div class="voice-mode" role="group" aria-label="Tryb słuchania">
+                <button id="pttModeButton" type="button" class="mode-button" title="Push-to-talk: przytrzymaj globalny hotkey">PTT</button>
+                <button id="listenToggle" type="button" class="mode-button" title="Ciągły nasłuch mikrofonu">Nasłuch</button>
+              </div>
+              <span id="voiceStatus" class="hud-item" aria-live="polite">
                 <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-                Push To Talk
-              </button>
-              <span id="voiceStatus" class="hud-item" aria-live="polite">…</span>
+                <span id="voiceStatusText">…</span>
+              </span>
               <button id="sendButton" type="submit" class="primary">Wyślij</button>
             </div>
           </form>
@@ -109,17 +112,8 @@
           <details class="card collapsible" aria-labelledby="advancedHeading">
             <summary>
               <h2 id="advancedHeading">Zaawansowane</h2>
-              <span class="summary-hint muted">głos · ustawienia · daemon</span>
+              <span class="summary-hint muted">ustawienia · daemon</span>
             </summary>
-
-            <div class="subsection" aria-labelledby="voiceHeading">
-              <h3 id="voiceHeading">Głos</h3>
-              <p class="muted section-desc">
-                Tryb słuchania: PTT (przycisk przy kompozytorze albo globalny
-                hotkey) lub ciągły nasłuch.
-              </p>
-              <button id="listenToggle" type="button">Nasłuch</button>
-            </div>
 
             <div class="subsection" aria-labelledby="settingsHeading">
               <div class="section-head">

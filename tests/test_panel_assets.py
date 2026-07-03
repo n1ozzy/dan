@@ -14,12 +14,12 @@ APP_JS = PANEL_DIR / "app.js"
 STYLES_CSS = PANEL_DIR / "styles.css"
 RUNBOOK = ROOT / "docs" / "runbooks" / "PANEL_COCKPIT.md"
 
+# Uwaga: /voice/ptt/down|up wypadły z panelu celowo — trzymanie PTT żyje na
+# globalnym hotkeyu (menubar_app), panel ustawia tylko TRYB lock/unlock.
 REQUIRED_ROUTES = (
     "/health",
     "/state",
     "/input/text",
-    "/voice/ptt/down",
-    "/voice/ptt/up",
     "/voice/listen/lock",
     "/voice/listen/unlock",
     "/voice/listening",
@@ -112,17 +112,19 @@ def test_cockpit_is_single_view_app_with_tabbar() -> None:
     assert "chat-meta" in script
 
 
-def test_cockpit_statusline_reflects_system_state() -> None:
-    # Ramka stanu wokół panelu zamiast osobnej sekcji statusu: STATYCZNA
-    # obwódka (bez neonowych animacji) — teal online, bursztyn gdy czekają
-    # zgody, czerwień offline. Stan niesie klasa na <body>.
+def test_cockpit_state_signals_are_quiet_structure() -> None:
+    # Stan systemu bez ozdób: pill stanu + klasy na <body> (offline wygasza
+    # kompozytor, has-pending barwi sygnały zgód). Żadnych neonowych ramek
+    # ani dekoracyjnych animacji dookoła panelu.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
-    assert "statusline" in markup
-    assert "statusline" in styles
+    assert "statusline" not in markup
     assert "conic-gradient" not in styles
+    assert "state-pill" in markup
+    assert "state-pill" in styles
+    assert "offline-hero" in script
     assert "offline" in script
     assert "has-pending" in script
     assert "has-pending" in styles
@@ -309,26 +311,23 @@ def test_memory_rows_expose_priority_and_disable_actions() -> None:
     assert "Wyłącz" in script
 
 
-def test_index_has_voice_controls_in_basic_view() -> None:
+def test_composer_has_voice_mode_switch() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
-    # The operator's PTT lives in the always-visible basic view (MASTER_PLAN
-    # §4a: "PTT: przycisk + globalny hotkey" — the button half). PTT + mic
-    # status sit in the composer; the PTT/continuous-listen mode choice lives
-    # under Zaawansowane → Głos.
+    # Głos w kompozytorze: segmenty PTT | Nasłuch obok siebie jako wybór
+    # TRYBU słuchania (nie hold-button — trzymanie PTT robi globalny hotkey
+    # w menubar_app), plus status mikrofonu z falą aktywną tylko przy
+    # zbieraniu. Live refresh jedzie na listening.* ze streamu.
     first_details = markup.index("<details")
-    for element_id in ("pttButton", "voiceStatus"):
+    for element_id in ("pttModeButton", "listenToggle", "voiceStatus"):
         assert element_id in markup, element_id
         assert markup.index(element_id) < first_details, element_id
-    assert "listenToggle" in markup
-    assert "voiceHeading" in markup
-
-    # Hold-to-talk: press acquires the lease, release frees it — pointer AND
-    # keyboard; live status refresh rides the listening.lease.* stream events.
-    assert "pointerdown" in script
-    assert "pointerup" in script
-    assert "keyup" in script
+    assert "voice-mode" in markup
+    assert "voice-mode" in styles
+    assert "setVoiceMode" in script
+    assert "hud-item.live .wave" in styles
     assert 'startsWith("listening.")' in script
 
 

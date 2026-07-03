@@ -53,19 +53,26 @@ not start, stop, supervise, or clean up any process.
 
 ## Sections
 
-- Layout: popover-first, no page scrolling — the chat zone (conversation
-  dropdown + "+ new" in the toolbar, chat log, composer with send/PTT) fills
-  the window and an ops column (approvals card + collapsible sections)
-  scrolls internally. Memory, tools, events, and the "Zaawansowane" group
-  (voice mode, settings, API base, health, runtime) are native `<details>`
-  sections, collapsed by default. An animated border around the whole panel
-  replaces a separate status section: teal online, amber when approvals are
-  pending, red offline.
-- Toolbar: conversation picker, new-conversation button, pending-approvals
-  badge, daemon state pill, and full refresh. The badge count comes from
-  `renderApprovals` and from `pending_approval_count` on the `/health`
-  heartbeat — when the two disagree (stream down, missed event), the cockpit
-  re-fetches approvals; clicking the badge scrolls to the approvals card.
+- Layout: popover-first single-view app, no page scrolling — one view at a
+  time (Chat / Approvals / Memory / System) switched by a bottom tab bar;
+  views scroll internally. The chat view holds the conversation dropdown,
+  "+ new", the daemon state pill, the chat log, and the composer. Tools,
+  events, and the "Zaawansowane" group (settings, API base, health, runtime)
+  are native `<details>` sections inside the System view, collapsed by
+  default. System state is quiet structure: the state pill (red when
+  offline), the offline hero in the chat log, and the approvals signals —
+  no decorative frames or ambient animation.
+- Voice: the composer has a PTT | Nasłuch segmented MODE switch (lock =
+  `POST /voice/listen/lock`, back to PTT = `POST /voice/listen/unlock`).
+  Holding PTT itself lives on the global hotkey in `menubar_app`, not in the
+  web view, so the cockpit no longer calls `/voice/ptt/down|up`. The mic
+  status next to the switch shows a small waveform that animates only while
+  the daemon is actually listening (driven by `listening.*` stream events).
+- Approvals signals: a pulsing count on the Approvals tab plus an amber
+  nudge bar inside the chat view ("N zgód czeka — pokaż") that switches to
+  the Approvals view; both come from `renderApprovals` and from
+  `pending_approval_count` on the `/health` heartbeat — when the two
+  disagree (stream down, missed event), the cockpit re-fetches approvals.
 - Health: `service`, `state`, `started`, `schema_version`, `brain_adapter`, and
   `voice_enabled` when the daemon exposes them.
 - Input: the composer sends typed text through `POST /input/text`; the sent

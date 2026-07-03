@@ -57,30 +57,10 @@ dl {
   margin: 0;
 }
 
-/* --- Ramka stanu ------------------------------------------------------------
-   Cicha struktura, nie pokaz świateł: statyczna obwódka w kolorze stanu.
-   Teal = online, bursztyn = czekają zgody, czerwień = offline. Ruch jest
-   zarezerwowany dla rzeczy, które naprawdę trwają (fala PTT, puls badge). */
-
-.statusline {
-  position: fixed;
-  inset: 3px;
-  z-index: 40;
-  pointer-events: none;
-  border-radius: 13px;
-  border: 1px solid rgba(45, 212, 191, 0.32);
-  transition: border-color 0.3s ease;
-}
-
-body.offline .statusline {
-  border-color: rgba(248, 113, 113, 0.55);
-}
-
-body.has-pending:not(.offline) .statusline {
-  border-color: rgba(251, 191, 36, 0.5);
-}
-
-/* --- Szkielet aplikacji ----------------------------------------------------- */
+/* --- Szkielet aplikacji -----------------------------------------------------
+   Stan systemu bez ozdób: pill stanu w toolbarze (czerwony offline), hero
+   offline w czacie, licznik + nudge dla zgód. Ruch jest zarezerwowany dla
+   rzeczy, które naprawdę trwają (fala słuchającego mikrofonu, puls badge). */
 
 .cockpit {
   display: flex;
@@ -143,17 +123,22 @@ body.has-pending:not(.offline) .statusline {
 .tab-button {
   position: relative;
   min-height: 34px;
-  padding: 8px 4px;
+  padding: 9px 4px;
   border: none;
   border-radius: 8px;
   background: transparent;
   color: var(--text-dim);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   cursor: pointer;
+}
+
+/* Czekająca zgoda podbarwia też samą zakładkę. */
+body.has-pending .tab-button[data-view="approvals"]:not(.active) {
+  color: var(--amber);
 }
 
 .tab-button:hover {
@@ -348,8 +333,12 @@ body.offline .state-pill {
 }
 
 .hud-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-dim);
   white-space: nowrap;
   overflow: hidden;
@@ -426,8 +415,8 @@ body.offline .state-pill {
 .chat-meta {
   align-self: flex-start;
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.04em;
+  font-size: 11px;
+  letter-spacing: 0.03em;
   color: var(--text-faint);
 }
 
@@ -451,65 +440,83 @@ body.offline .state-pill {
   gap: 8px;
 }
 
-.ptt-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 32px;
-  font-weight: 650;
-  touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
+/* Tryb słuchania: segmenty PTT | Nasłuch obok siebie — przełącznik trybu,
+   nie przycisk do trzymania (PTT trzyma się globalnym hotkeyem). */
+.voice-mode {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  overflow: hidden;
 }
 
-.ptt-button.talking {
-  border-color: var(--accent-line);
-  background: #0e3a34;
-  color: #99f6e4;
-  box-shadow: 0 0 14px rgba(45, 212, 191, 0.35);
+.mode-button {
+  min-height: 30px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-/* Fala głosu: słupki ożywają tylko, gdy mikrofon naprawdę zbiera (hold). */
-.wave {
+.mode-button + .mode-button {
+  border-left: 1px solid var(--line-strong);
+}
+
+.mode-button:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.mode-button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Fala głosu przy statusie: słupki ożywają tylko, gdy mikrofon zbiera. */
+.hud-item .wave {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  height: 14px;
+  height: 12px;
 }
 
 .wave i {
   display: block;
   width: 2px;
-  height: 5px;
+  height: 4px;
   border-radius: 1px;
   background: currentColor;
   opacity: 0.85;
 }
 
-.ptt-button.talking .wave i {
+.hud-item.live .wave i {
   animation: wave-bounce 0.9s ease-in-out infinite;
 }
 
-.ptt-button.talking .wave i:nth-child(2) {
+.hud-item.live .wave i:nth-child(2) {
   animation-delay: 0.15s;
 }
 
-.ptt-button.talking .wave i:nth-child(3) {
+.hud-item.live .wave i:nth-child(3) {
   animation-delay: 0.3s;
 }
 
-.ptt-button.talking .wave i:nth-child(4) {
+.hud-item.live .wave i:nth-child(4) {
   animation-delay: 0.45s;
 }
 
 @keyframes wave-bounce {
   0%,
   100% {
-    height: 5px;
+    height: 4px;
   }
   50% {
-    height: 14px;
+    height: 12px;
   }
 }
 
@@ -832,16 +839,12 @@ details.card.collapsible[open] summary::after {
 
 @media (prefers-reduced-motion: reduce) {
   .approvals-badge,
-  .ptt-button.talking .wave i {
+  .hud-item.live .wave i {
     animation: none;
   }
 
-  .statusline {
-    transition: none;
-  }
-
-  .ptt-button.talking .wave i {
-    height: 12px;
+  .hud-item.live .wave i {
+    height: 10px;
   }
 
   details.card.collapsible summary::after {

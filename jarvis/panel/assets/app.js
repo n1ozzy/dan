@@ -19,7 +19,6 @@ const cockpit = {
     enabled: false,
     listening: false,
     leases: [],
-    pttActive: false,
   },
   stream: {
     socket: null,
@@ -120,9 +119,10 @@ function bindElements() {
     "runtimeList",
     "runtimeObservationList",
     "runtimeError",
-    "pttButton",
+    "pttModeButton",
     "listenToggle",
     "voiceStatus",
+    "voiceStatusText",
     "voiceError",
   ];
 
@@ -174,28 +174,8 @@ function bindEvents() {
     renderEmpty(el.turnList, "Nowa rozmowa — napisz pierwszą wiadomość poniżej.");
     el.textInput.focus();
   });
-  el.pttButton.addEventListener("pointerdown", (event) => {
-    event.preventDefault();
-    if (el.pttButton.setPointerCapture && event.pointerId !== undefined) {
-      el.pttButton.setPointerCapture(event.pointerId);
-    }
-    pttDown();
-  });
-  el.pttButton.addEventListener("pointerup", () => pttUp());
-  el.pttButton.addEventListener("pointercancel", () => pttUp());
-  el.pttButton.addEventListener("keydown", (event) => {
-    if ((event.key === " " || event.key === "Enter") && !event.repeat) {
-      event.preventDefault();
-      pttDown();
-    }
-  });
-  el.pttButton.addEventListener("keyup", (event) => {
-    if (event.key === " " || event.key === "Enter") {
-      event.preventDefault();
-      pttUp();
-    }
-  });
-  el.listenToggle.addEventListener("click", toggleListenLock);
+  el.pttModeButton.addEventListener("click", () => setVoiceMode("ptt"));
+  el.listenToggle.addEventListener("click", () => setVoiceMode("listen"));
   el.memoryForm.addEventListener("submit", createMemoryBlock);
   el.apiBaseInput.addEventListener("change", () => {
     const nextBase = el.apiBaseInput.value.trim();
@@ -270,70 +250,54 @@ async function refreshVoice() {
 
 function renderVoice() {
   const usable = cockpit.online && cockpit.voice.enabled;
-  el.pttButton.disabled = !usable;
+  el.pttModeButton.disabled = !usable;
   el.listenToggle.disabled = !usable;
 
   const locked = cockpit.voice.leases.some((lease) => lease.mode === "locked");
-  setText(el.listenToggle, locked ? "Wyłącz nasłuch" : "Włącz nasłuch");
-  el.listenToggle.classList.toggle("active", locked);
+  el.pttModeButton.classList.toggle("active", usable && !locked);
+  el.listenToggle.classList.toggle("active", usable && locked);
 
-  let status = "mikrofon martwy";
+  let status = "cisza — przytrzymaj hotkey PTT";
   if (!cockpit.online) {
     status = "daemon offline";
   } else if (!cockpit.voice.enabled) {
     status = "głos wyłączony w configu";
   } else if (cockpit.voice.listening) {
     const holding = cockpit.voice.leases.some((lease) => lease.mode === "hold");
-    status = holding ? "słucha (PTT)" : "nasłuch ciągły aktywny";
+    status = holding ? "słucha (PTT)" : "słucha (nasłuch)";
+  } else if (locked) {
+    status = "nasłuch uzbrojony";
   }
-  setText(el.voiceStatus, status);
+  setText(el.voiceStatusText, status);
+  // Fala przy statusie ożywa tylko, gdy mikrofon naprawdę zbiera.
   el.voiceStatus.classList.toggle("live", cockpit.voice.listening);
 }
 
-async function pttDown() {
-  if (cockpit.voice.pttActive || !cockpit.online || !cockpit.voice.enabled) {
-    return;
-  }
-  cockpit.voice.pttActive = true;
-  el.pttButton.classList.add("talking");
-  clearError(el.voiceError);
-  try {
-    await requestJson("/voice/ptt/down", { method: "POST", body: { source: "ptt" } });
-  } catch (error) {
-    cockpit.voice.pttActive = false;
-    el.pttButton.classList.remove("talking");
-    renderError(el.voiceError, error);
-  }
-  await refreshVoice();
-}
-
-async function pttUp() {
-  if (!cockpit.voice.pttActive) {
-    return;
-  }
-  cockpit.voice.pttActive = false;
-  el.pttButton.classList.remove("talking");
-  try {
-    await requestJson("/voice/ptt/up", { method: "POST", body: { source: "ptt" } });
-  } catch (error) {
-    renderError(el.voiceError, error);
-  }
-  await refreshVoice();
-}
-
-async function toggleListenLock() {
+// Panel ustawia TRYB słuchania (PTT vs ciągły nasłuch); samo trzymanie PTT
+// żyje na globalnym hotkeyu (menubar), nie na przycisku w webview.
+async function setVoiceMode(mode) {
   if (!cockpit.online || !cockpit.voice.enabled) {
     return;
   }
   const locked = cockpit.voice.leases.some((lease) => lease.mode === "locked");
-  const path = locked ? "/voice/listen/unlock" : "/voice/listen/lock";
-  setBusy(el.listenToggle, true);
+  const path =
+    mode === "listen" && !locked
+      ? "/voice/listen/lock"
+      : mode === "ptt" && locked
+        ? "/voice/listen/unlock"
+        : null;
+  if (!path) {
+    return;
+  }
   clearError(el.voiceError);
+  setBusy(el.pttModeButton, true);
+  setBusy(el.listenToggle, true);
   try {
     await requestJson(path, { method: "POST", body: {} });
   } catch (error) {
     renderError(el.voiceError, error);
   } finally {
+    setBusy(el.pttModeButton, false);
     setBusy(el.listenToggle, false);
   }
   await refreshVoice();
@@ -1488,8 +1452,6 @@ function clearDynamicSections() {
   setText(el.brainAdapterLabel, "");
   cockpit.voice.listening = false;
   cockpit.voice.leases = [];
-  cockpit.voice.pttActive = false;
-  el.pttButton.classList.remove("talking");
   renderVoice();
   const offlineOption = document.createElement("option");
   offlineOption.value = "";
