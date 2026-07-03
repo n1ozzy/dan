@@ -127,6 +127,10 @@ class DaemonApp:
     # Daemon-lifetime (not voice-lifetime): streaming adapters register kill
     # handles here (G4d), the cancellation coordinator fires them (leg 1).
     voice_generation_registry: Any = field(default_factory=_build_generation_registry)
+    # Rolling voice conversation: consecutive spoken utterances continue the
+    # same conversation instead of each minting a fresh session (so Jarvis
+    # remembers the previous turn). None until the first voice turn creates one.
+    _voice_conversation_id: str | None = None
     api_token: str | None = None
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
@@ -783,13 +787,20 @@ class DaemonApp:
         """Gateway hook: an accepted transcript enters the SAME orchestrator
         as panel text (ADR-011), marked with the voice source. The HTTP layer
         refuses this source on purpose — only this internal path mints voice
-        turns."""
+        turns.
 
-        return self.handle_text_input(
+        Utterances roll into one conversation: pass the remembered id (None on
+        the first turn) and store whatever the orchestrator resolved, so the
+        next utterance continues the same session instead of starting fresh."""
+
+        result = self.handle_text_input(
             text=text,
+            conversation_id=self._voice_conversation_id,
             source="voice",
             metadata={"origin": "voice_transcript"},
         )
+        self._voice_conversation_id = result.conversation_id
+        return result
 
     def _sweep_listening_leases(self) -> None:
         """Sweeper tick: expire stale leases and sync the recorder."""
