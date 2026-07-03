@@ -152,6 +152,49 @@ class TestPopoverAppearance:
         assert "setUnderPageBackgroundColor_" in source
 
 
+class TestStateBorder:
+    """Neonowa ramka stanu żyje na KARCIE WIDŻETU (warstwa WKWebView),
+    nie w HTML-u cockpitu — powłoka rysuje chrome, dokument zostaje czysty.
+    Poller /health mapuje: nieosiągalny -> offline (czerwień), czekające
+    zgody -> pending (bursztyn), zdrowy -> online (teal)."""
+
+    def test_classify_daemon_state_maps_health_to_border_state(self) -> None:
+        assert menubar_app.classify_daemon_state(None) == "offline"
+        assert menubar_app.classify_daemon_state({}) == "online"
+        assert menubar_app.classify_daemon_state({"pending_approval_count": 0}) == "online"
+        assert menubar_app.classify_daemon_state({"pending_approval_count": 3}) == "pending"
+        assert menubar_app.classify_daemon_state({"pending_approval_count": "junk"}) == "online"
+
+    def test_border_colors_cover_every_state(self) -> None:
+        assert set(menubar_app.BORDER_STATE_COLORS) == {"online", "pending", "offline"}
+        for rgba in menubar_app.BORDER_STATE_COLORS.values():
+            assert len(rgba) == 4
+            assert all(0.0 <= channel <= 1.0 for channel in rgba)
+
+    def test_fetch_daemon_status_unreachable_returns_none(self) -> None:
+        # Port 9 na loopbacku nie nasłuchuje — natychmiastowy connection
+        # refused, bez sieci na zewnątrz.
+        assert (
+            menubar_app.fetch_daemon_status("http://127.0.0.1:9", None, timeout=0.2)
+            is None
+        )
+
+    def test_border_is_drawn_on_native_layer_not_in_cockpit_dom(self) -> None:
+        source = (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+        markup = (
+            ROOT / "jarvis" / "panel" / "assets" / "index.html"
+        ).read_text(encoding="utf-8")
+        styles = (
+            ROOT / "jarvis" / "panel" / "assets" / "styles.css"
+        ).read_text(encoding="utf-8")
+
+        assert "setBorderWidth_" in source
+        assert "setBorderColor_" in source
+        assert "NSOperationQueue" in source  # malowanie tylko z głównego wątku
+        assert "statusline" not in markup
+        assert "conic-gradient" not in styles
+
+
 class TestStatusIcon:
     def test_icon_asset_exists_in_panel_assets(self) -> None:
         path = menubar_app.status_icon_path()

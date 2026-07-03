@@ -16,6 +16,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +34,55 @@ COCKPIT_TOKEN_STORAGE_KEY = "jarvis-api-token"
 
 # Menu-bar display height in points; the PNG carries 2x pixels for retina.
 STATUS_ICON_HEIGHT = 40.0
+
+# --- Ramka stanu na karcie widżetu -----------------------------------------
+# Neonowa obwódka stanu żyje na NATYWNEJ warstwie WKWebView (chrome widżetu),
+# nie w HTML-u cockpitu — dokument zostaje czysty, powłoka rysuje ramkę.
+# Kolory lustrzane z tokenów cockpitu: teal online, bursztyn gdy czekają
+# zgody, czerwień offline.
+BORDER_WIDTH_POINTS = 2.0
+BORDER_CORNER_RADIUS = 10.0
+STATUS_POLL_SECONDS = 3.0
+STATUS_FETCH_TIMEOUT_SECONDS = 1.5
+
+BORDER_STATE_COLORS: dict[str, tuple[float, float, float, float]] = {
+    "online": (0x2D / 255, 0xD4 / 255, 0xBF / 255, 0.90),
+    "pending": (0xFB / 255, 0xBF / 255, 0x24 / 255, 0.95),
+    "offline": (0xF8 / 255, 0x71 / 255, 0x71 / 255, 0.95),
+}
+
+
+def classify_daemon_state(payload: object) -> str:
+    """None (daemon nieosiągalny) -> offline; czekające zgody -> pending;
+    reszta -> online. Śmieciowy payload liczy się jak zero zgód."""
+
+    if payload is None:
+        return "offline"
+    pending = 0
+    if isinstance(payload, dict):
+        try:
+            pending = int(payload.get("pending_approval_count") or 0)
+        except (TypeError, ValueError):
+            pending = 0
+    return "pending" if pending > 0 else "online"
+
+
+def fetch_daemon_status(
+    api_base_url: str,
+    api_token: str | None,
+    timeout: float = STATUS_FETCH_TIMEOUT_SECONDS,
+) -> dict | None:
+    """GET /health dla pollera ramki; None przy dowolnym błędzie = offline."""
+
+    request = urllib.request.Request(f"{api_base_url.rstrip('/')}/health")
+    if api_token:
+        request.add_header("X-Jarvis-Token", api_token)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - każdy błąd transportu znaczy offline
+        return None
+    return payload if isinstance(payload, dict) else {}
 
 
 def status_icon_path() -> Path:
@@ -113,6 +165,8 @@ class MenuBarApp:
         self._status_item = None
         self._popover = None
         self._controller = None
+        self._webview = None
+        self._border_state: str | None = None
         self._hotkey_monitors: list = []
 
     def run(self) -> None:
@@ -130,6 +184,8 @@ class MenuBarApp:
         self._controller = self._build_controller(AppKit)
         self._status_item = self._build_status_item(AppKit, self._controller)
         self._install_hotkey_monitors(AppKit)
+        self._apply_border_state(AppKit, "offline")
+        self._start_border_poller(AppKit)
 
         app.run()
 
@@ -219,6 +275,16 @@ class MenuBarApp:
         assets_url = AppKit.NSURL.fileURLWithPath_(str(self._settings.index_path.parent))
         webview.loadFileURL_allowingReadAccessToURL_(index_url, assets_url)
 
+        # Chrome widżetu: ramka stanu na warstwie natywnej, nie w DOM-ie
+        # cockpitu. Kolor ustawia poller (_apply_border_state).
+        webview.setWantsLayer_(True)
+        layer = webview.layer()
+        if layer is not None:
+            layer.setBorderWidth_(BORDER_WIDTH_POINTS)
+            layer.setCornerRadius_(BORDER_CORNER_RADIUS)
+            layer.setMasksToBounds_(True)
+        self._webview = webview
+
         view_controller = AppKit.NSViewController.alloc().init()
         view_controller.setView_(webview)
 
@@ -279,6 +345,39 @@ class MenuBarApp:
             image.setSize_(AppKit.NSMakeSize(pixel_w * scale, STATUS_ICON_HEIGHT))
         image.setTemplate_(True)
         return image
+
+    def _start_border_poller(self, AppKit):  # noqa: N803 - ObjC module name
+        """Wątek-daemon odpytuje /health i maluje ramkę widżetu na głównym
+        wątku (AppKit wymaga main). Padnięty daemon = czerwona ramka, zgody
+        w kolejce = bursztyn, zdrowy = teal."""
+
+        def loop() -> None:
+            while True:
+                payload = fetch_daemon_status(
+                    self._settings.api_base_url, self._settings.api_token
+                )
+                state = classify_daemon_state(payload)
+
+                def apply(state: str = state) -> None:
+                    self._apply_border_state(AppKit, state)
+
+                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(apply)
+                time.sleep(STATUS_POLL_SECONDS)
+
+        threading.Thread(target=loop, name="panel-border-status", daemon=True).start()
+
+    def _apply_border_state(self, AppKit, state: str) -> None:  # noqa: N803
+        if state == self._border_state or self._webview is None:
+            return
+        layer = self._webview.layer()
+        if layer is None:
+            return
+        red, green, blue, alpha = BORDER_STATE_COLORS.get(
+            state, BORDER_STATE_COLORS["offline"]
+        )
+        color = AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(red, green, blue, alpha)
+        layer.setBorderColor_(color.CGColor())
+        self._border_state = state
 
     def _toggle_popover(self, AppKit):  # noqa: N803
         button = self._status_item.button()

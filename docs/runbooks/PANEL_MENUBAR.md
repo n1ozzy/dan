@@ -41,6 +41,15 @@ scripts/jarvis-panel --probe    # exit 0 = PyObjC + assets OK, 2 = not
 - **Right-click**: menu with **Quit Jarvis Panel** (⌘Q also works while
   the popover has focus).
 
+## State border (widget chrome)
+
+The popover's WKWebView layer carries a 2pt state border drawn by the
+shell, NOT by the cockpit HTML/CSS: teal = daemon online, amber = approvals
+pending, red = daemon unreachable. A daemon thread polls `GET /health`
+every ~3 s (`STATUS_POLL_SECONDS`) and repaints the layer on the main
+thread. The web document stays chromeless — its own state signals are the
+state pill, the offline hero, and the approvals badge/nudge.
+
 ## Config
 
 `[panel]` section (`jarvis/config.py:PanelConfig`): `api_base_url`
