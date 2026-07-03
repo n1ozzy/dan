@@ -55,6 +55,7 @@ implemented only when their capability stage lands):
 | `screen_read` | ScreenCaptureKit capture + Vision OCR | D4 |
 | `terminal_read` | observing a named terminal app's front session (ADR-021) | D5 |
 | `terminal_write` | pasting a prepared command into a named terminal app (ADR-021) | D5 |
+| `memory_write` | saving a durable memory block proposed by the model (`memory_save`) | post-H |
 | `audio_input` | listening under ListeningLease | G2/G4 |
 | `audio_output` | speech via voice broker | G3 |
 | `fs_watch` | FSEvents observation within approved roots | E-phase |
@@ -86,6 +87,7 @@ Columns: `user` = `direct_user_command` / `panel_command` / `voice_command`
 | `screen_read` (broad) | AP | AP | **B** | full display / continuous |
 | `terminal_read` | A | AP | B | front session of a named app ({Terminal, iTerm2}); output is secret-bearing — redaction applies, never streamed (ADR-021) |
 | `terminal_write` | AP | AP | **B** | shell_write-grade: paste never submits, control chars rejected; never merged with `terminal_read` (ADR-021) |
+| `memory_write` | AP | AP | **B** | a saved block feeds every future prompt; approved execution promotes the candidate, so ADR-009's human-sanctioned promotion holds |
 | `audio_input` | lease-gated | **B** | **B** | only user sources can create a ListeningLease; a model can never start listening |
 | `audio_output` | A (broker) | A (broker) | AP | speaking is low-risk; auto-sources queue via approval to avoid a 3 a.m. monologue |
 | `fs_watch` | A (in roots) | AP | AP | registration is config-like; watching itself is passive |

@@ -46,6 +46,7 @@ from jarvis.macos.accessibility import create_actor, create_reader
 from jarvis.macos.screen import create_screen_reader
 from jarvis.macos.terminal import create_terminal_bridge
 from jarvis.tools.file_tool import FileReadTool, FileWriteTool
+from jarvis.tools.memory_tool import MemorySaveTool
 from jarvis.tools.registry import ApprovalProbeTool
 from jarvis.tools.screen_tool import ScreenOcrRegionTool, ScreenReadWindowTool
 from jarvis.tools.terminal_tool import TerminalPasteTool, TerminalReadScreenTool
@@ -1129,6 +1130,9 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     brain_manager = BrainManager.from_config(config, generation_registry=generation_registry)
     _restore_persisted_brain_adapter(conn, brain_manager)
     memory_manager = MemoryManager(conn, event_store=event_store)
+    # Registered here, not with the other tools above: memory_save needs the
+    # DB-backed manager, so the uninitialized (no-DB) registry never offers it.
+    tool_registry.register(MemorySaveTool(memory_manager))
     context_builder = ContextBuilder(
         conn,
         config=config,

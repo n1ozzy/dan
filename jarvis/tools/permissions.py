@@ -39,6 +39,7 @@ class PermissionClass(StrEnum):
     SCREEN_READ = "screen_read"
     TERMINAL_READ = "terminal_read"
     TERMINAL_WRITE = "terminal_write"
+    MEMORY_WRITE = "memory_write"
 
 
 class RequestSource(StrEnum):
@@ -175,6 +176,10 @@ class ToolPermissionPolicy:
             # a terminal is one Enter from execution, shell_write-grade
             # (ADR-021); never merged with terminal_read.
             PermissionClass.TERMINAL_WRITE,
+            # memory_write | user AP | model AP | auto B — a saved block feeds
+            # every future prompt, so promotion stays human-sanctioned
+            # (ADR-009) and unattended sources may not curate memory at all.
+            PermissionClass.MEMORY_WRITE,
         }:
             if normalized_source in AUTO_SOURCES:
                 return _blocked(
