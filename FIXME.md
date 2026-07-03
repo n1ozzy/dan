@@ -150,23 +150,19 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 - **⚠️ Wymaga migracji DB** (`jarvis/store/migrations.py` — idempotentna, version guard). Wymaga potwierdzenia na żywo.
 - **Estymat:** ~0,5–1 dzień · **Zależności:** PO FIX-04 (hot-mic). Anti-echo to fundament PRZED tuningiem VAD. **[PROMPT wykonany — przycięty przy DONE.]**
 
-## - [ ] FIX-10 · Store/memory/paths: uprawnienia, LIMIT, transakcje 🟡 MED×2 + LOW×2
+## - [x] FIX-10 · Store/memory/paths: uprawnienia, LIMIT, transakcje 🟡 MED×2 + LOW×2 — DONE `4139357`
+
+**DONE `4139357` (TDD; pełny pytest 1430 zielone):**
+- MED perms: `ensure_runtime_dirs` chmoduje katalogi runtime `0700`, `initialize_database` plik DB `0600`, `configure_logging` plik logu `0600` (helper `paths.secure_path`, stałe `RUNTIME_DIR_MODE`/`RUNTIME_FILE_MODE`; mirror `security/transport.py`) — wcześniej world-readable `0755/0644`.
+- MED LIMIT: `MemoryManager._read_blocks` binduje `LIMIT ?` w SQL (param), `list_blocks` nie materializuje całej tabeli ani nie tnie `blocks[:limit]` w Pythonie.
+- LOW martwe flagi: usunięte `DatabaseConfig.migrations`/`destroy_existing` (nic ich nie czytało w jarvis/); `_build_section` ignoruje nieznane klucze → stare configy/TOML-e testowe dalej ładują (backward-compat pokryty testem). Usunięte też z `config/jarvis.example.toml`.
+- LOW transakcje: **PRZY WERYFIKACJI okazało się już zrobione przez FIX-03** — `create_block`/`_update_block` owijają INSERT/UPDATE + `_append_memory_event` w jednym `with self._conn:`, a `event_store.append` dzieli to samo połączenie (rollback eventu cofa mutację). Dołożony test-guard atomowości; zero zmiany produkcyjnej (wtórne eventy candidate.* zostają osobnym appendem po już-atomowej mutacji — niski wpływ, stan bloku zawsze spójny).
+- **[PROMPT wykonany — przycięty przy DONE.]**
 
 - **Pliki:** `jarvis/paths.py:48` (DB/logi world-readable), `jarvis/memory/manager.py:318` (brak SQL LIMIT), `:315` (mutacja+event osobno), `jarvis/config.py:45` (martwe flagi)
 - **Problem:** `ensure_runtime_dirs()` robi goły `mkdir` → plik DB i logi world-readable (0644), choć reszta sekretów jest 0600/0700. `_read_blocks` bez `LIMIT` ładuje całą tabelę i tnie w Pythonie. Mutacja pamięci i audit-event w osobnych transakcjach. `destroy_existing`/`migrations` parsowane, nieużywane.
 - **Fix:** chmod home 0700, DB/logi 0600 po utworzeniu; wepchnij filtr+ORDER BY+LIMIT do SQL; jedna transakcja na zmianę+event (spójne z FIX-03); usuń lub zaimplementuj martwe flagi.
 - **Estymat:** ~2–3h · **Zależności:** transakcja spójna z decyzją FIX-03.
-
-```text
-Repo Jarvis v4.1 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-10 z FIXME.md (2× MED + 2× LOW, store/memory/paths).
-ZASADY: preflight tanio; TDD; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu pytest + commit + odhacz FIX-10.
-PROBLEMY:
-- paths.py ~48 (MED): ensure_runtime_dirs() tworzy ~/.jarvis, logs, runtime gołym mkdir (bez mode/chmod); plik SQLite (sqlite3.connect) i log FileHandler zostają world-readable (0755/0644), choć kod chmoduje inne sekrety 0600/0700 (security/transport.py, voice/*, macos/screen.py).
-- memory/manager.py ~318 (MED): _read_blocks robi SELECT ... ORDER BY updated_at DESC BEZ SQL LIMIT; list_blocks() ładuje całą pasującą tabelę do Pythona i dopiero tnie blocks[:limit] — argument limit nie ogranicza zapytania.
-- memory/manager.py ~315 (LOW): mutacja bloku i jej audit-event to dwie osobne transakcje (_update_block commit w swoim `with self._conn:`, potem _append_memory_event w innej; promote dokłada trzecią). Brak transakcji spinającej zmianę stanu + event.
-- config.py ~45 (LOW): DatabaseConfig.destroy_existing i .migrations są parsowane, ale nigdzie w jarvis/ nieużywane (martwe flagi).
-ZADANIE: Zweryfikuj linie. Testy + fixy: chmod runtime home 0700 i plik DB/log 0600 po utworzeniu (mirror hardeningu tokenu transportu); wepchnij active-filter + ORDER BY + LIMIT (bind budżetu) do SQL w _read_blocks; opakuj zapis wiersza i insert eventu w jedną transakcję (spójnie z decyzją FIX-03); usuń martwe flagi config albo je zaimplementuj/udokumentuj jako no-op. pytest.
-```
 
 ---
 
