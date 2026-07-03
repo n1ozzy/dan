@@ -186,6 +186,67 @@ def test_preserves_ordinary_non_secret_text() -> None:
     assert redact_secrets(payload) == payload
 
 
+# --- FIX-08: high-recall detectors + credential key ---------------------------
+
+
+def test_redacts_credential_keys_including_separators() -> None:
+    redacted = redact_secrets(
+        {"credentials": "raw", "aws_credential": "raw", "cred-entials": "safe?"}
+    )
+
+    assert redacted["credentials"] == REDACTION_PLACEHOLDER
+    assert redacted["aws_credential"] == REDACTION_PLACEHOLDER
+    # not a credential key (hyphen splits an unrelated word) — left readable
+    assert redacted["cred-entials"] == "safe?"
+
+
+def test_redacts_pem_private_key_block() -> None:
+    pem = (
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEpAIBAAKCAQEAsecretkeymaterial1234567890\n"
+        "abcdef0123456789/redactme+more==\n"
+        "-----END RSA PRIVATE KEY-----"
+    )
+
+    redacted = redact_secrets({"stdout": f"here is the key:\n{pem}\ndone"})
+
+    assert "secretkeymaterial" not in redacted["stdout"]
+    assert "redactme" not in redacted["stdout"]
+    assert REDACTION_PLACEHOLDER in redacted["stdout"]
+    assert redacted["stdout"].startswith("here is the key:")
+    assert redacted["stdout"].endswith("done")
+
+
+def test_redacts_connection_string_password_but_keeps_host() -> None:
+    redacted = redact_secrets(
+        {"conn": "postgres://appuser:s3cr3tpass@db.internal:5432/main"}
+    )
+
+    assert "s3cr3tpass" not in redacted["conn"]
+    assert "appuser" in redacted["conn"]
+    assert "db.internal:5432/main" in redacted["conn"]
+
+
+def test_redacts_sensitive_assignments_in_file_like_text() -> None:
+    text = (
+        "password = hunter2super\n"
+        "API_KEY: sk_live_shouldnotmatterhere\n"
+        'client_secret="topsecretvalue"\n'
+        "PORT = 5432\n"
+        "greeting: hello there\n"
+    )
+
+    redacted = redact_secrets({"stdout": text})
+
+    out = redacted["stdout"]
+    assert "hunter2super" not in out
+    assert "topsecretvalue" not in out
+    assert "sk_live_shouldnotmatterhere" not in out
+    # non-sensitive assignments stay readable
+    assert "PORT = 5432" in out
+    assert "greeting: hello there" in out
+
+
 def test_event_store_append_redacts_before_persistence(tmp_path: Path) -> None:
     conn, store = make_store(tmp_path)
     raw_payload = {

@@ -130,6 +130,31 @@ def test_ui_type_rejects_oversized_text() -> None:
         UiTypeTool(FakeAccessibilityActor()).run({"text": "x" * (MAX_TYPE_CHARS + 1)})
 
 
+@pytest.mark.parametrize(
+    "payload",
+    ["send this\nand submit", "tab\tseparated", "bell\x07here", "esc\x1bseq", "del\x7f"],
+)
+def test_ui_type_refuses_control_characters(payload: str) -> None:
+    # FIX-08 (LOW): the "Enter stays with the human" invariant must hold at the
+    # tool layer, not depend on the backend — a newline (or any control char)
+    # could submit a form / send a message. Mirrors validate_paste_text.
+    from jarvis.tools.registry import ToolExecutionError
+
+    actor = FakeAccessibilityActor()
+    with pytest.raises(ToolExecutionError, match="control character"):
+        UiTypeTool(actor).run({"text": payload})
+    assert actor.performed == []  # the backend was never asked to type it
+
+
+def test_ui_type_still_allows_ordinary_unicode_text() -> None:
+    actor = FakeAccessibilityActor()
+
+    output = UiTypeTool(actor).run({"text": "zażółć gęślą jaźń — ok"})
+
+    assert output["ok"] is True
+    assert actor.performed[-1]["action"] == "type_text"
+
+
 def test_ui_focus_app_requires_app_name() -> None:
     from jarvis.tools.registry import ToolExecutionError
 

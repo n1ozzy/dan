@@ -8,7 +8,11 @@ Safety model for reads:
 - The tool re-checks containment at execution time (defense in depth against
   symlink swaps between the policy check and the execute step).
 - Size-limited, UTF-8 text only; binary content is refused, never returned.
-- Results flow into tool_runs/events where secret redaction applies.
+- The full (redacted) content reaches the model via the transient tool result,
+  but the DURABLE store keeps only a redacted, size-capped preview: secret
+  redaction is best-effort (see security.redaction), so the persistence layer
+  additionally caps long strings (registry.PERSIST_MAX_STRING_CHARS) rather than
+  hoarding whole file bodies in tool_runs/events.
 """
 
 from __future__ import annotations
@@ -135,17 +139,43 @@ class FileWriteTool(Tool):
                 f"file_write target exists and is not a regular file: {resolved}"
             )
 
-        temp_path = f"{resolved}.jarvis-write-{os.getpid()}.tmp"
+        # Pin the parent directory by fd and do the write + atomic replace
+        # relative to it (openat/renameat). A symlink swap of the parent PATH
+        # between the containment check above and the write can no longer
+        # redirect the write outside the approved root (FIX-08 TOCTOU), and
+        # O_NOFOLLOW refuses a parent that has itself become a symlink since the
+        # check.
+        name = os.path.basename(resolved)
+        temp_name = f"{name}.jarvis-write-{os.getpid()}.tmp"
         try:
-            with open(temp_path, "wb") as handle:
-                handle.write(encoded)
-            os.replace(temp_path, resolved)
+            dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc:
+            raise ToolExecutionError(
+                f"file_write cannot open parent directory: {exc}"
+            ) from exc
+        try:
+            # O_EXCL|O_NOFOLLOW: never write through a pre-planted symlink at the
+            # temp name, and never clobber an existing entry there.
+            fd = os.open(
+                temp_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=dir_fd,
+            )
             try:
-                os.unlink(temp_path)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(encoded)
+                os.replace(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
             except OSError:
-                pass
+                try:
+                    os.unlink(temp_name, dir_fd=dir_fd)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
             raise ToolExecutionError(f"file_write cannot write file: {exc}") from exc
+        finally:
+            os.close(dir_fd)
 
         return {
             "ok": True,

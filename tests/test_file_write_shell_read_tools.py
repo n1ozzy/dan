@@ -130,6 +130,29 @@ def test_write_with_no_roots_blocks_everything(tmp_path: Path) -> None:
         tool.run({"path": str(tmp_path / "out.txt"), "content": "x"})
 
 
+def test_write_refuses_preplanted_symlink_at_temp_path(
+    write_tool: FileWriteTool, approved_root: Path, tmp_path: Path
+) -> None:
+    # FIX-08 (LOW): the temp file must be created without following a symlink
+    # (O_NOFOLLOW|O_EXCL). An attacker who pre-plants a symlink at the
+    # predictable temp path must not be able to redirect the write through it to
+    # a file outside the approved root (a TOCTOU on the write step).
+    import os
+
+    outside = tmp_path / "outside_target.txt"
+    outside.write_text("original", encoding="utf-8")
+    target = approved_root / "out.txt"
+    temp_path = f"{target.resolve()}.jarvis-write-{os.getpid()}.tmp"
+    os.symlink(outside, temp_path)
+
+    with pytest.raises(ToolExecutionError):
+        write_tool.run({"path": str(target), "content": "attacker-controlled"})
+
+    # the write never followed the symlink out of the root
+    assert outside.read_text(encoding="utf-8") == "original"
+    assert not target.exists()
+
+
 # --- shell_read unit ---
 
 

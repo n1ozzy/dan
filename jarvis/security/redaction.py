@@ -17,6 +17,8 @@ SENSITIVE_KEYS = frozenset(
         "authorization",
         "client_secret",
         "cookie",
+        "credential",
+        "credentials",
         "pass",
         "passwd",
         "password",
@@ -35,6 +37,8 @@ SENSITIVE_KEY_SUFFIXES = (
     "_authorization",
     "_client_secret",
     "_cookie",
+    "_credential",
+    "_credentials",
     "_pass",
     "_passwd",
     "_password",
@@ -52,6 +56,8 @@ SENSITIVE_KEY_PREFIXES = (
     "authorization_",
     "client_secret_",
     "cookie_",
+    "credential_",
+    "credentials_",
     "pass_",
     "passwd_",
     "password_",
@@ -73,6 +79,27 @@ SECRET_VALUE_PATTERNS = (
     re.compile(r"(?<![A-Za-z0-9_])sk-[A-Za-z0-9][A-Za-z0-9._-]*"),
     re.compile(r"(?<![A-Za-z0-9_])xox[abps]-[A-Za-z0-9-]{8,}"),
     re.compile(r"(?<![A-Za-z0-9_])AKIA[0-9A-Z]{16}(?![A-Za-z0-9_])"),
+    # FIX-08 high-recall: a sensitive key name assigned a value (config/.env
+    # lines, `password=…`, `api_key: …`). Scoped to whole sensitive words so it
+    # never fires on bare "key"/"token is …" prose. group(1) keeps the label.
+    re.compile(
+        r"(?i)(\b(?:password|passwd|secret|api[_-]?key|access[_-]?key"
+        r"|secret[_-]?key|auth[_-]?token|token|private[_-]?key|client[_-]?secret"
+        r"|credentials?)\b\s*[:=]\s*)[\"']?[^\s\"']{4,}[\"']?"
+    ),
+)
+
+# High-recall secret shapes that need bespoke handling (multi-line / preserve a
+# tail), applied before the single-line SECRET_VALUE_PATTERNS above (FIX-08).
+# Entropy heuristics are deliberately omitted: this module is deterministic and
+# false positives on hashes/UUIDs/base64 data would be worse than a missed
+# novel shape (the persistence path additionally size-caps as a backstop).
+_PEM_PRIVATE_KEY_BLOCK = re.compile(
+    r"-----BEGIN[ A-Z0-9]*PRIVATE KEY-----.*?-----END[ A-Z0-9]*PRIVATE KEY-----",
+    re.DOTALL,
+)
+_CONNECTION_STRING_CREDENTIALS = re.compile(
+    r"(?i)([a-z][a-z0-9+.\-]*://[^\s:/@]+:)[^\s:/@]+(@)"
 )
 
 
@@ -100,7 +127,13 @@ def redact_secrets(value: Any) -> Any:
 def redact_secret_text(value: str) -> str:
     """Redact secret-looking substrings while preserving ordinary surrounding text."""
 
-    redacted = value
+    # Whole PEM/private-key blocks first (multi-line), then connection-string
+    # passwords (keep scheme://user and @host), then the single-line shapes.
+    redacted = _PEM_PRIVATE_KEY_BLOCK.sub(REDACTION_PLACEHOLDER, value)
+    redacted = _CONNECTION_STRING_CREDENTIALS.sub(
+        lambda match: f"{match.group(1)}{REDACTION_PLACEHOLDER}{match.group(2)}",
+        redacted,
+    )
     for pattern in SECRET_VALUE_PATTERNS:
         redacted = pattern.sub(_replace_match, redacted)
     return redacted

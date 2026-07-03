@@ -11,7 +11,7 @@ from typing import Any
 
 from jarvis.events.models import utc_now_iso
 from jarvis.events.types import EventType
-from jarvis.security.redaction import redact_secret_text
+from jarvis.security.redaction import redact_secrets
 from jarvis.store.event_store import EventStore
 from jarvis.tools.permissions import (
     RequestSource,
@@ -810,39 +810,35 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-SECRET_KEY_PARTS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "credential",
-    "password",
-    "secret",
-    "token",
-)
+# The durable store keeps a bounded preview of each string, not whole payloads:
+# a 256 KB file_read body must not persist in full in tool_runs/events. The
+# brain continuation reads the transient ToolResult.output through the shared
+# redact_secrets (no cap), so the model still gets the full redacted content.
+PERSIST_MAX_STRING_CHARS = 4096
 
 
 def _redact(value: Any) -> Any:
-    """Redact secrets in persisted tool payloads.
+    """Redact secrets in persisted tool payloads, then size-cap long strings.
 
-    Sensitive keys are masked entirely; string values additionally pass the
-    central pattern redaction so secret-looking substrings (tokens inside file
-    contents, command output, etc.) never persist raw in tool_runs/approvals.
+    Key masking and secret-value redaction are delegated to the central
+    ``security.redaction`` module (single source of truth: it normalizes key
+    separators, so ``api-key``/``API.KEY`` mask just like ``api_key`` — the old
+    local substring rule missed those). On top of that, the DURABLE store caps
+    long strings (``PERSIST_MAX_STRING_CHARS``) so a large tool payload never
+    lands whole in tool_runs/events even if a novel secret shape slips redaction.
     """
 
+    return _cap_persisted_strings(redact_secrets(value))
+
+
+def _cap_persisted_strings(value: Any) -> Any:
     if isinstance(value, Mapping):
-        redacted: dict[str, Any] = {}
-        for key, item in value.items():
-            key_text = str(key)
-            lowered = key_text.lower()
-            if any(part in lowered for part in SECRET_KEY_PARTS):
-                redacted[key_text] = "[REDACTED]"
-            else:
-                redacted[key_text] = _redact(item)
-        return redacted
+        return {key: _cap_persisted_strings(item) for key, item in value.items()}
     if isinstance(value, list):
-        return [_redact(item) for item in value]
-    if isinstance(value, str):
-        return redact_secret_text(value)
+        return [_cap_persisted_strings(item) for item in value]
+    if isinstance(value, str) and len(value) > PERSIST_MAX_STRING_CHARS:
+        dropped = len(value) - PERSIST_MAX_STRING_CHARS
+        return f"{value[:PERSIST_MAX_STRING_CHARS]}…[+{dropped} chars TRUNCATED]"
     return value
 
 

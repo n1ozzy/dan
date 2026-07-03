@@ -135,6 +135,15 @@ class UiTypeTool(Tool):
             raise ToolExecutionError("ui_type requires non-empty string text.")
         if len(text) > MAX_TYPE_CHARS:
             raise ToolExecutionError(f"ui_type text exceeds {MAX_TYPE_CHARS} characters.")
+        # "Enter stays with the human": ban control characters at the tool layer
+        # (mirror validate_paste_text) so the invariant never depends on the
+        # backend — a newline/tab could submit a form or send a message.
+        for ch in text:
+            if ord(ch) < 0x20 or ord(ch) == 0x7F:
+                raise ToolExecutionError(
+                    "ui_type refuses control characters "
+                    f"(found {ch!r}); a newline would submit to the app."
+                )
         try:
             self._actor.type_text(text)
         except AccessibilityError as exc:
