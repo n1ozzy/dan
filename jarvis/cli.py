@@ -491,7 +491,9 @@ def _request_json(
 ) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}{path}"
     headers = {"Accept": "application/json"}
-    if method in {"POST", "PATCH", "DELETE"} and _transport_token is not None:
+    # Private-data reads (conversations, turns, memory) need the token too, not
+    # just mutations (FIX-06 follow-up); harmless on the still-open reads.
+    if _transport_token is not None:
         headers[API_TOKEN_HEADER] = _transport_token
     data = None
     if payload is not None:

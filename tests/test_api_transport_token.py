@@ -156,9 +156,30 @@ def test_unauthorized_request_creates_no_turn_or_event(app: DaemonApp, base_url:
     assert after == before
 
 
-def test_read_only_requests_do_not_require_token(base_url: str) -> None:
-    for path in ("/health", "/state", "/events", "/tools", "/approvals", "/memory"):
+def test_read_only_status_endpoints_do_not_require_token(base_url: str) -> None:
+    # Status/mechanism reads stay open (monitoring, panel bootstrap). Private
+    # DATA reads are covered separately below (FIX-06 follow-up moved /memory
+    # out of this list).
+    for path in ("/health", "/state", "/events", "/tools", "/approvals"):
         status, _ = request_json("GET", f"{base_url}{path}")
+        assert status == 200, path
+
+
+def test_private_read_endpoints_require_token(base_url: str) -> None:
+    # FIX-06 follow-up: after CORS null removal + Host validation, an untokened
+    # GET of private data was still the "any local process reads your data"
+    # vector. These endpoints now require the transport token.
+    for path in ("/conversations", "/turns", "/memory", "/memory/some-id", "/settings"):
+        status, payload = request_json("GET", f"{base_url}{path}")
+        assert status == 401, path
+        assert payload == {"error": "Unauthorized", "status": 401}
+
+
+def test_private_read_endpoints_succeed_with_token(app: DaemonApp, base_url: str) -> None:
+    token = app.api_token
+    assert token
+    for path in ("/conversations", "/memory", "/settings", "/turns?conversation_id=none"):
+        status, _ = request_json("GET", f"{base_url}{path}", token=token)
         assert status == 200, path
 
 

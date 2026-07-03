@@ -1019,7 +1019,6 @@ function renderRuntimeObservations(observations) {
 }
 
 const API_TOKEN_STORAGE_KEY = "jarvis-api-token";
-const MUTATING_METHODS = new Set(["POST", "PATCH", "DELETE"]);
 
 function apiToken() {
   try {
@@ -1053,11 +1052,11 @@ async function requestJson(path, options = {}) {
     headers: {},
   };
 
-  if (MUTATING_METHODS.has(method)) {
-    const token = apiToken() || promptForApiToken();
-    if (token) {
-      init.headers["X-Jarvis-Token"] = token;
-    }
+  // Every request carries the token now: private-data reads (conversations,
+  // memory, settings) require it too, not just mutations (FIX-06 follow-up).
+  const token = apiToken() || promptForApiToken();
+  if (token) {
+    init.headers["X-Jarvis-Token"] = token;
   }
 
   if (Object.prototype.hasOwnProperty.call(options, "body")) {
@@ -1073,7 +1072,7 @@ async function requestJson(path, options = {}) {
   }
 
   const payload = await readResponsePayload(response);
-  if (response.status === 401 && MUTATING_METHODS.has(method)) {
+  if (response.status === 401) {
     try {
       window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
     } catch (error) {

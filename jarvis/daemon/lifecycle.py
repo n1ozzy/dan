@@ -97,6 +97,12 @@ MUTATING_METHODS = {"POST", "PATCH", "DELETE"}
 HANDLER_TIMEOUT_SECONDS = 10.0
 # Each /stream session holds its own SQLite handle + worker thread; cap them.
 MAX_STREAM_SESSIONS = 8
+# Private-data reads gated behind the transport token (FIX-06 follow-up): after
+# removing CORS null and validating Host, an untokened GET of conversations,
+# memory or settings was the remaining "any local process reads your data"
+# vector. Status/mechanism reads (/health, /state, /events, /tools, /approvals)
+# stay open for monitoring and panel bootstrap.
+TOKEN_PROTECTED_GET_PATHS = {"/conversations", "/turns", "/memory", "/settings"}
 
 
 class LifecycleHook(Protocol):
@@ -239,6 +245,16 @@ def _host_header_is_local(handler: BaseHTTPRequestHandler) -> bool:
     return hostname in LOCAL_HOSTS
 
 
+def _is_token_protected_read(method: str, path: str) -> bool:
+    """A GET that returns private user data and needs the transport token."""
+
+    if method != "GET":
+        return False
+    if path in TOKEN_PROTECTED_GET_PATHS:
+        return True
+    return _memory_resource_id(path) is not None  # GET /memory/<id>
+
+
 def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> None:
     if not _host_header_is_local(handler):
         _write_json(handler, 403, {"error": "Forbidden", "status": 403}, close=True)
@@ -253,6 +269,10 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         return
 
     if method in MUTATING_METHODS and not _transport_authorized(handler, app):
+        _write_json(handler, 401, {"error": "Unauthorized", "status": 401}, close=True)
+        return
+
+    if _is_token_protected_read(method, path) and not _transport_authorized(handler, app):
         _write_json(handler, 401, {"error": "Unauthorized", "status": 401}, close=True)
         return
 
