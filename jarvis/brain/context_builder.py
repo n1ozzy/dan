@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from jarvis.brain.base import BrainMessage, BrainRequest
+from jarvis.brain.base import BrainMessage, BrainRequest, BrainToolSpec
 from jarvis.logging import get_logger
 
 from ..memory.manager import MemoryManager
@@ -51,6 +51,7 @@ class ContextBuilder:
         memory_manager: MemoryManager | None = None,
         event_store: Any | None = None,
         now: Callable[[], str] | None = None,
+        tool_specs: Callable[[], Any] | None = None,
     ) -> None:
         self._conn = conn
         self._config = config
@@ -58,6 +59,9 @@ class ContextBuilder:
         self._memory_manager = memory_manager or MemoryManager(conn)
         self._event_store = event_store
         self._now = now or utc_now_iso
+        # Callable returning the registry's ToolSpecs (name/description/
+        # input_schema/risk). None or empty => the prompt lists no tools.
+        self._tool_specs = tool_specs
 
     def build_request(
         self,
@@ -145,10 +149,28 @@ class ContextBuilder:
             input_text=input_text,
             context_messages=messages,
             memory_blocks=brain_memory_blocks,
+            available_tools=self._collect_available_tools(),
             settings=request_settings,
             metadata={"context_snapshot": _stable_snapshot_for_request_metadata(snapshot)},
         )
         return ContextBuildResult(request=request, context_snapshot=snapshot)
+
+    def _collect_available_tools(self) -> list[BrainToolSpec]:
+        """Expose the registry's tools so the prompt can list them (else the
+        model is told "Available tools: - none" and denies having any). Risk
+        rides along; execution stays approval-gated downstream regardless."""
+
+        if self._tool_specs is None:
+            return []
+        return [
+            BrainToolSpec(
+                name=spec.name,
+                description=spec.description,
+                input_schema=dict(getattr(spec, "input_schema", {}) or {}),
+                risk=spec.risk,
+            )
+            for spec in self._tool_specs()
+        ]
 
     def _resolve_context_budget(self, max_context_chars: int | None) -> int:
         if max_context_chars is not None:

@@ -182,6 +182,44 @@ def test_build_request_returns_brain_request(
     assert result.context_snapshot["turn_id"] == "turn-new"
 
 
+def test_available_tools_are_exposed_from_the_registry(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    # The model must know it has tools. build_request wires the registry's specs
+    # into request.available_tools so format_cli_prompt lists them instead of
+    # "Available tools: - none".
+    insert_conversation(conn)
+
+    class _Spec:
+        def __init__(self, name: str, description: str, risk: str) -> None:
+            self.name = name
+            self.description = description
+            self.input_schema = {"type": "object"}
+            self.risk = risk
+
+    specs = [
+        _Spec("file_read", "Read a file", "safe_read"),
+        _Spec("shell_command", "Run a shell command", "destructive"),
+    ]
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        now=fixed_now(),
+        tool_specs=lambda: specs,
+    )
+
+    request = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="hej",
+    ).request
+
+    assert [t.name for t in request.available_tools] == ["file_read", "shell_command"]
+    assert request.available_tools[1].risk == "destructive"
+
+
 def test_oversized_input_text_is_capped_to_the_budget_with_a_marker(
     conn: sqlite3.Connection,
     persona_path: Path,

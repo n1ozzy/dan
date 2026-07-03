@@ -1134,6 +1134,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         config=config,
         event_store=event_store,
         memory_manager=memory_manager,
+        tool_specs=tool_registry.list_specs,
     )
     approval_gate = ApprovalGate(conn, event_store=event_store)
     tool_run_recorder = ToolRunRecorder(conn, event_store=event_store)
