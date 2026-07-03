@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -92,6 +93,10 @@ ALLOWED_CORS_ORIGINS = {"http://127.0.0.1:41800", "http://localhost:41800"}
 CORS_ALLOW_METHODS = "GET, POST, PATCH, DELETE, OPTIONS"
 CORS_ALLOW_HEADERS = f"Content-Type, {API_TOKEN_HEADER}"
 MUTATING_METHODS = {"POST", "PATCH", "DELETE"}
+# Slowloris guard: drop a connection whose request never completes (FIX-06).
+HANDLER_TIMEOUT_SECONDS = 10.0
+# Each /stream session holds its own SQLite handle + worker thread; cap them.
+MAX_STREAM_SESSIONS = 8
 
 
 class LifecycleHook(Protocol):
@@ -137,6 +142,9 @@ def build_server(app: DaemonApp, host: str, port: int) -> DaemonServer:
 
     handler_class = _make_handler(app)
     httpd = ThreadingHTTPServer((host, port), handler_class)
+    # Bound the number of concurrent /stream sessions (FIX-06); read here so a
+    # test can lower the cap before the server is built.
+    httpd.stream_session_semaphore = threading.BoundedSemaphore(MAX_STREAM_SESSIONS)
     return DaemonServer(httpd, app)
 
 
@@ -152,6 +160,10 @@ def _make_handler(app: DaemonApp) -> type[BaseHTTPRequestHandler]:
     class JarvisRequestHandler(BaseHTTPRequestHandler):
         server_version = "jarvisd"
         error_content_type = "application/json"
+        # Socket-level timeout so a slow/partial request cannot pin a worker
+        # thread forever (FIX-06). The /stream session clears this itself after
+        # upgrade (settimeout(None) in EventStreamSession).
+        timeout = HANDLER_TIMEOUT_SECONDS
 
         def do_GET(self) -> None:
             _dispatch(self, app, "GET")
@@ -206,7 +218,32 @@ def _make_handler(app: DaemonApp) -> type[BaseHTTPRequestHandler]:
     return JarvisRequestHandler
 
 
+def _host_header_is_local(handler: BaseHTTPRequestHandler) -> bool:
+    """Reject a request whose Host is not loopback (DNS-rebinding guard, FIX-06).
+
+    Loopback binding alone does not stop a browser on a foreign origin that
+    resolves to 127.0.0.1: the Host header then carries the attacker's name.
+    """
+
+    host = handler.headers.get("Host")
+    if not host:
+        return False
+    hostname = host.strip()
+    if hostname.startswith("["):  # bracketed IPv6, e.g. [::1] or [::1]:41800
+        end = hostname.find("]")
+        if end == -1:
+            return False
+        hostname = hostname[1:end]
+    elif ":" in hostname:
+        hostname = hostname.rsplit(":", 1)[0]
+    return hostname in LOCAL_HOSTS
+
+
 def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> None:
+    if not _host_header_is_local(handler):
+        _write_json(handler, 403, {"error": "Forbidden", "status": 403}, close=True)
+        return
+
     parsed = urlparse(handler.path)
     path = parsed.path
     query = parse_qs(parsed.query)
@@ -216,7 +253,7 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         return
 
     if method in MUTATING_METHODS and not _transport_authorized(handler, app):
-        _write_json(handler, 401, {"error": "Unauthorized", "status": 401})
+        _write_json(handler, 401, {"error": "Unauthorized", "status": 401}, close=True)
         return
 
     try:
@@ -494,25 +531,40 @@ def _handle_stream(
         _write_json(handler, 400, {"error": str(exc), "status": 400})
         return
 
-    subprotocol = select_subprotocol(handler.headers)
-    response_lines = [
-        "HTTP/1.1 101 Switching Protocols",
-        "Upgrade: websocket",
-        "Connection: Upgrade",
-        f"Sec-WebSocket-Accept: {websocket_accept_key(key)}",
-    ]
-    if subprotocol is not None:
-        response_lines.append(f"Sec-WebSocket-Protocol: {subprotocol}")
-    handler.connection.sendall(("\r\n".join(response_lines) + "\r\n\r\n").encode("ascii"))
-
-    session = EventStreamSession(handler.connection, handler.rfile, app, after_id=after_id)
-    try:
-        session.run()
-    except Exception:
-        # Past the upgrade there is no HTTP error channel left; the daemon
-        # must survive any single stream connection dying.
-        get_logger(__name__).exception("Event stream session failed")
+    # Refuse over the cap BEFORE the upgrade, while an HTTP error channel still
+    # exists (FIX-06). The slot is held for the session's whole lifetime.
+    semaphore = getattr(handler.server, "stream_session_semaphore", None)
+    if semaphore is not None and not semaphore.acquire(blocking=False):
+        _write_json(
+            handler,
+            503,
+            {"error": "Too many concurrent stream sessions", "status": 503},
+        )
         return
+
+    try:
+        subprotocol = select_subprotocol(handler.headers)
+        response_lines = [
+            "HTTP/1.1 101 Switching Protocols",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            f"Sec-WebSocket-Accept: {websocket_accept_key(key)}",
+        ]
+        if subprotocol is not None:
+            response_lines.append(f"Sec-WebSocket-Protocol: {subprotocol}")
+        handler.connection.sendall(("\r\n".join(response_lines) + "\r\n\r\n").encode("ascii"))
+
+        session = EventStreamSession(handler.connection, handler.rfile, app, after_id=after_id)
+        try:
+            session.run()
+        except Exception:
+            # Past the upgrade there is no HTTP error channel left; the daemon
+            # must survive any single stream connection dying.
+            get_logger(__name__).exception("Event stream session failed")
+            return
+    finally:
+        if semaphore is not None:
+            semaphore.release()
 
 
 def _stream_after_id(query: dict[str, list[str]]) -> int | None:
@@ -646,11 +698,24 @@ def _read_optional_json_body(handler: BaseHTTPRequestHandler) -> Any | None:
         raise ValueError(f"Malformed JSON: {exc.msg}") from exc
 
 
-def _write_json(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
+def _write_json(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    payload: dict[str, Any],
+    *,
+    close: bool = False,
+) -> None:
     body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    # close=True ends the connection: the request body may be unread (e.g. a
+    # rejected mutation), and leaving the socket keep-alive would desync the
+    # next request against those leftover bytes (FIX-06).
+    if close:
+        handler.close_connection = True
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(body)))
+    if close:
+        handler.send_header("Connection", "close")
     send_cors_headers = getattr(handler, "_send_cors_headers", None)
     if callable(send_cors_headers):
         send_cors_headers()
