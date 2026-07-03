@@ -443,10 +443,62 @@ def test_barge_in_cancel_mid_stream_fails_the_generation() -> None:
         time.sleep(0.01)
     assert registry.active_count() == 1
 
-    assert registry.cancel_all() == 1
+    assert len(registry.cancel_all()) == 1
     assert done.wait(timeout=5)
-    assert len(errors) == 1  # a killed generation is a failed turn, not a fake success
+    # A killed generation raises (never a fake success) and the registry is
+    # cleaned up; the distinct cancelled-vs-failed classification is asserted in
+    # test_barge_in_cancel_raises_generation_cancelled_not_failure.
+    assert len(errors) == 1
     assert registry.active_count() == 0
+
+
+def test_barge_in_cancel_raises_generation_cancelled_not_failure() -> None:
+    # Operator-priority fix (FIX-09): a cancel (barge-in leg 1) that kills the
+    # CLI must be DISTINGUISHABLE from a real failure. rc=143/-15 after our own
+    # cancel handle fired is a cancellation, so the turn is CANCELLED, not FAILED.
+    from jarvis.brain.base import BrainGenerationCancelled
+
+    registry = GenerationRegistry()
+    process = FakeStreamProcess(
+        [partial("początek zdania")], block_after=1  # hangs until cancelled
+    )
+    adapter, _ = streaming_adapter(process, generation_registry=registry)
+    captured: list[Exception] = []
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            adapter.generate(make_request(), on_delta=lambda _: None)
+        except BrainAdapterError as exc:
+            captured.append(exc)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and registry.active_count() == 0:
+        time.sleep(0.01)
+    assert registry.active_count() == 1
+
+    registry.cancel_all()
+    assert done.wait(timeout=5)
+    assert len(captured) == 1
+    # The distinct subclass is what lets the orchestrator mark CANCELLED, not FAILED.
+    assert isinstance(captured[0], BrainGenerationCancelled)
+
+
+def test_genuine_nonzero_exit_stays_a_failure_not_a_cancellation() -> None:
+    # A real crash (nonzero exit we did NOT cause by cancelling) is still a
+    # plain failure — never misreported as a cancellation.
+    from jarvis.brain.base import BrainGenerationCancelled
+
+    process = FakeStreamProcess([partial("częściowo")], returncode=3, stderr="boom")
+    adapter, _ = streaming_adapter(process)
+
+    with pytest.raises(BrainAdapterError) as exc_info:
+        adapter.generate(make_request(), on_delta=lambda _: None)
+    assert not isinstance(exc_info.value, BrainGenerationCancelled)
 
 
 def test_blocking_path_never_touches_the_registry() -> None:

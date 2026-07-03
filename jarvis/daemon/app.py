@@ -167,7 +167,10 @@ class DaemonApp:
             from jarvis.voice.stt import build_stt_engine
             from jarvis.voice.transcription import TranscriptionPipeline
             from jarvis.voice.tts import build_tts_engine
-            from jarvis.turns.orchestrator import TurnOrchestratorBusyError
+            from jarvis.turns.orchestrator import (
+                TurnCancelledError,
+                TurnOrchestratorBusyError,
+            )
 
             # Engine construction validates the name: a banned or unknown
             # TTS engine kills the daemon at startup (decree §7.3), and so
@@ -188,6 +191,7 @@ class DaemonApp:
                 turn_starter=self._start_voice_turn,
                 speech_active=self._voice_speech_active,
                 busy_exceptions=(DaemonAppBusyError, TurnOrchestratorBusyError),
+                cancelled_exceptions=(TurnCancelledError,),
                 retry_seconds=float(self.config.voice.transcript_turn_retry_seconds),
             )
 

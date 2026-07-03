@@ -18,7 +18,7 @@ from jarvis.store.db import close_quietly
 from jarvis.store.event_store import create_event_store
 from jarvis.voice.models import VoiceRequest
 from jarvis.voice.queue import VoiceQueue
-from jarvis.voice.tts import SynthesizedChunk
+from jarvis.voice.tts import PlaybackCancelled, SynthesizedChunk
 
 
 _LOGGER = get_logger("voice.broker")
@@ -136,8 +136,19 @@ class VoiceBroker:
                 current = next_request
                 continue
 
+            # Committed to play this chunk: stamp spoken_at BEFORE playback so
+            # the anti-echo corpus counts it even if the player is killed
+            # mid-play (a partial that still put audio in the air — FIX-09).
+            self._mark_spoken(current)
             try:
-                self._play(chunk)
+                # should_play is re-checked inside the engine under its player
+                # lock, right before spawning — closes the barge-in TOCTOU the
+                # pre-play check above cannot (FIX-09).
+                self._play(chunk, should_play=lambda: self._still_speaking(current))
+            except PlaybackCancelled:
+                # Cancelled in the check->spawn gap: the row is already
+                # 'cancelled' (leg 2), so skip cleanly — no done, no failure.
+                pass
             except Exception as exc:  # playback must never kill the loop
                 self._mark_failed(current, f"playback failed: {exc}")
             else:
@@ -148,8 +159,8 @@ class VoiceBroker:
 
     # -- internals ------------------------------------------------------------
 
-    def _play(self, chunk: SynthesizedChunk) -> None:
-        self._engine.play(chunk)
+    def _play(self, chunk: SynthesizedChunk, should_play: Callable[[], bool] | None = None) -> None:
+        self._engine.play(chunk, should_play=should_play)
 
     def _claim(self) -> VoiceRequest | None:
         return self._with_queue(lambda queue: queue.claim_next())
@@ -163,6 +174,9 @@ class VoiceBroker:
             return row is not None and str(row[0]) == "speaking"
         finally:
             close_quietly(conn)
+
+    def _mark_spoken(self, request: VoiceRequest) -> None:
+        self._with_queue(lambda queue: queue.mark_spoken(request.id))
 
     def _mark_done(self, request: VoiceRequest) -> None:
         self._with_queue(lambda queue: queue.mark_done(request.id))

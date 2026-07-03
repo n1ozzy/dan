@@ -317,6 +317,65 @@ def test_capture_file_is_owner_only_while_recording(tmp_path: Path) -> None:
         recorder.stop()
 
 
+# --- locked-mode segmentation (FIX-09) ---------------------------------------
+
+
+def test_rotate_delivers_the_segment_and_keeps_recording(tmp_path: Path) -> None:
+    # FIX-09: a locked lease ran ONE ever-growing capture, so no transcript
+    # flowed until the lock ended. Segmentation rotates the capture: the closed
+    # segment is delivered while a fresh capture keeps the mic live.
+    captures: list[bytes] = []
+    recorder, argv_file = build_sox(
+        tmp_path, on_capture=captures.append, recorder_segment_seconds=60
+    )
+    try:
+        recorder.start()
+        assert wait_for(lambda: len(spawn_lines(argv_file)) == 1)
+
+        recorder.rotate()
+
+        # The first segment was delivered mid-lease...
+        assert wait_for(lambda: len(captures) == 1)
+        assert len(captures[0]) == 8000
+        # ...and a fresh capture is running (a second sox spawned).
+        assert wait_for(lambda: len(spawn_lines(argv_file)) == 2)
+        assert recorder.recording
+    finally:
+        recorder.stop()
+
+    # stop() still delivers the final, in-progress segment.
+    assert len(captures) == 2
+
+
+def test_rotate_is_a_noop_when_not_recording(tmp_path: Path) -> None:
+    captures: list[bytes] = []
+    recorder, argv_file = build_sox(
+        tmp_path, on_capture=captures.append, recorder_segment_seconds=60
+    )
+
+    recorder.rotate()  # never started
+
+    assert captures == []
+    assert spawn_lines(argv_file) == []
+    assert not recorder.recording
+
+
+def test_segment_mode_off_by_default_keeps_one_capture(tmp_path: Path) -> None:
+    # Hold mode (no segment interval) must behave exactly as before: one
+    # capture, delivered only on stop().
+    captures: list[bytes] = []
+    recorder, argv_file = build_sox(tmp_path, on_capture=captures.append)
+    recorder.start()
+    assert wait_for(lambda: len(spawn_lines(argv_file)) == 1)
+
+    recorder.rotate()  # no-op when segmentation is disabled
+
+    assert captures == []
+    assert len(spawn_lines(argv_file)) == 1
+    recorder.stop()
+    assert len(captures) == 1
+
+
 # --- daemon wiring -------------------------------------------------------------
 
 

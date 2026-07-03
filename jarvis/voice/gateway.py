@@ -45,6 +45,7 @@ class VoiceTurnGateway:
         turn_starter: Callable[[str], Any],
         speech_active: Callable[[], bool],
         busy_exceptions: tuple[type[BaseException], ...] = (),
+        cancelled_exceptions: tuple[type[BaseException], ...] = (),
         retry_seconds: float = DEFAULT_RETRY_SECONDS,
         retry_interval: float = DEFAULT_RETRY_INTERVAL,
     ) -> None:
@@ -53,6 +54,7 @@ class VoiceTurnGateway:
         self._turn_starter = turn_starter
         self._speech_active = speech_active
         self._busy_exceptions = tuple(busy_exceptions)
+        self._cancelled_exceptions = tuple(cancelled_exceptions)
         self._retry_seconds = float(retry_seconds)
         self._retry_interval = float(retry_interval)
         self._stopped = False
@@ -132,6 +134,12 @@ class VoiceTurnGateway:
                     )
                     return
                 time.sleep(self._retry_interval)
+            except self._cancelled_exceptions:
+                # Barge-in cancelled the turn (FIX-09): a normal terminal
+                # outcome, not a failure and not retryable. The turn is already
+                # CANCELLED and the runtime back to IDLE — just log and move on.
+                _LOGGER.info("voice turn cancelled by barge-in; gateway keeps running.")
+                return
             except Exception:  # noqa: BLE001 — the worker must survive a failed turn
                 _LOGGER.exception("voice turn failed; gateway keeps running.")
                 return

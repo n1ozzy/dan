@@ -55,16 +55,23 @@ class GenerationRegistry:
         with self._lock:
             return len(self._handles)
 
-    def cancel_all(self) -> int:
+    def cancel_all(self) -> list[str]:
+        """Fire every registered cancel handle; return the turn ids cancelled.
+
+        The coordinator tombstones exactly these turn ids, so a generation with
+        no queue rows yet is still blocked from enqueuing a late delta (FIX-09)."""
+
         with self._lock:
             handles = list(self._handles.items())
             self._handles.clear()
+        cancelled: list[str] = []
         for turn_id, cancel in handles:
             try:
                 cancel()
             except Exception:  # noqa: BLE001 — a dead process must not stop the sweep
                 _LOGGER.exception("generation cancel handle for turn %s raised.", turn_id)
-        return len(handles)
+            cancelled.append(turn_id)
+        return cancelled
 
 
 class CancellationCoordinator:
@@ -80,22 +87,32 @@ class CancellationCoordinator:
         self._engine = engine
 
     def cancel_active_speech(self, *, reason: str) -> dict[str, Any]:
-        generation_cancelled = self._registry.cancel_all()
-        queue_cancelled = self._cancel_queued()
+        generation_turn_ids = self._registry.cancel_all()
+        # Tombstone the still-generating turns FIRST, before the cancel sweep:
+        # a generation dying from the SIGTERM above can emit one last delta, and
+        # this closes the window in which it could enqueue a fresh row (FIX-09).
+        self._tombstone_turns(set(generation_turn_ids))
+        queue_cancelled, queue_turn_ids = self._cancel_queued()
+        # Tombstone the queue turns too (a filler timer is not tied to a live
+        # generation), so the UNION of everything cancelled refuses late rows.
+        tombstoned = self._tombstone_turns(
+            set(generation_turn_ids) | set(queue_turn_ids)
+        )
         playback_stopped = self._stop_playback()
         result = {
             "reason": reason,
-            "generation_cancelled": generation_cancelled,
+            "generation_cancelled": len(generation_turn_ids),
             "queue_cancelled": queue_cancelled,
             "playback_stopped": playback_stopped,
+            "tombstoned_turns": tombstoned,
         }
-        if generation_cancelled or queue_cancelled or playback_stopped:
+        if len(generation_turn_ids) or queue_cancelled or playback_stopped or tombstoned:
             _LOGGER.info("cancelled active speech: %s", result)
         return result
 
     # -- legs ------------------------------------------------------------------
 
-    def _cancel_queued(self) -> int:
+    def _cancel_queued(self) -> tuple[int, list[str]]:
         conn = self._connect()
         try:
             queue = VoiceQueue(conn, event_store=create_event_store(conn))
@@ -106,7 +123,17 @@ class CancellationCoordinator:
                     "WHERE status IN ('queued', 'speaking') AND turn_id IS NOT NULL"
                 ).fetchall()
             ]
-            return sum(queue.cancel_turn(turn_id) for turn_id in turn_ids)
+            cancelled = sum(queue.cancel_turn(turn_id) for turn_id in turn_ids)
+            return cancelled, turn_ids
+        finally:
+            close_quietly(conn)
+
+    def _tombstone_turns(self, turn_ids: set[str]) -> int:
+        if not turn_ids:
+            return 0
+        conn = self._connect()
+        try:
+            return VoiceQueue(conn).tombstone_turns(turn_ids)
         finally:
             close_quietly(conn)
 

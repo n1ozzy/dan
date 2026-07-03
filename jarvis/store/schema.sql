@@ -140,12 +140,25 @@ CREATE TABLE IF NOT EXISTS voice_queue (
   interrupt_policy TEXT NOT NULL DEFAULT 'no_interrupt',
   status TEXT NOT NULL,
   error TEXT,
-  metadata_json TEXT NOT NULL DEFAULT '{}'
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  -- Set the moment a row actually reaches playback (broker pre-play stamp).
+  -- Only rows with a non-NULL spoken_at may seed the anti-echo corpus: a
+  -- 'queued' row flipped to 'cancelled' by barge-in never made a sound (FIX-09).
+  spoken_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_voice_queue_status ON voice_queue(status);
 CREATE INDEX IF NOT EXISTS idx_voice_queue_priority ON voice_queue(priority);
 CREATE INDEX IF NOT EXISTS idx_voice_queue_turn_id ON voice_queue(turn_id);
+CREATE INDEX IF NOT EXISTS idx_voice_queue_spoken_at ON voice_queue(spoken_at);
+
+-- Tombstone of turns cancelled by barge-in: VoiceQueue.enqueue refuses new
+-- rows for these turn_ids, so an in-flight delta or a late FillerTimer of a
+-- cancelled turn cannot slip a fresh 'queued' row past the cancel sweep (FIX-09).
+CREATE TABLE IF NOT EXISTS cancelled_turns (
+  turn_id TEXT PRIMARY KEY,
+  cancelled_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS listening_leases (
   id TEXT PRIMARY KEY,

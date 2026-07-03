@@ -98,6 +98,22 @@ def test_repeated_ptt_down_refreshes_instead_of_stacking(conn) -> None:
     assert recorder.started == 1
 
 
+def test_renewing_a_lease_restarts_a_dead_recorder(conn) -> None:
+    # FIX-09: renewing an existing lease only bumped its TTL and returned — it
+    # never re-synced the recorder, so a sox that crashed under a still-active
+    # lease stayed dead. The renewal must restart it (recorder.start is
+    # idempotent, so a live recorder is untouched).
+    recorder = MockRecorder()
+    m = manager(conn, recorder=recorder)
+    m.acquire(mode="locked", source="lock")
+    assert recorder.started == 1
+
+    recorder.recording = False  # sox crashed on its own; the lease is still active
+    m.acquire(mode="locked", source="lock")  # renewal
+
+    assert recorder.started == 2
+
+
 def test_ptt_up_releases_hold_and_stops_recorder(conn) -> None:
     recorder = MockRecorder()
     events: list = []

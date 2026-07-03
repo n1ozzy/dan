@@ -10,6 +10,16 @@ class BrainAdapterError(Exception):
     """Raised when a brain adapter cannot produce a response."""
 
 
+class BrainGenerationCancelled(BrainAdapterError):
+    """Raised when a generation was deliberately cancelled (barge-in leg 1),
+    not because it failed.
+
+    A subclass of ``BrainAdapterError`` so every existing ``except
+    BrainAdapterError`` keeps catching it, but callers that care (the
+    orchestrator) can tell a cancelled turn — CANCELLED, runtime back to IDLE —
+    apart from a genuine failure (FAILED, runtime to ERROR)."""
+
+
 @dataclass
 class BrainMessage:
     role: str

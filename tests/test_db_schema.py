@@ -32,6 +32,7 @@ REQUIRED_TABLES = {
     "tool_runs",
     "approvals",
     "voice_queue",
+    "cancelled_turns",
     "listening_leases",
     "audio_device_snapshots",
     "runtime_process_observations",
@@ -131,6 +132,11 @@ CRITICAL_COLUMNS = {
         "status",
         "error",
         "metadata_json",
+        "spoken_at",
+    },
+    "cancelled_turns": {
+        "turn_id",
+        "cancelled_at",
     },
     "listening_leases": {
         "id",
@@ -287,8 +293,39 @@ def test_applying_migrations_twice_is_idempotent(tmp_path: Path) -> None:
     apply_migrations(conn)
     apply_migrations(conn)
 
-    version_rows = conn.execute("SELECT version FROM schema_version").fetchall()
-    assert version_rows == [(LATEST_SCHEMA_VERSION,)]
+    # schema_version is an append log: one row per applied version, and a
+    # re-run adds no duplicates (FIX-09 bumped the schema to v2).
+    version_rows = conn.execute(
+        "SELECT version FROM schema_version ORDER BY version"
+    ).fetchall()
+    assert version_rows == [(version,) for version in range(1, LATEST_SCHEMA_VERSION + 1)]
+    close_quietly(conn)
+
+
+def test_migration_adds_spoken_at_to_a_preexisting_v1_voice_queue(tmp_path: Path) -> None:
+    # An existing v1 database (voice_queue without spoken_at) must gain the
+    # column through the idempotent v2 migration without losing its rows.
+    db_path = tmp_path / "jarvis.db"
+    conn = initialize_database(db_path)
+    # Roll the fixture back to a real v1 shape: no spoken_at column, no index,
+    # no v2 version row (the index must go before the column it references).
+    conn.execute("DROP INDEX IF EXISTS idx_voice_queue_spoken_at")
+    conn.execute("ALTER TABLE voice_queue DROP COLUMN spoken_at")
+    conn.execute("DELETE FROM schema_version WHERE version >= 2")
+    conn.execute(
+        """
+        INSERT INTO voice_queue (id, created_at, updated_at, text, status, metadata_json)
+        VALUES ('keep-me', '2026-07-03T00:00:00Z', '2026-07-03T00:00:00Z', 'stare zdanie', 'done', '{}')
+        """
+    )
+    conn.commit()
+
+    apply_migrations(conn)
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(voice_queue)")}
+    assert "spoken_at" in columns
+    survived = conn.execute("SELECT text FROM voice_queue WHERE id = 'keep-me'").fetchone()
+    assert survived[0] == "stare zdanie"
     close_quietly(conn)
 
 

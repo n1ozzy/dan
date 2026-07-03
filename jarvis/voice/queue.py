@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from jarvis.events.types import EventType
@@ -18,8 +19,20 @@ from jarvis.store.repositories import utc_now_iso
 from jarvis.voice.models import VoiceRequest
 
 
+# A tombstone only needs to outlive a cancelled turn's last in-flight delta /
+# filler (seconds); an hour is a generous bound that keeps the table tiny.
+TOMBSTONE_TTL_SECONDS = 3600
+
+
 class VoiceQueueError(Exception):
     """Raised on invalid queue operations."""
+
+
+class VoiceQueueCancelledError(VoiceQueueError):
+    """Raised by enqueue for a turn a barge-in already tombstoned (FIX-09).
+
+    A subclass of VoiceQueueError, so the best-effort speech paths that already
+    swallow queue errors keep muting cleanly instead of failing a turn."""
 
 
 class VoiceQueue:
@@ -47,6 +60,13 @@ class VoiceQueue:
     ) -> VoiceRequest:
         if not isinstance(text, str) or not text.strip():
             raise VoiceQueueError("text must be a non-empty string.")
+        if turn_id is not None and self.is_tombstoned(turn_id):
+            # Barge-in already cancelled this turn: an in-flight delta or a late
+            # FillerTimer must not enqueue a fresh 'queued' row that would then
+            # be played after the cancel sweep already ran (FIX-09).
+            raise VoiceQueueCancelledError(
+                f"turn {turn_id} was cancelled; refusing a new speech row."
+            )
         request_id = uuid.uuid4().hex
         now = self._now()
         metadata = {"kind": kind, "seq": int(seq)}
@@ -82,11 +102,16 @@ class VoiceQueue:
 
         row = self._conn.execute(
             """
-            SELECT id FROM voice_queue
+            SELECT id FROM voice_queue AS vq
             WHERE status = 'queued'
             ORDER BY priority DESC,
-                     CAST(json_extract(metadata_json, '$.seq') AS INTEGER) ASC,
-                     rowid ASC
+                     -- Group by turn (turns ordered by their first row), so
+                     -- seq — which is per-turn — never interleaves two turns
+                     -- (FIX-09). `IS` groups the NULL-turn rows together.
+                     (SELECT MIN(vq2.rowid) FROM voice_queue AS vq2
+                      WHERE vq2.turn_id IS vq.turn_id) ASC,
+                     CAST(json_extract(vq.metadata_json, '$.seq') AS INTEGER) ASC,
+                     vq.rowid ASC
             LIMIT 1
             """
         ).fetchone()
@@ -103,6 +128,20 @@ class VoiceQueue:
             return None
         self._append_event(EventType.VOICE_SPEAK_STARTED, {"request_id": request_id})
         return self._by_id(request_id)
+
+    def mark_spoken(self, request_id: str) -> None:
+        """Stamp the moment a row actually reaches the speaker (broker pre-play).
+
+        Only a still-'speaking' row is stamped, and only once. spoken_at — not
+        the final status — is what the anti-echo corpus reads, so a 'queued' row
+        flipped to 'cancelled' by barge-in (never played) stays out of it."""
+
+        with self._conn:
+            self._conn.execute(
+                "UPDATE voice_queue SET spoken_at = ? "
+                "WHERE id = ? AND status = 'speaking' AND spoken_at IS NULL",
+                (self._now(), request_id),
+            )
 
     def mark_done(self, request_id: str) -> None:
         self._finish(request_id, "done", EventType.VOICE_SPEAK_FINISHED, None)
@@ -129,6 +168,33 @@ class VoiceQueue:
                 {"request_id": str(request_id), "turn_id": turn_id},
             )
         return len(rows)
+
+    def tombstone_turns(self, turn_ids: Iterable[str]) -> int:
+        """Mark turns as cancelled so enqueue refuses new rows for them.
+
+        Idempotent (INSERT OR IGNORE) and self-bounding: each call also prunes
+        tombstones older than the TTL, so the table never grows without limit."""
+
+        ids = [str(turn_id) for turn_id in turn_ids if turn_id]
+        if not ids:
+            return 0
+        now = self._now()
+        with self._conn:
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO cancelled_turns (turn_id, cancelled_at) VALUES (?, ?)",
+                [(turn_id, now) for turn_id in ids],
+            )
+            self._conn.execute(
+                "DELETE FROM cancelled_turns WHERE cancelled_at < ?",
+                (_tombstone_cutoff(now),),
+            )
+        return len(ids)
+
+    def is_tombstoned(self, turn_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM cancelled_turns WHERE turn_id = ? LIMIT 1", (turn_id,)
+        ).fetchone()
+        return row is not None
 
     def recover_orphans(self) -> int:
         """Requeue speaking rows orphaned by a restart (queued items recover)."""
@@ -193,4 +259,18 @@ class VoiceQueue:
             self._event_store.append(event_type, "voice", payload)
 
 
-__all__ = ["VoiceQueue", "VoiceQueueError"]
+def _tombstone_cutoff(now_iso: str) -> str:
+    """The oldest cancelled_at to keep; best effort — an unparseable clock skips
+    pruning (returns "") rather than risk wiping still-needed tombstones."""
+
+    try:
+        moment = datetime.fromisoformat(now_iso)
+    except ValueError:
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    cutoff = moment - timedelta(seconds=TOMBSTONE_TTL_SECONDS)
+    return cutoff.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+__all__ = ["VoiceQueue", "VoiceQueueCancelledError", "VoiceQueueError"]

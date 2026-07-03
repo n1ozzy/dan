@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from jarvis.brain.base import BrainResponse
+from jarvis.brain.base import BrainGenerationCancelled, BrainResponse
 from jarvis.brain.context_builder import ContextBuilder
 from jarvis.brain.manager import BrainManager
 from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
@@ -39,6 +39,15 @@ class TurnOrchestratorBusyError(TurnOrchestratorError):
 
     Subclasses ``TurnOrchestratorError`` so existing callers keep working while
     the HTTP layer can map this precondition to 409 instead of 500.
+    """
+
+
+class TurnCancelledError(TurnOrchestratorError):
+    """Raised when a turn's generation was cancelled by barge-in (FIX-09).
+
+    Subclasses ``TurnOrchestratorError`` so existing callers keep working, but
+    the voice gateway can tell a deliberate cancellation (info log, no retry,
+    turn already CANCELLED and runtime back to IDLE) apart from a real failure.
     """
 
 
@@ -304,6 +313,24 @@ class TurnOrchestrator:
                     context_result.request,
                     on_delta=speech_session.feed if speech_session is not None else None,
                 )
+            except BrainGenerationCancelled as exc:
+                # Barge-in killed the generation (FIX-09): this is a CANCELLED
+                # turn, not a FAILED one. Same cleanup as a failure (disarm
+                # filler, cancel queued speech) but the turn ends CANCELLED and
+                # the runtime settles back to IDLE — never through ERROR.
+                if filler_timer is not None:
+                    filler_timer.disarm()
+                self._cancel_turn_speech(turn.id)
+                self._record_brain_cancellation(
+                    turn=turn,
+                    conversation_id=conversation.id,
+                    adapter=adapter_name,
+                    model=request_model,
+                    reason=exc,
+                    event_ids=event_ids,
+                    correlation_id=correlation_id,
+                )
+                raise TurnCancelledError(f"brain generation cancelled: {exc}") from exc
             except Exception as exc:
                 if filler_timer is not None:
                     filler_timer.disarm()
@@ -449,8 +476,9 @@ class TurnOrchestrator:
         correlation_id: str,
         turn_id: str,
         event_ids: list[int],
+        reason: str | None = None,
     ) -> None:
-        """Return the runtime to IDLE after a completed turn.
+        """Return the runtime to IDLE after a completed (or cancelled) turn.
 
         Post-completion and best effort: a shutdown race (STOPPING) or a persist
         failure must never fail the already-finished turn (FIX-05 cases 1-2).
@@ -460,7 +488,8 @@ class TurnOrchestrator:
 
         if self._state_machine.state is RuntimeState.IDLE:
             return
-        reason = "text turn awaiting approval" if pending_approval else "text turn finished"
+        if reason is None:
+            reason = "text turn awaiting approval" if pending_approval else "text turn finished"
         try:
             event_ids.append(
                 self._state_machine.transition(
@@ -556,6 +585,19 @@ class TurnOrchestrator:
                 on_delta=speech_session.feed if speech_session is not None else None,
             )
             continuation_text = _continuation_answer_text(response)
+        except BrainGenerationCancelled as exc:
+            # Barge-in killed the continuation generation (FIX-09): CANCELLED,
+            # not FAILED — same distinction as the main handle_text path.
+            self._cancel_turn_speech(turn.id)
+            return self._record_continuation_cancellation(
+                turn=turn,
+                adapter_name=adapter_name,
+                request_model=request_model,
+                reason=exc,
+                event_ids=event_ids,
+                correlation_id=correlation_id,
+                metadata=base_metadata,
+            )
         except Exception as exc:
             self._cancel_turn_speech(turn.id)
             return self._record_continuation_failure(
@@ -1020,6 +1062,58 @@ class TurnOrchestrator:
         )
         self._recover_runtime_after_failure(event_ids, correlation_id=correlation_id, turn_id=turn.id)
 
+    def _record_brain_cancellation(
+        self,
+        *,
+        turn: Turn,
+        conversation_id: str,
+        adapter: str,
+        model: str,
+        reason: Exception,
+        event_ids: list[int],
+        correlation_id: str,
+    ) -> None:
+        """Barge-in cancelled the generation: CANCELLED turn + IDLE runtime.
+
+        Deliberately NOT a failure — no BRAIN_FAILED/TURN_FAILED/ERROR_RAISED and
+        no transition through ERROR. Mirrors the failure recorder's shape so the
+        audit trail is symmetric (brain.cancelled + turn.cancelled)."""
+
+        message = _error_message(reason)
+        self._append_event(
+            EventType.BRAIN_CANCELLED,
+            {
+                "turn_id": turn.id,
+                "conversation_id": conversation_id,
+                "adapter": adapter,
+                "model": model,
+                "reason": message,
+            },
+            event_ids,
+            correlation_id=correlation_id,
+            turn_id=turn.id,
+        )
+        self._cancel_turn_status(turn, message)
+        self._append_event(
+            EventType.TURN_CANCELLED,
+            {
+                "turn_id": turn.id,
+                "conversation_id": conversation_id,
+                "kind": "brain",
+                "reason": message,
+            },
+            event_ids,
+            correlation_id=correlation_id,
+            turn_id=turn.id,
+        )
+        self._settle_runtime_idle_after_completion(
+            pending_approval=False,
+            correlation_id=correlation_id,
+            turn_id=turn.id,
+            event_ids=event_ids,
+            reason="text turn cancelled (barge-in)",
+        )
+
     def _record_generic_failure(
         self,
         *,
@@ -1108,6 +1202,73 @@ class TurnOrchestrator:
             metadata=failure_metadata,
         )
 
+    def _record_continuation_cancellation(
+        self,
+        *,
+        turn: Turn,
+        adapter_name: str,
+        request_model: str,
+        reason: Exception,
+        event_ids: list[int],
+        correlation_id: str,
+        metadata: Mapping[str, Any],
+    ) -> ToolResultContinuationResult:
+        """Barge-in cancelled the continuation: CANCELLED turn, no failure.
+
+        Mirrors _record_continuation_failure but emits brain.cancelled +
+        turn.cancelled and drives the turn to CANCELLED (never FAILED/ERROR)."""
+
+        message = _error_message(reason)
+        cancel_metadata = {
+            **dict(metadata),
+            "status": "cancelled",
+            "reason": message,
+            "retry_policy": "no_automatic_retry",
+        }
+        self._append_event(
+            EventType.BRAIN_CANCELLED,
+            {
+                "turn_id": turn.id,
+                "conversation_id": turn.conversation_id,
+                "adapter": adapter_name,
+                "model": request_model,
+                "reason": message,
+                "continuation": cancel_metadata,
+            },
+            event_ids,
+            correlation_id=correlation_id,
+            turn_id=turn.id,
+        )
+        # A cancelled continuation must not dangle in AWAITING_APPROVAL forever
+        # either — drive it to CANCELLED (terminal). The approval already ran.
+        self._cancel_turn_status(turn, message)
+        self._append_event(
+            EventType.TURN_CANCELLED,
+            {
+                "turn_id": turn.id,
+                "conversation_id": turn.conversation_id,
+                "kind": "tool_result_continuation",
+                "reason": message,
+                "continuation": cancel_metadata,
+            },
+            event_ids,
+            correlation_id=correlation_id,
+            turn_id=turn.id,
+        )
+        self._turns.merge_metadata(
+            turn.id,
+            {"tool_result_continuation": cancel_metadata},
+        )
+        return ToolResultContinuationResult(
+            applied=False,
+            status="cancelled",
+            turn_id=turn.id,
+            final_text=None,
+            error=message,
+            event_ids=event_ids,
+            metadata=cancel_metadata,
+        )
+
     def _append_failure_events(
         self,
         *,
@@ -1186,6 +1347,21 @@ class TurnOrchestrator:
             return
         try:
             self._turns.fail(turn.id, error=error, metadata={"failure_kind": kind})
+        except Exception:
+            pass
+
+    def _cancel_turn_status(self, turn: Turn, reason: str) -> None:
+        # Same terminal guard as _fail_turn: never reclassify a turn that
+        # already reached a terminal outcome (FIX-05).
+        try:
+            current = self._turns.get(turn.id)
+        except Exception:
+            current = None
+        status = current.status if current is not None else turn.status
+        if status in _TERMINAL_TURN_STATUSES:
+            return
+        try:
+            self._turns.cancel(turn.id, reason=reason)
         except Exception:
             pass
 
@@ -1468,6 +1644,7 @@ def _jsonable(value: Any) -> Any:
 __all__ = [
     "TextTurnResult",
     "ToolResultContinuationResult",
+    "TurnCancelledError",
     "TurnOrchestrator",
     "TurnOrchestratorBusyError",
     "TurnOrchestratorError",

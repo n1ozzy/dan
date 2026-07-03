@@ -130,6 +130,33 @@ def test_mlx_engine_gives_the_model_a_private_wav_then_cleans(tmp_path: Path) ->
         engine.stop()
 
 
+def test_mlx_engine_transcribe_times_out_and_recycles_the_worker(tmp_path: Path) -> None:
+    # FIX-09: future.result() had no timeout, so a stuck MLX/Metal call blocked
+    # the single worker forever. A bounded timeout must raise, and the poisoned
+    # worker must be recycled so the NEXT capture still transcribes.
+    engine = build_stt_engine(
+        "mlx_whisper", config=mlx_config(tmp_path, stt_timeout_seconds=0.3)
+    )
+    release = threading.Event()
+
+    def hung_model(path: str) -> dict:
+        release.wait(timeout=10)  # a Metal call that never returns in time
+        return {"text": "za późno"}
+
+    engine._run_model = hung_model  # type: ignore[method-assign]
+    try:
+        with pytest.raises(STTEngineError, match="timed out"):
+            engine.transcribe(b"a" * 2000)
+
+        # The worker is recycled: a fresh, working call is NOT blocked by the
+        # abandoned hung thread.
+        engine._run_model = lambda path: {"text": " Działa znowu. "}  # type: ignore[method-assign]
+        assert engine.transcribe(b"b" * 2000) == "Działa znowu."
+    finally:
+        release.set()
+        engine.stop()
+
+
 def test_mlx_engine_model_failure_raises_engine_error_and_cleans(tmp_path: Path) -> None:
     engine = build_stt_engine("mlx_whisper", config=mlx_config(tmp_path))
 

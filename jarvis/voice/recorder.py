@@ -81,9 +81,17 @@ class SoxRecorder:
         self._gain_db = float(getattr(voice_cfg, "recorder_gain_db", 0.0) or 0.0)
         self._device_provider = input_device_provider
         self._on_capture = on_capture
+        # Locked-mode segmentation (FIX-09): > 0 rotates the capture every N
+        # seconds so transcripts flow during a long lease instead of only when
+        # it ends. 0 keeps the old single-capture behaviour (hold mode).
+        self._segment_seconds = max(
+            0.0, float(getattr(voice_cfg, "recorder_segment_seconds", 0.0) or 0.0)
+        )
         self._lock = threading.Lock()
         self._proc: subprocess.Popen[bytes] | None = None
         self._capture_path: Path | None = None
+        self._rotation_stop = threading.Event()
+        self._rotation_thread: threading.Thread | None = None
         workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
         workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(workdir, 0o700)
@@ -102,50 +110,109 @@ class SoxRecorder:
                 # The previous session died on its own (device yanked, sox
                 # crash): finalize what it captured, then start fresh.
                 self._finalize_locked()
+            self._start_locked()
+        self._arm_rotation()
 
-            device = self._device_provider()
-            if not device:
-                # Policy said "no usable input": recording from a disallowed
-                # device is worse than not recording — fail closed, no spawn.
-                logger.warning(
-                    "sox recorder not started: audio policy offers no usable input device."
-                )
+    def _start_locked(self) -> None:
+        device = self._device_provider()
+        if not device:
+            # Policy said "no usable input": recording from a disallowed
+            # device is worse than not recording — fail closed, no spawn.
+            logger.warning(
+                "sox recorder not started: audio policy offers no usable input device."
+            )
+            return
+
+        path = Path(self.workdir) / f"rec-{uuid.uuid4().hex}.wav"
+        path.touch(mode=0o600)
+        cmd = [
+            self._binary,
+            "-q",
+            "-t", "coreaudio", device,
+            "-r", str(self._sample_rate),
+            "-c", "1",
+            "-b", "16",
+            str(path),
+        ]
+        if self._highpass_hz > 0:
+            cmd += ["highpass", str(self._highpass_hz)]
+        if self._gain_db:
+            # §4a: gain must precede any future `silence` effect.
+            cmd += ["gain", f"{self._gain_db:g}"]
+        try:
+            self._proc = subprocess.Popen(
+                cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+        except OSError as exc:
+            path.unlink(missing_ok=True)
+            raise RecorderBackendError(f"Failed to spawn sox recorder: {exc}") from exc
+        self._capture_path = path
+
+    def rotate(self) -> None:
+        """Close the current segment and start a fresh capture (FIX-09).
+
+        Capture-first: the new sox is spawned under the lock so the mic gap is
+        minimal, and the closed segment is delivered OUTSIDE the lock (on_capture
+        runs whisper — it must not block a concurrent stop()). No-op when
+        segmentation is disabled or nothing is recording."""
+
+        if self._segment_seconds <= 0:
+            return
+        with self._lock:
+            proc, path = self._proc, self._capture_path
+            if proc is None or proc.poll() is not None:
                 return
-
-            path = Path(self.workdir) / f"rec-{uuid.uuid4().hex}.wav"
-            path.touch(mode=0o600)
-            cmd = [
-                self._binary,
-                "-q",
-                "-t", "coreaudio", device,
-                "-r", str(self._sample_rate),
-                "-c", "1",
-                "-b", "16",
-                str(path),
-            ]
-            if self._highpass_hz > 0:
-                cmd += ["highpass", str(self._highpass_hz)]
-            if self._gain_db:
-                # §4a: gain must precede any future `silence` effect.
-                cmd += ["gain", f"{self._gain_db:g}"]
-            try:
-                self._proc = subprocess.Popen(
-                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
-            except OSError as exc:
-                path.unlink(missing_ok=True)
-                raise RecorderBackendError(f"Failed to spawn sox recorder: {exc}") from exc
-            self._capture_path = path
+            self._proc, self._capture_path = None, None
+            self._start_locked()
+        self._deliver_segment(proc, path)
 
     def stop(self) -> None:
+        self._disarm_rotation()
         with self._lock:
             self._finalize_locked()
+
+    # -- rotation thread ----------------------------------------------------
+
+    def _arm_rotation(self) -> None:
+        if self._segment_seconds <= 0:
+            return
+        if self._rotation_thread is not None and self._rotation_thread.is_alive():
+            return
+        self._rotation_stop.clear()
+        self._rotation_thread = threading.Thread(
+            target=self._run_rotation, name="jarvis-recorder-rotate", daemon=True
+        )
+        self._rotation_thread.start()
+
+    def _disarm_rotation(self) -> None:
+        self._rotation_stop.set()
+        thread = self._rotation_thread
+        if thread is not None:
+            thread.join(timeout=5)
+            self._rotation_thread = None
+
+    def _run_rotation(self) -> None:
+        while not self._rotation_stop.wait(self._segment_seconds):
+            try:
+                self.rotate()
+            except Exception:  # noqa: BLE001 — a rotation hiccup must not kill listening
+                logger.exception("recorder segment rotation failed; continuing.")
 
     # -- internals ---------------------------------------------------------
 
     def _finalize_locked(self) -> None:
         proc, path = self._proc, self._capture_path
         self._proc, self._capture_path = None, None
+        self._deliver_segment(proc, path)
+
+    def _deliver_segment(
+        self, proc: subprocess.Popen[bytes] | None, path: Path | None
+    ) -> None:
+        """Stop one capture proc, read its WAV, and hand the bytes to on_capture.
+
+        Takes proc/path explicitly and touches no shared state, so rotate() can
+        call it OUTSIDE the lock while a fresh capture is already running."""
+
         if proc is not None and proc.poll() is None:
             # SIGINT is sox's documented graceful stop (it finalizes the WAV
             # header); escalate only if it ignores us.

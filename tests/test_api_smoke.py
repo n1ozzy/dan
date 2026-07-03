@@ -26,6 +26,7 @@ from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_
 from jarvis.daemon.state_machine import RuntimeState
 from jarvis.runtime.supervisor import RuntimeSupervisor
 from jarvis.store.db import close_quietly
+from jarvis.store.migrations import LATEST_SCHEMA_VERSION
 from jarvis.tools.registry import Tool
 
 
@@ -363,7 +364,7 @@ def test_get_health_returns_200_json_and_expected_fields(app: DaemonApp) -> None
     assert payload["service"] == "jarvisd"
     assert payload["state"] == "IDLE"
     assert payload["started"] is True
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == LATEST_SCHEMA_VERSION
 
 
 def test_get_state_returns_current_state_and_allowed_targets(app: DaemonApp) -> None:

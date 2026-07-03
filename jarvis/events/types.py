@@ -19,10 +19,12 @@ class EventType(StrEnum):
     TURN_CONTEXT_BUILT = "turn.context.built"
     TURN_FINISHED = "turn.finished"
     TURN_FAILED = "turn.failed"
+    TURN_CANCELLED = "turn.cancelled"
 
     BRAIN_REQUESTED = "brain.requested"
     BRAIN_RESPONDED = "brain.responded"
     BRAIN_FAILED = "brain.failed"
+    BRAIN_CANCELLED = "brain.cancelled"
     BRAIN_SWITCHED = "brain.switched"
 
     VOICE_SPEAK_QUEUED = "voice.speak.queued"

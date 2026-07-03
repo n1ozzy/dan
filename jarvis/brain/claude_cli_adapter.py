@@ -9,8 +9,9 @@ Two paths share one prompt format and one safety net:
   `BrainResponse.text` comes from the CLI's final `result` event only, and
   nothing about deltas is persisted here. The subprocess registers a kill
   handle in the GenerationRegistry (barge-in leg 1, VOICE_STREAMING §7):
-  a cancelled generation dies mid-stream and surfaces as a failed turn,
-  never as a fake success.
+  a cancelled generation dies mid-stream and surfaces as
+  ``BrainGenerationCancelled`` (a distinct subclass), so the turn is
+  CANCELLED, never a fake success and never a misreported failure.
 """
 
 from __future__ import annotations
@@ -23,7 +24,13 @@ import threading
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from jarvis.brain.base import BrainAdapterError, BrainRequest, BrainResponse, BrainUsage
+from jarvis.brain.base import (
+    BrainAdapterError,
+    BrainGenerationCancelled,
+    BrainRequest,
+    BrainResponse,
+    BrainUsage,
+)
 from jarvis.brain.tool_call_parser import parse_tool_call_blocks
 from jarvis.logging import get_logger, redact_secrets
 
@@ -257,13 +264,18 @@ def stream_cli_response(
     watchdog.daemon = True
     watchdog.start()
 
+    cancelled = threading.Event()
+
+    def _cancel() -> None:
+        # Barge-in leg 1 (§7): cancel = terminate this subprocess; pending
+        # deltas are discarded because they were never truth. The flag lets
+        # the wait below tell "we killed it" apart from a real crash.
+        cancelled.set()
+        _signal_process(proc, force=False)
+
     registered = bool(generation_registry is not None and request.turn_id)
     if registered:
-        # Barge-in leg 1 (§7): cancel = terminate this subprocess; pending
-        # deltas are discarded because they were never truth.
-        generation_registry.register(
-            request.turn_id, lambda: _signal_process(proc, force=False)
-        )
+        generation_registry.register(request.turn_id, _cancel)
 
     parser = _StreamJsonParser(on_delta)
     stderr_lines: list[str] = []
@@ -281,6 +293,11 @@ def stream_cli_response(
 
     if timed_out.is_set():
         raise BrainAdapterError(f"{adapter_name} timed out after {timeout_seconds:g}s")
+    if returncode != 0 and cancelled.is_set():
+        # We killed it (barge-in leg 1), so a nonzero exit here is the cancel
+        # landing, not a failure. A rc==0 clean finish that raced a late cancel
+        # is honoured normally below — a completed answer is never discarded.
+        raise BrainGenerationCancelled(f"{adapter_name} generation cancelled (barge-in)")
     if returncode != 0:
         stderr = _stderr_preview("".join(stderr_lines))
         raise BrainAdapterError(

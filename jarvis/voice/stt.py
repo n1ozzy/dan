@@ -17,11 +17,17 @@ import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any
 
 
 DEFAULT_STT_MODEL = "mlx-community/whisper-large-v3-turbo"
+# 16 kHz / 16-bit / mono is the recorder's native shape; used to size the
+# transcription timeout to how much audio was actually captured.
+_BYTES_PER_AUDIO_SECOND = 16000 * 2
+DEFAULT_STT_TIMEOUT_SECONDS = 30.0
+DEFAULT_STT_TIMEOUT_PER_AUDIO_SECOND = 10.0
 
 
 class STTEngineError(Exception):
@@ -78,6 +84,24 @@ class MlxWhisperEngine:
         voice_cfg = config.voice
         self._model = str(getattr(voice_cfg, "stt_model", DEFAULT_STT_MODEL) or DEFAULT_STT_MODEL)
         self._language = str(getattr(voice_cfg, "stt_language", "pl") or "pl")
+        self._base_timeout = max(
+            0.1,
+            float(
+                getattr(voice_cfg, "stt_timeout_seconds", DEFAULT_STT_TIMEOUT_SECONDS)
+                or DEFAULT_STT_TIMEOUT_SECONDS
+            ),
+        )
+        self._timeout_per_second = max(
+            0.0,
+            float(
+                getattr(
+                    voice_cfg,
+                    "stt_timeout_per_audio_second",
+                    DEFAULT_STT_TIMEOUT_PER_AUDIO_SECOND,
+                )
+                or DEFAULT_STT_TIMEOUT_PER_AUDIO_SECOND
+            ),
+        )
         workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
         workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(workdir, 0o700)
@@ -85,13 +109,33 @@ class MlxWhisperEngine:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-stt-mlx")
 
     def transcribe(self, audio: bytes) -> str:
+        timeout = self._timeout_for(audio)
         future = self._executor.submit(self._transcribe_on_thread, audio)
         try:
-            return future.result()
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError as exc:
+            # A stuck MLX/Metal call can never be cancelled from here, so the
+            # only way to free the pipeline is to abandon the poisoned worker
+            # and hand the NEXT capture a fresh one (FIX-09).
+            self._recycle_executor()
+            raise STTEngineError(f"mlx-whisper timed out after {timeout:g}s") from exc
         except STTEngineError:
             raise
         except Exception as exc:  # noqa: BLE001 — normalize model errors
             raise STTEngineError(f"mlx-whisper failed: {exc}") from exc
+
+    def _timeout_for(self, audio: bytes) -> float:
+        audio_seconds = len(audio) / _BYTES_PER_AUDIO_SECOND
+        return self._base_timeout + audio_seconds * self._timeout_per_second
+
+    def _recycle_executor(self) -> None:
+        old = self._executor
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="jarvis-stt-mlx"
+        )
+        # Do not wait: the abandoned thread is stuck inside the model call and
+        # will exit on its own if/when the call ever returns.
+        old.shutdown(wait=False, cancel_futures=True)
 
     def stop(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)

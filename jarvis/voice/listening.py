@@ -74,6 +74,11 @@ class ListeningLeaseManager:
                     "UPDATE listening_leases SET expires_at = ?, updated_at = ? WHERE id = ?",
                     (expires_at, now, lease_id),
                 )
+            # Renewal must re-sync the recorder (FIX-09): a sox that crashed
+            # under a still-active lease would otherwise stay dead forever, since
+            # bumping the TTL alone never touches the recorder. start() is
+            # idempotent, so a live recorder is untouched.
+            self._sync_recorder()
             return self._lease_by_id(lease_id)
 
         lease_id = uuid.uuid4().hex

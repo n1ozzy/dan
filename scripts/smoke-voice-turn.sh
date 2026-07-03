@@ -311,24 +311,25 @@ if events_after_barge_in < len(old_rows):
     fail(f"missing voice.speak.cancelled events: {events_after_barge_in}")
 print("barge-in cancelled pending speech and started a voice turn PASS")
 
-# 3. The voice turn's own response is queued now; a SECOND identical
-#    transcript overlaps text already sent to the speaker (the cancelled
-#    rows carry the mock transcript inside the mock brain echo), so the
-#    anti-echo gate must reject it: no third turn, no new cancellations.
+# 3. A SECOND identical transcript. The anti-echo corpus is now spoken_at rows
+#    (FIX-09), NOT merely cancelled ones — and with the broker off nothing has
+#    reached the speaker yet, so the corpus is empty: capture #2 is not an echo,
+#    it barge-ins the pending speech and becomes one more voice turn.
 turn_count_before = len(turns())
 ptt_cycle(expected_spawns=2)
-# The second capture cancels the voice turn's own pending speech first? No:
 # anti-echo runs BEFORE barge-in — give the pipeline a moment to process.
 time.sleep(2.0)
 if len(turns()) != turn_count_before + 1:
-    # The second transcript is not yet an echo (the corpus holds only turn-1
-    # sentences), so it barge-ins and becomes one more voice turn.
     fail(f"expected one more voice turn after capture #2: {turns()}")
 if not wait_for(lambda: turns()[-1][1] == "finished"):
     fail(f"voice turn #2 did not finish: {turns()}")
 
-# 4. Capture #3: now the corpus DOES hold cancelled rows spelling the mock
-#    brain echo of the SAME transcript — the gate must reject it.
+# 4. Capture #3 must be rejected as an echo. FIX-09: only rows the broker
+#    actually played (spoken_at set) seed the echo corpus — a 'queued' row a
+#    barge-in flipped to 'cancelled' never made a sound. The broker is off in
+#    this smoke, so model "Jarvis really played its speech" by stamping
+#    spoken_at on the rows already sent; only then is capture #3 a true echo.
+query("UPDATE voice_queue SET spoken_at = updated_at WHERE spoken_at IS NULL")
 turn_count_before = len(turns())
 cancelled_before = cancelled_event_count()
 ptt_cycle(expected_spawns=3)

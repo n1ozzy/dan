@@ -52,7 +52,9 @@ def build_gate(db_path: Path, **overrides) -> AntiEchoGate:
 
 
 def speak_and_finish(db_path: Path, text: str, *, now: str | None = None) -> None:
-    """Put one row through queued -> speaking -> done, like the broker would."""
+    """Put one row through queued -> speaking -> spoken -> done, like the broker
+    would: mark_spoken stamps spoken_at at playback, which is what the anti-echo
+    corpus now reads (FIX-09)."""
 
     conn = connect(db_path)
     try:
@@ -60,6 +62,7 @@ def speak_and_finish(db_path: Path, text: str, *, now: str | None = None) -> Non
         request = queue.enqueue(text=text, turn_id="turn-spoken", kind="sentence", seq=0)
         claimed = queue.claim_next()
         assert claimed is not None and claimed.id == request.id
+        queue.mark_spoken(request.id)
         queue.mark_done(request.id)
     finally:
         close_quietly(conn)
@@ -175,12 +178,14 @@ def test_fragment_of_spoken_sentence_is_rejected(db_path: Path) -> None:
 
 
 def test_recently_cancelled_speech_still_counts_as_echo_source(db_path: Path) -> None:
-    # A barge-in cancels rows mid-play; their audio was already in the air.
+    # A barge-in cancels rows mid-play; their audio was already in the air, so
+    # the broker had stamped spoken_at before the cancel landed.
     conn = connect(db_path)
     try:
         queue = VoiceQueue(conn)
-        queue.enqueue(text="Zdanie przerwane w połowie grania.", turn_id="t", seq=0)
+        request = queue.enqueue(text="Zdanie przerwane w połowie grania.", turn_id="t", seq=0)
         queue.claim_next()
+        queue.mark_spoken(request.id)
         queue.cancel_turn("t")
     finally:
         close_quietly(conn)
@@ -201,6 +206,44 @@ def test_queued_but_never_played_text_does_not_block_the_user(db_path: Path) -> 
     )
 
     assert decision.accepted is True
+
+
+def test_queued_then_cancelled_text_is_not_an_echo_source(db_path: Path) -> None:
+    # FIX-09 core bug: a barge-in cancels a whole turn, flipping even 'queued'
+    # rows that NEVER reached the speaker to 'cancelled'. Under the old status
+    # filter those polluted the echo corpus and wrongly rejected the user's next
+    # sentence. spoken_at (NULL here — never played) keeps them out.
+    conn = connect(db_path)
+    try:
+        queue = VoiceQueue(conn)
+        queue.enqueue(text="Zaplanowane ale nigdy niewypowiedziane.", turn_id="t", seq=0)
+        # No claim → never played; barge-in cancels the whole turn anyway.
+        queue.cancel_turn("t")
+    finally:
+        close_quietly(conn)
+
+    decision = build_gate(db_path).accepts_transcript("Zaplanowane ale nigdy niewypowiedziane.")
+
+    assert decision.accepted is True
+
+
+def test_failed_after_partial_audio_still_counts_as_echo_source(db_path: Path) -> None:
+    # A row that reached the speaker (spoken_at stamped) then failed mid-play
+    # DID put audio in the air, so it must stay an echo source (FIX-09).
+    conn = connect(db_path)
+    try:
+        queue = VoiceQueue(conn)
+        request = queue.enqueue(text="Częściowo odtworzone zdanie zanim padło.", turn_id="t", seq=0)
+        queue.claim_next()
+        queue.mark_spoken(request.id)
+        queue.mark_failed(request.id, error="player died mid-play")
+    finally:
+        close_quietly(conn)
+
+    decision = build_gate(db_path).accepts_transcript("Częściowo odtworzone zdanie zanim padło.")
+
+    assert decision.accepted is False
+    assert decision.reason == "echo"
 
 
 def test_speech_older_than_window_does_not_block_the_user(db_path: Path) -> None:

@@ -355,6 +355,38 @@ def test_continuation_failure_keeps_tool_run_and_records_predictable_metadata(tm
         app.close()
 
 
+def test_continuation_cancellation_marks_turn_cancelled_not_failed(tmp_path: Path) -> None:
+    # FIX-09: a barge-in that kills the continuation generation is a CANCELLED
+    # turn, not a FAILED one — same fix as the main handle_text path.
+    from jarvis.brain.base import BrainGenerationCancelled
+
+    tool = RecordingContinuationTool()
+    adapter = SequenceBrainAdapter(
+        model_tool_response(tool.name, {"n": 1}),
+        BrainGenerationCancelled("continuation cancelled by barge-in"),
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(tool)
+    try:
+        app.start()
+        first = app.handle_text_input(text="Continue but get barged in")
+        approval_id = str(first.approvals[0]["id"])
+        app.approve(approval_id)
+
+        executed = app.execute_approved_tool(approval_id)
+
+        stored = turn_row(app, first.turn_id)
+        assert executed["continuation"]["status"] == "cancelled"
+        assert stored["status"] == TurnStatus.CANCELLED
+        turn_events = event_types_for_turn(app, first.turn_id)
+        assert EventType.BRAIN_CANCELLED in turn_events
+        assert EventType.TURN_CANCELLED in turn_events
+        assert EventType.BRAIN_FAILED not in turn_events
+        assert EventType.TURN_FAILED not in turn_events
+    finally:
+        app.close()
+
+
 def test_event_store_redacts_continuation_payloads(tmp_path: Path) -> None:
     raw_secret = "sk-ant-continuation123"
     tool = RecordingContinuationTool(

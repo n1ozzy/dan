@@ -32,6 +32,13 @@ class TTSEngineError(Exception):
     """Raised when an engine is unknown, reserved, or fails to synthesize."""
 
 
+class PlaybackCancelled(Exception):
+    """Raised by play() when the should_play re-check fails under the player
+    lock (FIX-09): the row was cancelled in the check->spawn gap, so no player
+    is started. Deliberately NOT a TTSEngineError — it is a clean skip, not a
+    failure, and the broker treats it as such (no mark_failed, no error log)."""
+
+
 class BannedEngineError(TTSEngineError):
     """Raised when a decree-banned engine is requested."""
 
@@ -73,9 +80,13 @@ class MockTTSEngine:
             raise TTSEngineError(f"mock synthesis failure for {text!r}")
         return SynthesizedChunk(text=text, audio=text.encode("utf-8"))
 
-    def play(self, chunk: SynthesizedChunk) -> None:
+    def play(self, chunk: SynthesizedChunk, should_play: Any = None) -> None:
         interrupt = threading.Event()
         with self._lock:
+            # Same lock stop_playback uses: the should_play re-check and the
+            # commit-to-play are atomic, closing the barge-in TOCTOU (FIX-09).
+            if should_play is not None and not should_play():
+                raise PlaybackCancelled(f"playback skipped for {chunk.text!r}")
             self._current_interrupt = interrupt
         try:
             if self._play_gate is not None:
@@ -205,7 +216,7 @@ class SupertonicEngine:
         finally:
             out.unlink(missing_ok=True)
 
-    def play(self, chunk: SynthesizedChunk) -> None:
+    def play(self, chunk: SynthesizedChunk, should_play: Any = None) -> None:
         path = Path(self.workdir) / f"play-{uuid.uuid4().hex}.wav"
         try:
             path.touch(mode=0o600)
@@ -217,6 +228,11 @@ class SupertonicEngine:
             if self._pad_start > 0 or self._pad_end > 0:
                 command += ["pad", f"{self._pad_start:g}", f"{self._pad_end:g}"]
             with self._player_lock:
+                # Re-check under the same lock stop_playback holds, right before
+                # spawning: a barge-in that landed in the check->spawn gap flips
+                # the row to 'cancelled', so this closes the TOCTOU (FIX-09).
+                if should_play is not None and not should_play():
+                    raise PlaybackCancelled(f"playback skipped for {chunk.text!r}")
                 # Own process group: stop_playback() kills the player AND
                 # anything it spawned, so no orphan can hold the pipes open.
                 proc = subprocess.Popen(
@@ -305,6 +321,7 @@ __all__ = [
     "BANNED_ENGINES",
     "BannedEngineError",
     "MockTTSEngine",
+    "PlaybackCancelled",
     "SupertonicEngine",
     "SynthesizedChunk",
     "TTSEngineError",

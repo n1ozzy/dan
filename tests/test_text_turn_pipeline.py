@@ -175,6 +175,22 @@ class FailingBrainAdapter:
         raise BrainAdapterError("mock brain failure")
 
 
+class CancellingBrainAdapter:
+    """Generation killed by barge-in (leg 1): raises the distinct cancelled
+    exception, exactly as the streaming CLI adapter does on rc=143-after-cancel."""
+
+    name = "cancelling"
+    default_model = "cancelling-model"
+
+    def available_models(self) -> list[str]:
+        return [self.default_model]
+
+    def generate(self, request: BrainRequest, *, on_delta=None) -> BrainResponse:
+        from jarvis.brain.base import BrainGenerationCancelled
+
+        raise BrainGenerationCancelled("cancelling generation cancelled (barge-in)")
+
+
 class ToolCallingBrainAdapter:
     name = "tool_calling"
     default_model = "tool-calling-model"
@@ -827,6 +843,27 @@ def test_brain_failure_marks_turn_failed_and_records_events(conn: sqlite3.Connec
     assert "brain.failed" in event_types
     assert "turn.failed" in event_types
     assert "error.raised" in event_types
+    assert final_runtime_state(conn) == "IDLE"
+
+
+def test_barge_in_cancellation_marks_turn_cancelled_not_failed(conn: sqlite3.Connection) -> None:
+    # Operator-priority fix (FIX-09): a generation killed by barge-in is a
+    # CANCELLED turn, not a FAILED one — the panel reads the turn status, and
+    # the runtime must land back in IDLE (not stranded through ERROR).
+    from jarvis.turns.orchestrator import TurnCancelledError
+
+    manager = BrainManager([CancellingBrainAdapter()], default_adapter="cancelling")
+    orchestrator = make_orchestrator(conn, brain_manager=manager)
+
+    with pytest.raises(TurnCancelledError):
+        orchestrator.handle_text(text="Przerwane w połowie zdania")
+
+    turn = conn.execute("SELECT status FROM turns").fetchone()
+    assert turn[0] == "cancelled"
+    event_types = [event.type for event in create_event_store(conn).list_after(0, limit=100)]
+    assert "turn.cancelled" in event_types
+    assert "turn.failed" not in event_types
+    assert "brain.failed" not in event_types
     assert final_runtime_state(conn) == "IDLE"
 
 

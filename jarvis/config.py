@@ -107,12 +107,23 @@ class VoiceConfig:
     recorder_sample_rate: int = 16000
     recorder_highpass_hz: int = 80
     recorder_gain_db: float = 0.0
+    # Locked-mode segmentation (FIX-09): rotate the capture every N seconds so
+    # transcripts flow during a long sticky-listen lease instead of only when it
+    # ends. 0 disables it (one capture per lease). Hold mode is unaffected in
+    # practice — a PTT press is far shorter than a segment. Interval to be
+    # confirmed at the G4 live gate (too short splits utterances mid-word).
+    recorder_segment_seconds: float = 8.0
     # STT (G4b, decree §7.4). The gate thresholds and the junk list are the
     # mandatory hallucination filters (live-confirmed fact: silence
     # transcribes as „Dziękuję."); thresholds to be calibrated against the
     # first real recordings at the G4 live gate.
     stt_model: str = "mlx-community/whisper-large-v3-turbo"
     stt_language: str = "pl"
+    # Transcription timeout (FIX-09): a stuck MLX/Metal call would otherwise
+    # block the single STT worker forever. The bound scales with the captured
+    # audio length: base + seconds_of_audio * per_audio_second.
+    stt_timeout_seconds: float = 30.0
+    stt_timeout_per_audio_second: float = 10.0
     stt_min_rms: int = 300
     stt_min_voiced_seconds: float = 0.3
     stt_min_voiced_ratio: float = 0.05

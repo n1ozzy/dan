@@ -5,6 +5,7 @@ from __future__ import annotations
 from jarvis.brain.base import (
     BrainAdapter,
     BrainAdapterError,
+    BrainGenerationCancelled,
     BrainMemoryBlock,
     BrainMessage,
     BrainRequest,
@@ -19,6 +20,7 @@ from jarvis.brain.mock_adapter import MockBrainAdapter
 __all__ = [
     "BrainAdapter",
     "BrainAdapterError",
+    "BrainGenerationCancelled",
     "BrainMemoryBlock",
     "BrainMessage",
     "BrainRequest",

@@ -3,9 +3,11 @@
 Content anti-echo per AUDIO_RUNTIME §4: an incoming transcript is compared
 against what the daemon recently sent to the speaker. The corpus is read
 from the persisted voice_queue — daemon state, never a /tmp flag — and only
-rows that at least reached playback count ('speaking', 'done', and
-'cancelled' for chunks killed mid-play); a 'queued' row never made a sound,
-so it cannot echo.
+rows that actually reached playback: the broker stamps `spoken_at` the moment
+it plays a chunk, so `spoken_at IS NOT NULL` is the truth of "made a sound",
+independent of final status. A 'queued' row a barge-in flipped to 'cancelled'
+never played (spoken_at NULL) and is excluded; a 'failed' row killed mid-play
+(spoken_at set) did put audio in the air and is included (FIX-09).
 
 The comparison is deterministic token overlap on normalized text: if the
 share of transcript tokens that also occur in the UNION of everything
@@ -33,9 +35,10 @@ from jarvis.voice.transcription import normalize_phrase
 DEFAULT_WINDOW_SECONDS = 30
 DEFAULT_OVERLAP_THRESHOLD = 0.75
 
-# Rows that produced (or were producing) actual sound. 'queued' is absent on
-# purpose: text that never reached the speaker cannot be an echo source.
-_SPOKEN_STATUSES = ("speaking", "done", "cancelled")
+# Corpus membership is decided by spoken_at, not status (FIX-09): the broker
+# stamps spoken_at the moment a chunk reaches the speaker, so a NULL means the
+# row never made a sound (a 'queued' row a barge-in flipped to 'cancelled'),
+# while any non-NULL — including a 'failed' row killed mid-play — did echo.
 
 
 @dataclass(frozen=True)
@@ -88,13 +91,15 @@ class AntiEchoGate:
         cutoff = (
             datetime.now(UTC) - timedelta(seconds=self._window_seconds)
         ).isoformat(timespec="seconds")
-        placeholders = ", ".join("?" for _ in _SPOKEN_STATUSES)
         conn = self._connect()
         try:
+            # spoken_at is both the membership test (non-NULL = actually played)
+            # and the recency clock (when it played), so cancelled/failed rows
+            # that never reached the speaker are excluded by construction.
             rows = conn.execute(
                 "SELECT text FROM voice_queue "
-                f"WHERE status IN ({placeholders}) AND updated_at >= ?",
-                (*_SPOKEN_STATUSES, cutoff),
+                "WHERE spoken_at IS NOT NULL AND spoken_at >= ?",
+                (cutoff,),
             ).fetchall()
             return [str(row[0]) for row in rows]
         finally:

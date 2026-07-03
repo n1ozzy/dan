@@ -217,6 +217,10 @@ class SpeechPipeline:
                     seq=-1,  # a filler always precedes the real sentences
                     interrupt_policy="interruptible",
                 )
+            except Exception:  # noqa: BLE001 — runs on a Timer thread
+                # A tombstoned (barge-in-cancelled) turn refuses the filler, and
+                # any queue hiccup here must never crash the timer thread (FIX-09).
+                _LOGGER.debug("filler enqueue skipped for turn %s.", turn_id)
             finally:
                 close_quietly(conn)
 

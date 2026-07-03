@@ -22,6 +22,8 @@ from jarvis.voice.speech import SpeechPipeline
 from jarvis.voice.tts import (
     BannedEngineError,
     MockTTSEngine,
+    PlaybackCancelled,
+    SynthesizedChunk,
     TTSEngineError,
     build_tts_engine,
 )
@@ -193,6 +195,82 @@ def test_broker_never_plays_a_row_cancelled_after_claim(db_path: Path) -> None:
     assert played == ["Zdanie grane przed barge-in."]
     statuses = dict(conn.execute("SELECT text, status FROM voice_queue").fetchall())
     assert statuses["Zdanie anulowane w locie."] == "cancelled"
+    close_quietly(conn)
+
+
+def test_broker_stamps_spoken_at_only_on_rows_it_actually_played(db_path: Path) -> None:
+    # FIX-09: the anti-echo corpus reads spoken_at, so the broker must stamp it
+    # for every chunk it plays — and only those. A synthesis failure (never
+    # reached the speaker) must leave spoken_at NULL.
+    conn = connect(db_path)
+    queue = VoiceQueue(conn)
+    queue.enqueue(text="Zdanie które realnie zagra.", turn_id="t", kind="sentence", seq=0)
+    queue.enqueue(text="EXPLODE zanim cokolwiek zabrzmi.", turn_id="t", kind="sentence", seq=1)
+    engine = MockTTSEngine(explode_on="EXPLODE")
+    broker = VoiceBroker(lambda: connect(db_path), config=voice_config(), engine=engine)
+
+    broker.drain_all()
+
+    spoken = dict(
+        conn.execute("SELECT text, spoken_at FROM voice_queue").fetchall()
+    )
+    assert spoken["Zdanie które realnie zagra."] is not None
+    assert spoken["EXPLODE zanim cokolwiek zabrzmi."] is None
+    close_quietly(conn)
+
+
+def test_mock_engine_skips_playback_when_should_play_is_false() -> None:
+    # FIX-09 TOCTOU: the engine consults should_play under its player lock right
+    # before spawning, so a row cancelled in the check->spawn gap never plays.
+    engine = MockTTSEngine()
+
+    with pytest.raises(PlaybackCancelled):
+        engine.play(SynthesizedChunk(text="Anulowane w locie.", audio=b"audio"), should_play=lambda: False)
+
+    assert [op for op, _ in engine.log if op == "play"] == []
+
+
+def test_broker_does_not_play_a_row_cancelled_in_the_spawn_gap(db_path: Path) -> None:
+    # The narrow TOCTOU the plain pre-play _still_speaking check cannot close:
+    # the cancel lands AFTER that check, in the gap before the player spawns.
+    # The engine's should_play re-check (under the player lock) closes it.
+    conn = connect(db_path)
+    queue = VoiceQueue(conn)
+    request = queue.enqueue(text="Anulowane tuż przed Popen.", turn_id="turn-x", seq=0)
+
+    class GapCancelEngine:
+        name = "gap"
+
+        def __init__(self) -> None:
+            self.played: list[str] = []
+
+        def synthesize(self, text: str) -> SynthesizedChunk:
+            return SynthesizedChunk(text=text, audio=b"audio-bytes")
+
+        def play(self, chunk: SynthesizedChunk, should_play=None) -> None:
+            # Barge-in lands right here, in the check->spawn gap.
+            gap_conn = connect(db_path)
+            try:
+                VoiceQueue(gap_conn).cancel_turn("turn-x")
+            finally:
+                close_quietly(gap_conn)
+            if should_play is not None and not should_play():
+                raise PlaybackCancelled("cancelled in the spawn gap")
+            self.played.append(chunk.text)
+
+        def stop_playback(self) -> None:
+            return None
+
+    engine = GapCancelEngine()
+    broker = VoiceBroker(lambda: connect(db_path), config=voice_config(), engine=engine)
+
+    broker.drain_all()
+
+    assert engine.played == []
+    status = conn.execute(
+        "SELECT status FROM voice_queue WHERE id = ?", (request.id,)
+    ).fetchone()[0]
+    assert status == "cancelled"
     close_quietly(conn)
 
 

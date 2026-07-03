@@ -84,11 +84,11 @@ def test_registry_cancels_registered_generation_once() -> None:
     registry.register("turn-1", lambda: calls.append("killed"))
 
     assert registry.active_count() == 1
-    assert registry.cancel_all() == 1
+    assert len(registry.cancel_all()) == 1
     assert calls == ["killed"]
     assert registry.active_count() == 0
     # Idempotent: nothing left to cancel.
-    assert registry.cancel_all() == 0
+    assert len(registry.cancel_all()) == 0
     assert calls == ["killed"]
 
 
@@ -99,8 +99,20 @@ def test_registry_unregister_removes_the_handle() -> None:
     registry.unregister("turn-1")
 
     assert registry.active_count() == 0
-    assert registry.cancel_all() == 0
+    assert len(registry.cancel_all()) == 0
     assert calls == []
+
+
+def test_cancel_all_returns_the_cancelled_turn_ids() -> None:
+    # FIX-09: the coordinator tombstones what cancel_all reports, so it must
+    # name the turns it cancelled — including generations with no queue rows yet.
+    registry = GenerationRegistry()
+    registry.register("turn-1", lambda: None)
+    registry.register("turn-2", lambda: None)
+
+    cancelled = registry.cancel_all()
+
+    assert sorted(cancelled) == ["turn-1", "turn-2"]
 
 
 def test_registry_survives_a_cancel_callable_that_raises() -> None:
@@ -113,7 +125,7 @@ def test_registry_survives_a_cancel_callable_that_raises() -> None:
     registry.register("turn-1", explode)
     registry.register("turn-2", lambda: calls.append("killed"))
 
-    assert registry.cancel_all() == 2
+    assert len(registry.cancel_all()) == 2
     assert calls == ["killed"]
     assert registry.active_count() == 0
 
@@ -193,6 +205,34 @@ def test_queue_leg_runs_before_playback_leg(db_path: Path) -> None:
     coordinator.cancel_active_speech(reason="barge_in")
 
     assert observed == [["cancelled", "cancelled", "cancelled"]]
+
+
+def test_cancel_active_speech_tombstones_cancelled_and_generating_turns(db_path: Path) -> None:
+    # FIX-09: after a barge-in, a late delta or FillerTimer of a cancelled turn
+    # must be refused at enqueue — for BOTH a turn that had queue rows and a
+    # generation that had none yet (registry-only), since the mic barge-in fires
+    # on active generation too.
+    from jarvis.voice.queue import VoiceQueueCancelledError
+
+    seed_queue(db_path)  # turn-a (rows), turn-b (rows)
+    registry = GenerationRegistry()
+    registry.register("turn-generating", lambda: None)  # no queue rows yet
+    coordinator = CancellationCoordinator(
+        factory_for(db_path), generation_registry=registry, engine=StoppableEngine()
+    )
+
+    coordinator.cancel_active_speech(reason="barge_in")
+
+    conn = connect(db_path)
+    try:
+        q = VoiceQueue(conn)
+        for cancelled_turn in ("turn-a", "turn-b", "turn-generating"):
+            with pytest.raises(VoiceQueueCancelledError):
+                q.enqueue(text="Spóźniona delta.", turn_id=cancelled_turn, seq=9)
+        # An unrelated live turn is unaffected.
+        assert q.enqueue(text="Żywe zdanie.", turn_id="turn-live", seq=0).status == "queued"
+    finally:
+        close_quietly(conn)
 
 
 def test_engine_without_stop_playback_is_tolerated(db_path: Path) -> None:

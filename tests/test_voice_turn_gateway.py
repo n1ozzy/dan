@@ -187,6 +187,27 @@ def test_turn_starter_failure_does_not_kill_the_gateway() -> None:
     assert ("turn", "Ta tura przejdzie.") in harness.log
 
 
+def test_cancelled_turn_is_logged_as_cancellation_not_failure(caplog) -> None:
+    # FIX-09: a barge-in cancellation surfacing from the turn starter must be
+    # logged as a clean cancellation, never as "voice turn failed" — the log
+    # must stop lying about barge-in the same way the panel does.
+    class TurnCancelled(Exception):
+        pass
+
+    harness = Harness(starter_error=TurnCancelled("brain generation cancelled"))
+    gateway = harness.gateway(cancelled_exceptions=(TurnCancelled,))
+    try:
+        with caplog.at_level("INFO", logger="jarvis.voice.gateway"):
+            gateway.handle_transcript("Przerwane w połowie.")
+            assert gateway.flush(timeout=5)
+    finally:
+        gateway.stop()
+
+    messages = [record.getMessage().lower() for record in caplog.records]
+    assert any("cancel" in message for message in messages)
+    assert not any("voice turn failed" in message for message in messages)
+
+
 def test_handle_transcript_does_not_block_on_a_slow_turn() -> None:
     harness = Harness()
     release = threading.Event()
@@ -287,6 +308,7 @@ def test_daemon_never_turns_an_echo_into_a_turn(tmp_path: Path) -> None:
         queue = VoiceQueue(conn)
         request = queue.enqueue(text=transcript, turn_id="turn-tts", seq=0)
         queue.claim_next()
+        queue.mark_spoken(request.id)  # the broker stamps spoken_at at playback (FIX-09)
         queue.mark_done(request.id)
 
         app.voice_stt.accept_capture(voiced_wav())
