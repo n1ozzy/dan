@@ -8,6 +8,7 @@ from typing import Any
 
 from jarvis.brain.base import BrainAdapter, BrainRequest, BrainResponse
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
+from jarvis.brain.claude_cli_warm_adapter import ClaudeCliWarmAdapter
 from jarvis.brain.codex_cli_adapter import CodexCliAdapter
 from jarvis.brain.mock_adapter import MockBrainAdapter
 
@@ -53,6 +54,19 @@ class BrainManager:
                     timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
                     stream_args=getattr(claude_config, "stream_args", None),
                     generation_registry=generation_registry,
+                )
+            )
+
+        # Ciepły wariant (PROTOTYP): dzieli config [brain.claude_cli], dokłada
+        # tryb strumienia i trzyma proces ciepły. Rejestrowany tylko gdy jawnie
+        # wybrany (default_adapter = "claude_cli_warm").
+        if default_adapter == "claude_cli_warm" and claude_config is not None:
+            adapters.append(
+                ClaudeCliWarmAdapter(
+                    command=getattr(claude_config, "command", "claude"),
+                    args=getattr(claude_config, "args", ["-p"]),
+                    model=getattr(claude_config, "model", ""),
+                    timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
                 )
             )
 
