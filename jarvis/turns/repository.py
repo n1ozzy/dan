@@ -127,13 +127,39 @@ class ConversationRepository:
         try:
             rows = self._conn.execute(
                 f"""
+                WITH turn_stats AS (
+                  SELECT conversation_id, COUNT(id) AS turn_count, MAX(created_at) AS latest_turn_at
+                  FROM turns
+                  GROUP BY conversation_id
+                ),
+                latest_turns AS (
+                  SELECT t.conversation_id, MAX(t.rowid) AS latest_turn_rowid
+                  FROM turns t
+                  JOIN turn_stats ts
+                    ON ts.conversation_id = t.conversation_id
+                   AND ts.latest_turn_at = t.created_at
+                  GROUP BY t.conversation_id
+                )
                 SELECT c.id, c.created_at, c.updated_at, c.title, c.status, c.metadata_json,
-                       COUNT(t.id) AS turn_count, MAX(t.created_at) AS latest_turn_at
+                       COALESCE(ts.turn_count, 0) AS turn_count, ts.latest_turn_at
                 FROM conversations c
-                LEFT JOIN turns t ON t.conversation_id = c.id
+                LEFT JOIN turn_stats ts ON ts.conversation_id = c.id
+                LEFT JOIN latest_turns lt ON lt.conversation_id = c.id
                 {where_clause}
-                GROUP BY c.id, c.created_at, c.updated_at, c.title, c.status, c.metadata_json
-                ORDER BY c.updated_at DESC, c.created_at DESC, c.id ASC
+                ORDER BY
+                  CASE
+                    WHEN ts.latest_turn_at IS NOT NULL
+                         AND ts.latest_turn_at > COALESCE(c.updated_at, c.created_at)
+                    THEN ts.latest_turn_at
+                    ELSE COALESCE(c.updated_at, c.created_at)
+                  END DESC,
+                  CASE
+                    WHEN ts.latest_turn_at IS NOT NULL
+                         AND ts.latest_turn_at >= COALESCE(c.updated_at, c.created_at)
+                    THEN lt.latest_turn_rowid
+                    ELSE c.rowid
+                  END DESC,
+                  c.id ASC
                 LIMIT ?
                 """,
                 params,

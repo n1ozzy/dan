@@ -146,6 +146,61 @@ def test_conversation_list_recent_returns_newest_first(conn: sqlite3.Connection)
     assert [conversation.id for conversation in conversations] == ["third", "second", "first"]
 
 
+def test_list_recent_with_stats_orders_by_latest_activity(conn: sqlite3.Connection) -> None:
+    conversations = ConversationRepository(
+        conn,
+        now=fixed_now(
+            "2026-07-01T12:00:00+00:00",
+            "2026-07-01T12:01:00+00:00",
+            "2026-07-01T12:02:00+00:00",
+            "2026-07-01T12:04:00+00:00",
+        ),
+    )
+    conversations.create(conversation_id="conversation-a")
+    conversations.create(conversation_id="conversation-b")
+    conversations.create(conversation_id="conversation-empty")
+    TurnRepository(conn, now=fixed_now("2026-07-01T12:00:30+00:00")).create(
+        "conversation-a",
+        source="text",
+        turn_id="turn-a-old",
+    )
+    TurnRepository(conn, now=fixed_now("2026-07-01T12:03:00+00:00")).create(
+        "conversation-b",
+        source="text",
+        turn_id="turn-b-newer",
+    )
+    conversations.update("conversation-a", title="Renamed after B turn")
+
+    summaries = conversations.list_recent_with_stats()
+
+    assert [summary["id"] for summary in summaries] == [
+        "conversation-a",
+        "conversation-b",
+        "conversation-empty",
+    ]
+    by_id = {summary["id"]: summary for summary in summaries}
+    assert by_id["conversation-a"]["title"] == "Renamed after B turn"
+    assert by_id["conversation-a"]["latest_turn_at"] == "2026-07-01T12:00:30+00:00"
+    assert by_id["conversation-b"]["latest_turn_at"] == "2026-07-01T12:03:00+00:00"
+    assert by_id["conversation-empty"]["turn_count"] == 0
+    assert by_id["conversation-empty"]["latest_turn_at"] is None
+
+
+def test_list_recent_with_stats_uses_turn_insert_order_for_same_second_activity(
+    conn: sqlite3.Connection,
+) -> None:
+    conversations = ConversationRepository(conn, now=fixed_now("2026-07-01T12:00:00+00:00"))
+    conversations.create(conversation_id="conversation-a")
+    conversations.create(conversation_id="conversation-z")
+    turns = TurnRepository(conn, now=fixed_now("2026-07-01T12:01:00+00:00"))
+    turns.create("conversation-a", source="text", turn_id="turn-a")
+    turns.create("conversation-z", source="text", turn_id="turn-z")
+
+    summaries = conversations.list_recent_with_stats(limit=1)
+
+    assert [summary["id"] for summary in summaries] == ["conversation-z"]
+
+
 def test_conversation_update_updates_title_status_metadata(conn: sqlite3.Connection) -> None:
     repo = ConversationRepository(
         conn,
