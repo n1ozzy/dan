@@ -1294,12 +1294,32 @@ JarvisDaemonApp = DaemonApp
 JarvisDaemon = DaemonApp
 
 
+def _resolve_compiled_memory_enabled(
+    config: JarvisConfig,
+    *,
+    explicit_enabled: bool | None,
+) -> bool:
+    if not config.memory.enabled:
+        return False
+    if explicit_enabled is not None:
+        return bool(explicit_enabled)
+    return bool(config.memory.compiled_context_enabled)
+
+
+def _compiled_memory_config_from_config(config: JarvisConfig) -> MemoryCompilerConfig:
+    return MemoryCompilerConfig(
+        max_items=config.memory.compiled_context_max_items,
+        max_chars=config.memory.compiled_context_max_chars,
+        include_procedural=config.memory.compiled_context_include_procedural,
+    )
+
+
 def create_daemon_app(
     config_path: str | Path | None = None,
     *,
     initialize: bool = True,
     memory_compiler: Any | None = None,
-    compiled_memory_enabled: bool = False,
+    compiled_memory_enabled: bool | None = None,
     compiled_memory_config: MemoryCompilerConfig | None = None,
 ) -> DaemonApp:
     config = load_config(config_path)
@@ -1317,7 +1337,7 @@ def create_daemon_app_from_config(
     *,
     initialize: bool = True,
     memory_compiler: Any | None = None,
-    compiled_memory_enabled: bool = False,
+    compiled_memory_enabled: bool | None = None,
     compiled_memory_config: MemoryCompilerConfig | None = None,
 ) -> DaemonApp:
     paths = resolve_runtime_paths(config)
@@ -1397,6 +1417,16 @@ def create_daemon_app_from_config(
     memory_candidate_repository = MemoryCandidateRepository(conn, event_store=event_store)
     memory_evidence_repository = MemoryEvidenceRepository(conn, event_store=event_store)
     memory_item_repository = MemoryItemRepository(conn, event_store=event_store)
+    runtime_compiled_memory_enabled = _resolve_compiled_memory_enabled(
+        config,
+        explicit_enabled=compiled_memory_enabled,
+    )
+    runtime_compiled_memory_config = compiled_memory_config or _compiled_memory_config_from_config(
+        config
+    )
+    runtime_memory_compiler = memory_compiler
+    if runtime_compiled_memory_enabled and runtime_memory_compiler is None:
+        runtime_memory_compiler = MemoryCompiler(memory_item_repository)
     # Registered here, not with the other tools above: memory_save needs the
     # DB-backed Memory OS repositories, so the uninitialized (no-DB) registry
     # never offers it.
@@ -1412,9 +1442,9 @@ def create_daemon_app_from_config(
         config=config,
         event_store=event_store,
         memory_manager=memory_manager,
-        memory_compiler=memory_compiler,
-        compiled_memory_enabled=compiled_memory_enabled,
-        compiled_memory_config=compiled_memory_config,
+        memory_compiler=runtime_memory_compiler,
+        compiled_memory_enabled=runtime_compiled_memory_enabled,
+        compiled_memory_config=runtime_compiled_memory_config,
         tool_specs=tool_registry.list_specs,
     )
     approval_gate = ApprovalGate(conn, event_store=event_store)

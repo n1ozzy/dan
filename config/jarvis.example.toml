@@ -39,6 +39,12 @@ enabled = true
 max_active_blocks = 50
 max_context_chars = 12000
 worker_candidates_require_promotion = true
+# Dev/local explicit enablement only. Keep compiled memory context disabled in
+# shared/default configs; [memory].enabled must also remain true for it to run.
+compiled_context_enabled = false
+compiled_context_max_items = 3
+compiled_context_max_chars = 1200
+compiled_context_include_procedural = false
 
 [voice]
 enabled = false

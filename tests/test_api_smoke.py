@@ -24,7 +24,7 @@ from tests.git_guards import assert_schema_and_migrations_unchanged
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
 from jarvis.daemon.state_machine import RuntimeState
-from jarvis.memory.compiler import CompiledMemoryContext, MemoryCompilerConfig
+from jarvis.memory.compiler import CompiledMemoryContext, MemoryCompiler, MemoryCompilerConfig
 from jarvis.runtime.supervisor import RuntimeSupervisor
 from jarvis.store.db import close_quietly
 from jarvis.store.migrations import LATEST_SCHEMA_VERSION
@@ -34,8 +34,28 @@ from jarvis.tools.registry import Tool
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def config_text(db_path: Path, *, port: int = 41741) -> str:
+def config_text(
+    db_path: Path,
+    *,
+    port: int = 41741,
+    memory_enabled: bool = True,
+    compiled_context_enabled: bool = False,
+    compiled_context_max_items: int | None = None,
+    compiled_context_max_chars: int | None = None,
+    compiled_context_include_procedural: bool = False,
+) -> str:
     runtime_home = db_path.parent
+    compiler_defaults = MemoryCompilerConfig()
+    compiled_context_max_items = (
+        compiler_defaults.max_items
+        if compiled_context_max_items is None
+        else compiled_context_max_items
+    )
+    compiled_context_max_chars = (
+        compiler_defaults.max_chars
+        if compiled_context_max_chars is None
+        else compiled_context_max_chars
+    )
     return f"""
 [daemon]
 name = "jarvisd"
@@ -56,10 +76,14 @@ context_budget_chars = 24000
 provider_sessions_are_memory = false
 
 [memory]
-enabled = true
+enabled = {str(memory_enabled).lower()}
 max_active_blocks = 50
 max_context_chars = 12000
 worker_candidates_require_promotion = true
+compiled_context_enabled = {str(compiled_context_enabled).lower()}
+compiled_context_max_items = {compiled_context_max_items}
+compiled_context_max_chars = {compiled_context_max_chars}
+compiled_context_include_procedural = {str(compiled_context_include_procedural).lower()}
 
 [voice]
 enabled = false
@@ -106,8 +130,29 @@ install_automatically = false
 """
 
 
-def write_config(path: Path, db_path: Path, *, port: int = 41741) -> Path:
-    path.write_text(config_text(db_path, port=port), encoding="utf-8")
+def write_config(
+    path: Path,
+    db_path: Path,
+    *,
+    port: int = 41741,
+    memory_enabled: bool = True,
+    compiled_context_enabled: bool = False,
+    compiled_context_max_items: int | None = None,
+    compiled_context_max_chars: int | None = None,
+    compiled_context_include_procedural: bool = False,
+) -> Path:
+    path.write_text(
+        config_text(
+            db_path,
+            port=port,
+            memory_enabled=memory_enabled,
+            compiled_context_enabled=compiled_context_enabled,
+            compiled_context_max_items=compiled_context_max_items,
+            compiled_context_max_chars=compiled_context_max_chars,
+            compiled_context_include_procedural=compiled_context_include_procedural,
+        ),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -257,6 +302,68 @@ def insert_runtime_conversation(app: DaemonApp, conversation_id: str = "conversa
     app.conn.commit()
 
 
+def insert_runtime_memory_item(
+    app: DaemonApp,
+    *,
+    memory_id: str,
+    title: str,
+    claim: str,
+) -> None:
+    assert app.conn is not None
+    app.conn.execute(
+        """
+        INSERT INTO memory_items (
+          id, canonical_key, kind, scope, namespace, title, claim, content,
+          status, confidence, sensitivity, source_policy, created_at,
+          updated_at, last_used_at, last_confirmed_at, supersedes, superseded_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            memory_id,
+            f"key-{memory_id}",
+            "semantic",
+            "project",
+            "project/jarvis",
+            title,
+            claim,
+            claim,
+            "active",
+            "high",
+            "low",
+            "candidate_evidence",
+            "2026-07-04T11:00:00+00:00",
+            "2026-07-04T12:00:00+00:00",
+            None,
+            None,
+            None,
+            None,
+        ),
+    )
+    app.conn.execute(
+        """
+        INSERT INTO memory_evidence (
+          id, memory_id, candidate_id, observation_id, conversation_id, turn_id,
+          event_id, quote, weight, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            f"evidence-{memory_id}",
+            memory_id,
+            None,
+            f"observation-{memory_id}",
+            "conversation-runtime",
+            "turn-runtime",
+            1,
+            "Runtime evidence quote should not render.",
+            1.0,
+            "2026-07-04T12:01:00+00:00",
+        ),
+    )
+    app.conn.commit()
+
+
 def tool_run_count_for_approval(app: DaemonApp, approval_id: object) -> int:
     assert app.conn is not None
     return int(
@@ -377,6 +484,103 @@ def test_create_daemon_app_default_runtime_path_does_not_call_memory_compiler(
             turn_id="turn-runtime",
             conversation_id="conversation-runtime",
             input_text="runtime default path",
+        )
+
+        assert [
+            message
+            for message in result.request.context_messages
+            if message.metadata.get("kind") == "compiled_memory"
+        ] == []
+    finally:
+        daemon_app.close()
+
+
+def test_create_daemon_app_config_enabled_wires_compiled_memory_context(tmp_path: Path) -> None:
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        db_path,
+        compiled_context_enabled=True,
+        compiled_context_max_items=1,
+        compiled_context_max_chars=256,
+        compiled_context_include_procedural=True,
+    )
+
+    daemon_app = create_daemon_app(config_path)
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.context_builder._compiled_memory_enabled is True
+        assert isinstance(daemon_app.context_builder._memory_compiler, MemoryCompiler)
+        assert daemon_app.context_builder._compiled_memory_config == MemoryCompilerConfig(
+            max_items=1,
+            max_chars=256,
+            include_procedural=True,
+        )
+
+        insert_runtime_conversation(daemon_app)
+        insert_runtime_memory_item(
+            daemon_app,
+            memory_id="mem-runtime-compiled",
+            title="Runtime config memory",
+            claim="Explicit dev config can inject compiled memory.",
+        )
+
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime config enabled check",
+        )
+
+        messages = [
+            message
+            for message in result.request.context_messages
+            if message.metadata.get("kind") == "compiled_memory"
+        ]
+        assert len(messages) == 1
+        assert messages[0].metadata == {"kind": "compiled_memory", "untrusted": True}
+        assert "Runtime config memory" in messages[0].content
+        assert "Explicit dev config can inject compiled memory." in messages[0].content
+    finally:
+        daemon_app.close()
+
+
+def test_memory_disabled_overrides_compiled_context_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExplodingMemoryCompiler:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("memory.enabled=false must not create MemoryCompiler")
+
+    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        db_path,
+        memory_enabled=False,
+        compiled_context_enabled=True,
+    )
+
+    daemon_app = create_daemon_app(config_path)
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.config.memory.enabled is False
+        assert daemon_app.config.memory.compiled_context_enabled is True
+        assert daemon_app.context_builder._compiled_memory_enabled is False
+        assert daemon_app.context_builder._memory_compiler is None
+
+        insert_runtime_conversation(daemon_app)
+        insert_runtime_memory_item(
+            daemon_app,
+            memory_id="mem-runtime-disabled",
+            title="Disabled memory title",
+            claim="Disabled memory claim must not render.",
+        )
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime memory disabled check",
         )
 
         assert [

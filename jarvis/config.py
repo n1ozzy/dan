@@ -83,6 +83,8 @@ DEFAULT_VOICE_FILLERS: tuple[str, ...] = (
     "Dobra, odpalam tryb chamstwa.",
     "Czekaj, logi zaraz zaczną śpiewać.",
 )
+DEFAULT_COMPILED_CONTEXT_MAX_ITEMS = 3
+DEFAULT_COMPILED_CONTEXT_MAX_CHARS = 1200
 
 
 class ConfigError(RuntimeError):
@@ -145,6 +147,10 @@ class MemoryConfig:
     max_active_blocks: int = 50
     max_context_chars: int = 12000
     worker_candidates_require_promotion: bool = True
+    compiled_context_enabled: bool = False
+    compiled_context_max_items: int = DEFAULT_COMPILED_CONTEXT_MAX_ITEMS
+    compiled_context_max_chars: int = DEFAULT_COMPILED_CONTEXT_MAX_CHARS
+    compiled_context_include_procedural: bool = False
 
 
 @dataclass(frozen=True)
@@ -357,7 +363,7 @@ def load_config(path: str | Path | None = None) -> JarvisConfig:
         daemon=_build_section(DaemonConfig, raw["daemon"]),
         database=_build_section(DatabaseConfig, raw["database"]),
         brain=_build_brain_config(raw["brain"]),
-        memory=_build_section(MemoryConfig, raw["memory"]),
+        memory=_build_memory_config(raw["memory"]),
         voice=_build_section(VoiceConfig, raw["voice"]),
         audio=_build_section(AudioConfig, raw["audio"]),
         panel=_build_section(PanelConfig, raw["panel"]),
@@ -421,6 +427,41 @@ def _build_section(section_type: type[T], raw: dict[str, Any]) -> T:
         return section_type(**selected)
     except TypeError as exc:
         raise ConfigError(f"Invalid config section {section_type.__name__}: {exc}") from exc
+
+
+def _build_memory_config(raw: dict[str, Any]) -> MemoryConfig:
+    allowed = {field.name for field in fields(MemoryConfig)}
+    selected = {key: value for key, value in raw.items() if key in allowed}
+    _require_config_bool(
+        "memory.compiled_context_enabled",
+        selected.get("compiled_context_enabled"),
+    )
+    _require_config_int(
+        "memory.compiled_context_max_items",
+        selected.get("compiled_context_max_items"),
+    )
+    _require_config_int(
+        "memory.compiled_context_max_chars",
+        selected.get("compiled_context_max_chars"),
+    )
+    _require_config_bool(
+        "memory.compiled_context_include_procedural",
+        selected.get("compiled_context_include_procedural"),
+    )
+    try:
+        return MemoryConfig(**selected)
+    except TypeError as exc:
+        raise ConfigError(f"Invalid config section MemoryConfig: {exc}") from exc
+
+
+def _require_config_bool(name: str, value: Any) -> None:
+    if value is not None and not isinstance(value, bool):
+        raise ConfigError(f"{name} must be a bool")
+
+
+def _require_config_int(name: str, value: Any) -> None:
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+        raise ConfigError(f"{name} must be an int")
 
 
 def _build_brain_config(raw: dict[str, Any]) -> BrainConfig:

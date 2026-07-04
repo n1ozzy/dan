@@ -12,6 +12,7 @@ import pytest
 
 from jarvis.config import ConfigError, load_config
 from jarvis.logging import redact_secrets
+from jarvis.memory.compiler import MemoryCompilerConfig
 from jarvis.paths import ensure_runtime_dirs, expand_user_path, resolve_runtime_paths
 
 
@@ -23,6 +24,17 @@ def canonical_config(**overrides: str | int | bool) -> str:
     brain_adapter = overrides.get("brain_adapter", "mock")
     runtime_home = overrides.get("runtime_home", "~/.jarvis")
     db_path = overrides.get("db_path", "~/.jarvis/jarvis.db")
+    memory_enabled = overrides.get("memory_enabled", True)
+    compiled_context_enabled = overrides.get("compiled_context_enabled", False)
+    compiled_context_max_items = overrides.get(
+        "compiled_context_max_items", MemoryCompilerConfig().max_items
+    )
+    compiled_context_max_chars = overrides.get(
+        "compiled_context_max_chars", MemoryCompilerConfig().max_chars
+    )
+    compiled_context_include_procedural = overrides.get(
+        "compiled_context_include_procedural", False
+    )
     return f"""
 [daemon]
 name = "jarvisd"
@@ -43,10 +55,14 @@ context_budget_chars = 24000
 provider_sessions_are_memory = false
 
 [memory]
-enabled = true
+enabled = {str(memory_enabled).lower()}
 max_active_blocks = 50
 max_context_chars = 12000
 worker_candidates_require_promotion = true
+compiled_context_enabled = {str(compiled_context_enabled).lower()}
+compiled_context_max_items = {compiled_context_max_items}
+compiled_context_max_chars = {compiled_context_max_chars}
+compiled_context_include_procedural = {str(compiled_context_include_procedural).lower()}
 
 [voice]
 enabled = false
@@ -122,7 +138,79 @@ def test_loads_example_config(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.daemon.name == "jarvisd"
     assert config.daemon.port == 41741
     assert config.brain.default_adapter == "mock"
+    assert config.memory.compiled_context_enabled is False
+    assert config.memory.compiled_context_max_items == MemoryCompilerConfig().max_items
+    assert config.memory.compiled_context_max_chars == MemoryCompilerConfig().max_chars
+    assert config.memory.compiled_context_include_procedural is False
     assert config.launchd.label == "com.ozzy.jarvisd"
+
+
+def test_example_config_compiled_memory_defaults_off() -> None:
+    config = load_config(ROOT / "config" / "jarvis.example.toml")
+
+    assert config.memory.enabled is True
+    assert config.memory.compiled_context_enabled is False
+    assert config.memory.compiled_context_max_items == MemoryCompilerConfig().max_items
+    assert config.memory.compiled_context_max_chars == MemoryCompilerConfig().max_chars
+    assert config.memory.compiled_context_include_procedural is False
+
+
+def test_explicit_config_can_enable_compiled_memory_context(tmp_path: Path) -> None:
+    config_path = write_config(
+        tmp_path / "compiled-memory.toml",
+        compiled_context_enabled=True,
+        compiled_context_max_items=7,
+        compiled_context_max_chars=2048,
+        compiled_context_include_procedural=True,
+    )
+
+    config = load_config(config_path)
+
+    assert config.memory.compiled_context_enabled is True
+    assert config.memory.compiled_context_max_items == 7
+    assert config.memory.compiled_context_max_chars == 2048
+    assert config.memory.compiled_context_include_procedural is True
+
+
+@pytest.mark.parametrize(
+    ("line", "replacement", "message"),
+    (
+        (
+            "compiled_context_enabled = false",
+            'compiled_context_enabled = "true"',
+            "memory.compiled_context_enabled must be a bool",
+        ),
+        (
+            f"compiled_context_max_items = {MemoryCompilerConfig().max_items}",
+            'compiled_context_max_items = "3"',
+            "memory.compiled_context_max_items must be an int",
+        ),
+        (
+            f"compiled_context_max_chars = {MemoryCompilerConfig().max_chars}",
+            'compiled_context_max_chars = "1200"',
+            "memory.compiled_context_max_chars must be an int",
+        ),
+        (
+            "compiled_context_include_procedural = false",
+            'compiled_context_include_procedural = "false"',
+            "memory.compiled_context_include_procedural must be a bool",
+        ),
+    ),
+)
+def test_compiled_memory_config_rejects_invalid_types(
+    tmp_path: Path,
+    line: str,
+    replacement: str,
+    message: str,
+) -> None:
+    config_path = tmp_path / "invalid-compiled-memory.toml"
+    config_path.write_text(
+        canonical_config().replace(line, replacement, 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(config_path)
 
 
 def test_default_voice_fillers_have_enough_variation(monkeypatch: pytest.MonkeyPatch) -> None:
