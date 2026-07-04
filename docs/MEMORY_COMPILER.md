@@ -207,6 +207,65 @@ execution, but it must not be mixed blindly with semantic memory. A project fact
 must not override a procedural safety rule, and a procedural rule must not be
 treated as a factual claim about the user.
 
+## Governance addendum for first compiler implementation
+
+This addendum closes first-compiler governance rules without creating a separate
+governance source of truth.
+
+### Compiler eligibility statuses
+
+- selectable: active only.
+- never selectable: candidate, needs_review, approved-but-not-activated,
+  rejected, disabled, superseded, forgotten, conflict, merge_candidate.
+
+### Status precedence
+
+Governance status beats relevance, recency, namespace match, and confidence. If
+a memory item is disabled/superseded/forgotten/conflict, the compiler must skip
+it even if it looks highly relevant.
+
+### Conflict handling for first compiler
+
+The compiler must not resolve conflicts. The compiler must skip conflict-marked
+items or surface `reason_skipped="conflict"`. The compiler must not merge
+memories and must not silently pick one conflicting memory as truth.
+
+### Supersession handling for first compiler
+
+The compiler must skip superseded items. If a superseding active item exists and
+is eligible, the compiler may select the superseding item. A skipped superseded
+item must receive `reason_skipped="superseded"`.
+
+### Forget/disable handling for first compiler
+
+Disabled memory is skipped and remains auditable. Forgotten memory is skipped
+and must not be surfaced in compiled output. Future APIs may distinguish
+tombstone/audit behavior, but compiler output must not expose forgotten content.
+
+### Merge policy for first compiler
+
+There is no runtime merge in the first compiler. Same title, same namespace, or
+similar text is not enough to merge. Deterministic equivalence/merge is future
+governance runtime, not compiler runtime.
+
+### Procedural memory handling for first compiler
+
+The first compiler must skip procedural memories by default unless explicitly
+requested by caller config. Procedural memory must not be mixed into semantic
+memory output without a separate section or reason.
+
+### Compiler output reasons
+
+The addendum defines canonical reason values only; it does not define a new
+output field. Per-item skip reasons must use the existing `reason_skipped`
+field, and aggregate skipped reasons must use the existing `skipped_reasons`
+collection.
+
+Canonical skipped reasons for the first implementation are: `inactive`,
+`disabled`, `superseded`, `forgotten`, `conflict`, `candidate_only`,
+`rejected`, `over_budget`, `missing_provenance`, `sensitivity_policy`,
+`procedural_not_requested`, and `namespace_mismatch`.
+
 ## Future Usage Ledger
 
 A future `memory_usage_events` ledger should persist what happened during
