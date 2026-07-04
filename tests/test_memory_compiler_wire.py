@@ -241,6 +241,352 @@ def test_context_output_shape_compiled_memory_enabled_has_safe_section(
     ]
 
 
+def test_context_governance_excludes_disabled_superseded_forgotten_conflict_and_missing_provenance(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-safe",
+        title="SAFE_GOVERNANCE_TITLE_MARKER",
+        claim="SAFE_GOVERNANCE_CLAIM_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-safe")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-disabled",
+        status="disabled",
+        title="DISABLED_GOVERNANCE_TITLE_MARKER",
+        claim="DISABLED_GOVERNANCE_CLAIM_MARKER",
+        content="DISABLED_GOVERNANCE_CONTENT_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-disabled")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-superseded",
+        superseded_by="mem-governance-replacement",
+        title="SUPERSEDED_GOVERNANCE_TITLE_MARKER",
+        claim="SUPERSEDED_GOVERNANCE_CLAIM_MARKER",
+        content="SUPERSEDED_GOVERNANCE_CONTENT_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-superseded")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-forgotten",
+        status="forgotten",
+        title="FORGOTTEN_GOVERNANCE_TITLE_MARKER",
+        claim="FORGOTTEN_GOVERNANCE_CLAIM_MARKER",
+        content="FORGOTTEN_GOVERNANCE_CONTENT_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-forgotten")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-conflict",
+        status="conflict",
+        title="CONFLICT_GOVERNANCE_TITLE_MARKER",
+        claim="CONFLICT_GOVERNANCE_CLAIM_MARKER",
+        content="CONFLICT_GOVERNANCE_CONTENT_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-conflict")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-missing-provenance",
+        title="MISSING_PROVENANCE_GOVERNANCE_TITLE_MARKER",
+        claim="MISSING_PROVENANCE_GOVERNANCE_CLAIM_MARKER",
+        content="MISSING_PROVENANCE_GOVERNANCE_CONTENT_MARKER",
+    )
+    builder = enabled_builder(conn, persona_path)
+    user_input = "USER_INPUT_GOVERNANCE_EXCLUSION_MARKER"
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text=user_input,
+    )
+
+    messages = compiled_memory_messages(result.request)
+    assert len(messages) == 1
+    assert messages[0].metadata == {"kind": "compiled_memory", "untrusted": True}
+    assert result.request.input_text == user_input
+    assert context_message_kinds(result.request) == ["persona", "compiled_memory"]
+    assert compiled_memory_field_names(messages[0].content) == [
+        "title",
+        "claim",
+        "evidence_count",
+    ]
+    assert messages[0].content == (
+        "Compiled memory:\n"
+        "- title: SAFE_GOVERNANCE_TITLE_MARKER\n"
+        "  claim: SAFE_GOVERNANCE_CLAIM_MARKER\n"
+        "  evidence_count: 1"
+    )
+
+    compiled_text = compiled_memory_text(result.request)
+    rendered = render_context(result.request, result.context_snapshot)
+    assert "SAFE_GOVERNANCE_TITLE_MARKER" in rendered
+    assert "SAFE_GOVERNANCE_CLAIM_MARKER" in rendered
+    forbidden_markers = (
+        "DISABLED_GOVERNANCE_TITLE_MARKER",
+        "DISABLED_GOVERNANCE_CLAIM_MARKER",
+        "DISABLED_GOVERNANCE_CONTENT_MARKER",
+        "SUPERSEDED_GOVERNANCE_TITLE_MARKER",
+        "SUPERSEDED_GOVERNANCE_CLAIM_MARKER",
+        "SUPERSEDED_GOVERNANCE_CONTENT_MARKER",
+        "FORGOTTEN_GOVERNANCE_TITLE_MARKER",
+        "FORGOTTEN_GOVERNANCE_CLAIM_MARKER",
+        "FORGOTTEN_GOVERNANCE_CONTENT_MARKER",
+        "CONFLICT_GOVERNANCE_TITLE_MARKER",
+        "CONFLICT_GOVERNANCE_CLAIM_MARKER",
+        "CONFLICT_GOVERNANCE_CONTENT_MARKER",
+        "MISSING_PROVENANCE_GOVERNANCE_TITLE_MARKER",
+        "MISSING_PROVENANCE_GOVERNANCE_CLAIM_MARKER",
+        "MISSING_PROVENANCE_GOVERNANCE_CONTENT_MARKER",
+    )
+    assert [marker for marker in forbidden_markers if marker in compiled_text] == []
+    assert [marker for marker in forbidden_markers if marker in rendered] == []
+
+
+def test_context_governance_excludes_procedural_memory_by_default(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-procedural-safe",
+        title="SAFE_PROCEDURAL_CONTROL_TITLE_MARKER",
+        claim="SAFE_PROCEDURAL_CONTROL_CLAIM_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-procedural-safe")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-procedural",
+        kind="procedural",
+        title="PROCEDURAL_GOVERNANCE_TITLE_MARKER",
+        claim="PROCEDURAL_GOVERNANCE_CLAIM_MARKER",
+        content="PROCEDURAL_GOVERNANCE_CONTENT_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-procedural")
+    builder = enabled_builder(conn, persona_path)
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    messages = compiled_memory_messages(result.request)
+    assert len(messages) == 1
+    assert messages[0].metadata == {"kind": "compiled_memory", "untrusted": True}
+    compiled_text = compiled_memory_text(result.request)
+    rendered = render_context(result.request, result.context_snapshot)
+    assert "SAFE_PROCEDURAL_CONTROL_TITLE_MARKER" in compiled_text
+    assert "SAFE_PROCEDURAL_CONTROL_CLAIM_MARKER" in compiled_text
+    assert "PROCEDURAL_GOVERNANCE_TITLE_MARKER" not in compiled_text
+    assert "PROCEDURAL_GOVERNANCE_CLAIM_MARKER" not in compiled_text
+    assert "PROCEDURAL_GOVERNANCE_CONTENT_MARKER" not in rendered
+
+
+def test_context_governance_final_output_excludes_raw_internal_fields(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    raw_evidence_quote = "RAW_EVIDENCE_QUOTE_GOVERNANCE_MARKER"
+    raw_observation_text = "RAW_OBSERVATION_TEXT_GOVERNANCE_MARKER"
+    raw_secret_marker = "sk-governance1234567890"
+    insert_memory_item(
+        conn,
+        memory_id="MEMORY_ID_GOVERNANCE_RAW_MARKER",
+        canonical_key=f"CANONICAL_KEY_GOVERNANCE_RAW_MARKER {raw_secret_marker}",
+        title="SAFE_RAW_FIELD_TITLE_MARKER",
+        claim=f"SAFE_RAW_FIELD_CLAIM_MARKER {raw_secret_marker}",
+        content="RAW_CONTENT_GOVERNANCE_MARKER",
+    )
+    insert_observation(
+        conn,
+        observation_id="observation-governance-raw",
+        text=raw_observation_text,
+    )
+    insert_evidence(
+        conn,
+        memory_id="MEMORY_ID_GOVERNANCE_RAW_MARKER",
+        observation_id="observation-governance-raw",
+        quote=raw_evidence_quote,
+    )
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-raw-disabled",
+        status="disabled",
+        title="DISABLED_RAW_FIELD_TITLE_MARKER",
+        claim="DISABLED_RAW_FIELD_CLAIM_MARKER",
+        content="DISABLED_RAW_FIELD_CONTENT_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-raw-disabled")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-raw-superseded",
+        superseded_by="mem-governance-raw-replacement",
+        title="SUPERSEDED_RAW_FIELD_TITLE_MARKER",
+        claim="SUPERSEDED_RAW_FIELD_CLAIM_MARKER",
+        content="SUPERSEDED_RAW_FIELD_CONTENT_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-raw-superseded")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-raw-forgotten",
+        status="forgotten",
+        title="FORGOTTEN_RAW_FIELD_TITLE_MARKER",
+        claim="FORGOTTEN_RAW_FIELD_CLAIM_MARKER",
+        content="FORGOTTEN_RAW_FIELD_CONTENT_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-raw-forgotten")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-raw-conflict",
+        status="conflict",
+        title="CONFLICT_RAW_FIELD_TITLE_MARKER",
+        claim="CONFLICT_RAW_FIELD_CLAIM_MARKER",
+        content="CONFLICT_RAW_FIELD_CONTENT_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-raw-conflict")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-raw-missing-provenance",
+        title="MISSING_PROVENANCE_RAW_FIELD_TITLE_MARKER",
+        claim="MISSING_PROVENANCE_RAW_FIELD_CLAIM_MARKER",
+        content="MISSING_PROVENANCE_RAW_FIELD_CONTENT_MARKER",
+    )
+    builder = enabled_builder(conn, persona_path)
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    messages = compiled_memory_messages(result.request)
+    assert len(messages) == 1
+    assert messages[0].metadata == {"kind": "compiled_memory", "untrusted": True}
+    assert compiled_memory_field_names(messages[0].content) == [
+        "title",
+        "claim",
+        "evidence_count",
+    ]
+    compiled_text = compiled_memory_text(result.request)
+    rendered = render_context(result.request, result.context_snapshot)
+    assert "SAFE_RAW_FIELD_TITLE_MARKER" in compiled_text
+    assert "SAFE_RAW_FIELD_CLAIM_MARKER" in compiled_text
+    assert REDACTION_PLACEHOLDER in compiled_text
+
+    forbidden_markers = (
+        "memory_id",
+        "canonical_key",
+        "audit_metadata",
+        "skipped_items",
+        "skipped_reasons",
+        "selection_reasons",
+        "reason_selected",
+        "reason_skipped",
+        "MEMORY_ID_GOVERNANCE_RAW_MARKER",
+        "CANONICAL_KEY_GOVERNANCE_RAW_MARKER",
+        raw_evidence_quote,
+        raw_observation_text,
+        "RAW_CONTENT_GOVERNANCE_MARKER",
+        "DISABLED_RAW_FIELD_TITLE_MARKER",
+        "DISABLED_RAW_FIELD_CLAIM_MARKER",
+        "DISABLED_RAW_FIELD_CONTENT_MARKER",
+        "SUPERSEDED_RAW_FIELD_TITLE_MARKER",
+        "SUPERSEDED_RAW_FIELD_CLAIM_MARKER",
+        "SUPERSEDED_RAW_FIELD_CONTENT_MARKER",
+        "FORGOTTEN_RAW_FIELD_TITLE_MARKER",
+        "FORGOTTEN_RAW_FIELD_CLAIM_MARKER",
+        "FORGOTTEN_RAW_FIELD_CONTENT_MARKER",
+        "CONFLICT_RAW_FIELD_TITLE_MARKER",
+        "CONFLICT_RAW_FIELD_CLAIM_MARKER",
+        "CONFLICT_RAW_FIELD_CONTENT_MARKER",
+        "MISSING_PROVENANCE_RAW_FIELD_TITLE_MARKER",
+        "MISSING_PROVENANCE_RAW_FIELD_CLAIM_MARKER",
+        "MISSING_PROVENANCE_RAW_FIELD_CONTENT_MARKER",
+        raw_secret_marker,
+        "CompiledMemoryContext(",
+        "CompiledMemoryItem(",
+        "SkippedMemoryItem(",
+        "MemoryCompilerRequest(",
+    )
+    assert [marker for marker in forbidden_markers if marker in rendered] == []
+
+
+def test_context_governance_positive_control_renders_only_safe_selected_memory(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    memory = MemoryManager(conn, now=fixed_now)
+    block = memory.create_block(
+        "fact",
+        "Existing block",
+        "MEMORY_BLOCK_GOVERNANCE_PRESERVE_MARKER",
+        priority=3,
+    )
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-positive-safe",
+        title="SAFE_POSITIVE_CONTROL_TITLE_MARKER",
+        claim="SAFE_POSITIVE_CONTROL_CLAIM_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-positive-safe")
+    insert_memory_item(
+        conn,
+        memory_id="mem-governance-positive-disabled",
+        status="disabled",
+        title="DISABLED_POSITIVE_CONTROL_TITLE_MARKER",
+        claim="DISABLED_POSITIVE_CONTROL_CLAIM_MARKER",
+    )
+    insert_evidence(conn, memory_id="mem-governance-positive-disabled")
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_manager=memory,
+        compiled_memory_enabled=True,
+        now=fixed_now,
+    )
+    user_input = "USER_INPUT_POSITIVE_CONTROL_MARKER"
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text=user_input,
+    )
+
+    messages = compiled_memory_messages(result.request)
+    assert len(messages) == 1
+    assert messages[0].metadata == {"kind": "compiled_memory", "untrusted": True}
+    assert messages[0].content == (
+        "Compiled memory:\n"
+        "- title: SAFE_POSITIVE_CONTROL_TITLE_MARKER\n"
+        "  claim: SAFE_POSITIVE_CONTROL_CLAIM_MARKER\n"
+        "  evidence_count: 1"
+    )
+    assert result.request.input_text == user_input
+    assert [memory_block.id for memory_block in result.request.memory_blocks] == [
+        block.id
+    ]
+    assert (
+        result.request.memory_blocks[0].body
+        == "MEMORY_BLOCK_GOVERNANCE_PRESERVE_MARKER"
+    )
+    assert "DISABLED_POSITIVE_CONTROL_TITLE_MARKER" not in compiled_memory_text(
+        result.request
+    )
+    assert "DISABLED_POSITIVE_CONTROL_CLAIM_MARKER" not in render_context(
+        result.request,
+        result.context_snapshot,
+    )
+
+
 def test_flag_on_excludes_skipped_memory(
     conn: sqlite3.Connection,
     persona_path: Path,
