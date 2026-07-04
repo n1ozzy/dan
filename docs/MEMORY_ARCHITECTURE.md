@@ -7,6 +7,8 @@ design reference, not an implementation report. The current runtime still uses
 v0 `memory_blocks` plus `MemoryManager`, manual Memory API/CLI operations, and
 active-only `ContextBuilder` injection.
 
+Data model ADR: `docs/adr/ADR-001-memory-os-data-model.md`.
+
 ## Design Goal
 
 Jarvis needs a professional local memory system, not a single table that stores
@@ -98,16 +100,21 @@ reason, and resulting response.
 
 ## Target Data Model
 
-Future schema work should be scoped explicitly and may introduce structures
-like these:
+ADR-001 records the future data-model direction. MEMORY-SCHEMA-DESIGN-01 makes
+no schema change in this task and no migration in this task; it only documents
+the staged model and migration boundary.
+No schema change in MEMORY-SCHEMA-DESIGN-01.
+
+Future schema work should be scoped explicitly and may introduce these
+structures:
 
 - `memory_observations` for raw source observations.
-- `memory_candidates` for proposed memory writes.
-- `memory_items` for active and inactive semantic/procedural claims.
-- `memory_evidence` for provenance.
-- `memory_topics` for topic documents.
-- `memory_usage_events` for retrieval audit.
-- `memory_review_decisions` for approval/rejection/edit history.
+- `memory_candidates` for reviewable proposed memories.
+- `memory_items` for active or lifecycle-managed semantic/procedural claims.
+- `memory_evidence` for provenance links and quote/evidence.
+- `memory_topics` for topic documents / consolidation units.
+- `memory_usage_events` for retrieval/audit trail.
+- `memory_review_decisions` for approve/reject/edit/merge decisions.
 
 No schema change in this task. No migration in this task. This task does not add
 those tables. Any future schema work must be deliberate, tested, and separately
@@ -119,8 +126,12 @@ Future migration from v0 memory must:
 
 - preserve current memory_blocks.
 - introduce additive structures later.
+- keep `memory_blocks` as source of truth until explicit cutover.
+- map `memory_blocks` to future `memory_items` as v0 semantic items.
+- create `source_unknown` or manual evidence when old provenance is missing.
 - maintain ContextBuilder compatibility during transition.
 - future cutover must be explicit and tested.
+- keep the old `memory_blocks` path readable until tested cutover.
 
 The transition should keep existing manual memory usable while new observation,
 candidate, evidence, topic, and usage-audit structures are added around it.

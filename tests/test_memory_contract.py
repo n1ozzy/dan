@@ -14,6 +14,7 @@ CONTRACT = ROOT / "docs" / "MEMORY_CONTRACT.md"
 ARCHITECTURE = ROOT / "docs" / "MEMORY_ARCHITECTURE.md"
 DOCS_INDEX = ROOT / "docs" / "DOCS_INDEX.md"
 STATUS = ROOT / "docs" / "STATUS.md"
+MEMORY_OS_ADR = ROOT / "docs" / "adr" / "ADR-001-memory-os-data-model.md"
 
 
 def read_doc(path: Path) -> str:
@@ -23,6 +24,34 @@ def read_doc(path: Path) -> str:
 def test_memory_contract_docs_exist() -> None:
     assert CONTRACT.is_file()
     assert ARCHITECTURE.is_file()
+
+
+def test_memory_os_data_model_adr_defines_future_schema_boundary() -> None:
+    assert MEMORY_OS_ADR.is_file()
+
+    text = read_doc(MEMORY_OS_ADR).casefold()
+    architecture = read_doc(ARCHITECTURE)
+
+    required = (
+        "classification: authoritative/current design decision",
+        "no schema change in memory-schema-design-01",
+        "memory_observations",
+        "memory_candidates",
+        "memory_items",
+        "memory_evidence",
+        "memory_topics",
+        "memory_usage_events",
+        "memory_review_decisions",
+        "additive-first",
+        "memory_blocks remains source of truth until explicit cutover",
+        "contextbuilder compatibility must be maintained during transition",
+        "map memory_blocks to memory_items",
+        "rollback keeps memory_blocks usable",
+    )
+    missing = [snippet for snippet in required if snippet not in text]
+
+    assert missing == []
+    assert "docs/adr/ADR-001-memory-os-data-model.md" in architecture
 
 
 def test_memory_docs_are_classified() -> None:
@@ -224,6 +253,7 @@ def test_docs_index_references_memory_design_docs() -> None:
 
     assert "docs/MEMORY_CONTRACT.md" in text
     assert "docs/MEMORY_ARCHITECTURE.md" in text
+    assert "docs/adr/ADR-001-memory-os-data-model.md" in text
 
 
 def test_status_declares_design_only_and_runtime_unchanged() -> None:

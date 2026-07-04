@@ -13,6 +13,8 @@ win over old handoffs/roadmaps.
 - `docs/STATUS.md` - current branch/HEAD snapshot and current status labels.
 - `docs/DECISIONS.md` - accepted ADRs unless superseded by a later explicit
   authoritative rule.
+- `docs/adr/ADR-001-memory-os-data-model.md` - authoritative/current Memory OS
+  data model and migration direction.
 - `docs/CONTRACTS.md` - runtime contracts and invariants.
 - `docs/SECURITY_MODEL.md` - security boundaries and approval model.
 - `docs/PANEL_CONTRACT.md` - thin-client panel contract.
