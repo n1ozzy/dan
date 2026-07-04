@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from jarvis.memory.compiler import (
+    CompiledMemoryContext,
+    MemoryCompiler,
+    MemoryCompilerConfig,
+    MemoryCompilerRequest,
+    SelectedMemoryItem,
+    SkippedMemoryItem,
+)
 from jarvis.memory.evidence import (
     MemoryEvidence,
     MemoryEvidenceConflict,
@@ -36,6 +44,7 @@ from jarvis.memory.policies import (
 from jarvis.memory.retrieval import MemoryRetriever
 
 __all__ = [
+    "CompiledMemoryContext",
     "MEMORY_KINDS",
     "MemoryBlock",
     "MemoryCandidate",
@@ -44,6 +53,9 @@ __all__ = [
     "MemoryCandidateNotFound",
     "MemoryCandidateRepository",
     "MemoryCandidateValidationError",
+    "MemoryCompiler",
+    "MemoryCompilerConfig",
+    "MemoryCompilerRequest",
     "MemoryEvidence",
     "MemoryEvidenceConflict",
     "MemoryEvidenceError",
@@ -59,6 +71,8 @@ __all__ = [
     "MemoryError",
     "MemoryManager",
     "MemoryRetriever",
+    "SelectedMemoryItem",
+    "SkippedMemoryItem",
     "estimate_memory_chars",
     "select_memory_for_budget",
     "validate_memory_kind",

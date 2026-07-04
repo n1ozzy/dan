@@ -54,6 +54,29 @@ class MemoryItem:
     updated_at: str
 
 
+@dataclass(frozen=True, kw_only=True)
+class CompilerMemoryItem:
+    id: str
+    canonical_key: str
+    kind: str
+    scope: str
+    namespace: str
+    title: str | None
+    claim: str
+    content: str | None
+    status: str
+    confidence: str
+    sensitivity: str
+    source_policy: str | None
+    created_at: str
+    updated_at: str
+    last_used_at: str | None
+    last_confirmed_at: str | None
+    supersedes: str | None
+    superseded_by: str | None
+    evidence_count: int
+
+
 class MemoryItemRepository:
     def __init__(
         self,
@@ -191,6 +214,34 @@ class MemoryItemRepository:
         except sqlite3.Error as exc:
             raise MemoryItemError(f"Could not list memory items: {exc}") from exc
         return [_item_from_row(row) for row in rows]
+
+    def list_items_for_compiler(self) -> list[CompilerMemoryItem]:
+        """Return read-only memory item projections for compiler selection."""
+
+        try:
+            rows = self._conn.execute(
+                """
+                SELECT i.id, i.canonical_key, i.kind, i.scope, i.namespace,
+                       i.title, i.claim, i.content, i.status, i.confidence,
+                       i.sensitivity, i.source_policy, i.created_at,
+                       i.updated_at, i.last_used_at, i.last_confirmed_at,
+                       i.supersedes, i.superseded_by,
+                       COALESCE(e.evidence_count, 0) AS evidence_count
+                FROM memory_items AS i
+                LEFT JOIN (
+                    SELECT memory_id, COUNT(*) AS evidence_count
+                    FROM memory_evidence
+                    WHERE memory_id IS NOT NULL
+                    GROUP BY memory_id
+                ) AS e ON e.memory_id = i.id
+                ORDER BY i.created_at ASC, i.rowid ASC
+                """
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise MemoryItemError(
+                f"Could not list memory items for compiler: {exc}"
+            ) from exc
+        return [_compiler_item_from_row(row) for row in rows]
 
     def get_item(self, memory_id: str) -> MemoryItem | None:
         normalized_id = _required_text(memory_id, "memory_id")
@@ -343,6 +394,53 @@ def _item_from_row(row: sqlite3.Row | tuple[Any, ...]) -> MemoryItem:
     )
 
 
+def _compiler_item_from_row(row: sqlite3.Row | tuple[Any, ...]) -> CompilerMemoryItem:
+    (
+        memory_id,
+        canonical_key,
+        kind,
+        scope,
+        namespace,
+        title,
+        claim,
+        content,
+        status,
+        confidence,
+        sensitivity,
+        source_policy,
+        created_at,
+        updated_at,
+        last_used_at,
+        last_confirmed_at,
+        supersedes,
+        superseded_by,
+        evidence_count,
+    ) = row
+    return CompilerMemoryItem(
+        id=str(memory_id),
+        canonical_key=str(canonical_key),
+        kind=str(kind),
+        scope=str(scope),
+        namespace=str(namespace),
+        title=None if title is None else str(title),
+        claim=str(claim),
+        content=None if content is None else str(content),
+        status=str(status),
+        confidence=str(confidence),
+        sensitivity=str(sensitivity),
+        source_policy=None if source_policy is None else str(source_policy),
+        created_at=str(created_at),
+        updated_at=str(updated_at),
+        last_used_at=None if last_used_at is None else str(last_used_at),
+        last_confirmed_at=None
+        if last_confirmed_at is None
+        else str(last_confirmed_at),
+        supersedes=None if supersedes is None else str(supersedes),
+        superseded_by=None if superseded_by is None else str(superseded_by),
+        evidence_count=int(evidence_count),
+    )
+
+
 def _required_text(value: Any, label: str) -> str:
     if not isinstance(value, str):
         raise MemoryItemValidationError(f"{label} must be a string.")
@@ -358,6 +456,7 @@ def _canonical_part(value: str) -> str:
 
 __all__ = [
     "ACTIVE",
+    "CompilerMemoryItem",
     "SOURCE_POLICY_CANDIDATE_EVIDENCE",
     "MemoryItem",
     "MemoryItemConflict",
