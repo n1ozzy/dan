@@ -10,6 +10,7 @@ import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import asdict
 from http.client import HTTPConnection
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -306,10 +307,15 @@ def insert_runtime_memory_item(
     app: DaemonApp,
     *,
     memory_id: str,
+    canonical_key: str | None = None,
     title: str,
     claim: str,
+    content: str | None = None,
+    evidence_quote: str = "Runtime evidence quote should not render.",
+    observation_text: str | None = None,
 ) -> None:
     assert app.conn is not None
+    observation_id = f"observation-{memory_id}"
     app.conn.execute(
         """
         INSERT INTO memory_items (
@@ -321,13 +327,13 @@ def insert_runtime_memory_item(
         """,
         (
             memory_id,
-            f"key-{memory_id}",
+            canonical_key or f"key-{memory_id}",
             "semantic",
             "project",
             "project/jarvis",
             title,
             claim,
-            claim,
+            content if content is not None else claim,
             "active",
             "high",
             "low",
@@ -340,6 +346,28 @@ def insert_runtime_memory_item(
             None,
         ),
     )
+    if observation_text is not None:
+        app.conn.execute(
+            """
+            INSERT INTO memory_observations (
+              id, source_type, source_id, conversation_id, turn_id, event_id,
+              observed_text, detected_kind, sensitivity, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                observation_id,
+                "test",
+                "source-runtime",
+                "conversation-runtime",
+                "turn-runtime",
+                1,
+                observation_text,
+                None,
+                "unknown",
+                "2026-07-04T12:00:30+00:00",
+            ),
+        )
     app.conn.execute(
         """
         INSERT INTO memory_evidence (
@@ -352,11 +380,11 @@ def insert_runtime_memory_item(
             f"evidence-{memory_id}",
             memory_id,
             None,
-            f"observation-{memory_id}",
+            observation_id,
             "conversation-runtime",
             "turn-runtime",
             1,
-            "Runtime evidence quote should not render.",
+            evidence_quote,
             1.0,
             "2026-07-04T12:01:00+00:00",
         ),
@@ -434,6 +462,17 @@ def test_runtime_context_output_shape_remains_default_off(
         )
 
         assert compiler.calls == 0
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": False,
+            "compiler_available": True,
+            "compiled_memory_attempted": False,
+            "compiled_memory_section_present": False,
+            "selected_count": 0,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
         assert [message.metadata.get("kind") for message in result.request.context_messages] == [
             "persona"
         ]
@@ -491,6 +530,17 @@ def test_create_daemon_app_default_runtime_path_does_not_call_memory_compiler(
             for message in result.request.context_messages
             if message.metadata.get("kind") == "compiled_memory"
         ] == []
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": False,
+            "compiler_available": False,
+            "compiled_memory_attempted": False,
+            "compiled_memory_section_present": False,
+            "selected_count": 0,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
     finally:
         daemon_app.close()
 
@@ -517,12 +567,19 @@ def test_create_daemon_app_config_enabled_wires_compiled_memory_context(tmp_path
             include_procedural=True,
         )
 
+        raw_evidence_quote = "RAW_EVIDENCE_QUOTE_RUNTIME_CONFIG_MARKER"
+        raw_observation_text = "RAW_OBSERVATION_TEXT_RUNTIME_CONFIG_MARKER"
+        raw_secret_marker = "sk-runtimeconfig1234567890"
         insert_runtime_conversation(daemon_app)
         insert_runtime_memory_item(
             daemon_app,
-            memory_id="mem-runtime-compiled",
+            memory_id="MEMORY_ID_RUNTIME_CONFIG_RAW_MARKER",
+            canonical_key=f"CANONICAL_KEY_RUNTIME_CONFIG_RAW_MARKER {raw_secret_marker}",
             title="Runtime config memory",
-            claim="Explicit dev config can inject compiled memory.",
+            claim=f"Explicit dev config can inject compiled memory. {raw_secret_marker}",
+            content=f"RAW_CONTENT_RUNTIME_CONFIG_MARKER {raw_secret_marker}",
+            evidence_quote=raw_evidence_quote,
+            observation_text=raw_observation_text,
         )
 
         result = daemon_app.context_builder.build_request(
@@ -540,6 +597,42 @@ def test_create_daemon_app_config_enabled_wires_compiled_memory_context(tmp_path
         assert messages[0].metadata == {"kind": "compiled_memory", "untrusted": True}
         assert "Runtime config memory" in messages[0].content
         assert "Explicit dev config can inject compiled memory." in messages[0].content
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": True,
+            "compiler_available": True,
+            "compiled_memory_attempted": True,
+            "compiled_memory_section_present": True,
+            "selected_count": 1,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
+
+        rendered_final_context = json.dumps(
+            {
+                "request": asdict(result.request),
+                "context_snapshot": result.context_snapshot,
+                "compiled_memory_diagnostics": asdict(result.compiled_memory_diagnostics),
+            },
+            sort_keys=True,
+        )
+        forbidden_markers = (
+            "memory_id",
+            "canonical_key",
+            "audit_metadata",
+            "skipped_items",
+            "MEMORY_ID_RUNTIME_CONFIG_RAW_MARKER",
+            "CANONICAL_KEY_RUNTIME_CONFIG_RAW_MARKER",
+            raw_evidence_quote,
+            raw_observation_text,
+            "RAW_CONTENT_RUNTIME_CONFIG_MARKER",
+            raw_secret_marker,
+            "Traceback",
+            "RuntimeError",
+            "compiler boom",
+        )
+        assert [marker for marker in forbidden_markers if marker in rendered_final_context] == []
     finally:
         daemon_app.close()
 
@@ -588,6 +681,17 @@ def test_memory_disabled_overrides_compiled_context_config(
             for message in result.request.context_messages
             if message.metadata.get("kind") == "compiled_memory"
         ] == []
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": False,
+            "compiler_available": False,
+            "compiled_memory_attempted": False,
+            "compiled_memory_section_present": False,
+            "selected_count": 0,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
     finally:
         daemon_app.close()
 
