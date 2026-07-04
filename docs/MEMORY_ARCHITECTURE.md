@@ -21,14 +21,18 @@ a visible lifecycle.
 
 The current repo already has useful v0 pieces:
 
+- memory_blocks are v0 semantic memory items.
 - `memory_blocks` stores durable Jarvis-owned memory rows.
 - `MemoryManager` owns create, update, disable, and active block selection.
 - Manual Memory API/CLI operations expose memory management.
+- ContextBuilder currently injects active memory.
 - `ContextBuilder` injects active memory only.
 - Disabled memory is excluded from future brain requests.
 - EventStore records `memory.updated`.
 - Providers do not own Jarvis memory.
 - Workers cannot write committed memory facts directly.
+- The memory_save/tool approval path may exist but must be characterized later
+  by reality tests before any design assumes its exact behavior.
 
 These pieces are not yet automatic assistant memory. They are the seed for the
 future semantic memory layer.
@@ -105,8 +109,21 @@ like these:
 - `memory_usage_events` for retrieval audit.
 - `memory_review_decisions` for approval/rejection/edit history.
 
-This task does not add those tables. Any future schema work must be deliberate,
-tested, and separately scoped.
+No schema change in this task. No migration in this task. This task does not add
+those tables. Any future schema work must be deliberate, tested, and separately
+scoped.
+
+## Migration Path
+
+Future migration from v0 memory must:
+
+- preserve current memory_blocks.
+- introduce additive structures later.
+- maintain ContextBuilder compatibility during transition.
+- future cutover must be explicit and tested.
+
+The transition should keep existing manual memory usable while new observation,
+candidate, evidence, topic, and usage-audit structures are added around it.
 
 ## Governance Operators
 
@@ -158,14 +175,23 @@ does not own canonical memory.
 
 ## Rollout Sequence
 
-Recommended future task sequence:
+Recommended future phase plan:
 
-1. Reality tests for the current memory surface.
-2. Candidate Inbox without changing active memory behavior.
-3. `memory_save` v2 as candidate/approval with evidence.
-4. MemoryCompiler with explainable retrieval and usage events.
-5. Topic documents and manual consolidation.
-6. Panel Memory Inbox, Active Memory, Topic Documents, and Audit.
+1. Contract
+2. Reality tests
+3. ADR/data model
+4. Additive schema
+5. Memory Inbox
+6. Evidence ledger
+7. memory_save v2
+8. MemoryCompiler
+9. Topic Documents
+10. Governance/dedupe
+11. Audit API
+12. Panel UX
+13. Auto-candidates
+14. Manual consolidator
+15. Privacy/forgetting
 
 This sequence keeps runtime behavior visible and reviewable at each step.
 

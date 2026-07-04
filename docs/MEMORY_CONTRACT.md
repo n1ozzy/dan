@@ -11,6 +11,17 @@ change current `MemoryManager` behavior.
 introduce candidate, evidence, usage, and topic structures deliberately instead
 of treating the current table as the whole memory system.
 
+## Product Intent
+
+Jarvis Memory OS is the contract for local, inspectable, evidence-backed memory
+that can support a long-running operator without turning provider sessions,
+model guesses, or one-off chat residue into hidden product truth.
+
+Manual memory is not the same as automatic assistant memory. Manual memory is
+explicit user-managed state entered through approved product surfaces. Automatic
+assistant memory is a future capability that must pass through observation,
+candidate review, evidence, policy, and audit before anything becomes active.
+
 ## Authority And Scope
 
 Jarvis memory is local, daemon-owned product state. Provider sessions are not
@@ -24,6 +35,12 @@ This contract is binding for future memory work:
 - Procedural rules that matter for safety must be enforced by docs plus
   guardrail tests, hooks, or runtime policy, not only prompt text.
 - Mock/unit tests are not proof of live product behavior.
+
+## Non-Goals
+
+MEMORY-DESIGN-01 does not implement runtime behavior. It does not add
+auto-memory extraction, schema changes, migrations, daemon behavior, panel UI,
+provider behavior, brain adapter behavior, voice behavior, or live validation.
 
 ## Memory Layers
 
@@ -110,8 +127,10 @@ Jarvis supports these intended write paths:
 - Model-originated `memory_save`: a proposal path, not silent activation.
 - Explicit user "remember this": creates a candidate or manual memory with
   evidence and policy checks.
-- Background consolidator: future only, for dedupe, summaries, topic updates,
-  conflict detection, and decay.
+- Future background consolidator: future only, for dedupe, summaries, topic
+  updates, conflict detection, and decay.
+- Future topic document consolidation: future only, for turning reviewed claims
+  and episodes into maintained topic documents with evidence links.
 
 A model-originated memory_save cannot silently write active durable memory.
 `memory_save` requires approval/execution policy before any candidate becomes
@@ -146,6 +165,20 @@ it.
 The system must reject one-off emotion, unsupported inference, and offensive
 content as a stored "preference" unless the user explicitly asks for a safe,
 bounded project/persona rule.
+
+## Privacy Policy
+
+Jarvis memory must be useful without becoming creepy or unsafe:
+
+- no secret storage.
+- no hidden psychological inference.
+- no sensitive inference without approval.
+- secrets must be rejected or redacted.
+- forget/disable must prevent default retrieval.
+
+Sensitive memory must have explicit policy before promotion. User profile
+claims must be grounded in evidence and scoped to observable product use, not
+private speculation.
 
 ## Evidence And Provenance
 
@@ -257,6 +290,7 @@ The following are design targets only:
 - episode cards are not implemented yet.
 - Memory Inbox candidate review is not implemented yet.
 - MemoryCompiler is not implemented yet.
+- memory usage events are not implemented yet.
 
 Current `MemoryManager`, `memory_blocks`, `ContextBuilder` memory injection,
 manual Memory API/CLI, and `memory.updated` events remain the current behavior.
