@@ -13,7 +13,12 @@ import pytest
 
 from jarvis.brain.base import BrainMessage, BrainRequest
 from jarvis.brain.context_builder import ContextBuilder
-from jarvis.memory.compiler import CompiledMemoryContext, MemoryCompiler
+from jarvis.memory.compiler import (
+    CompiledMemoryContext,
+    MemoryCompiler,
+    SelectedMemoryItem,
+    SkippedMemoryItem,
+)
 from jarvis.memory.items import MemoryItemRepository
 from jarvis.memory.manager import MemoryManager
 from jarvis.security.redaction import REDACTION_PLACEHOLDER
@@ -1061,6 +1066,354 @@ def test_context_output_shape_compiler_failure_fails_closed(
     assert "RuntimeError" not in rendered
 
 
+def test_compiled_memory_observe_disabled_reports_no_attempt(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    compiler = SpyCompiler()
+    with_compiler = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        now=fixed_now,
+    ).build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+    without_compiler = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        now=fixed_now,
+    ).build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    assert compiler.calls == 0
+    assert asdict(with_compiler.request) == asdict(without_compiler.request)
+    assert with_compiler.context_snapshot == without_compiler.context_snapshot
+    assert compiled_memory_diagnostics(with_compiler) == {
+        "compiled_memory_enabled": False,
+        "compiler_available": True,
+        "compiled_memory_attempted": False,
+        "compiled_memory_section_present": False,
+        "selected_count": 0,
+        "skipped_count": 0,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {},
+    }
+    assert compiled_memory_diagnostics(without_compiler)["compiler_available"] is False
+    assert compiled_memory_messages(with_compiler.request) == []
+
+
+def test_compiled_memory_observe_enabled_reports_safe_counts_only(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    user_input = "USER_INPUT_OBSERVE_ENABLED_MARKER"
+    insert_memory_item(
+        conn,
+        memory_id="mem-observe-safe",
+        canonical_key="canonical-observe-safe",
+        title="OBSERVE_SAFE_TITLE_MARKER",
+        claim="OBSERVE_SAFE_CLAIM_MARKER",
+        content="OBSERVE_SAFE_CONTENT_MARKER",
+    )
+    insert_evidence(
+        conn,
+        memory_id="mem-observe-safe",
+        quote="OBSERVE_SAFE_EVIDENCE_MARKER",
+    )
+    builder = enabled_builder(conn, persona_path)
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text=user_input,
+    )
+
+    diagnostics = compiled_memory_diagnostics(result)
+    assert diagnostics == {
+        "compiled_memory_enabled": True,
+        "compiler_available": True,
+        "compiled_memory_attempted": True,
+        "compiled_memory_section_present": True,
+        "selected_count": 1,
+        "skipped_count": 0,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {},
+    }
+    compiled_text = compiled_memory_text(result.request)
+    assert "OBSERVE_SAFE_TITLE_MARKER" in compiled_text
+    assert "OBSERVE_SAFE_CLAIM_MARKER" in compiled_text
+    assert "OBSERVE_SAFE_EVIDENCE_MARKER" not in compiled_text
+    diagnostics_text = json.dumps(diagnostics, sort_keys=True)
+    assert "OBSERVE_SAFE_TITLE_MARKER" not in diagnostics_text
+    assert "OBSERVE_SAFE_CLAIM_MARKER" not in diagnostics_text
+    assert "OBSERVE_SAFE_CONTENT_MARKER" not in diagnostics_text
+    assert "OBSERVE_SAFE_EVIDENCE_MARKER" not in diagnostics_text
+    assert "USER_INPUT_OBSERVE_ENABLED_MARKER" not in diagnostics_text
+    assert "mem-observe-safe" not in diagnostics_text
+    assert "canonical-observe-safe" not in diagnostics_text
+
+
+def test_compiled_memory_observe_budget_drop_reports_no_visible_section(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    compiler = StaticCompiler(
+        CompiledMemoryContext(
+            selected_items=[
+                selected_memory_item(
+                    title="OBSERVE_BUDGET_DROP_TITLE",
+                    claim="OBSERVE_BUDGET_DROP_CLAIM " * 8,
+                )
+            ],
+            skipped_items=[
+                SkippedMemoryItem(
+                    memory_id="raw-budget-drop-skipped-id",
+                    reason_skipped="disabled",
+                )
+            ],
+        )
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=True,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+        max_context_chars=80,
+    )
+
+    diagnostics = compiled_memory_diagnostics(result)
+    assert compiler.calls == 1
+    assert compiled_memory_messages(result.request) == []
+    assert context_message_kinds(result.request) == ["persona"]
+    assert diagnostics == {
+        "compiled_memory_enabled": True,
+        "compiler_available": True,
+        "compiled_memory_attempted": True,
+        "compiled_memory_section_present": False,
+        "selected_count": 0,
+        "skipped_count": 1,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {"disabled": 1},
+    }
+    rendered = render_context(result.request, result.context_snapshot)
+    diagnostics_text = json.dumps(diagnostics, sort_keys=True)
+    assert "OBSERVE_BUDGET_DROP_TITLE" not in rendered
+    assert "OBSERVE_BUDGET_DROP_CLAIM" not in rendered
+    assert "OBSERVE_BUDGET_DROP_TITLE" not in diagnostics_text
+    assert "OBSERVE_BUDGET_DROP_CLAIM" not in diagnostics_text
+    assert "raw-budget-drop-skipped-id" not in diagnostics_text
+
+
+def test_compiled_memory_observe_skipped_items_are_redacted(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    secret_marker = "SKIPPED_OBSERVE_SECRET_MARKER"
+    compiler = StaticCompiler(
+        CompiledMemoryContext(
+            selected_items=[
+                selected_memory_item(
+                    title="OBSERVE_SELECTED_TITLE",
+                    claim="OBSERVE_SELECTED_CLAIM",
+                )
+            ],
+            skipped_items=[
+                SkippedMemoryItem(
+                    memory_id=f"raw-skipped-id-{secret_marker}",
+                    reason_skipped="disabled",
+                ),
+                SkippedMemoryItem(
+                    memory_id=f"raw-skipped-id-2-{secret_marker}",
+                    reason_skipped=f"raw skipped reason {secret_marker}",
+                ),
+            ],
+        )
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=True,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    diagnostics = compiled_memory_diagnostics(result)
+    assert diagnostics["selected_count"] == 1
+    assert diagnostics["skipped_count"] == 2
+    assert diagnostics["skipped_categories"] == {"disabled": 1, "other": 1}
+    assert diagnostics["fail_closed"] is False
+    assert "OBSERVE_SELECTED_CLAIM" in compiled_memory_text(result.request)
+    diagnostics_text = json.dumps(diagnostics, sort_keys=True)
+    rendered = render_context(result.request, result.context_snapshot)
+    assert secret_marker not in diagnostics_text
+    assert secret_marker not in rendered
+    assert "raw-skipped-id" not in diagnostics_text
+    assert "raw skipped reason" not in diagnostics_text
+    assert "memory_id" not in diagnostics_text
+    assert "canonical_key" not in diagnostics_text
+
+
+def test_compiled_memory_observe_failure_is_redacted_and_fail_closed(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    secret_marker = "SECRET_COMPILER_FAILURE_OBSERVE_MARKER"
+    compiler = FailingCompiler(
+        f"compiler boom {secret_marker}\nTraceback bait\nRuntimeError bait"
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=True,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    diagnostics = compiled_memory_diagnostics(result)
+    assert compiler.calls == 1
+    assert compiled_memory_messages(result.request) == []
+    assert diagnostics == {
+        "compiled_memory_enabled": True,
+        "compiler_available": True,
+        "compiled_memory_attempted": True,
+        "compiled_memory_section_present": False,
+        "selected_count": 0,
+        "skipped_count": 0,
+        "fail_closed": True,
+        "failure_category": "compiler_error",
+        "skipped_categories": {},
+    }
+    rendered = render_context(result.request, result.context_snapshot)
+    diagnostics_text = json.dumps(diagnostics, sort_keys=True)
+    assert secret_marker not in rendered
+    assert secret_marker not in diagnostics_text
+    assert "compiler boom" not in rendered
+    assert "compiler boom" not in diagnostics_text
+    assert "Traceback" not in rendered
+    assert "Traceback" not in diagnostics_text
+    assert "RuntimeError" not in rendered
+    assert "RuntimeError" not in diagnostics_text
+
+
+def test_compiled_memory_observe_does_not_change_context_output(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    insert_memory_item(
+        conn,
+        memory_id="mem-observe-output",
+        title="Observe output title",
+        claim="Observe output claim",
+    )
+    insert_evidence(conn, memory_id="mem-observe-output")
+    builder = enabled_builder(conn, persona_path)
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    assert compiled_memory_text(result.request) == (
+        "Compiled memory:\n"
+        "- title: Observe output title\n"
+        "  claim: Observe output claim\n"
+        "  evidence_count: 1"
+    )
+    request_text = json.dumps(asdict(result.request), sort_keys=True)
+    snapshot_text = json.dumps(result.context_snapshot, sort_keys=True)
+    assert "compiled_memory_diagnostics" not in request_text
+    assert "compiled_memory_diagnostics" not in snapshot_text
+    assert "skipped_categories" not in request_text
+    assert "skipped_categories" not in snapshot_text
+    assert "failure_category" not in request_text
+    assert "failure_category" not in snapshot_text
+    assert "compiled_memory_diagnostics" not in result.request.metadata
+    assert "compiled_memory_diagnostics" not in result.context_snapshot
+
+
+def test_compiled_memory_observe_preserves_memory_blocks(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    memory = MemoryManager(conn, now=fixed_now)
+    block = memory.create_block(
+        "fact",
+        "Observe block title",
+        "OBSERVE_MEMORY_BLOCK_BODY_MARKER",
+        priority=9,
+    )
+    insert_memory_item(
+        conn,
+        memory_id="mem-observe-block",
+        title="Observe compiled title",
+        claim="Observe compiled claim",
+    )
+    insert_evidence(conn, memory_id="mem-observe-block")
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_manager=memory,
+        compiled_memory_enabled=True,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    assert [memory_block.id for memory_block in result.request.memory_blocks] == [block.id]
+    assert result.request.memory_blocks[0].body == "OBSERVE_MEMORY_BLOCK_BODY_MARKER"
+    assert result.context_snapshot["memory_block_count"] == 1
+    assert compiled_memory_diagnostics(result)["selected_count"] == 1
+    assert "OBSERVE_MEMORY_BLOCK_BODY_MARKER" not in compiled_memory_text(result.request)
+    diagnostics_text = json.dumps(compiled_memory_diagnostics(result), sort_keys=True)
+    assert "OBSERVE_MEMORY_BLOCK_BODY_MARKER" not in diagnostics_text
+
+
 class SpyCompiler:
     def __init__(self) -> None:
         self.calls = 0
@@ -1080,6 +1433,17 @@ class FailingCompiler:
         del request
         self.calls += 1
         raise RuntimeError(self.message)
+
+
+class StaticCompiler:
+    def __init__(self, context: CompiledMemoryContext) -> None:
+        self.calls = 0
+        self.context = context
+
+    def compile(self, request: Any) -> CompiledMemoryContext:
+        del request
+        self.calls += 1
+        return self.context
 
 
 def enabled_builder(conn: sqlite3.Connection, persona_path: Path) -> ContextBuilder:
@@ -1106,6 +1470,34 @@ def compiled_memory_text(request: BrainRequest) -> str:
 
 def context_message_kinds(request: BrainRequest) -> list[str]:
     return [str(message.metadata.get("kind", "")) for message in request.context_messages]
+
+
+def compiled_memory_diagnostics(result: Any) -> dict[str, Any]:
+    diagnostics = result.compiled_memory_diagnostics
+    if hasattr(diagnostics, "__dataclass_fields__"):
+        return asdict(diagnostics)
+    return dict(diagnostics)
+
+
+def selected_memory_item(
+    *,
+    title: str,
+    claim: str,
+) -> SelectedMemoryItem:
+    return SelectedMemoryItem(
+        memory_id="mem-ref-selected",
+        canonical_key="canonical-selected",
+        kind="semantic",
+        scope="project",
+        namespace="project/jarvis",
+        title=title,
+        claim=claim,
+        reason_selected="eligible",
+        evidence_count=1,
+        source_policy="candidate_evidence",
+        sensitivity="low",
+        budget_cost=len(title) + len(claim),
+    )
 
 
 def compiled_memory_field_names(content: str) -> list[str]:

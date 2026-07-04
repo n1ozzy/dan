@@ -35,6 +35,21 @@ DEFAULT_PERSONA_PROFILE = "default"
 # Conservative file names only: the profile is a settings-supplied value, so
 # anything that could escape the persona directory is rejected outright.
 _PERSONA_PROFILE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
+_SAFE_COMPILED_MEMORY_SKIPPED_CATEGORIES = frozenset(
+    {
+        "candidate_only",
+        "conflict",
+        "disabled",
+        "forgotten",
+        "inactive",
+        "missing_provenance",
+        "namespace_mismatch",
+        "over_budget",
+        "procedural_not_requested",
+        "rejected",
+        "superseded",
+    }
+)
 
 _LOGGER = get_logger("brain.context_builder")
 
@@ -44,9 +59,29 @@ class ContextBuilderError(Exception):
 
 
 @dataclass(frozen=True)
+class CompiledMemoryDiagnostics:
+    compiled_memory_enabled: bool
+    compiler_available: bool
+    compiled_memory_attempted: bool
+    compiled_memory_section_present: bool
+    selected_count: int
+    skipped_count: int
+    fail_closed: bool
+    failure_category: str | None
+    skipped_categories: dict[str, int]
+
+
+@dataclass(frozen=True)
 class ContextBuildResult:
     request: BrainRequest
     context_snapshot: dict[str, Any]
+    compiled_memory_diagnostics: CompiledMemoryDiagnostics
+
+
+@dataclass(frozen=True)
+class _CompiledMemoryBuild:
+    message: BrainMessage | None
+    diagnostics: CompiledMemoryDiagnostics
 
 
 class ContextBuilder:
@@ -111,13 +146,13 @@ class ContextBuilder:
         job_message = self._build_job_message(active_jobs)
         if job_message is not None:
             core_messages.append(job_message)
-        compiled_memory_message = self._build_compiled_memory_message(
+        compiled_memory = self._build_compiled_memory(
             conversation_id=normalized_conversation_id,
             turn_id=normalized_turn_id,
             input_text=input_text,
         )
-        if compiled_memory_message is not None:
-            core_messages.append(compiled_memory_message)
+        if compiled_memory.message is not None:
+            core_messages.append(compiled_memory.message)
 
         memory_max_chars = _config_int(self._config, ("memory", "max_context_chars"), budget)
         if memory_max_chars is None:
@@ -135,6 +170,10 @@ class ContextBuilder:
             memory_blocks=brain_memory_blocks,
             input_text=input_text,
             max_context_chars=budget,
+        )
+        compiled_memory_diagnostics = _finalize_compiled_memory_diagnostics(
+            compiled_memory.diagnostics,
+            messages,
         )
 
         estimated_context_chars = _estimate_context_chars(
@@ -174,17 +213,34 @@ class ContextBuilder:
             settings=request_settings,
             metadata={"context_snapshot": _stable_snapshot_for_request_metadata(snapshot)},
         )
-        return ContextBuildResult(request=request, context_snapshot=snapshot)
+        return ContextBuildResult(
+            request=request,
+            context_snapshot=snapshot,
+            compiled_memory_diagnostics=compiled_memory_diagnostics,
+        )
 
-    def _build_compiled_memory_message(
+    def _build_compiled_memory(
         self,
         *,
         conversation_id: str,
         turn_id: str,
         input_text: str,
-    ) -> BrainMessage | None:
+    ) -> _CompiledMemoryBuild:
         if not self._compiled_memory_enabled:
-            return None
+            return _CompiledMemoryBuild(
+                message=None,
+                diagnostics=_compiled_memory_diagnostics(
+                    enabled=False,
+                    compiler_available=self._memory_compiler is not None,
+                    attempted=False,
+                    section_present=False,
+                    selected_count=0,
+                    skipped_count=0,
+                    fail_closed=False,
+                    failure_category=None,
+                    skipped_categories={},
+                ),
+            )
 
         compiler = self._memory_compiler
         if compiler is None:
@@ -203,14 +259,53 @@ class ContextBuilder:
             content = _format_compiled_memory_context(compiled)
         except Exception:
             _LOGGER.warning("omitting compiled memory context after compiler failure")
-            return None
+            return _CompiledMemoryBuild(
+                message=None,
+                diagnostics=_compiled_memory_diagnostics(
+                    enabled=True,
+                    compiler_available=compiler is not None,
+                    attempted=True,
+                    section_present=False,
+                    selected_count=0,
+                    skipped_count=0,
+                    fail_closed=True,
+                    failure_category="compiler_error",
+                    skipped_categories={},
+                ),
+            )
 
         if content is None:
-            return None
-        return BrainMessage(
-            role="user",
-            content=content,
-            metadata={"kind": "compiled_memory", "untrusted": True},
+            return _CompiledMemoryBuild(
+                message=None,
+                diagnostics=_compiled_memory_diagnostics(
+                    enabled=True,
+                    compiler_available=True,
+                    attempted=True,
+                    section_present=False,
+                    selected_count=len(compiled.selected_items),
+                    skipped_count=len(compiled.skipped_items),
+                    fail_closed=False,
+                    failure_category=None,
+                    skipped_categories=_compiled_memory_skipped_categories(compiled),
+                ),
+            )
+        return _CompiledMemoryBuild(
+            message=BrainMessage(
+                role="user",
+                content=content,
+                metadata={"kind": "compiled_memory", "untrusted": True},
+            ),
+            diagnostics=_compiled_memory_diagnostics(
+                enabled=True,
+                compiler_available=True,
+                attempted=True,
+                section_present=True,
+                selected_count=len(compiled.selected_items),
+                skipped_count=len(compiled.skipped_items),
+                fail_closed=False,
+                failure_category=None,
+                skipped_categories=_compiled_memory_skipped_categories(compiled),
+            ),
         )
 
     def _collect_available_tools(self) -> list[BrainToolSpec]:
@@ -539,6 +634,67 @@ def _format_compiled_memory_context(compiled: CompiledMemoryContext) -> str | No
     return "\n".join(lines)
 
 
+def _compiled_memory_diagnostics(
+    *,
+    enabled: bool,
+    compiler_available: bool,
+    attempted: bool,
+    section_present: bool,
+    selected_count: int,
+    skipped_count: int,
+    fail_closed: bool,
+    failure_category: str | None,
+    skipped_categories: dict[str, int],
+) -> CompiledMemoryDiagnostics:
+    return CompiledMemoryDiagnostics(
+        compiled_memory_enabled=enabled,
+        compiler_available=compiler_available,
+        compiled_memory_attempted=attempted,
+        compiled_memory_section_present=section_present,
+        selected_count=selected_count,
+        skipped_count=skipped_count,
+        fail_closed=fail_closed,
+        failure_category=failure_category,
+        skipped_categories=dict(sorted(skipped_categories.items())),
+    )
+
+
+def _compiled_memory_skipped_categories(
+    compiled: CompiledMemoryContext,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in compiled.skipped_items:
+        reason = str(getattr(item, "reason_skipped", "")).strip()
+        category = (
+            reason
+            if reason in _SAFE_COMPILED_MEMORY_SKIPPED_CATEGORIES
+            else "other"
+        )
+        counts[category] = counts.get(category, 0) + 1
+    return counts
+
+
+def _finalize_compiled_memory_diagnostics(
+    diagnostics: CompiledMemoryDiagnostics,
+    final_context_messages: list[BrainMessage],
+) -> CompiledMemoryDiagnostics:
+    section_present = any(
+        message.metadata.get("kind") == "compiled_memory"
+        for message in final_context_messages
+    )
+    return _compiled_memory_diagnostics(
+        enabled=diagnostics.compiled_memory_enabled,
+        compiler_available=diagnostics.compiler_available,
+        attempted=diagnostics.compiled_memory_attempted,
+        section_present=section_present,
+        selected_count=diagnostics.selected_count if section_present else 0,
+        skipped_count=diagnostics.skipped_count,
+        fail_closed=diagnostics.fail_closed,
+        failure_category=diagnostics.failure_category,
+        skipped_categories=diagnostics.skipped_categories,
+    )
+
+
 def _compiled_prompt_field(value: Any) -> str:
     redacted = redact_secret_text(str(value))
     normalized = " ".join(redacted.split())
@@ -594,4 +750,9 @@ def _truncate(value: str, max_chars: int) -> str:
     return normalized[: max_chars - 3].rstrip() + "..."
 
 
-__all__ = ["ContextBuildResult", "ContextBuilder", "ContextBuilderError"]
+__all__ = [
+    "CompiledMemoryDiagnostics",
+    "ContextBuildResult",
+    "ContextBuilder",
+    "ContextBuilderError",
+]
