@@ -13,6 +13,14 @@ from typing import Any
 
 from jarvis.brain.base import BrainMessage, BrainRequest, BrainToolSpec
 from jarvis.logging import get_logger
+from jarvis.memory.compiler import (
+    CompiledMemoryContext,
+    MemoryCompiler,
+    MemoryCompilerConfig,
+    MemoryCompilerRequest,
+)
+from jarvis.memory.items import MemoryItemRepository
+from jarvis.security.redaction import redact_secret_text
 
 from ..memory.manager import MemoryManager
 
@@ -49,6 +57,9 @@ class ContextBuilder:
         config: Any | None = None,
         persona_path: Path | None = None,
         memory_manager: MemoryManager | None = None,
+        memory_compiler: Any | None = None,
+        compiled_memory_enabled: bool = False,
+        compiled_memory_config: MemoryCompilerConfig | None = None,
         event_store: Any | None = None,
         now: Callable[[], str] | None = None,
         tool_specs: Callable[[], Any] | None = None,
@@ -57,6 +68,9 @@ class ContextBuilder:
         self._config = config
         self._persona_path = persona_path or DEFAULT_PERSONA_PATH
         self._memory_manager = memory_manager or MemoryManager(conn)
+        self._memory_compiler = memory_compiler
+        self._compiled_memory_enabled = bool(compiled_memory_enabled)
+        self._compiled_memory_config = compiled_memory_config or MemoryCompilerConfig()
         self._event_store = event_store
         self._now = now or utc_now_iso
         # Callable returning the registry's ToolSpecs (name/description/
@@ -97,6 +111,13 @@ class ContextBuilder:
         job_message = self._build_job_message(active_jobs)
         if job_message is not None:
             core_messages.append(job_message)
+        compiled_memory_message = self._build_compiled_memory_message(
+            conversation_id=normalized_conversation_id,
+            turn_id=normalized_turn_id,
+            input_text=input_text,
+        )
+        if compiled_memory_message is not None:
+            core_messages.append(compiled_memory_message)
 
         memory_max_chars = _config_int(self._config, ("memory", "max_context_chars"), budget)
         if memory_max_chars is None:
@@ -154,6 +175,43 @@ class ContextBuilder:
             metadata={"context_snapshot": _stable_snapshot_for_request_metadata(snapshot)},
         )
         return ContextBuildResult(request=request, context_snapshot=snapshot)
+
+    def _build_compiled_memory_message(
+        self,
+        *,
+        conversation_id: str,
+        turn_id: str,
+        input_text: str,
+    ) -> BrainMessage | None:
+        if not self._compiled_memory_enabled:
+            return None
+
+        compiler = self._memory_compiler
+        if compiler is None:
+            compiler = MemoryCompiler(MemoryItemRepository(self._conn))
+            self._memory_compiler = compiler
+
+        try:
+            compiled = compiler.compile(
+                MemoryCompilerRequest(
+                    conversation_id=conversation_id,
+                    current_turn_id=turn_id,
+                    current_user_text=input_text,
+                    config=self._compiled_memory_config,
+                )
+            )
+            content = _format_compiled_memory_context(compiled)
+        except Exception:
+            _LOGGER.warning("omitting compiled memory context after compiler failure")
+            return None
+
+        if content is None:
+            return None
+        return BrainMessage(
+            role="user",
+            content=content,
+            metadata={"kind": "compiled_memory", "untrusted": True},
+        )
 
     def _collect_available_tools(self) -> list[BrainToolSpec]:
         """Expose the registry's tools so the prompt can list them (else the
@@ -460,6 +518,38 @@ def _cap_input_text(input_text: str, max_chars: int) -> str:
         return input_text
     keep = max(0, max_chars - len(_INPUT_TRUNCATION_MARKER))
     return (input_text[:keep] + _INPUT_TRUNCATION_MARKER)[:max_chars]
+
+
+def _format_compiled_memory_context(compiled: CompiledMemoryContext) -> str | None:
+    if not compiled.selected_items:
+        return None
+
+    lines = ["Compiled memory:"]
+    for item in compiled.selected_items:
+        title = _compiled_prompt_field(item.title) if item.title else "(untitled)"
+        claim = _compiled_prompt_field(item.claim)
+        evidence_count = _compiled_evidence_count(item.evidence_count)
+        lines.extend(
+            [
+                f"- title: {title}",
+                f"  claim: {claim}",
+                f"  evidence_count: {evidence_count}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _compiled_prompt_field(value: Any) -> str:
+    redacted = redact_secret_text(str(value))
+    normalized = " ".join(redacted.split())
+    return normalized or "(empty)"
+
+
+def _compiled_evidence_count(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _estimate_context_chars(
