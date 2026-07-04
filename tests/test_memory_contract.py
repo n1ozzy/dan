@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from jarvis.memory.summarizer import MemorySummarizer
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "docs" / "MEMORY_CONTRACT.md"
@@ -109,6 +113,11 @@ def test_contract_marks_auto_memory_not_implemented() -> None:
     assert "auto-memory extraction is not implemented yet" in text
     assert "summarization/consolidator is not implemented yet" in text
     assert "memory usage events are not implemented yet" in text
+
+
+def test_memory_summarizer_is_explicitly_not_implemented() -> None:
+    with pytest.raises(NotImplementedError, match="memory summarization is not implemented yet"):
+        MemorySummarizer().summarize("summarize this")
 
 
 def test_contract_defines_privacy_policy() -> None:

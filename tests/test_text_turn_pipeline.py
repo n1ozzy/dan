@@ -603,7 +603,7 @@ def test_fake_claude_cli_tool_call_block_creates_approval_without_execution(
     assert table_count(app.conn, "worker_jobs") == 0
 
 
-def test_no_voice_tool_or_worker_rows_are_created(app: DaemonApp) -> None:
+def test_plain_text_turn_creates_no_voice_tool_worker_or_memory_rows(app: DaemonApp) -> None:
     app.start()
 
     with running_server(app) as base_url:
@@ -614,6 +614,7 @@ def test_no_voice_tool_or_worker_rows_are_created(app: DaemonApp) -> None:
     assert table_count(app.conn, "voice_queue") == 0
     assert table_count(app.conn, "tool_runs") == 0
     assert table_count(app.conn, "worker_jobs") == 0
+    assert table_count(app.conn, "memory_blocks") == 0
 
 
 def test_model_originated_safe_echo_tool_call_creates_approval_without_execution(

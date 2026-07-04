@@ -147,6 +147,24 @@ def post_text(app: DaemonApp, text: str = "Use tool") -> dict[str, object]:
     return payload
 
 
+def memory_save_call(
+    *,
+    call_id: str = "call-memory-save",
+    title: str = "Remembered fact",
+    body: str = "This fact should enter context only after approved execution.",
+) -> BrainToolCall:
+    return BrainToolCall(
+        id=call_id,
+        name="memory_save",
+        arguments={
+            "kind": "fact",
+            "title": title,
+            "body": body,
+            "priority": 4,
+        },
+    )
+
+
 def event_types_for_turn(app: DaemonApp, turn_id: str) -> list[str]:
     assert app.event_store is not None
     return [event.type for event in app.event_store.list_by_turn_id(turn_id, limit=100)]
@@ -359,6 +377,98 @@ def test_explicit_execute_approved_behavior_is_unchanged_for_model_created_appro
         "message": "approval_probe executed safely",
     }
     assert table_count(app, "tool_runs") == 1
+
+
+def test_model_originated_memory_save_waits_for_approval_and_execute_promotes_once(
+    app: DaemonApp,
+) -> None:
+    set_model_tool_response(app, memory_save_call())
+    app.start()
+
+    payload = post_text(app, text="Remember this through memory_save")
+    turn_id = str(payload["turn_id"])
+    conversation_id = str(payload["conversation_id"])
+    tool_call = payload["tool_calls"][0]
+    approval_id = str(tool_call["approval_id"])
+
+    assert tool_call["tool_name"] == "memory_save"
+    assert tool_call["status"] == "approval_required"
+    assert payload["approvals"][0]["status"] == "pending"
+    assert payload["approvals"][0]["risk"] == "memory_write"
+    assert table_count(app, "approvals") == 1
+    assert table_count(app, "tool_runs") == 0
+    assert table_count(app, "memory_blocks") == 0
+
+    approval = app.approval_gate.get_approval(approval_id)  # type: ignore[union-attr]
+    assert approval is not None
+    assert approval["payload"]["tool_name"] == "memory_save"
+    assert approval["payload"]["turn_id"] == turn_id
+    assert approval["metadata"]["origin"] == "model"
+    assert approval["metadata"]["tool_call_id"] == "call-memory-save"
+
+    assert app.event_store is not None
+    created_events = [
+        event
+        for event in app.event_store.list_by_turn_id(turn_id, limit=100)
+        if event.type == EventType.APPROVAL_CREATED
+    ]
+    assert len(created_events) == 1
+    assert created_events[0].turn_id == turn_id
+    assert created_events[0].correlation_id == turn_id
+
+    approved = app.approve(approval_id, reason="ok")
+    assert approved["status"] == "approved"
+    assert table_count(app, "memory_blocks") == 0
+    assert table_count(app, "tool_runs") == 0
+
+    executed = app.execute_approved_tool(approval_id)
+    assert executed["ok"] is True
+    assert table_count(app, "memory_blocks") == 1
+    assert table_count(app, "tool_runs") == 1
+
+    with pytest.raises(DaemonAppConflictError):
+        app.execute_approved_tool(approval_id)
+    assert table_count(app, "memory_blocks") == 1
+    assert table_count(app, "tool_runs") == 1
+
+    blocks = app.memory_manager.list_blocks()  # type: ignore[union-attr]
+    assert len(blocks) == 1
+    assert blocks[0].title == "Remembered fact"
+    assert blocks[0].active is True
+    assert blocks[0].metadata["candidate"] is False
+    assert blocks[0].metadata["proposed_by"] == "model"
+    assert blocks[0].metadata["promoted_by"] == "approval"
+
+    assert app.context_builder is not None
+    future = app.context_builder.build_request(
+        turn_id="future-turn",
+        conversation_id=conversation_id,
+        input_text="Use saved memory later",
+    )
+    assert [block.id for block in future.request.memory_blocks] == [blocks[0].id]
+
+
+def test_rejected_model_originated_memory_save_creates_no_memory(app: DaemonApp) -> None:
+    set_model_tool_response(
+        app,
+        memory_save_call(
+            call_id="call-rejected-memory-save",
+            title="Rejected fact",
+            body="This rejected memory must never persist.",
+        ),
+    )
+    app.start()
+
+    payload = post_text(app, text="Try rejected memory_save")
+    approval_id = str(payload["tool_calls"][0]["approval_id"])
+
+    rejected = app.reject(approval_id, reason="no")
+    assert rejected["status"] == "rejected"
+    with pytest.raises(DaemonAppConflictError):
+        app.execute_approved_tool(approval_id)
+
+    assert table_count(app, "memory_blocks") == 0
+    assert table_count(app, "tool_runs") == 0
 
 
 def test_prompt_19a_decision_events_still_work_for_model_created_approval(
