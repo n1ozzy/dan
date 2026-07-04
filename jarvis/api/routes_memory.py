@@ -7,7 +7,14 @@ from dataclasses import asdict
 from typing import Any
 
 from jarvis.daemon.app import DaemonApp
-from jarvis.memory import MemoryBlock, MemoryCandidate, MemoryEvidence, MemoryItem
+from jarvis.memory import (
+    MemoryBlock,
+    MemoryCandidate,
+    MemoryCompilerConfig,
+    MemoryCompilerRequest,
+    MemoryEvidence,
+    MemoryItem,
+)
 
 ROUTE_GROUP = "memory"
 
@@ -36,6 +43,25 @@ def post_memory(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
     payload = _create_payload(request_payload)
     block = app.create_memory(**payload)
     return {"memory": memory_to_dict(block)}
+
+
+def post_memory_compile_preview(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
+    payload = _compile_preview_payload(request_payload)
+    context = app.compile_memory_preview(
+        MemoryCompilerRequest(
+            conversation_id=payload["conversation_id"],
+            current_turn_id=payload["current_turn_id"],
+            current_user_text=payload["current_user_text"],
+            config=MemoryCompilerConfig(
+                max_items=payload["max_items"],
+                max_chars=payload["max_chars"],
+                include_procedural=payload["include_procedural"],
+                scope_filter=payload["scope_filter"],
+                namespace_filter=payload["namespace_filter"],
+            ),
+        )
+    )
+    return asdict(context)
 
 
 def get_memory_block(app: DaemonApp, memory_id: str) -> dict[str, Any]:
@@ -180,6 +206,34 @@ def _update_payload(request_payload: Any) -> dict[str, Any]:
     return payload
 
 
+def _compile_preview_payload(request_payload: Any) -> dict[str, Any]:
+    if not isinstance(request_payload, Mapping):
+        raise MemoryRequestValidationError("Request JSON must be an object.")
+
+    return {
+        "conversation_id": _optional_string(request_payload, "conversation_id"),
+        "current_turn_id": _optional_string(request_payload, "current_turn_id"),
+        "current_user_text": _optional_string(request_payload, "current_user_text"),
+        "max_items": _optional_positive_integer(
+            request_payload,
+            "max_items",
+            default=MemoryCompilerConfig.max_items,
+        ),
+        "max_chars": _optional_positive_integer(
+            request_payload,
+            "max_chars",
+            default=MemoryCompilerConfig.max_chars,
+        ),
+        "include_procedural": _optional_boolean(
+            request_payload,
+            "include_procedural",
+            default=MemoryCompilerConfig.include_procedural,
+        ),
+        "scope_filter": _optional_string(request_payload, "scope_filter"),
+        "namespace_filter": _optional_string(request_payload, "namespace_filter"),
+    }
+
+
 def _metadata(value: Any) -> dict[str, Any]:
     if value is None:
         return {}
@@ -197,6 +251,35 @@ def _integer(value: Any, label: str) -> int:
 def _boolean(value: Any, label: str) -> bool:
     if type(value) is not bool:
         raise MemoryRequestValidationError(f"{label} must be true or false.")
+    return value
+
+
+def _optional_boolean(payload: Mapping[str, Any], label: str, *, default: bool) -> bool:
+    if label not in payload:
+        return default
+    return _boolean(payload[label], label)
+
+
+def _optional_positive_integer(
+    payload: Mapping[str, Any],
+    label: str,
+    *,
+    default: int,
+) -> int:
+    if label not in payload:
+        return default
+    value = _integer(payload[label], label)
+    if value <= 0:
+        raise MemoryRequestValidationError(f"{label} must be a positive integer.")
+    return value
+
+
+def _optional_string(payload: Mapping[str, Any], label: str) -> str | None:
+    if label not in payload:
+        return None
+    value = payload[label]
+    if type(value) is not str:
+        raise MemoryRequestValidationError(f"{label} must be a string.")
     return value
 
 
@@ -223,6 +306,7 @@ __all__ = [
     "item_to_dict",
     "memory_to_dict",
     "patch_memory",
+    "post_memory_compile_preview",
     "post_memory_candidate_evidence",
     "post_memory_candidate",
     "post_memory",

@@ -165,7 +165,7 @@ class MemoryCompiler:
             selected = SelectedMemoryItem(
                 memory_id=projected_memory_id,
                 canonical_key=redact_secret_text(eligible.item.canonical_key),
-                kind=eligible.item.kind,
+                kind=redact_secret_text(eligible.item.kind),
                 scope=redact_secret_text(eligible.item.scope),
                 namespace=redact_secret_text(eligible.item.namespace),
                 title=eligible.title,

@@ -44,6 +44,7 @@ from jarvis.api.routes_memory import (
     get_memory_items,
     patch_memory,
     post_memory,
+    post_memory_compile_preview,
     post_memory_candidate,
     post_memory_candidate_evidence,
     reject_memory_candidate,
@@ -426,6 +427,11 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         if method == "POST" and path == "/memory":
             request_payload = _read_json_body(handler)
             _write_json(handler, 201, post_memory(app, request_payload))
+            return
+
+        if method == "POST" and path == "/memory/compile-preview":
+            request_payload = _read_json_body(handler)
+            _write_json(handler, 200, post_memory_compile_preview(app, request_payload))
             return
 
         if method == "GET" and path == "/memory/candidates":

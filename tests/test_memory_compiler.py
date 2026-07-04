@@ -239,10 +239,12 @@ def test_item_containing_fake_secret_does_not_leak_raw_secret_in_selected_output
     compiler: MemoryCompiler,
 ) -> None:
     fake_secret = "sk-testcompilersecret1234567890"
+    raw_kind = f"semantic {fake_secret}"
     insert_memory_item(
         conn,
         memory_id="mem-secret",
         canonical_key=f"semantic:project:project/jarvis:token {fake_secret}",
+        kind=raw_kind,
         title=f"Token {fake_secret}",
         claim=f"Use token {fake_secret} never.",
         content=f"Body also has {fake_secret}.",
@@ -252,16 +254,23 @@ def test_item_containing_fake_secret_does_not_leak_raw_secret_in_selected_output
     context = compiler.compile(MemoryCompilerRequest())
 
     rendered = json.dumps(asdict(context), sort_keys=True)
+    stored_kind = conn.execute(
+        "SELECT kind FROM memory_items WHERE id = ?",
+        ("mem-secret",),
+    ).fetchone()[0]
     assert fake_secret not in rendered
     assert REDACTION_PLACEHOLDER in rendered
     assert context.selected_items[0].canonical_key == (
         f"semantic:project:project/jarvis:token {REDACTION_PLACEHOLDER}"
     )
+    assert context.selected_items[0].kind == f"semantic {REDACTION_PLACEHOLDER}"
+    assert fake_secret not in context.selected_items[0].kind
     assert context.selected_items[0].title == f"Token {REDACTION_PLACEHOLDER}"
     assert (
         context.selected_items[0].claim
         == f"Use token {REDACTION_PLACEHOLDER} never."
     )
+    assert stored_kind == raw_kind
 
 
 def test_selected_canonical_key_is_redacted_without_mutating_stored_value(
@@ -630,6 +639,7 @@ def test_selected_memory_id_and_reason_key_are_redacted_without_mutating_stored_
 ) -> None:
     fake_secret = "sk-selectedmemoryidsecret1234567890"
     raw_memory_id = f"mem-{fake_secret}"
+    raw_kind = f"semantic {fake_secret}"
     raw_scope = f"project/{fake_secret}"
     raw_namespace = f"project/{fake_secret}/memory"
     raw_source_policy = f"manual import {fake_secret}"
@@ -649,6 +659,7 @@ def test_selected_memory_id_and_reason_key_are_redacted_without_mutating_stored_
         conn,
         memory_id=raw_memory_id,
         canonical_key=f"key-{fake_secret}",
+        kind=raw_kind,
         scope=raw_scope,
         namespace=raw_namespace,
         title=f"Title {fake_secret}",
@@ -664,10 +675,10 @@ def test_selected_memory_id_and_reason_key_are_redacted_without_mutating_stored_
 
     rendered = json.dumps(asdict(context), sort_keys=True)
     selected = context.selected_items[0]
-    stored_memory_id = conn.execute(
-        "SELECT id FROM memory_items WHERE id = ?",
+    stored_memory_id, stored_kind = conn.execute(
+        "SELECT id, kind FROM memory_items WHERE id = ?",
         (raw_memory_id,),
-    ).fetchone()[0]
+    ).fetchone()
     assert fake_secret not in rendered
     assert raw_memory_id not in rendered
     assert REDACTION_PLACEHOLDER in rendered
@@ -677,6 +688,8 @@ def test_selected_memory_id_and_reason_key_are_redacted_without_mutating_stored_
     assert raw_memory_id not in context.selection_reasons
     assert all(fake_secret not in key for key in context.selection_reasons)
     assert REDACTION_PLACEHOLDER in selected.canonical_key
+    assert REDACTION_PLACEHOLDER in selected.kind
+    assert fake_secret not in selected.kind
     assert REDACTION_PLACEHOLDER in (selected.title or "")
     assert REDACTION_PLACEHOLDER in selected.claim
     assert REDACTION_PLACEHOLDER in selected.scope
@@ -689,6 +702,7 @@ def test_selected_memory_id_and_reason_key_are_redacted_without_mutating_stored_
     assert REDACTION_PLACEHOLDER in context.audit_metadata["namespace_filter"]
     assert "current_user_text" not in context.audit_metadata
     assert stored_memory_id == raw_memory_id
+    assert stored_kind == raw_kind
     assert table_count(conn, "memory_usage_events") == usage_events_before
 
 

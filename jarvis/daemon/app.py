@@ -20,6 +20,7 @@ from jarvis.events.models import Event, utc_now_iso
 from jarvis.events.types import EventType
 from jarvis.logging import get_logger
 from jarvis.memory import (
+    CompiledMemoryContext,
     MemoryBlock,
     MemoryCandidate,
     MemoryCandidateConflict,
@@ -31,6 +32,8 @@ from jarvis.memory import (
     MemoryEvidenceError,
     MemoryEvidenceNotFound,
     MemoryEvidenceRepository,
+    MemoryCompiler,
+    MemoryCompilerRequest,
     MemoryItem,
     MemoryItemConflict,
     MemoryItemError,
@@ -740,6 +743,18 @@ class DaemonApp:
         if item is None:
             raise DaemonAppNotFoundError(f"Memory item not found: {normalized_id}")
         return item
+
+    def compile_memory_preview(
+        self,
+        request: MemoryCompilerRequest,
+    ) -> CompiledMemoryContext:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        try:
+            compiler = MemoryCompiler(self._require_memory_item_repository())
+            return compiler.compile(request)
+        except MemoryItemError as exc:
+            raise DaemonAppError(str(exc)) from exc
 
     def create_worker_job(
         self,
