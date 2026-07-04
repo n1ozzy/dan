@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from jarvis.memory.inbox import (
+    MemoryCandidate,
+    MemoryCandidateConflict,
+    MemoryCandidateError,
+    MemoryCandidateNotFound,
+    MemoryCandidateRepository,
+    MemoryCandidateValidationError,
+)
 from jarvis.memory.manager import MemoryBlock, MemoryError, MemoryManager
 from jarvis.memory.policies import (
     MEMORY_KINDS,
@@ -14,6 +22,12 @@ from jarvis.memory.retrieval import MemoryRetriever
 __all__ = [
     "MEMORY_KINDS",
     "MemoryBlock",
+    "MemoryCandidate",
+    "MemoryCandidateConflict",
+    "MemoryCandidateError",
+    "MemoryCandidateNotFound",
+    "MemoryCandidateRepository",
+    "MemoryCandidateValidationError",
     "MemoryError",
     "MemoryManager",
     "MemoryRetriever",

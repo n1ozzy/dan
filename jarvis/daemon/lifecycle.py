@@ -32,11 +32,16 @@ from jarvis.api.routes_input import (
 )
 from jarvis.api.routes_memory import (
     MemoryRequestValidationError,
+    approve_memory_candidate,
     delete_memory,
     get_memory,
     get_memory_block,
+    get_memory_candidate,
+    get_memory_candidates,
     patch_memory,
     post_memory,
+    post_memory_candidate,
+    reject_memory_candidate,
 )
 from jarvis.api.routes_runtime import (
     get_runtime_legacy,
@@ -103,7 +108,13 @@ MAX_STREAM_SESSIONS = 8
 # memory or settings was the remaining "any local process reads your data"
 # vector. Status/mechanism reads (/health, /state, /events, /tools, /approvals)
 # stay open for monitoring and panel bootstrap.
-TOKEN_PROTECTED_GET_PATHS = {"/conversations", "/turns", "/memory", "/settings"}
+TOKEN_PROTECTED_GET_PATHS = {
+    "/conversations",
+    "/turns",
+    "/memory",
+    "/memory/candidates",
+    "/settings",
+}
 
 
 class LifecycleHook(Protocol):
@@ -252,6 +263,8 @@ def _is_token_protected_read(method: str, path: str) -> bool:
     if method != "GET":
         return False
     if path in TOKEN_PROTECTED_GET_PATHS:
+        return True
+    if _memory_candidate_resource_id(path) is not None:
         return True
     return _memory_resource_id(path) is not None  # GET /memory/<id>
 
@@ -403,6 +416,35 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         if method == "POST" and path == "/memory":
             request_payload = _read_json_body(handler)
             _write_json(handler, 201, post_memory(app, request_payload))
+            return
+
+        if method == "GET" and path == "/memory/candidates":
+            status_filter = query["status"][0] if "status" in query else None
+            _write_json(
+                handler,
+                200,
+                get_memory_candidates(app, status=status_filter),
+            )
+            return
+
+        if method == "POST" and path == "/memory/candidates":
+            request_payload = _read_json_body(handler)
+            _write_json(handler, 201, post_memory_candidate(app, request_payload))
+            return
+
+        candidate_action = _memory_candidate_action(path)
+        if method == "POST" and candidate_action is not None:
+            candidate_id, action = candidate_action
+            if action == "approve":
+                _write_json(handler, 200, approve_memory_candidate(app, candidate_id))
+                return
+            if action == "reject":
+                _write_json(handler, 200, reject_memory_candidate(app, candidate_id))
+                return
+
+        candidate_id = _memory_candidate_resource_id(path)
+        if method == "GET" and candidate_id is not None:
+            _write_json(handler, 200, get_memory_candidate(app, candidate_id))
             return
 
         memory_id = _memory_resource_id(path)
@@ -670,6 +712,27 @@ def _memory_resource_id(path: str) -> str | None:
     if not memory_id:
         return None
     return memory_id
+
+
+def _memory_candidate_resource_id(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) != 3 or parts[0] != "memory" or parts[1] != "candidates":
+        return None
+    candidate_id = unquote(parts[2]).strip()
+    if not candidate_id:
+        return None
+    return candidate_id
+
+
+def _memory_candidate_action(path: str) -> tuple[str, str] | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) != 4 or parts[0] != "memory" or parts[1] != "candidates":
+        return None
+    candidate_id = unquote(parts[2]).strip()
+    action = parts[3]
+    if not candidate_id or action not in {"approve", "reject"}:
+        return None
+    return candidate_id, action
 
 
 def _approval_action(path: str) -> tuple[str, str] | None:

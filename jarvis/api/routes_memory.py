@@ -7,7 +7,7 @@ from dataclasses import asdict
 from typing import Any
 
 from jarvis.daemon.app import DaemonApp
-from jarvis.memory import MemoryBlock
+from jarvis.memory import MemoryBlock, MemoryCandidate
 
 ROUTE_GROUP = "memory"
 
@@ -52,8 +52,45 @@ def delete_memory(app: DaemonApp, memory_id: str) -> dict[str, Any]:
     return {"memory": memory_to_dict(app.disable_memory(memory_id))}
 
 
+def post_memory_candidate(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
+    if not isinstance(request_payload, Mapping):
+        raise MemoryRequestValidationError("Request JSON must be an object.")
+    candidate = app.create_memory_candidate(request_payload)
+    return {"ok": True, "candidate": candidate_to_dict(candidate)}
+
+
+def get_memory_candidates(app: DaemonApp, *, status: str | None = None) -> dict[str, Any]:
+    candidates = app.list_memory_candidates(status=status)
+    return {
+        "ok": True,
+        "candidates": [candidate_to_dict(candidate) for candidate in candidates],
+    }
+
+
+def get_memory_candidate(app: DaemonApp, candidate_id: str) -> dict[str, Any]:
+    return {"ok": True, "candidate": candidate_to_dict(app.get_memory_candidate(candidate_id))}
+
+
+def approve_memory_candidate(app: DaemonApp, candidate_id: str) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "candidate": candidate_to_dict(app.approve_memory_candidate(candidate_id)),
+    }
+
+
+def reject_memory_candidate(app: DaemonApp, candidate_id: str) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "candidate": candidate_to_dict(app.reject_memory_candidate(candidate_id)),
+    }
+
+
 def memory_to_dict(block: MemoryBlock) -> dict[str, Any]:
     return asdict(block)
+
+
+def candidate_to_dict(candidate: MemoryCandidate) -> dict[str, Any]:
+    return asdict(candidate)
 
 
 def register_routes(app: object) -> None:
@@ -124,11 +161,17 @@ def _validate_limit(limit: int) -> None:
 __all__ = [
     "MemoryRequestValidationError",
     "ROUTE_GROUP",
+    "approve_memory_candidate",
+    "candidate_to_dict",
     "delete_memory",
     "get_memory",
     "get_memory_block",
+    "get_memory_candidate",
+    "get_memory_candidates",
     "memory_to_dict",
     "patch_memory",
+    "post_memory_candidate",
     "post_memory",
+    "reject_memory_candidate",
     "register_routes",
 ]
