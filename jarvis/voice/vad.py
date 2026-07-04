@@ -15,6 +15,8 @@ from array import array
 from dataclasses import dataclass
 from typing import Any
 
+from jarvis.voice.capture_policy import min_capture_ms
+
 
 DEFAULT_SAMPLE_RATE = 16000
 FRAME_MS = 30
@@ -105,6 +107,7 @@ class CaptureGate:
         self._min_rms = int(getattr(config, "stt_min_rms", 300) or 0)
         self._min_voiced_seconds = float(getattr(config, "stt_min_voiced_seconds", 0.3) or 0.0)
         self._min_voiced_ratio = float(getattr(config, "stt_min_voiced_ratio", 0.05) or 0.0)
+        self._min_capture_seconds = min_capture_ms(config) / 1000.0
 
     def evaluate(self, audio: bytes) -> GateDecision:
         stats = analyze_capture(
@@ -114,6 +117,8 @@ class CaptureGate:
         )
         if stats.duration_seconds <= 0.0:
             return GateDecision(False, "empty", stats)
+        if stats.duration_seconds < self._min_capture_seconds:
+            return GateDecision(False, "too_short", stats)
         if stats.voiced_seconds < self._min_voiced_seconds:
             return GateDecision(False, "too_quiet", stats)
         if stats.voiced_ratio < self._min_voiced_ratio:

@@ -21,6 +21,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from jarvis.voice.capture_policy import min_capture_ms
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,7 @@ class MockRecorder:
     def __init__(self) -> None:
         self.started = 0
         self.stopped = 0
+        self.discarded = 0
         self.recording = False
 
     def start(self) -> None:
@@ -52,6 +55,9 @@ class MockRecorder:
         if self.recording:
             self.stopped += 1
             self.recording = False
+
+    def discard_current_capture(self) -> None:
+        self.discarded += 1
 
 
 class SoxRecorder:
@@ -77,6 +83,7 @@ class SoxRecorder:
         voice_cfg = config.voice
         self._binary = _resolve_sox_binary(str(getattr(voice_cfg, "recorder_binary", "") or ""))
         self._sample_rate = int(getattr(voice_cfg, "recorder_sample_rate", 16000) or 16000)
+        self._min_capture_ms = min_capture_ms(voice_cfg)
         self._highpass_hz = int(getattr(voice_cfg, "recorder_highpass_hz", 80) or 0)
         self._gain_db = float(getattr(voice_cfg, "recorder_gain_db", 0.0) or 0.0)
         self._device_provider = input_device_provider
@@ -90,6 +97,7 @@ class SoxRecorder:
         self._lock = threading.Lock()
         self._proc: subprocess.Popen[bytes] | None = None
         self._capture_path: Path | None = None
+        self._discard_current_capture = False
         self._rotation_stop = threading.Event()
         self._rotation_thread: threading.Thread | None = None
         workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
@@ -162,14 +170,23 @@ class SoxRecorder:
             proc, path = self._proc, self._capture_path
             if proc is None or proc.poll() is not None:
                 return
+            discard = self._discard_current_capture
             self._proc, self._capture_path = None, None
+            self._discard_current_capture = False
             self._start_locked()
-        self._deliver_segment(proc, path)
+        self._deliver_segment(proc, path, discard=discard)
 
     def stop(self) -> None:
         self._disarm_rotation()
         with self._lock:
             self._finalize_locked()
+
+    def discard_current_capture(self) -> None:
+        """Drop the current segment when it closes."""
+
+        with self._lock:
+            if self._proc is not None or self._capture_path is not None:
+                self._discard_current_capture = True
 
     # -- rotation thread ----------------------------------------------------
 
@@ -202,11 +219,17 @@ class SoxRecorder:
 
     def _finalize_locked(self) -> None:
         proc, path = self._proc, self._capture_path
+        discard = self._discard_current_capture
         self._proc, self._capture_path = None, None
-        self._deliver_segment(proc, path)
+        self._discard_current_capture = False
+        self._deliver_segment(proc, path, discard=discard)
 
     def _deliver_segment(
-        self, proc: subprocess.Popen[bytes] | None, path: Path | None
+        self,
+        proc: subprocess.Popen[bytes] | None,
+        path: Path | None,
+        *,
+        discard: bool = False,
     ) -> None:
         """Stop one capture proc, read its WAV, and hand the bytes to on_capture.
 
@@ -237,6 +260,8 @@ class SoxRecorder:
             path.unlink(missing_ok=True)
         if len(audio) < MIN_CAPTURE_BYTES or self._on_capture is None:
             return
+        if discard and _capture_duration_ms(audio, sample_rate=self._sample_rate) < self._min_capture_ms:
+            return
         try:
             self._on_capture(audio)
         except Exception:  # noqa: BLE001 — a consumer bug must not kill listening
@@ -254,6 +279,19 @@ def _resolve_sox_binary(explicit: str) -> str:
         "sox recorder binary not found (set voice.recorder_binary or install "
         "sox — decreed stack, MASTER_PLAN §7.4)."
     )
+
+
+def _capture_duration_ms(audio: bytes, *, sample_rate: int) -> float:
+    pcm = audio
+    if audio[:4] == b"RIFF" and audio[8:12] == b"WAVE":
+        marker = audio.find(b"data", 12)
+        if marker == -1 or marker + 8 > len(audio):
+            pcm = b""
+        else:
+            pcm = audio[marker + 8 :]
+    if len(pcm) % 2:
+        pcm = pcm[:-1]
+    return (len(pcm) / 2) / max(1, sample_rate) * 1000.0
 
 
 def build_recorder(

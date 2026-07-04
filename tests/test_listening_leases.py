@@ -51,7 +51,31 @@ class Clock:
         return self.value
 
 
-def manager(conn, recorder=None, clock=None, events=None):
+class CaptureAwareRecorder(MockRecorder):
+    """Recorder double that models whether stop() would hand audio to STT."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.discarded = 0
+        self.capture_deliveries = 0
+        self._discard_current = False
+
+    def discard_current_capture(self) -> None:
+        self.discarded += 1
+        self._discard_current = True
+
+    def stop(self) -> None:
+        was_recording = self.recording
+        super().stop()
+        if not was_recording:
+            return
+        if self._discard_current:
+            self._discard_current = False
+            return
+        self.capture_deliveries += 1
+
+
+def manager(conn, recorder=None, clock=None, events=None, config=None):
     class FakeEventStore:
         def append(self, event_type, source, payload):
             if events is not None:
@@ -59,7 +83,7 @@ def manager(conn, recorder=None, clock=None, events=None):
 
     return ListeningLeaseManager(
         conn,
-        config=voice_config(),
+        config=config or voice_config(),
         recorder=recorder or MockRecorder(),
         event_store=FakeEventStore(),
         now=clock or Clock(),
@@ -128,6 +152,52 @@ def test_ptt_up_releases_hold_and_stops_recorder(conn) -> None:
     assert row[0] == "released"
     assert row[1]
     assert any(name == "listening.lease.released" for name, _ in events)
+
+
+def test_short_ptt_press_discards_capture_before_stt_handoff(conn) -> None:
+    clock = Clock("2026-07-02T10:00:00+00:00")
+    recorder = CaptureAwareRecorder()
+    m = manager(conn, recorder=recorder, clock=clock)
+
+    m.acquire(mode="hold", source="ptt")
+    clock.value = "2026-07-02T10:00:00.200000+00:00"
+    released = m.release(mode="hold")
+
+    assert len(released) == 1
+    assert recorder.stopped == 1
+    assert recorder.discarded == 1
+    assert recorder.capture_deliveries == 0
+
+
+def test_long_ptt_press_keeps_capture_for_stt_handoff(conn) -> None:
+    clock = Clock("2026-07-02T10:00:00+00:00")
+    recorder = CaptureAwareRecorder()
+    m = manager(conn, recorder=recorder, clock=clock)
+
+    m.acquire(mode="hold", source="ptt")
+    clock.value = "2026-07-02T10:00:00.900000+00:00"
+    m.release(mode="hold")
+
+    assert recorder.discarded == 0
+    assert recorder.capture_deliveries == 1
+
+
+def test_ptt_debounce_threshold_is_centralized_and_configurable(conn) -> None:
+    clock = Clock("2026-07-02T10:00:00+00:00")
+    recorder = CaptureAwareRecorder()
+    m = manager(
+        conn,
+        recorder=recorder,
+        clock=clock,
+        config=voice_config(ptt_debounce_ms=100),
+    )
+
+    m.acquire(mode="hold", source="ptt")
+    clock.value = "2026-07-02T10:00:00.200000+00:00"
+    m.release(mode="hold")
+
+    assert recorder.discarded == 0
+    assert recorder.capture_deliveries == 1
 
 
 def test_ptt_up_never_clears_a_locked_lease(conn) -> None:

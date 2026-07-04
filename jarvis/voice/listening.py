@@ -19,6 +19,7 @@ from jarvis.logging import get_logger
 
 from jarvis.events.types import EventType
 from jarvis.store.repositories import utc_now_iso
+from jarvis.voice.capture_policy import elapsed_ms, ptt_debounce_ms
 from jarvis.voice.models import ListeningLease
 
 
@@ -107,9 +108,10 @@ class ListeningLeaseManager:
             raise ListeningLeaseError(f"Unknown listening mode {mode!r}.")
         self._expire_stale()
         now = self._now()
-        rows = self._active_rows(mode=mode)
+        rows = self._active_full_rows(mode=mode)
         released: list[ListeningLease] = []
-        for (lease_id,) in [(row[0],) for row in rows]:
+        for row in rows:
+            lease_id = row[0]
             with self._conn:
                 self._conn.execute(
                     """
@@ -124,6 +126,8 @@ class ListeningLeaseManager:
                 {"lease_id": lease_id, "mode": mode},
             )
             released.append(self._lease_by_id(lease_id))
+        if self._should_discard_hold_capture(rows, released_at=now):
+            self._discard_current_capture()
         self._sync_recorder()
         return released
 
@@ -180,15 +184,38 @@ class ListeningLeaseManager:
             params.append(source)
         return self._conn.execute(query, params).fetchall()
 
-    def _active_full_rows(self) -> list[tuple]:
-        return self._conn.execute(
-            """
+    def _active_full_rows(
+        self, *, mode: str | None = None, source: str | None = None
+    ) -> list[tuple]:
+        query = """
             SELECT id, created_at, released_at, source, expires_at, status, mode
             FROM listening_leases
             WHERE status = 'active'
-            ORDER BY created_at ASC
-            """
-        ).fetchall()
+        """
+        params: list[Any] = []
+        if mode is not None:
+            query += " AND mode = ?"
+            params.append(mode)
+        if source is not None:
+            query += " AND source = ?"
+            params.append(source)
+        query += " ORDER BY created_at ASC"
+        return self._conn.execute(query, params).fetchall()
+
+    def _should_discard_hold_capture(self, rows: list[tuple], *, released_at: str) -> bool:
+        if not rows or str(rows[0][6]) != "hold":
+            return False
+        if self._active_full_rows():
+            return False
+        threshold_ms = ptt_debounce_ms(self._config)
+        if threshold_ms <= 0:
+            return False
+        return all(elapsed_ms(str(row[1]), released_at) < threshold_ms for row in rows)
+
+    def _discard_current_capture(self) -> None:
+        discard = getattr(self._recorder, "discard_current_capture", None)
+        if callable(discard):
+            discard()
 
     def _lease_by_id(self, lease_id: str) -> ListeningLease:
         row = self._conn.execute(

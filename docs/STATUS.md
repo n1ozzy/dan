@@ -16,6 +16,10 @@ Classification: current.
 - daemon/security/db green
 - voice unit/mock tests green
 - real live voice still requires manual validation
+- Memory OS is design-only: contract/architecture docs define future memory
+  layers, evidence, approvals, retrieval audit, and topic documents, but
+  auto-memory extraction, topic documents, dedupe, MemoryCompiler, and memory
+  audit UI are not implemented.
 
 These are status labels for the current rescue checkpoint. Fresh test evidence
 must come from commands in the current task, not from this file alone.

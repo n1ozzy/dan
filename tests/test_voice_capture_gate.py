@@ -14,6 +14,7 @@ import struct
 import wave
 from types import SimpleNamespace
 
+from jarvis.voice.stt import MockSTTEngine
 from jarvis.voice.vad import CaptureGate, analyze_capture, pcm_from_wav
 
 
@@ -126,10 +127,25 @@ def test_gate_rejects_quiet_hum_below_threshold() -> None:
 
 
 def test_gate_rejects_a_blip_shorter_than_min_voiced_seconds() -> None:
-    pcm = pcm_tone(0.1) + pcm_silence(0.4)
+    pcm = pcm_tone(0.1) + pcm_silence(0.9)
     decision = gate().evaluate(as_wav(pcm))
     assert not decision.accepted
     assert decision.reason == "too_quiet"
+
+
+def test_gate_rejects_capture_shorter_than_min_capture_ms() -> None:
+    decision = gate().evaluate(as_wav(pcm_tone(0.6)))
+
+    assert not decision.accepted
+    assert decision.reason == "too_short"
+
+
+def test_min_capture_ms_comes_from_config() -> None:
+    strict = gate(min_capture_ms=1200)
+    assert strict.evaluate(as_wav(pcm_tone(1.0))).reason == "too_short"
+
+    lenient = gate(min_capture_ms=500)
+    assert lenient.evaluate(as_wav(pcm_tone(1.0))).accepted
 
 
 def test_gate_rejects_sparse_voice_below_ratio() -> None:
@@ -159,3 +175,43 @@ def test_gate_thresholds_come_from_config() -> None:
     assert not strict.evaluate(as_wav(pcm_tone(1.0))).accepted
     lenient = gate(stt_min_voiced_seconds=0.5)
     assert lenient.evaluate(as_wav(pcm_tone(1.0))).accepted
+
+
+def test_too_short_capture_skips_stt_turn_and_barge_in(tmp_path) -> None:
+    from jarvis.daemon.app import create_daemon_app
+    from jarvis.voice.queue import VoiceQueue
+    from tests.test_api_smoke import config_text
+
+    config_path = tmp_path / "jarvis.toml"
+    text = config_text(tmp_path / "home" / "jarvis.db").replace(
+        "[voice]\nenabled = false", "[voice]\nenabled = true"
+    )
+    config_path.write_text(text, encoding="utf-8")
+    app = create_daemon_app(config_path)
+    app.start()
+    try:
+        assert app.conn is not None
+        assert app.voice_stt is not None
+        assert isinstance(app.voice_stt._engine, MockSTTEngine)
+        queue = VoiceQueue(app.conn)
+        pending = queue.enqueue(
+            text="To ma zostać, bo za krótki capture nie jest barge-in.",
+            turn_id="turn-pending",
+            seq=0,
+        )
+
+        app.voice_stt.accept_capture(as_wav(pcm_tone(0.6)))
+        assert app.voice_stt.flush(timeout=15)
+        assert app.voice_gateway.flush(timeout=15)
+
+        assert app.voice_stt._engine.calls == []
+        assert app.conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0] == 0
+        assert app.conn.execute(
+            "SELECT status FROM voice_queue WHERE id = ?",
+            (pending.id,),
+        ).fetchone() == ("queued",)
+        assert app.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE type = 'voice.speak.cancelled'"
+        ).fetchone()[0] == 0
+    finally:
+        app.close()

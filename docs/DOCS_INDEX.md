@@ -17,6 +17,7 @@ win over old handoffs/roadmaps.
 - `docs/SECURITY_MODEL.md` - security boundaries and approval model.
 - `docs/PANEL_CONTRACT.md` - thin-client panel contract.
 - `docs/MACOS_OPERATOR_CONTRACT.md` - local macOS operator boundaries.
+- `docs/MEMORY_CONTRACT.md` - Memory OS contract and future memory guardrails.
 
 ## Current Runbooks
 
@@ -45,6 +46,7 @@ explicitly changes that status.
 - `docs/AUDIO_RUNTIME.md`
 - `docs/LAUNCH_SUPERVISION.md`
 - `docs/MACOS_CAPABILITIES.md`
+- `docs/MEMORY_ARCHITECTURE.md`
 - `docs/MIGRATION_INVENTORY.md`
 
 Reference docs explain the current system, but if they conflict with
@@ -79,4 +81,3 @@ When docs disagree, use this order:
 
 Examples are not roadmap commitments. Voice claims must say whether they are
 mock, smoke, live, or manual.
-
