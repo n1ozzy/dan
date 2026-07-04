@@ -302,7 +302,7 @@ def test_create_daemon_app_with_temp_config_initializes_temp_db_only(config_path
         daemon_app.close()
 
 
-def test_create_daemon_app_internal_memory_compiler_dependency_stays_default_off(
+def test_runtime_context_output_shape_remains_default_off(
     config_path: Path,
 ) -> None:
     compiler = RuntimeSpyCompiler()
@@ -327,11 +327,30 @@ def test_create_daemon_app_internal_memory_compiler_dependency_stays_default_off
         )
 
         assert compiler.calls == 0
+        assert [message.metadata.get("kind") for message in result.request.context_messages] == [
+            "persona"
+        ]
         assert [
             message
             for message in result.request.context_messages
             if message.metadata.get("kind") == "compiled_memory"
         ] == []
+        assert result.context_snapshot["memory_block_count"] == 0
+        assert "compiled_memory" not in json.dumps(
+            {
+                "context_messages": [
+                    {
+                        "role": message.role,
+                        "content": message.content,
+                        "metadata": message.metadata,
+                    }
+                    for message in result.request.context_messages
+                ],
+                "memory_blocks": [block.__dict__ for block in result.request.memory_blocks],
+                "context_snapshot": result.context_snapshot,
+            },
+            sort_keys=True,
+        )
     finally:
         daemon_app.close()
 

@@ -118,6 +118,53 @@ def test_flag_off_does_not_call_compiler(
     assert compiler.calls == 0
 
 
+def test_context_output_shape_compiled_memory_disabled_has_no_section(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    memory = MemoryManager(conn, now=fixed_now)
+    block = memory.create_block("fact", "Existing block", "Keep this block", priority=1)
+    compiler = SpyCompiler()
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_manager=memory,
+        memory_compiler=compiler,
+        now=fixed_now,
+    )
+    before = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    insert_memory_item(
+        conn,
+        memory_id="mem-compiled-off-shape",
+        title="Compiled disabled title",
+        claim="Compiled disabled claim",
+    )
+    insert_evidence(conn, memory_id="mem-compiled-off-shape")
+    after = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    assert compiler.calls == 0
+    assert asdict(after.request) == asdict(before.request)
+    assert after.context_snapshot == before.context_snapshot
+    assert context_message_kinds(after.request) == ["persona"]
+    assert compiled_memory_messages(after.request) == []
+    assert [memory_block.id for memory_block in after.request.memory_blocks] == [block.id]
+    rendered = render_context(after.request, after.context_snapshot)
+    assert "compiled_memory" not in rendered
+    assert "Compiled disabled title" not in rendered
+    assert "Compiled disabled claim" not in rendered
+
+
 def test_flag_on_includes_selected_compiled_memory(
     conn: sqlite3.Connection,
     persona_path: Path,
@@ -148,6 +195,50 @@ def test_flag_on_includes_selected_compiled_memory(
         "  claim: Use SQLite as Jarvis memory.\n"
         "  evidence_count: 1"
     )
+
+
+def test_context_output_shape_compiled_memory_enabled_has_safe_section(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    insert_memory_item(
+        conn,
+        memory_id="mem-safe-shape",
+        canonical_key="canonical-key-must-not-render",
+        title="Safe shape title",
+        claim="Safe shape claim",
+        content="Content body must not render",
+    )
+    insert_evidence(conn, memory_id="mem-safe-shape", quote="Quote must not render")
+    builder = enabled_builder(conn, persona_path)
+    user_input = "USER_INPUT_MARKER_compile_memory_must_not_replace_me"
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text=user_input,
+    )
+
+    assert result.request.input_text == user_input
+    messages = compiled_memory_messages(result.request)
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.role == "user"
+    assert message.name is None
+    assert message.metadata == {"kind": "compiled_memory", "untrusted": True}
+    assert context_message_kinds(result.request) == ["persona", "compiled_memory"]
+    assert compiled_memory_field_names(message.content) == [
+        "title",
+        "claim",
+        "evidence_count",
+    ]
+    assert message.content.splitlines() == [
+        "Compiled memory:",
+        "- title: Safe shape title",
+        "  claim: Safe shape claim",
+        "  evidence_count: 1",
+    ]
 
 
 def test_flag_on_excludes_skipped_memory(
@@ -307,6 +398,76 @@ def test_no_raw_evidence_or_observation_in_context_output(
     assert "Evidence-safe claim" in rendered
 
 
+def test_context_output_shape_excludes_raw_memory_fields(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    raw_quote = "RAW_EVIDENCE_QUOTE_CONTEXT_SHAPE_MARKER"
+    raw_observation = "RAW_OBSERVATION_CONTEXT_SHAPE_MARKER"
+    forgotten_content = "FORGOTTEN_CONTENT_CONTEXT_SHAPE_MARKER"
+    raw_secret_marker = "sk-outputshape1234567890"
+    insert_memory_item(
+        conn,
+        memory_id="MEMORY_ID_CONTEXT_SHAPE_MARKER",
+        canonical_key="CANONICAL_KEY_CONTEXT_SHAPE_MARKER",
+        title=f"Safe title {raw_secret_marker}",
+        claim=f"Safe claim {raw_secret_marker}",
+        content="RAW_CONTENT_CONTEXT_SHAPE_MARKER",
+    )
+    insert_observation(
+        conn,
+        observation_id="observation-context-shape",
+        text=raw_observation,
+    )
+    insert_evidence(
+        conn,
+        memory_id="MEMORY_ID_CONTEXT_SHAPE_MARKER",
+        observation_id="observation-context-shape",
+        quote=raw_quote,
+    )
+    insert_memory_item(
+        conn,
+        memory_id="mem-forgotten-context-shape",
+        status="forgotten",
+        title="FORGOTTEN_TITLE_CONTEXT_SHAPE_MARKER",
+        claim="FORGOTTEN_CLAIM_CONTEXT_SHAPE_MARKER",
+        content=forgotten_content,
+    )
+    insert_evidence(conn, memory_id="mem-forgotten-context-shape")
+    builder = enabled_builder(conn, persona_path)
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    compiled_text = compiled_memory_text(result.request)
+    rendered = render_context(result.request, result.context_snapshot)
+    assert REDACTION_PLACEHOLDER in compiled_text
+    forbidden_markers = (
+        "skipped_items",
+        "audit_metadata",
+        "memory_id",
+        "canonical_key",
+        "MEMORY_ID_CONTEXT_SHAPE_MARKER",
+        "CANONICAL_KEY_CONTEXT_SHAPE_MARKER",
+        raw_quote,
+        raw_observation,
+        "RAW_CONTENT_CONTEXT_SHAPE_MARKER",
+        "FORGOTTEN_TITLE_CONTEXT_SHAPE_MARKER",
+        "FORGOTTEN_CLAIM_CONTEXT_SHAPE_MARKER",
+        forgotten_content,
+        raw_secret_marker,
+        "traceback",
+        "Traceback",
+        "RuntimeError",
+        "Exception",
+    )
+    assert [marker for marker in forbidden_markers if marker in rendered] == []
+
+
 def test_procedural_opt_in_default_false(
     conn: sqlite3.Connection,
     persona_path: Path,
@@ -400,6 +561,62 @@ def test_memory_blocks_behavior_preserved(
     assert "Keep using memory blocks." not in compiled_text
 
 
+def test_context_output_shape_preserves_memory_blocks_with_compiled_memory(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    memory = MemoryManager(conn, now=fixed_now)
+    block = memory.create_block(
+        "fact",
+        "Memory block title",
+        "MEMORY_BLOCK_BODY_CONTEXT_SHAPE",
+        priority=7,
+    )
+    insert_memory_item(
+        conn,
+        memory_id="mem-compiled-with-block",
+        title="Compiled block title",
+        claim="Compiled block claim",
+    )
+    insert_evidence(conn, memory_id="mem-compiled-with-block")
+
+    off = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_manager=memory,
+        now=fixed_now,
+    ).build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+    on = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_manager=memory,
+        compiled_memory_enabled=True,
+        now=fixed_now,
+    ).build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    assert [memory_block.id for memory_block in off.request.memory_blocks] == [block.id]
+    assert [memory_block.id for memory_block in on.request.memory_blocks] == [block.id]
+    assert off.request.memory_blocks[0].body == "MEMORY_BLOCK_BODY_CONTEXT_SHAPE"
+    assert on.request.memory_blocks[0].body == "MEMORY_BLOCK_BODY_CONTEXT_SHAPE"
+    assert compiled_memory_messages(off.request) == []
+    assert len(compiled_memory_messages(on.request)) == 1
+    assert context_message_kinds(off.request) == ["persona"]
+    assert context_message_kinds(on.request) == ["persona", "compiled_memory"]
+    assert "Compiled block claim" in compiled_memory_text(on.request)
+    assert "MEMORY_BLOCK_BODY_CONTEXT_SHAPE" not in compiled_memory_text(on.request)
+
+
 def test_context_section_shape_stable(
     conn: sqlite3.Connection,
     persona_path: Path,
@@ -464,6 +681,40 @@ def test_compiler_failure_fails_closed_without_traceback(
     assert "RuntimeError" not in rendered
 
 
+def test_context_output_shape_compiler_failure_fails_closed(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    compiler = FailingCompiler("EXCEPTION_TEXT_CONTEXT_SHAPE traceback bait")
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=True,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    rendered = render_context(result.request, result.context_snapshot)
+    assert result.request.turn_id == "turn-new"
+    assert result.request.conversation_id == "conversation-1"
+    assert compiler.calls == 1
+    assert context_message_kinds(result.request) == ["persona"]
+    assert compiled_memory_messages(result.request) == []
+    assert "compiled_memory" not in rendered
+    assert "EXCEPTION_TEXT_CONTEXT_SHAPE" not in rendered
+    assert "traceback bait" not in rendered
+    assert "Traceback" not in rendered
+    assert "RuntimeError" not in rendered
+
+
 class SpyCompiler:
     def __init__(self) -> None:
         self.calls = 0
@@ -475,13 +726,14 @@ class SpyCompiler:
 
 
 class FailingCompiler:
-    def __init__(self) -> None:
+    def __init__(self, message: str = "compiler boom with traceback bait") -> None:
         self.calls = 0
+        self.message = message
 
     def compile(self, request: Any) -> CompiledMemoryContext:
         del request
         self.calls += 1
-        raise RuntimeError("compiler boom with traceback bait")
+        raise RuntimeError(self.message)
 
 
 def enabled_builder(conn: sqlite3.Connection, persona_path: Path) -> ContextBuilder:
@@ -504,6 +756,20 @@ def compiled_memory_messages(request: BrainRequest) -> list[BrainMessage]:
 
 def compiled_memory_text(request: BrainRequest) -> str:
     return "\n\n".join(message.content for message in compiled_memory_messages(request))
+
+
+def context_message_kinds(request: BrainRequest) -> list[str]:
+    return [str(message.metadata.get("kind", "")) for message in request.context_messages]
+
+
+def compiled_memory_field_names(content: str) -> list[str]:
+    fields: list[str] = []
+    for line in content.splitlines()[1:]:
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            stripped = stripped[2:]
+        fields.append(stripped.split(":", 1)[0])
+    return fields
 
 
 def render_context(request: BrainRequest, snapshot: dict[str, Any]) -> str:
