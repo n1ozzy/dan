@@ -20,6 +20,7 @@ from jarvis.daemon.app import DaemonApp, DaemonAppConflictError, create_daemon_a
 from jarvis.daemon.lifecycle import build_server
 from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.events.types import EventType
+from jarvis.security.redaction import REDACTION_PLACEHOLDER
 from jarvis.store.db import close_quietly, initialize_database
 from jarvis.store.event_store import create_event_store
 from jarvis.tools import RequestSource, ToolPermissionPolicy, ToolRegistry
@@ -173,6 +174,11 @@ def event_types_for_turn(app: DaemonApp, turn_id: str) -> list[str]:
 def table_count(app: DaemonApp, table: str) -> int:
     assert app.conn is not None
     return int(app.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def event_type_count(app: DaemonApp, event_type: str) -> int:
+    assert app.conn is not None
+    return int(app.conn.execute("SELECT COUNT(*) FROM events WHERE type = ?", (event_type,)).fetchone()[0])
 
 
 def test_model_originated_approval_required_tool_creates_pending_approval(app: DaemonApp) -> None:
@@ -397,14 +403,52 @@ def test_model_originated_memory_save_waits_for_approval_and_execute_promotes_on
     assert payload["approvals"][0]["risk"] == "memory_write"
     assert table_count(app, "approvals") == 1
     assert table_count(app, "tool_runs") == 0
+    assert table_count(app, "memory_candidates") == 1
+    assert table_count(app, "memory_evidence") == 1
+    assert table_count(app, "memory_items") == 0
     assert table_count(app, "memory_blocks") == 0
 
     approval = app.approval_gate.get_approval(approval_id)  # type: ignore[union-attr]
     assert approval is not None
     assert approval["payload"]["tool_name"] == "memory_save"
     assert approval["payload"]["turn_id"] == turn_id
+    candidate_id = approval["payload"]["arguments"]["candidate_id"]
+    assert isinstance(candidate_id, str)
     assert approval["metadata"]["origin"] == "model"
     assert approval["metadata"]["tool_call_id"] == "call-memory-save"
+
+    assert app.conn is not None
+    candidate = app.conn.execute(
+        """
+        SELECT candidate_kind, title, claim, status
+        FROM memory_candidates
+        WHERE id = ?
+        """,
+        (candidate_id,),
+    ).fetchone()
+    assert candidate == (
+        "fact",
+        "Remembered fact",
+        "This fact should enter context only after approved execution.",
+        "needs_review",
+    )
+    evidence = app.conn.execute(
+        """
+        SELECT o.source_type, o.source_id, e.conversation_id, e.turn_id, e.quote, e.memory_id
+        FROM memory_evidence AS e
+        JOIN memory_observations AS o ON o.id = e.observation_id
+        WHERE e.candidate_id = ?
+        """,
+        (candidate_id,),
+    ).fetchone()
+    assert evidence == (
+        "explicit_memory_save",
+        "call-memory-save",
+        conversation_id,
+        turn_id,
+        "This fact should enter context only after approved execution.",
+        None,
+    )
 
     assert app.event_store is not None
     created_events = [
@@ -418,26 +462,39 @@ def test_model_originated_memory_save_waits_for_approval_and_execute_promotes_on
 
     approved = app.approve(approval_id, reason="ok")
     assert approved["status"] == "approved"
+    assert table_count(app, "memory_items") == 0
     assert table_count(app, "memory_blocks") == 0
     assert table_count(app, "tool_runs") == 0
 
     executed = app.execute_approved_tool(approval_id)
     assert executed["ok"] is True
-    assert table_count(app, "memory_blocks") == 1
+    assert executed["result"]["candidate_id"] == candidate_id
+    memory_id = executed["result"]["memory_id"]
+    assert isinstance(memory_id, str)
+    assert table_count(app, "memory_items") == 1
+    assert table_count(app, "memory_blocks") == 0
     assert table_count(app, "tool_runs") == 1
 
     with pytest.raises(DaemonAppConflictError):
         app.execute_approved_tool(approval_id)
-    assert table_count(app, "memory_blocks") == 1
+    assert table_count(app, "memory_items") == 1
+    assert table_count(app, "memory_blocks") == 0
     assert table_count(app, "tool_runs") == 1
+    assert event_type_count(app, "memory.activated") == 1
 
-    blocks = app.memory_manager.list_blocks()  # type: ignore[union-attr]
-    assert len(blocks) == 1
-    assert blocks[0].title == "Remembered fact"
-    assert blocks[0].active is True
-    assert blocks[0].metadata["candidate"] is False
-    assert blocks[0].metadata["proposed_by"] == "model"
-    assert blocks[0].metadata["promoted_by"] == "approval"
+    linked_memory_id = app.conn.execute(
+        "SELECT memory_id FROM memory_evidence WHERE candidate_id = ?",
+        (candidate_id,),
+    ).fetchone()[0]
+    assert linked_memory_id == memory_id
+
+    assert app.memory_item_repository is not None
+    items = app.memory_item_repository.list_items()
+    assert len(items) == 1
+    assert items[0].id == memory_id
+    assert items[0].title == "Remembered fact"
+    assert items[0].claim == "This fact should enter context only after approved execution."
+    assert items[0].status == "active"
 
     assert app.context_builder is not None
     future = app.context_builder.build_request(
@@ -445,7 +502,81 @@ def test_model_originated_memory_save_waits_for_approval_and_execute_promotes_on
         conversation_id=conversation_id,
         input_text="Use saved memory later",
     )
-    assert [block.id for block in future.request.memory_blocks] == [blocks[0].id]
+    assert future.request.memory_blocks == []
+
+
+def test_malformed_model_originated_memory_save_is_captured_as_failed_without_memory(
+    app: DaemonApp,
+) -> None:
+    set_model_tool_response(
+        app,
+        BrainToolCall(
+            id="call-bad-memory-save",
+            name="memory_save",
+            arguments={"key": "value"},
+        ),
+    )
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/input/text",
+            {"text": "Try malformed memory_save"},
+        )
+
+    assert status == 200
+    assert "Internal server error" not in json.dumps(payload, sort_keys=True)
+    tool_call = payload["tool_calls"][0]
+    assert tool_call["tool_name"] == "memory_save"
+    assert tool_call["status"] == "failed"
+    assert tool_call["approval_required"] is False
+    assert tool_call["approval_id"] is None
+    assert "memory_save requires a non-empty string kind" in tool_call["error"]
+    assert payload["approvals"] == []
+    assert table_count(app, "approvals") == 0
+    assert table_count(app, "memory_candidates") == 0
+    assert table_count(app, "memory_evidence") == 0
+    assert table_count(app, "memory_items") == 0
+    assert table_count(app, "memory_blocks") == 0
+    assert "tool.failed" in event_types_for_turn(app, str(payload["turn_id"]))
+
+
+def test_model_originated_memory_save_rejects_model_supplied_candidate_id(
+    app: DaemonApp,
+) -> None:
+    set_model_tool_response(
+        app,
+        BrainToolCall(
+            id="call-candidate-id-memory-save",
+            name="memory_save",
+            arguments={"candidate_id": "bogus"},
+        ),
+    )
+    app.start()
+
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/input/text",
+            {"text": "Try candidate_id memory_save"},
+        )
+
+    assert status == 200
+    tool_call = payload["tool_calls"][0]
+    assert tool_call["tool_name"] == "memory_save"
+    assert tool_call["status"] == "failed"
+    assert tool_call["approval_required"] is False
+    assert tool_call["approval_id"] is None
+    assert "candidate_id" in tool_call["error"]
+    assert "model proposal" in tool_call["error"]
+    assert payload["approvals"] == []
+    assert table_count(app, "approvals") == 0
+    assert table_count(app, "memory_candidates") == 0
+    assert table_count(app, "memory_evidence") == 0
+    assert table_count(app, "memory_items") == 0
+    assert table_count(app, "memory_blocks") == 0
+    assert "tool.failed" in event_types_for_turn(app, str(payload["turn_id"]))
 
 
 def test_rejected_model_originated_memory_save_creates_no_memory(app: DaemonApp) -> None:
@@ -461,14 +592,78 @@ def test_rejected_model_originated_memory_save_creates_no_memory(app: DaemonApp)
 
     payload = post_text(app, text="Try rejected memory_save")
     approval_id = str(payload["tool_calls"][0]["approval_id"])
+    approval = app.approval_gate.get_approval(approval_id)  # type: ignore[union-attr]
+    assert approval is not None
+    candidate_id = approval["payload"]["arguments"]["candidate_id"]
 
     rejected = app.reject(approval_id, reason="no")
     assert rejected["status"] == "rejected"
     with pytest.raises(DaemonAppConflictError):
         app.execute_approved_tool(approval_id)
 
+    assert app.conn is not None
+    candidate_status = app.conn.execute(
+        "SELECT status FROM memory_candidates WHERE id = ?",
+        (candidate_id,),
+    ).fetchone()[0]
+    assert candidate_status == "rejected"
+    assert table_count(app, "memory_items") == 0
     assert table_count(app, "memory_blocks") == 0
     assert table_count(app, "tool_runs") == 0
+
+
+def test_model_originated_memory_save_redacts_secrets_before_persistence(
+    app: DaemonApp,
+) -> None:
+    raw_secret = "sk-ant-memorysavev201"
+    set_model_tool_response(
+        app,
+        memory_save_call(
+            title=f"Remember {raw_secret}",
+            body=f"Authorization: Bearer {raw_secret}",
+        ),
+    )
+    app.start()
+
+    post_text(app, text="Try secret memory_save")
+
+    assert app.conn is not None
+    persisted = {
+        "candidates": app.conn.execute(
+            "SELECT title, claim FROM memory_candidates"
+        ).fetchall(),
+        "evidence": app.conn.execute(
+            "SELECT quote FROM memory_evidence"
+        ).fetchall(),
+        "observations": app.conn.execute(
+            "SELECT observed_text FROM memory_observations"
+        ).fetchall(),
+    }
+    rendered_persisted = json.dumps(persisted, sort_keys=True)
+    assert raw_secret not in rendered_persisted
+    assert REDACTION_PLACEHOLDER in rendered_persisted
+
+    assert app.event_store is not None
+    rendered_events = json.dumps(
+        [event.payload for event in app.event_store.list_after(0, limit=100)],
+        sort_keys=True,
+    )
+    assert raw_secret not in rendered_events
+    assert REDACTION_PLACEHOLDER in rendered_events
+
+
+def test_plain_text_turn_does_not_create_automatic_memory_candidates(
+    app: DaemonApp,
+) -> None:
+    set_model_tool_response(app, text="Plain response with no tool calls.")
+    app.start()
+
+    post_text(app, text="Remembering is not requested here.")
+
+    assert table_count(app, "memory_candidates") == 0
+    assert table_count(app, "memory_evidence") == 0
+    assert table_count(app, "memory_items") == 0
+    assert table_count(app, "memory_blocks") == 0
 
 
 def test_prompt_19a_decision_events_still_work_for_model_created_approval(

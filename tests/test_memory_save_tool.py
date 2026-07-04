@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 
 from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.memory import MemoryManager
+from jarvis.memory import (
+    MemoryCandidateRepository,
+    MemoryEvidenceRepository,
+    MemoryItemRepository,
+    MemoryManager,
+)
 from jarvis.store.db import close_quietly, initialize_database
 from jarvis.tools.memory_tool import MAX_BODY_CHARS, MAX_TITLE_CHARS, MemorySaveTool
 from jarvis.tools.permissions import (
@@ -34,14 +39,22 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
         close_quietly(connection)
 
 
+def table_count(conn: sqlite3.Connection, table: str) -> int:
+    return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
 @pytest.fixture
 def manager(conn: sqlite3.Connection) -> MemoryManager:
     return MemoryManager(conn)
 
 
 @pytest.fixture
-def tool(manager: MemoryManager) -> MemorySaveTool:
-    return MemorySaveTool(manager)
+def tool(conn: sqlite3.Connection) -> MemorySaveTool:
+    return MemorySaveTool(
+        candidate_repository=MemoryCandidateRepository(conn),
+        evidence_repository=MemoryEvidenceRepository(conn),
+        item_repository=MemoryItemRepository(conn),
+    )
 
 
 @pytest.fixture
@@ -65,57 +78,117 @@ def test_spec_declares_memory_write_risk(tool: MemorySaveTool) -> None:
     assert set(tool.input_schema["required"]) == {"kind", "title", "body"}
 
 
-# --- unit: run() ---
+# --- unit: propose() / run() ---
 
 
-def test_run_creates_promoted_block(tool: MemorySaveTool, manager: MemoryManager) -> None:
-    output = tool.run(
+def test_propose_creates_candidate_and_evidence_without_active_memory(
+    tool: MemorySaveTool,
+    conn: sqlite3.Connection,
+) -> None:
+    output = tool.propose(
         {
             "kind": "user_preference",
-            "title": "Ozzy woli słuchawki",
-            "body": "Głośniki dają echo bez AEC; do rozmów głosowych używa słuchawek.",
+            "title": "Ozzy prefers headphones",
+            "body": "Speakers echo without AEC; voice chats should use headphones.",
+        },
+        source_id="call-memory-save",
+        turn_id="turn-memory-save",
+    )
+
+    assert output["ok"] is True
+    assert table_count(conn, "memory_candidates") == 1
+    assert table_count(conn, "memory_evidence") == 1
+    assert table_count(conn, "memory_items") == 0
+    assert table_count(conn, "memory_blocks") == 0
+
+    candidate = conn.execute(
+        """
+        SELECT candidate_kind, scope, namespace, title, claim, status
+        FROM memory_candidates
+        WHERE id = ?
+        """,
+        (output["candidate_id"],),
+    ).fetchone()
+    assert candidate == (
+        "user_preference",
+        "user",
+        "user/default",
+        "Ozzy prefers headphones",
+        "Speakers echo without AEC; voice chats should use headphones.",
+        "needs_review",
+    )
+    evidence = conn.execute(
+        """
+        SELECT o.source_type, o.source_id, e.turn_id, e.quote
+        FROM memory_evidence AS e
+        JOIN memory_observations AS o ON o.id = e.observation_id
+        WHERE e.candidate_id = ?
+        """,
+        (output["candidate_id"],),
+    ).fetchone()
+    assert evidence == (
+        "explicit_memory_save",
+        "call-memory-save",
+        "turn-memory-save",
+        "Speakers echo without AEC; voice chats should use headphones.",
+    )
+
+
+def test_run_activates_candidate_into_memory_items_without_memory_blocks(
+    tool: MemorySaveTool,
+    conn: sqlite3.Connection,
+) -> None:
+    proposed = tool.propose(
+        {"kind": "fact", "title": "Fact", "body": "Approved execution activates this."},
+        source_id="call-memory-save",
+    )
+
+    output = tool.run(
+        {
+            "candidate_id": proposed["candidate_id"],
+            "kind": "fact",
+            "title": "Fact",
+            "body": "Approved execution activates this.",
         }
     )
 
     assert output["ok"] is True
-    block = manager.get_block(output["block_id"])
-    assert block is not None
-    assert block.active is True
-    assert block.kind == "user_preference"
-    assert block.metadata["candidate"] is False
-    assert block.metadata["proposed_by"] == "model"
-    assert block.metadata["promoted_by"] == "approval"
-
-
-def test_run_promoted_block_enters_brain_context(
-    tool: MemorySaveTool, manager: MemoryManager
-) -> None:
-    tool.run({"kind": "fact", "title": "Fakt", "body": "Treść faktu."})
-
-    contexts = manager.active_blocks_for_context()
-    assert [block.title for block in contexts] == ["Fakt"]
+    assert output["candidate_id"] == proposed["candidate_id"]
+    assert isinstance(output["memory_id"], str)
+    assert table_count(conn, "memory_items") == 1
+    assert table_count(conn, "memory_blocks") == 0
+    assert (
+        conn.execute(
+            "SELECT memory_id FROM memory_evidence WHERE candidate_id = ?",
+            (proposed["candidate_id"],),
+        ).fetchone()[0]
+        == output["memory_id"]
+    )
 
 
 def test_run_rejects_invalid_kind(tool: MemorySaveTool, manager: MemoryManager) -> None:
     with pytest.raises(ValueError, match="kind"):
-        tool.run({"kind": "nope", "title": "T", "body": "B"})
+        tool.propose({"kind": "nope", "title": "T", "body": "B"})
     assert manager.list_blocks() == []
 
 
 def test_run_caps_title_and_body(tool: MemorySaveTool, manager: MemoryManager) -> None:
     with pytest.raises(ValueError, match="body"):
-        tool.run({"kind": "fact", "title": "T", "body": "x" * (MAX_BODY_CHARS + 1)})
+        tool.propose({"kind": "fact", "title": "T", "body": "x" * (MAX_BODY_CHARS + 1)})
     with pytest.raises(ValueError, match="title"):
-        tool.run({"kind": "fact", "title": "t" * (MAX_TITLE_CHARS + 1), "body": "B"})
+        tool.propose({"kind": "fact", "title": "t" * (MAX_TITLE_CHARS + 1), "body": "B"})
     assert manager.list_blocks() == []
 
 
-def test_run_clamps_priority(tool: MemorySaveTool, manager: MemoryManager) -> None:
-    output = tool.run({"kind": "fact", "title": "T", "body": "B", "priority": 3})
+def test_run_requires_candidate_id_from_approval_proposal(
+    tool: MemorySaveTool,
+    conn: sqlite3.Connection,
+) -> None:
+    with pytest.raises(ValueError, match="candidate_id"):
+        tool.run({"kind": "fact", "title": "T", "body": "B", "priority": 3})
 
-    block = manager.get_block(output["block_id"])
-    assert block is not None
-    assert block.priority == 3
+    assert table_count(conn, "memory_items") == 0
+    assert table_count(conn, "memory_blocks") == 0
 
 
 # --- permission matrix: memory_write | user AP | model AP | auto B ---
@@ -156,13 +229,46 @@ def test_memory_save_full_approval_lifecycle(app: DaemonApp) -> None:
         source=RequestSource.MODEL_ORIGINATED,
     )
     assert requested.status == "approval_required"
+    assert requested.approval_id is not None
+    assert app.conn is not None
+    assert table_count(app.conn, "memory_candidates") == 1
+    assert table_count(app.conn, "memory_evidence") == 1
+    assert table_count(app.conn, "memory_items") == 0
+    assert table_count(app.conn, "memory_blocks") == 0
     assert app.memory_manager.list_blocks() == []  # nic przed zgodą
 
     app.approve(str(requested.approval_id), reason="ok")
-    assert app.memory_manager.list_blocks() == []  # approve sam nie wykonuje
+    assert table_count(app.conn, "memory_items") == 0  # approve sam nie wykonuje
+    assert table_count(app.conn, "memory_blocks") == 0
 
     response = app.execute_approved_tool(str(requested.approval_id))
 
     assert response["ok"] is True
-    active = app.memory_manager.active_blocks_for_context()
-    assert [block.title for block in active] == ["Jarvis v4"]
+    assert response["result"]["candidate_id"]
+    assert response["result"]["memory_id"]
+    assert table_count(app.conn, "memory_items") == 1
+    assert table_count(app.conn, "memory_blocks") == 0
+    assert app.memory_manager.active_blocks_for_context() == []
+
+
+def test_model_originated_request_tool_rejects_model_supplied_candidate_id(
+    app: DaemonApp,
+) -> None:
+    result = app.request_tool(
+        tool_name="memory_save",
+        arguments={"candidate_id": "bogus"},
+        requested_by="model",
+        source=RequestSource.MODEL_ORIGINATED,
+    )
+
+    assert result.status == "failed"
+    assert result.approval_id is None
+    assert result.error is not None
+    assert "candidate_id" in result.error
+    assert "model proposal" in result.error
+    assert app.conn is not None
+    assert table_count(app.conn, "approvals") == 0
+    assert table_count(app.conn, "memory_candidates") == 0
+    assert table_count(app.conn, "memory_evidence") == 0
+    assert table_count(app.conn, "memory_items") == 0
+    assert table_count(app.conn, "memory_blocks") == 0

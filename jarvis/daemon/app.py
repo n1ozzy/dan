@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from jarvis.brain.base import BrainResponse
 from jarvis.brain.context_builder import ContextBuilder
 from jarvis.brain.manager import BrainManager, BrainManagerError
 from jarvis.config import JarvisConfig, load_config
@@ -66,7 +67,7 @@ from jarvis.macos.screen import create_screen_reader
 from jarvis.macos.terminal import create_terminal_bridge
 from jarvis.tools.file_tool import FileReadTool, FileWriteTool
 from jarvis.tools.memory_tool import MemorySaveTool
-from jarvis.tools.registry import ApprovalProbeTool
+from jarvis.tools.registry import ApprovalProbeTool, ToolRegistryError
 from jarvis.tools.screen_tool import ScreenOcrRegionTool, ScreenReadWindowTool
 from jarvis.tools.terminal_tool import TerminalPasteTool, TerminalReadScreenTool
 from jarvis.tools.shell_tool import ShellReadTool
@@ -845,24 +846,40 @@ class DaemonApp:
                 input=request.arguments,
                 turn_id=turn_id,
             )
-            result = self.tool_registry.request_tool(
-                request,
-                permission_policy=self.tool_permission_policy,
-                source=source,
-                approval_gate=self.approval_gate,
-            )
+            try:
+                result = self.tool_registry.request_tool(
+                    request,
+                    permission_policy=self.tool_permission_policy,
+                    source=source,
+                    approval_gate=self._approval_gate_for_tool_requests(source=source),
+                )
+            except _MemorySaveProposalValidationError as exc:
+                result = ToolResult(
+                    id=request.id,
+                    tool_name=tool.name,
+                    status="failed",
+                    error=str(exc),
+                )
             if result.status == "finished":
                 recorder.record_finished(request.id, output=result.output or {})
             elif result.status == "failed":
                 recorder.record_failed(request.id, error=result.error or "Tool execution failed.")
             return result
 
-        return self.tool_registry.request_tool(
-            request,
-            permission_policy=self.tool_permission_policy,
-            source=source,
-            approval_gate=self.approval_gate,
-        )
+        try:
+            return self.tool_registry.request_tool(
+                request,
+                permission_policy=self.tool_permission_policy,
+                source=source,
+                approval_gate=self._approval_gate_for_tool_requests(source=source),
+            )
+        except _MemorySaveProposalValidationError as exc:
+            return ToolResult(
+                id=request.id,
+                tool_name=tool.name,
+                status="failed",
+                error=str(exc),
+            )
 
     def _decide_memory_candidate(self, candidate_id: str, decision: str) -> MemoryCandidate:
         if not self.started:
@@ -895,7 +912,11 @@ class DaemonApp:
     def reject(self, approval_id: str, *, reason: str | None = None) -> dict[str, Any]:
         if not self.started:
             raise DaemonAppNotStartedError("Daemon app is not started.")
-        return self._require_approval_gate().decide(approval_id, "rejected", reason=reason)
+        gate = self._require_approval_gate()
+        approval = gate.get_approval(approval_id)
+        rejected = gate.decide(approval_id, "rejected", reason=reason)
+        self._reject_memory_save_candidate_for_approval(approval or rejected)
+        return rejected
 
     def execute_approved_tool(self, approval_id: str) -> dict[str, Any]:
         if not self.started:
@@ -1068,7 +1089,7 @@ class DaemonApp:
                 self._connect_existing,
                 config=self.config.voice,
             )
-        return TurnOrchestrator(
+        return _MemorySaveAwareTurnOrchestrator(
             conn=self._require_conn(),
             event_store=self._require_event_store(),
             event_bus=self.event_bus,
@@ -1076,10 +1097,43 @@ class DaemonApp:
             brain_manager=self._require_brain_manager(),
             context_builder=self._require_context_builder(),
             tool_registry=self.tool_registry,
-            approval_gate=self._require_approval_gate(),
+            approval_gate=self._approval_gate_for_tool_requests(
+                source=RequestSource.MODEL_ORIGINATED
+            ),
             tool_permission_policy=self.tool_permission_policy,
             speech_pipeline=speech_pipeline,
         )
+
+    def _approval_gate_for_tool_requests(
+        self,
+        *,
+        source: RequestSource | str | None = None,
+    ) -> Any:
+        gate = self._require_approval_gate()
+        try:
+            tool = self.tool_registry.get("memory_save")
+        except ToolRegistryError:
+            return gate
+        if isinstance(tool, MemorySaveTool):
+            return _MemorySaveProposalApprovalGate(gate, tool, source=source)
+        return gate
+
+    def _reject_memory_save_candidate_for_approval(self, approval: Mapping[str, Any] | None) -> None:
+        candidate_id = _memory_save_candidate_id_from_approval(approval)
+        if candidate_id is None:
+            return
+        repository = self._require_memory_candidate_repository()
+        try:
+            repository.reject_candidate(candidate_id)
+        except MemoryCandidateConflict as exc:
+            candidate = repository.get_candidate(candidate_id)
+            if candidate is not None and candidate.status == "rejected":
+                return
+            raise DaemonAppConflictError(str(exc)) from exc
+        except MemoryCandidateNotFound as exc:
+            raise DaemonAppNotFoundError(str(exc)) from exc
+        except MemoryCandidateError as exc:
+            raise DaemonAppError(str(exc)) from exc
 
     def _execute_approved_tool_locked(self, approval_id: str) -> dict[str, Any]:
         normalized_approval_id = _required_text(approval_id, "approval_id")
@@ -1310,8 +1364,15 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     memory_evidence_repository = MemoryEvidenceRepository(conn, event_store=event_store)
     memory_item_repository = MemoryItemRepository(conn, event_store=event_store)
     # Registered here, not with the other tools above: memory_save needs the
-    # DB-backed manager, so the uninitialized (no-DB) registry never offers it.
-    tool_registry.register(MemorySaveTool(memory_manager))
+    # DB-backed Memory OS repositories, so the uninitialized (no-DB) registry
+    # never offers it.
+    tool_registry.register(
+        MemorySaveTool(
+            candidate_repository=memory_candidate_repository,
+            evidence_repository=memory_evidence_repository,
+            item_repository=memory_item_repository,
+        )
+    )
     context_builder = ContextBuilder(
         conn,
         config=config,
@@ -1352,6 +1413,308 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         voice_generation_registry=generation_registry,
         api_token=api_token,
     )
+
+
+class _MemorySaveAwareTurnOrchestrator(TurnOrchestrator):
+    def _capture_model_tool_calls(
+        self,
+        *,
+        response: BrainResponse,
+        turn_id: str,
+        conversation_id: str,
+        event_ids: list[int],
+        correlation_id: str,
+    ) -> Any:
+        original_gate = self._approval_gate
+        if isinstance(original_gate, _MemorySaveProposalApprovalGate):
+            self._approval_gate = original_gate.with_conversation_id(conversation_id)
+        try:
+            return self._capture_model_tool_calls_with_memory_validation(
+                response=response,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                event_ids=event_ids,
+                correlation_id=correlation_id,
+            )
+        finally:
+            self._approval_gate = original_gate
+
+    def _capture_model_tool_calls_with_memory_validation(
+        self,
+        *,
+        response: BrainResponse,
+        turn_id: str,
+        conversation_id: str,
+        event_ids: list[int],
+        correlation_id: str,
+    ) -> Any:
+        if not response.tool_calls:
+            return super()._capture_model_tool_calls(
+                response=response,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                event_ids=event_ids,
+                correlation_id=correlation_id,
+            )
+
+        validation_errors = [
+            self._memory_save_proposal_validation_error(tool_call)
+            for tool_call in response.tool_calls
+        ]
+        if all(error is None for error in validation_errors):
+            return super()._capture_model_tool_calls(
+                response=response,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                event_ids=event_ids,
+                correlation_id=correlation_id,
+            )
+
+        result = super()._capture_model_tool_calls(
+            response=_response_with_tool_calls(response, []),
+            turn_id=turn_id,
+            conversation_id=conversation_id,
+            event_ids=event_ids,
+            correlation_id=correlation_id,
+        )
+        for index, (tool_call, validation_error) in enumerate(
+            zip(response.tool_calls, validation_errors, strict=True),
+            start=1,
+        ):
+            if validation_error is not None:
+                result.tool_calls.append(
+                    self._record_model_tool_call_failure(
+                        call_id=_model_tool_call_id(tool_call, index),
+                        tool_name=_model_tool_call_name(tool_call),
+                        status="failed",
+                        error=validation_error,
+                        turn_id=turn_id,
+                        conversation_id=conversation_id,
+                        event_ids=event_ids,
+                        correlation_id=correlation_id,
+                    )
+                )
+                continue
+
+            capture = super()._capture_model_tool_calls(
+                response=_response_with_tool_calls(
+                    response,
+                    [_StableModelToolCall(tool_call, index)],
+                ),
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                event_ids=event_ids,
+                correlation_id=correlation_id,
+            )
+            result.tool_calls.extend(capture.tool_calls)
+            result.approvals.extend(capture.approvals)
+        return result
+
+    def _memory_save_proposal_validation_error(self, tool_call: Any) -> str | None:
+        if _model_tool_call_name(tool_call) != "memory_save":
+            return None
+        if self._tool_registry is None:
+            return None
+        try:
+            tool = self._tool_registry.get("memory_save")
+        except ToolRegistryError:
+            return None
+        if not isinstance(tool, MemorySaveTool):
+            return None
+        try:
+            arguments = _json_safe_model_tool_arguments(tool_call)
+        except ValueError:
+            return None
+        candidate_error = _memory_save_model_candidate_id_error(arguments)
+        if candidate_error is not None:
+            return candidate_error
+        try:
+            tool.validate_proposal_arguments(arguments)
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+
+class _StableModelToolCall:
+    def __init__(self, tool_call: Any, index: int) -> None:
+        self.id = _model_tool_call_id(tool_call, index)
+        self.name = _model_tool_call_name(tool_call)
+        self.arguments = getattr(tool_call, "arguments", {})
+        self.risk = getattr(tool_call, "risk", "safe_read")
+
+
+def _response_with_tool_calls(response: BrainResponse, tool_calls: list[Any]) -> BrainResponse:
+    return BrainResponse(
+        text=response.text,
+        tool_calls=tool_calls,
+        model=response.model,
+        usage=response.usage,
+        raw_metadata=dict(response.raw_metadata),
+    )
+
+
+def _model_tool_call_id(tool_call: Any, index: int) -> str:
+    value = getattr(tool_call, "id", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return f"model-tool-call-{index}"
+
+
+def _model_tool_call_name(tool_call: Any) -> str:
+    value = getattr(tool_call, "name", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return "unknown"
+
+
+def _json_safe_model_tool_arguments(tool_call: Any) -> dict[str, Any]:
+    arguments = getattr(tool_call, "arguments", {})
+    if not isinstance(arguments, Mapping):
+        raise ValueError("tool arguments must be a JSON object")
+    try:
+        json.dumps(arguments, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("tool arguments must be JSON serializable") from exc
+    return dict(arguments)
+
+
+class _MemorySaveProposalValidationError(ValueError):
+    pass
+
+
+def _memory_save_model_candidate_id_error(arguments: Mapping[str, Any]) -> str | None:
+    if "candidate_id" in arguments:
+        return "memory_save model proposal must not include candidate_id"
+    return None
+
+
+def _is_model_originated_source(source: RequestSource | str | None) -> bool:
+    if source is None:
+        return False
+    try:
+        return RequestSource(source) == RequestSource.MODEL_ORIGINATED
+    except (TypeError, ValueError):
+        return False
+
+
+class _MemorySaveProposalApprovalGate:
+    def __init__(
+        self,
+        approval_gate: ApprovalGate,
+        memory_save_tool: MemorySaveTool,
+        *,
+        conversation_id: str | None = None,
+        source: RequestSource | str | None = None,
+    ) -> None:
+        self._approval_gate = approval_gate
+        self._memory_save_tool = memory_save_tool
+        self._conversation_id = conversation_id
+        self._source = source
+
+    def with_conversation_id(self, conversation_id: str) -> "_MemorySaveProposalApprovalGate":
+        return _MemorySaveProposalApprovalGate(
+            self._approval_gate,
+            self._memory_save_tool,
+            conversation_id=conversation_id,
+            source=self._source,
+        )
+
+    def create_approval(
+        self,
+        risk: str,
+        requested_by: str,
+        action_type: str,
+        payload: Mapping[str, Any],
+        metadata: Mapping[str, Any] | None = None,
+        turn_id: str | None = None,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload_dict = dict(payload)
+        metadata_dict = dict(metadata or {})
+        arguments = payload_dict.get("arguments")
+        if (
+            payload_dict.get("tool_name") == "memory_save"
+            and isinstance(arguments, Mapping)
+            and _is_model_originated_source(self._source)
+        ):
+            candidate_error = _memory_save_model_candidate_id_error(arguments)
+            if candidate_error is not None:
+                raise _MemorySaveProposalValidationError(candidate_error)
+
+        if (
+            payload_dict.get("tool_name") == "memory_save"
+            and isinstance(arguments, Mapping)
+            and "candidate_id" not in arguments
+        ):
+            proposal = self._memory_save_tool.propose(
+                arguments,
+                source_type="explicit_memory_save",
+                source_id=_first_non_empty_text(
+                    metadata_dict.get("tool_call_id"),
+                    metadata_dict.get("tool_request_id"),
+                    payload_dict.get("source_id"),
+                ),
+                conversation_id=_first_non_empty_text(
+                    payload_dict.get("conversation_id"),
+                    metadata_dict.get("conversation_id"),
+                    self._conversation_id,
+                ),
+                turn_id=_first_non_empty_text(
+                    payload_dict.get("turn_id"),
+                    metadata_dict.get("turn_id"),
+                    turn_id,
+                ),
+                event_id=_first_int(
+                    payload_dict.get("event_id"),
+                    metadata_dict.get("event_id"),
+                ),
+            )
+            arguments_with_candidate = dict(arguments)
+            arguments_with_candidate["candidate_id"] = proposal["candidate_id"]
+            payload_dict["arguments"] = arguments_with_candidate
+            metadata_dict["memory_candidate_id"] = proposal["candidate_id"]
+            metadata_dict["memory_evidence_id"] = proposal["evidence_id"]
+
+        return self._approval_gate.create_approval(
+            risk=risk,
+            requested_by=requested_by,
+            action_type=action_type,
+            payload=payload_dict,
+            metadata=metadata_dict,
+            turn_id=turn_id,
+            correlation_id=correlation_id,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._approval_gate, name)
+
+
+def _memory_save_candidate_id_from_approval(approval: Mapping[str, Any] | None) -> str | None:
+    if approval is None:
+        return None
+    payload = approval.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    if payload.get("tool_name") != "memory_save":
+        return None
+    arguments = payload.get("arguments")
+    if not isinstance(arguments, Mapping):
+        return None
+    return _first_non_empty_text(arguments.get("candidate_id"))
+
+
+def _first_non_empty_text(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _first_int(*values: Any) -> int | None:
+    for value in values:
+        if type(value) is int:
+            return value
+    return None
 
 
 def _restore_persisted_brain_adapter(
