@@ -33,6 +33,7 @@ from jarvis.memory import (
     MemoryEvidenceNotFound,
     MemoryEvidenceRepository,
     MemoryCompiler,
+    MemoryCompilerConfig,
     MemoryCompilerRequest,
     MemoryItem,
     MemoryItemConflict,
@@ -1294,13 +1295,31 @@ JarvisDaemon = DaemonApp
 
 
 def create_daemon_app(
-    config_path: str | Path | None = None, *, initialize: bool = True
+    config_path: str | Path | None = None,
+    *,
+    initialize: bool = True,
+    memory_compiler: Any | None = None,
+    compiled_memory_enabled: bool = False,
+    compiled_memory_config: MemoryCompilerConfig | None = None,
 ) -> DaemonApp:
     config = load_config(config_path)
-    return create_daemon_app_from_config(config, initialize=initialize)
+    return create_daemon_app_from_config(
+        config,
+        initialize=initialize,
+        memory_compiler=memory_compiler,
+        compiled_memory_enabled=compiled_memory_enabled,
+        compiled_memory_config=compiled_memory_config,
+    )
 
 
-def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = True) -> DaemonApp:
+def create_daemon_app_from_config(
+    config: JarvisConfig,
+    *,
+    initialize: bool = True,
+    memory_compiler: Any | None = None,
+    compiled_memory_enabled: bool = False,
+    compiled_memory_config: MemoryCompilerConfig | None = None,
+) -> DaemonApp:
     paths = resolve_runtime_paths(config)
     event_bus = EventBus()
     runtime_supervisor = RuntimeSupervisor(home=paths.home)
@@ -1393,6 +1412,9 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         config=config,
         event_store=event_store,
         memory_manager=memory_manager,
+        memory_compiler=memory_compiler,
+        compiled_memory_enabled=compiled_memory_enabled,
+        compiled_memory_config=compiled_memory_config,
         tool_specs=tool_registry.list_specs,
     )
     approval_gate = ApprovalGate(conn, event_store=event_store)

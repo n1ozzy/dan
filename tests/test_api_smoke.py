@@ -24,6 +24,7 @@ from tests.git_guards import assert_schema_and_migrations_unchanged
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
 from jarvis.daemon.state_machine import RuntimeState
+from jarvis.memory.compiler import CompiledMemoryContext, MemoryCompilerConfig
 from jarvis.runtime.supervisor import RuntimeSupervisor
 from jarvis.store.db import close_quietly
 from jarvis.store.migrations import LATEST_SCHEMA_VERSION
@@ -237,6 +238,25 @@ def table_count(app: DaemonApp, table: str) -> int:
     return int(app.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
 
 
+def insert_runtime_conversation(app: DaemonApp, conversation_id: str = "conversation-runtime") -> None:
+    assert app.conn is not None
+    app.conn.execute(
+        """
+        INSERT INTO conversations (id, created_at, updated_at, title, status, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            conversation_id,
+            "2026-07-04T12:00:00+00:00",
+            "2026-07-04T12:00:00+00:00",
+            "Runtime",
+            "active",
+            "{}",
+        ),
+    )
+    app.conn.commit()
+
+
 def tool_run_count_for_approval(app: DaemonApp, approval_id: object) -> int:
     assert app.conn is not None
     return int(
@@ -262,12 +282,89 @@ class ApiFakeTool(Tool):
         return {"received": payload}
 
 
+class RuntimeSpyCompiler:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def compile(self, request: object) -> CompiledMemoryContext:
+        del request
+        self.calls += 1
+        return CompiledMemoryContext()
+
+
 def test_create_daemon_app_with_temp_config_initializes_temp_db_only(config_path: Path) -> None:
     daemon_app = create_daemon_app(config_path)
     try:
         assert daemon_app.paths.db_path.is_file()
         assert daemon_app.paths.db_path.parent == config_path.parent / "home"
         assert daemon_app.paths.home == config_path.parent / "home"
+    finally:
+        daemon_app.close()
+
+
+def test_create_daemon_app_internal_memory_compiler_dependency_stays_default_off(
+    config_path: Path,
+) -> None:
+    compiler = RuntimeSpyCompiler()
+    compiler_config = MemoryCompilerConfig(max_items=1, max_chars=64)
+
+    daemon_app = create_daemon_app(
+        config_path,
+        memory_compiler=compiler,
+        compiled_memory_config=compiler_config,
+    )
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.context_builder._memory_compiler is compiler
+        assert daemon_app.context_builder._compiled_memory_config is compiler_config
+        assert daemon_app.context_builder._compiled_memory_enabled is False
+
+        insert_runtime_conversation(daemon_app)
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime default-off check",
+        )
+
+        assert compiler.calls == 0
+        assert [
+            message
+            for message in result.request.context_messages
+            if message.metadata.get("kind") == "compiled_memory"
+        ] == []
+    finally:
+        daemon_app.close()
+
+
+def test_create_daemon_app_default_runtime_path_does_not_call_memory_compiler(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExplodingMemoryCompiler:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("default runtime context build must not create MemoryCompiler")
+
+    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+
+    daemon_app = create_daemon_app(config_path)
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.context_builder._memory_compiler is None
+        assert daemon_app.context_builder._compiled_memory_enabled is False
+
+        insert_runtime_conversation(daemon_app)
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime default path",
+        )
+
+        assert [
+            message
+            for message in result.request.context_messages
+            if message.metadata.get("kind") == "compiled_memory"
+        ] == []
     finally:
         daemon_app.close()
 
