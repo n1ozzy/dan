@@ -7,7 +7,7 @@ from dataclasses import asdict
 from typing import Any
 
 from jarvis.daemon.app import DaemonApp
-from jarvis.memory import MemoryBlock, MemoryCandidate, MemoryEvidence
+from jarvis.memory import MemoryBlock, MemoryCandidate, MemoryEvidence, MemoryItem
 
 ROUTE_GROUP = "memory"
 
@@ -85,6 +85,13 @@ def reject_memory_candidate(app: DaemonApp, candidate_id: str) -> dict[str, Any]
     }
 
 
+def activate_memory_candidate(app: DaemonApp, candidate_id: str) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "item": item_to_dict(app.activate_memory_candidate(candidate_id)),
+    }
+
+
 def post_memory_candidate_evidence(
     app: DaemonApp,
     candidate_id: str,
@@ -108,6 +115,15 @@ def get_memory_candidate_evidence(
     }
 
 
+def get_memory_items(app: DaemonApp) -> dict[str, Any]:
+    items = app.list_memory_items()
+    return {"ok": True, "items": [item_to_dict(item) for item in items]}
+
+
+def get_memory_item(app: DaemonApp, memory_id: str) -> dict[str, Any]:
+    return {"ok": True, "item": item_to_dict(app.get_memory_item(memory_id))}
+
+
 def memory_to_dict(block: MemoryBlock) -> dict[str, Any]:
     return asdict(block)
 
@@ -118,6 +134,10 @@ def candidate_to_dict(candidate: MemoryCandidate) -> dict[str, Any]:
 
 def evidence_to_dict(evidence: MemoryEvidence) -> dict[str, Any]:
     return asdict(evidence)
+
+
+def item_to_dict(item: MemoryItem) -> dict[str, Any]:
+    return asdict(item)
 
 
 def register_routes(app: object) -> None:
@@ -188,6 +208,7 @@ def _validate_limit(limit: int) -> None:
 __all__ = [
     "MemoryRequestValidationError",
     "ROUTE_GROUP",
+    "activate_memory_candidate",
     "approve_memory_candidate",
     "candidate_to_dict",
     "delete_memory",
@@ -197,6 +218,9 @@ __all__ = [
     "get_memory_candidate",
     "get_memory_candidate_evidence",
     "get_memory_candidates",
+    "get_memory_item",
+    "get_memory_items",
+    "item_to_dict",
     "memory_to_dict",
     "patch_memory",
     "post_memory_candidate_evidence",

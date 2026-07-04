@@ -32,6 +32,7 @@ from jarvis.api.routes_input import (
 )
 from jarvis.api.routes_memory import (
     MemoryRequestValidationError,
+    activate_memory_candidate,
     approve_memory_candidate,
     delete_memory,
     get_memory,
@@ -39,6 +40,8 @@ from jarvis.api.routes_memory import (
     get_memory_candidate,
     get_memory_candidate_evidence,
     get_memory_candidates,
+    get_memory_item,
+    get_memory_items,
     patch_memory,
     post_memory,
     post_memory_candidate,
@@ -115,6 +118,7 @@ TOKEN_PROTECTED_GET_PATHS = {
     "/turns",
     "/memory",
     "/memory/candidates",
+    "/memory/items",
     "/settings",
 }
 
@@ -267,6 +271,8 @@ def _is_token_protected_read(method: str, path: str) -> bool:
     if path in TOKEN_PROTECTED_GET_PATHS:
         return True
     if _memory_candidate_evidence_resource_id(path) is not None:
+        return True
+    if _memory_item_resource_id(path) is not None:
         return True
     if _memory_candidate_resource_id(path) is not None:
         return True
@@ -436,6 +442,15 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 201, post_memory_candidate(app, request_payload))
             return
 
+        if method == "GET" and path == "/memory/items":
+            _write_json(handler, 200, get_memory_items(app))
+            return
+
+        memory_item_id = _memory_item_resource_id(path)
+        if method == "GET" and memory_item_id is not None:
+            _write_json(handler, 200, get_memory_item(app, memory_item_id))
+            return
+
         evidence_candidate_id = _memory_candidate_evidence_resource_id(path)
         if evidence_candidate_id is not None:
             if method == "GET":
@@ -466,6 +481,9 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
                 return
             if action == "reject":
                 _write_json(handler, 200, reject_memory_candidate(app, candidate_id))
+                return
+            if action == "activate":
+                _write_json(handler, 200, activate_memory_candidate(app, candidate_id))
                 return
 
         candidate_id = _memory_candidate_resource_id(path)
@@ -750,6 +768,16 @@ def _memory_candidate_resource_id(path: str) -> str | None:
     return candidate_id
 
 
+def _memory_item_resource_id(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) != 3 or parts[0] != "memory" or parts[1] != "items":
+        return None
+    memory_id = unquote(parts[2]).strip()
+    if not memory_id:
+        return None
+    return memory_id
+
+
 def _memory_candidate_evidence_resource_id(path: str) -> str | None:
     parts = [part for part in path.split("/") if part]
     if (
@@ -771,7 +799,7 @@ def _memory_candidate_action(path: str) -> tuple[str, str] | None:
         return None
     candidate_id = unquote(parts[2]).strip()
     action = parts[3]
-    if not candidate_id or action not in {"approve", "reject"}:
+    if not candidate_id or action not in {"approve", "reject", "activate"}:
         return None
     return candidate_id, action
 

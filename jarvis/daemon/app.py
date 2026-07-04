@@ -30,6 +30,11 @@ from jarvis.memory import (
     MemoryEvidenceError,
     MemoryEvidenceNotFound,
     MemoryEvidenceRepository,
+    MemoryItem,
+    MemoryItemConflict,
+    MemoryItemError,
+    MemoryItemNotFound,
+    MemoryItemRepository,
     MemoryError,
     MemoryManager,
 )
@@ -134,6 +139,7 @@ class DaemonApp:
     memory_manager: MemoryManager | None = None
     memory_candidate_repository: MemoryCandidateRepository | None = None
     memory_evidence_repository: MemoryEvidenceRepository | None = None
+    memory_item_repository: MemoryItemRepository | None = None
     worker_broker: WorkerBroker | None = None
     voice_recorder: Any = None
     voice_broker: Any = None
@@ -700,6 +706,40 @@ class DaemonApp:
         except MemoryEvidenceError as exc:
             raise DaemonAppError(str(exc)) from exc
 
+    def activate_memory_candidate(self, candidate_id: str) -> MemoryItem:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        normalized_id = _required_text(candidate_id, "candidate_id")
+        repository = self._require_memory_item_repository()
+        try:
+            return repository.activate_candidate(normalized_id)
+        except MemoryItemNotFound as exc:
+            raise DaemonAppNotFoundError(str(exc)) from exc
+        except MemoryItemConflict as exc:
+            raise DaemonAppConflictError(str(exc)) from exc
+        except MemoryItemError as exc:
+            raise DaemonAppError(str(exc)) from exc
+
+    def list_memory_items(self) -> list[MemoryItem]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        try:
+            return self._require_memory_item_repository().list_items()
+        except MemoryItemError as exc:
+            raise DaemonAppError(str(exc)) from exc
+
+    def get_memory_item(self, memory_id: str) -> MemoryItem:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        normalized_id = _required_text(memory_id, "memory_id")
+        try:
+            item = self._require_memory_item_repository().get_item(normalized_id)
+        except MemoryItemError as exc:
+            raise DaemonAppError(str(exc)) from exc
+        if item is None:
+            raise DaemonAppNotFoundError(f"Memory item not found: {normalized_id}")
+        return item
+
     def create_worker_job(
         self,
         *,
@@ -947,6 +987,7 @@ class DaemonApp:
         self.memory_manager = None
         self.memory_candidate_repository = None
         self.memory_evidence_repository = None
+        self.memory_item_repository = None
         self.worker_broker = None
         self.approval_gate = None
         self.tool_run_recorder = None
@@ -995,6 +1036,13 @@ class DaemonApp:
                 "Daemon app is not initialized with a memory evidence repository."
             )
         return self.memory_evidence_repository
+
+    def _require_memory_item_repository(self) -> MemoryItemRepository:
+        if self.memory_item_repository is None:
+            raise DaemonAppError(
+                "Daemon app is not initialized with a memory item repository."
+            )
+        return self.memory_item_repository
 
     def _require_worker_broker(self) -> WorkerBroker:
         if self.worker_broker is None:
@@ -1241,6 +1289,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
             memory_manager=None,
             memory_candidate_repository=None,
             memory_evidence_repository=None,
+            memory_item_repository=None,
         )
 
     ensure_runtime_dirs(paths)
@@ -1259,6 +1308,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     memory_manager = MemoryManager(conn, event_store=event_store)
     memory_candidate_repository = MemoryCandidateRepository(conn, event_store=event_store)
     memory_evidence_repository = MemoryEvidenceRepository(conn, event_store=event_store)
+    memory_item_repository = MemoryItemRepository(conn, event_store=event_store)
     # Registered here, not with the other tools above: memory_save needs the
     # DB-backed manager, so the uninitialized (no-DB) registry never offers it.
     tool_registry.register(MemorySaveTool(memory_manager))
@@ -1297,6 +1347,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         memory_manager=memory_manager,
         memory_candidate_repository=memory_candidate_repository,
         memory_evidence_repository=memory_evidence_repository,
+        memory_item_repository=memory_item_repository,
         worker_broker=worker_broker,
         voice_generation_registry=generation_registry,
         api_token=api_token,

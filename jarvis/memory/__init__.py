@@ -18,6 +18,14 @@ from jarvis.memory.inbox import (
     MemoryCandidateRepository,
     MemoryCandidateValidationError,
 )
+from jarvis.memory.items import (
+    MemoryItem,
+    MemoryItemConflict,
+    MemoryItemError,
+    MemoryItemNotFound,
+    MemoryItemRepository,
+    MemoryItemValidationError,
+)
 from jarvis.memory.manager import MemoryBlock, MemoryError, MemoryManager
 from jarvis.memory.policies import (
     MEMORY_KINDS,
@@ -42,6 +50,12 @@ __all__ = [
     "MemoryEvidenceNotFound",
     "MemoryEvidenceRepository",
     "MemoryEvidenceValidationError",
+    "MemoryItem",
+    "MemoryItemConflict",
+    "MemoryItemError",
+    "MemoryItemNotFound",
+    "MemoryItemRepository",
+    "MemoryItemValidationError",
     "MemoryError",
     "MemoryManager",
     "MemoryRetriever",
