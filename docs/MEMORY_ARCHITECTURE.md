@@ -120,6 +120,10 @@ No schema change in this task. No migration in this task. This task does not add
 those tables. Any future schema work must be deliberate, tested, and separately
 scoped.
 
+MEMORY-SCHEMA-01 later added these Memory OS v1 tables additively. It did not
+migrate `memory_blocks` data, change current retrieval behavior, or cut over
+ContextBuilder to a new compiler, and it did not bump the core schema version.
+
 ## Migration Path
 
 Future migration from v0 memory must:

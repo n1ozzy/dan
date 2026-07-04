@@ -20,6 +20,17 @@ from jarvis.store.migrations import LATEST_SCHEMA_VERSION, apply_migrations
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SCHEMA_SQL = ROOT / "jarvis" / "store" / "schema.sql"
+
+MEMORY_OS_TABLES = {
+    "memory_observations",
+    "memory_candidates",
+    "memory_items",
+    "memory_evidence",
+    "memory_topics",
+    "memory_usage_events",
+    "memory_review_decisions",
+}
 
 REQUIRED_TABLES = {
     "schema_version",
@@ -36,7 +47,7 @@ REQUIRED_TABLES = {
     "listening_leases",
     "audio_device_snapshots",
     "runtime_process_observations",
-}
+} | MEMORY_OS_TABLES
 
 REQUIRED_INDEXES = {
     "idx_events_created_at",
@@ -69,6 +80,13 @@ REQUIRED_INDEXES = {
     "idx_runtime_process_observations_kind",
     "idx_runtime_process_observations_status",
     "idx_runtime_process_observations_risk",
+    "idx_memory_candidates_status",
+    "idx_memory_candidates_namespace",
+    "idx_memory_items_status",
+    "idx_memory_items_namespace",
+    "idx_memory_evidence_memory_id",
+    "idx_memory_evidence_candidate_id",
+    "idx_memory_usage_events_turn_id",
 }
 
 CRITICAL_COLUMNS = {
@@ -176,6 +194,94 @@ CRITICAL_COLUMNS = {
         "risk",
         "details_json",
     },
+    "memory_observations": {
+        "id",
+        "source_type",
+        "source_id",
+        "conversation_id",
+        "turn_id",
+        "event_id",
+        "observed_text",
+        "detected_kind",
+        "sensitivity",
+        "created_at",
+    },
+    "memory_candidates": {
+        "id",
+        "candidate_kind",
+        "scope",
+        "namespace",
+        "claim",
+        "title",
+        "reason",
+        "confidence",
+        "sensitivity",
+        "recommended_action",
+        "target_memory_id",
+        "status",
+        "created_at",
+        "reviewed_at",
+    },
+    "memory_items": {
+        "id",
+        "canonical_key",
+        "kind",
+        "scope",
+        "namespace",
+        "title",
+        "claim",
+        "content",
+        "status",
+        "confidence",
+        "sensitivity",
+        "source_policy",
+        "created_at",
+        "updated_at",
+        "last_used_at",
+        "last_confirmed_at",
+        "supersedes",
+        "superseded_by",
+    },
+    "memory_evidence": {
+        "id",
+        "memory_id",
+        "candidate_id",
+        "observation_id",
+        "conversation_id",
+        "turn_id",
+        "event_id",
+        "quote",
+        "weight",
+        "created_at",
+    },
+    "memory_topics": {
+        "id",
+        "namespace",
+        "title",
+        "summary",
+        "status",
+        "last_consolidated_at",
+        "token_estimate",
+        "created_at",
+        "updated_at",
+    },
+    "memory_usage_events": {
+        "id",
+        "memory_id",
+        "turn_id",
+        "reason",
+        "rank",
+        "included",
+        "created_at",
+    },
+    "memory_review_decisions": {
+        "id",
+        "candidate_id",
+        "decision",
+        "edited_claim",
+        "reason",
+        "created_at",
+    },
 }
 
 
@@ -268,6 +374,29 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _remove_memory_os_v1_schema(conn: sqlite3.Connection) -> None:
+    for index_name in REQUIRED_INDEXES:
+        if index_name.startswith("idx_memory_"):
+            conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+    for table_name in MEMORY_OS_TABLES:
+        conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+    conn.commit()
+
+
+def _has_unique_index_on(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    for index_row in conn.execute(f"PRAGMA index_list({table})"):
+        index_name = index_row[1]
+        is_unique = index_row[2] == 1
+        if not is_unique:
+            continue
+        indexed_columns = {
+            column_row[2] for column_row in conn.execute(f"PRAGMA index_info({index_name})")
+        }
+        if indexed_columns == {column}:
+            return True
+    return False
+
+
 def test_initialize_database_creates_db_at_tmp_path(tmp_path: Path) -> None:
     db_path = tmp_path / "jarvis.db"
     conn = initialize_database(db_path)
@@ -299,6 +428,85 @@ def test_applying_migrations_twice_is_idempotent(tmp_path: Path) -> None:
         "SELECT version FROM schema_version ORDER BY version"
     ).fetchall()
     assert version_rows == [(version,) for version in range(1, LATEST_SCHEMA_VERSION + 1)]
+    close_quietly(conn)
+
+
+def test_memory_os_sidecar_tables_do_not_bump_core_schema_version() -> None:
+    assert LATEST_SCHEMA_VERSION == 2
+
+
+def test_schema_sql_declares_memory_os_v1_tables() -> None:
+    schema = SCHEMA_SQL.read_text(encoding="utf-8")
+
+    missing = [
+        table
+        for table in MEMORY_OS_TABLES
+        if f"CREATE TABLE IF NOT EXISTS {table}" not in schema
+    ]
+
+    assert missing == []
+
+
+def test_sidecar_migration_creates_memory_os_tables_for_preexisting_v2_database(
+    tmp_path: Path,
+) -> None:
+    conn = initialize_database(tmp_path / "jarvis.db")
+    _remove_memory_os_v1_schema(conn)
+
+    apply_migrations(conn)
+
+    assert MEMORY_OS_TABLES.issubset(table_names(conn))
+    assert get_schema_version(conn) == LATEST_SCHEMA_VERSION
+    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 3").fetchone()[0] == 0
+    close_quietly(conn)
+
+
+def test_sidecar_migration_does_not_migrate_existing_memory_blocks_data(
+    tmp_path: Path,
+) -> None:
+    conn = initialize_database(tmp_path / "jarvis.db")
+    _remove_memory_os_v1_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO memory_blocks (
+          id, kind, title, body, priority, active, created_at, updated_at, metadata_json
+        )
+        VALUES (
+          'memory-old',
+          'preference',
+          'Old memory',
+          'Keep this v0 row untouched.',
+          7,
+          1,
+          '2026-07-04T00:00:00Z',
+          '2026-07-04T00:00:00Z',
+          '{"origin":"v0"}'
+        )
+        """
+    )
+    conn.commit()
+
+    apply_migrations(conn)
+
+    old_row = conn.execute(
+        """
+        SELECT id, kind, title, body, priority, active, metadata_json
+        FROM memory_blocks
+        WHERE id = 'memory-old'
+        """
+    ).fetchone()
+    memory_items_count = conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]
+
+    assert old_row == (
+        "memory-old",
+        "preference",
+        "Old memory",
+        "Keep this v0 row untouched.",
+        7,
+        1,
+        '{"origin":"v0"}',
+    )
+    assert memory_items_count == 0
     close_quietly(conn)
 
 
@@ -353,6 +561,13 @@ def test_required_indexes_exist(tmp_path: Path) -> None:
     }
 
     assert REQUIRED_INDEXES.issubset(indexes)
+    close_quietly(conn)
+
+
+def test_memory_topics_namespace_has_unique_index(tmp_path: Path) -> None:
+    conn = initialize_database(tmp_path / "jarvis.db")
+
+    assert _has_unique_index_on(conn, "memory_topics", "namespace")
     close_quietly(conn)
 
 

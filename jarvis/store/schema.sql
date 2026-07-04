@@ -66,6 +66,119 @@ CREATE INDEX IF NOT EXISTS idx_memory_blocks_kind ON memory_blocks(kind);
 CREATE INDEX IF NOT EXISTS idx_memory_blocks_active ON memory_blocks(active);
 CREATE INDEX IF NOT EXISTS idx_memory_blocks_priority ON memory_blocks(priority);
 
+CREATE TABLE IF NOT EXISTS memory_observations (
+  id TEXT PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  source_id TEXT,
+  conversation_id TEXT,
+  turn_id TEXT,
+  event_id INTEGER,
+  observed_text TEXT NOT NULL,
+  detected_kind TEXT,
+  sensitivity TEXT NOT NULL DEFAULT 'unknown',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS memory_candidates (
+  id TEXT PRIMARY KEY,
+  candidate_kind TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  namespace TEXT NOT NULL,
+  claim TEXT NOT NULL,
+  title TEXT,
+  reason TEXT,
+  confidence TEXT NOT NULL DEFAULT 'unknown',
+  sensitivity TEXT NOT NULL DEFAULT 'unknown',
+  recommended_action TEXT NOT NULL,
+  target_memory_id TEXT,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  reviewed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_candidates_status
+ON memory_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_memory_candidates_namespace
+ON memory_candidates(namespace);
+
+CREATE TABLE IF NOT EXISTS memory_items (
+  id TEXT PRIMARY KEY,
+  canonical_key TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  namespace TEXT NOT NULL,
+  title TEXT,
+  claim TEXT NOT NULL,
+  content TEXT,
+  status TEXT NOT NULL,
+  confidence TEXT NOT NULL DEFAULT 'unknown',
+  sensitivity TEXT NOT NULL DEFAULT 'unknown',
+  source_policy TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  last_used_at TEXT,
+  last_confirmed_at TEXT,
+  supersedes TEXT,
+  superseded_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_items_status
+ON memory_items(status);
+CREATE INDEX IF NOT EXISTS idx_memory_items_namespace
+ON memory_items(namespace);
+
+CREATE TABLE IF NOT EXISTS memory_evidence (
+  id TEXT PRIMARY KEY,
+  memory_id TEXT,
+  candidate_id TEXT,
+  observation_id TEXT,
+  conversation_id TEXT,
+  turn_id TEXT,
+  event_id INTEGER,
+  quote TEXT,
+  weight REAL NOT NULL DEFAULT 1.0,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_evidence_memory_id
+ON memory_evidence(memory_id);
+CREATE INDEX IF NOT EXISTS idx_memory_evidence_candidate_id
+ON memory_evidence(candidate_id);
+
+CREATE TABLE IF NOT EXISTS memory_topics (
+  id TEXT PRIMARY KEY,
+  namespace TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  last_consolidated_at TEXT,
+  token_estimate INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS memory_usage_events (
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL,
+  turn_id TEXT,
+  reason TEXT NOT NULL,
+  rank INTEGER,
+  included INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_usage_events_turn_id
+ON memory_usage_events(turn_id);
+
+CREATE TABLE IF NOT EXISTS memory_review_decisions (
+  id TEXT PRIMARY KEY,
+  candidate_id TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  edited_claim TEXT,
+  reason TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL,

@@ -29,6 +29,10 @@ The future Memory OS data model is staged around these entities:
 This ADR does not implement the entities. It records the target shape for a
 future additive schema task.
 
+Implementation note: MEMORY-SCHEMA-01 added the seven Memory OS v1 tables
+additively. It did not migrate `memory_blocks` rows, change runtime retrieval,
+authorize a compiler cutover, or bump the core schema version.
+
 ## Entity Responsibilities
 
 `memory_observations` are raw source observations. They may come from a turn,
