@@ -37,10 +37,12 @@ from jarvis.api.routes_memory import (
     get_memory,
     get_memory_block,
     get_memory_candidate,
+    get_memory_candidate_evidence,
     get_memory_candidates,
     patch_memory,
     post_memory,
     post_memory_candidate,
+    post_memory_candidate_evidence,
     reject_memory_candidate,
 )
 from jarvis.api.routes_runtime import (
@@ -264,6 +266,8 @@ def _is_token_protected_read(method: str, path: str) -> bool:
         return False
     if path in TOKEN_PROTECTED_GET_PATHS:
         return True
+    if _memory_candidate_evidence_resource_id(path) is not None:
+        return True
     if _memory_candidate_resource_id(path) is not None:
         return True
     return _memory_resource_id(path) is not None  # GET /memory/<id>
@@ -431,6 +435,28 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             request_payload = _read_json_body(handler)
             _write_json(handler, 201, post_memory_candidate(app, request_payload))
             return
+
+        evidence_candidate_id = _memory_candidate_evidence_resource_id(path)
+        if evidence_candidate_id is not None:
+            if method == "GET":
+                _write_json(
+                    handler,
+                    200,
+                    get_memory_candidate_evidence(app, evidence_candidate_id),
+                )
+                return
+            if method == "POST":
+                request_payload = _read_json_body(handler)
+                _write_json(
+                    handler,
+                    201,
+                    post_memory_candidate_evidence(
+                        app,
+                        evidence_candidate_id,
+                        request_payload,
+                    ),
+                )
+                return
 
         candidate_action = _memory_candidate_action(path)
         if method == "POST" and candidate_action is not None:
@@ -717,6 +743,21 @@ def _memory_resource_id(path: str) -> str | None:
 def _memory_candidate_resource_id(path: str) -> str | None:
     parts = [part for part in path.split("/") if part]
     if len(parts) != 3 or parts[0] != "memory" or parts[1] != "candidates":
+        return None
+    candidate_id = unquote(parts[2]).strip()
+    if not candidate_id:
+        return None
+    return candidate_id
+
+
+def _memory_candidate_evidence_resource_id(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if (
+        len(parts) != 4
+        or parts[0] != "memory"
+        or parts[1] != "candidates"
+        or parts[3] != "evidence"
+    ):
         return None
     candidate_id = unquote(parts[2]).strip()
     if not candidate_id:

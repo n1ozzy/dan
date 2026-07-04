@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from jarvis.memory.evidence import (
+    MemoryEvidence,
+    MemoryEvidenceConflict,
+    MemoryEvidenceError,
+    MemoryEvidenceNotFound,
+    MemoryEvidenceRepository,
+    MemoryEvidenceValidationError,
+)
 from jarvis.memory.inbox import (
     MemoryCandidate,
     MemoryCandidateConflict,
@@ -28,6 +36,12 @@ __all__ = [
     "MemoryCandidateNotFound",
     "MemoryCandidateRepository",
     "MemoryCandidateValidationError",
+    "MemoryEvidence",
+    "MemoryEvidenceConflict",
+    "MemoryEvidenceError",
+    "MemoryEvidenceNotFound",
+    "MemoryEvidenceRepository",
+    "MemoryEvidenceValidationError",
     "MemoryError",
     "MemoryManager",
     "MemoryRetriever",

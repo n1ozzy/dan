@@ -25,6 +25,11 @@ from jarvis.memory import (
     MemoryCandidateError,
     MemoryCandidateNotFound,
     MemoryCandidateRepository,
+    MemoryEvidence,
+    MemoryEvidenceConflict,
+    MemoryEvidenceError,
+    MemoryEvidenceNotFound,
+    MemoryEvidenceRepository,
     MemoryError,
     MemoryManager,
 )
@@ -128,6 +133,7 @@ class DaemonApp:
     context_builder: ContextBuilder | None = None
     memory_manager: MemoryManager | None = None
     memory_candidate_repository: MemoryCandidateRepository | None = None
+    memory_evidence_repository: MemoryEvidenceRepository | None = None
     worker_broker: WorkerBroker | None = None
     voice_recorder: Any = None
     voice_broker: Any = None
@@ -663,6 +669,37 @@ class DaemonApp:
     def reject_memory_candidate(self, candidate_id: str) -> MemoryCandidate:
         return self._decide_memory_candidate(candidate_id, "reject")
 
+    def add_memory_candidate_evidence(
+        self,
+        candidate_id: str,
+        payload: Mapping[str, Any],
+    ) -> MemoryEvidence:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        repository = self._require_memory_evidence_repository()
+        try:
+            return repository.add_evidence(candidate_id, **dict(payload))
+        except MemoryEvidenceNotFound as exc:
+            raise DaemonAppNotFoundError(str(exc)) from exc
+        except MemoryEvidenceConflict as exc:
+            raise DaemonAppConflictError(str(exc)) from exc
+        except MemoryEvidenceError as exc:
+            raise DaemonAppError(str(exc)) from exc
+
+    def list_memory_candidate_evidence(
+        self,
+        candidate_id: str,
+    ) -> list[MemoryEvidence]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        repository = self._require_memory_evidence_repository()
+        try:
+            return repository.list_evidence(candidate_id)
+        except MemoryEvidenceNotFound as exc:
+            raise DaemonAppNotFoundError(str(exc)) from exc
+        except MemoryEvidenceError as exc:
+            raise DaemonAppError(str(exc)) from exc
+
     def create_worker_job(
         self,
         *,
@@ -909,6 +946,7 @@ class DaemonApp:
         self.context_builder = None
         self.memory_manager = None
         self.memory_candidate_repository = None
+        self.memory_evidence_repository = None
         self.worker_broker = None
         self.approval_gate = None
         self.tool_run_recorder = None
@@ -950,6 +988,13 @@ class DaemonApp:
                 "Daemon app is not initialized with a memory candidate repository."
             )
         return self.memory_candidate_repository
+
+    def _require_memory_evidence_repository(self) -> MemoryEvidenceRepository:
+        if self.memory_evidence_repository is None:
+            raise DaemonAppError(
+                "Daemon app is not initialized with a memory evidence repository."
+            )
+        return self.memory_evidence_repository
 
     def _require_worker_broker(self) -> WorkerBroker:
         if self.worker_broker is None:
@@ -1195,6 +1240,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
             tool_run_recorder=None,
             memory_manager=None,
             memory_candidate_repository=None,
+            memory_evidence_repository=None,
         )
 
     ensure_runtime_dirs(paths)
@@ -1212,6 +1258,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
     _restore_persisted_brain_adapter(conn, brain_manager)
     memory_manager = MemoryManager(conn, event_store=event_store)
     memory_candidate_repository = MemoryCandidateRepository(conn, event_store=event_store)
+    memory_evidence_repository = MemoryEvidenceRepository(conn, event_store=event_store)
     # Registered here, not with the other tools above: memory_save needs the
     # DB-backed manager, so the uninitialized (no-DB) registry never offers it.
     tool_registry.register(MemorySaveTool(memory_manager))
@@ -1249,6 +1296,7 @@ def create_daemon_app_from_config(config: JarvisConfig, *, initialize: bool = Tr
         context_builder=context_builder,
         memory_manager=memory_manager,
         memory_candidate_repository=memory_candidate_repository,
+        memory_evidence_repository=memory_evidence_repository,
         worker_broker=worker_broker,
         voice_generation_registry=generation_registry,
         api_token=api_token,

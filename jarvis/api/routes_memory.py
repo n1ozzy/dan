@@ -7,7 +7,7 @@ from dataclasses import asdict
 from typing import Any
 
 from jarvis.daemon.app import DaemonApp
-from jarvis.memory import MemoryBlock, MemoryCandidate
+from jarvis.memory import MemoryBlock, MemoryCandidate, MemoryEvidence
 
 ROUTE_GROUP = "memory"
 
@@ -85,12 +85,39 @@ def reject_memory_candidate(app: DaemonApp, candidate_id: str) -> dict[str, Any]
     }
 
 
+def post_memory_candidate_evidence(
+    app: DaemonApp,
+    candidate_id: str,
+    request_payload: Any,
+) -> dict[str, Any]:
+    if not isinstance(request_payload, Mapping):
+        raise MemoryRequestValidationError("Request JSON must be an object.")
+    evidence = app.add_memory_candidate_evidence(candidate_id, request_payload)
+    return {"ok": True, "evidence": evidence_to_dict(evidence)}
+
+
+def get_memory_candidate_evidence(
+    app: DaemonApp,
+    candidate_id: str,
+) -> dict[str, Any]:
+    evidence = app.list_memory_candidate_evidence(candidate_id)
+    return {
+        "ok": True,
+        "candidate_id": candidate_id,
+        "evidence": [evidence_to_dict(item) for item in evidence],
+    }
+
+
 def memory_to_dict(block: MemoryBlock) -> dict[str, Any]:
     return asdict(block)
 
 
 def candidate_to_dict(candidate: MemoryCandidate) -> dict[str, Any]:
     return asdict(candidate)
+
+
+def evidence_to_dict(evidence: MemoryEvidence) -> dict[str, Any]:
+    return asdict(evidence)
 
 
 def register_routes(app: object) -> None:
@@ -164,12 +191,15 @@ __all__ = [
     "approve_memory_candidate",
     "candidate_to_dict",
     "delete_memory",
+    "evidence_to_dict",
     "get_memory",
     "get_memory_block",
     "get_memory_candidate",
+    "get_memory_candidate_evidence",
     "get_memory_candidates",
     "memory_to_dict",
     "patch_memory",
+    "post_memory_candidate_evidence",
     "post_memory_candidate",
     "post_memory",
     "reject_memory_candidate",
