@@ -195,11 +195,6 @@ class DaemonApp:
             # Build every dependency first; if startup fails, tear down any
             # partially-built pieces instead of leaving hot processes alive.
             try:
-                from jarvis.audio.devices import AudioDeviceManager
-                from jarvis.voice.recorder import build_recorder
-
-                AudioDeviceManager(self._require_conn(), config=self.config.audio)
-
                 # STT pipeline first (the recorder needs its capture sink). Building
                 # the engine validates the name, so an unknown or unavailable STT
                 # engine kills the daemon at startup (established rule). Transcripts
@@ -209,9 +204,11 @@ class DaemonApp:
                 # echo of Jarvis's own TTS can never become a turn by
                 # construction.
                 if self.config.voice.enabled:
+                    from jarvis.audio.devices import AudioDeviceManager
                     from jarvis.voice.anti_echo import AntiEchoGate
                     from jarvis.voice.cancellation import CancellationCoordinator
                     from jarvis.voice.gateway import VoiceTurnGateway
+                    from jarvis.voice.recorder import build_recorder
                     from jarvis.voice.stt import build_stt_engine
                     from jarvis.voice.transcription import TranscriptionPipeline
                     from jarvis.voice.tts import build_tts_engine
@@ -219,6 +216,8 @@ class DaemonApp:
                         TurnCancelledError,
                         TurnOrchestratorBusyError,
                     )
+
+                    AudioDeviceManager(self._require_conn(), config=self.config.audio)
 
                     # Engine construction validates the name: a banned or unknown
                     # TTS engine kills the daemon at startup (decree §7.3), and so
@@ -252,42 +251,42 @@ class DaemonApp:
                     )
                     on_capture = voice_stt.accept_capture
 
-                # One stateful recorder for the whole daemon: leases decide when it
-                # runs, so per-request lease managers must share it. Building it
-                # validates the backend (a missing sox binary kills the daemon at
-                # startup — established rule); the input device comes from audio
-                # policy at every start (ADR-012).
-                voice_recorder = build_recorder(
-                    self.config.voice.recorder,
-                    config=self.config,
-                    input_device_provider=self._resolve_recorder_input_device,
-                    on_capture=on_capture,
-                )
-
-                if self.config.voice.enabled and self.config.voice.broker_enabled:
-                    from jarvis.voice.broker import VoiceBroker
-
-                    # The broker shares the engine with the cancellation
-                    # coordinator: one engine, one player, one kill target
-                    # (ADR-005).
-                    voice_broker = VoiceBroker(
-                        self._connect_existing,
-                        config=self.config.voice,
-                        engine=tts_engine,
+                    # One stateful recorder for the whole daemon: leases decide when it
+                    # runs, so per-request lease managers must share it. Building it
+                    # validates the backend (a missing sox binary kills the daemon at
+                    # startup — established rule); the input device comes from audio
+                    # policy at every start (ADR-012).
+                    voice_recorder = build_recorder(
+                        self.config.voice.recorder,
+                        config=self.config,
+                        input_device_provider=self._resolve_recorder_input_device,
+                        on_capture=on_capture,
                     )
-                    voice_broker.start()
 
-                # Daemon-side lease TTL enforcement (FIX-04b): a crashed panel that
-                # never sends button-up must not leave the microphone hot until the
-                # next API call happens to run _expire_stale.
-                from jarvis.voice.listening import ListeningLeaseSweeper
+                    if self.config.voice.broker_enabled:
+                        from jarvis.voice.broker import VoiceBroker
 
-                voice_lease_sweeper = ListeningLeaseSweeper(
-                    self._sweep_listening_leases,
-                    interval_seconds=float(
-                        getattr(self.config.voice, "lease_sweep_interval_seconds", 5.0)
-                    ),
-                )
+                        # The broker shares the engine with the cancellation
+                        # coordinator: one engine, one player, one kill target
+                        # (ADR-005).
+                        voice_broker = VoiceBroker(
+                            self._connect_existing,
+                            config=self.config.voice,
+                            engine=tts_engine,
+                        )
+                        voice_broker.start()
+
+                    # Daemon-side lease TTL enforcement (FIX-04b): a crashed panel that
+                    # never sends button-up must not leave the microphone hot until the
+                    # next API call happens to run _expire_stale.
+                    from jarvis.voice.listening import ListeningLeaseSweeper
+
+                    voice_lease_sweeper = ListeningLeaseSweeper(
+                        self._sweep_listening_leases,
+                        interval_seconds=float(
+                            getattr(self.config.voice, "lease_sweep_interval_seconds", 5.0)
+                        ),
+                    )
 
                 self.voice_stt = voice_stt
                 self.voice_gateway = voice_gateway
@@ -296,7 +295,8 @@ class DaemonApp:
                 self.voice_broker = voice_broker
                 self.voice_lease_sweeper = voice_lease_sweeper
 
-                voice_lease_sweeper.start()
+                if voice_lease_sweeper is not None:
+                    voice_lease_sweeper.start()
 
                 event_store.append(EventType.DAEMON_STARTED, "daemon", {"service": "jarvisd"})
                 state_machine.transition(RuntimeState.IDLE, reason="daemon started")
@@ -521,6 +521,8 @@ class DaemonApp:
             close_quietly(conn)
 
     def _listening_manager(self, conn: sqlite3.Connection):
+        if self.voice_recorder is None:
+            raise DaemonAppError("Voice recorder is not available; voice is disabled.")
         from jarvis.voice.listening import ListeningLeaseManager
 
         return ListeningLeaseManager(
