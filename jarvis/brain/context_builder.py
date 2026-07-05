@@ -122,6 +122,7 @@ class ContextBuilder:
         settings: Mapping[str, Any] | None = None,
         max_context_chars: int | None = None,
         recent_turn_limit: int = 12,
+        compiled_memory_enabled_override: bool | None = None,
     ) -> ContextBuildResult:
         normalized_turn_id = _required_text(turn_id, "turn_id")
         normalized_conversation_id = _required_text(conversation_id, "conversation_id")
@@ -146,10 +147,17 @@ class ContextBuilder:
         job_message = self._build_job_message(active_jobs)
         if job_message is not None:
             core_messages.append(job_message)
+        compiled_memory_enabled = (
+            self._compiled_memory_enabled
+            if compiled_memory_enabled_override is None
+            else compiled_memory_enabled_override
+        )
         compiled_memory = self._build_compiled_memory(
             conversation_id=normalized_conversation_id,
             turn_id=normalized_turn_id,
             input_text=input_text,
+            compiled_memory_enabled=compiled_memory_enabled,
+            cache_created_compiler=compiled_memory_enabled_override is None,
         )
         if compiled_memory.message is not None:
             core_messages.append(compiled_memory.message)
@@ -225,8 +233,10 @@ class ContextBuilder:
         conversation_id: str,
         turn_id: str,
         input_text: str,
+        compiled_memory_enabled: bool,
+        cache_created_compiler: bool,
     ) -> _CompiledMemoryBuild:
-        if not self._compiled_memory_enabled:
+        if not compiled_memory_enabled:
             return _CompiledMemoryBuild(
                 message=None,
                 diagnostics=_compiled_memory_diagnostics(
@@ -245,7 +255,8 @@ class ContextBuilder:
         compiler = self._memory_compiler
         if compiler is None:
             compiler = MemoryCompiler(MemoryItemRepository(self._conn))
-            self._memory_compiler = compiler
+            if cache_created_compiler:
+                self._memory_compiler = compiler
 
         try:
             compiled = compiler.compile(

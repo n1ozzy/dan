@@ -170,6 +170,174 @@ def test_context_output_shape_compiled_memory_disabled_has_no_section(
     assert "Compiled disabled claim" not in rendered
 
 
+def test_scoped_override_true_enables_compiled_memory_without_mutating_builder(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    memory = MemoryManager(conn, now=fixed_now)
+    block = memory.create_block(
+        "fact",
+        "Scoped override block",
+        "SCOPED_OVERRIDE_MEMORY_BLOCK_BODY",
+        priority=2,
+    )
+    compiler = StaticCompiler(
+        CompiledMemoryContext(
+            selected_items=[
+                selected_memory_item(
+                    title="SCOPED_OVERRIDE_TITLE",
+                    claim="SCOPED_OVERRIDE_CLAIM",
+                )
+            ]
+        )
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_manager=memory,
+        memory_compiler=compiler,
+        compiled_memory_enabled=False,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+        compiled_memory_enabled_override=True,
+    )
+
+    assert compiler.calls == 1
+    assert builder._compiled_memory_enabled is False
+    assert context_message_kinds(result.request) == ["persona", "compiled_memory"]
+    assert compiled_memory_text(result.request) == (
+        "Compiled memory:\n"
+        "- title: SCOPED_OVERRIDE_TITLE\n"
+        "  claim: SCOPED_OVERRIDE_CLAIM\n"
+        "  evidence_count: 1"
+    )
+    assert [memory_block.id for memory_block in result.request.memory_blocks] == [block.id]
+    assert result.request.memory_blocks[0].body == "SCOPED_OVERRIDE_MEMORY_BLOCK_BODY"
+    assert compiled_memory_diagnostics(result) == {
+        "compiled_memory_enabled": True,
+        "compiler_available": True,
+        "compiled_memory_attempted": True,
+        "compiled_memory_section_present": True,
+        "selected_count": 1,
+        "skipped_count": 0,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {},
+    }
+
+
+def test_scoped_override_false_disables_enabled_builder_without_mutating_builder(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    compiler = StaticCompiler(
+        CompiledMemoryContext(
+            selected_items=[
+                selected_memory_item(
+                    title="SCOPED_OVERRIDE_FALSE_TITLE",
+                    claim="SCOPED_OVERRIDE_FALSE_CLAIM",
+                )
+            ]
+        )
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=True,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+        compiled_memory_enabled_override=False,
+    )
+
+    assert compiler.calls == 0
+    assert builder._compiled_memory_enabled is True
+    assert context_message_kinds(result.request) == ["persona"]
+    assert compiled_memory_messages(result.request) == []
+    assert compiled_memory_diagnostics(result) == {
+        "compiled_memory_enabled": False,
+        "compiler_available": True,
+        "compiled_memory_attempted": False,
+        "compiled_memory_section_present": False,
+        "selected_count": 0,
+        "skipped_count": 0,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {},
+    }
+    rendered = render_context(result.request, result.context_snapshot)
+    assert "SCOPED_OVERRIDE_FALSE_TITLE" not in rendered
+    assert "SCOPED_OVERRIDE_FALSE_CLAIM" not in rendered
+
+
+def test_scoped_override_true_does_not_persist_across_requests(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    compiler = StaticCompiler(
+        CompiledMemoryContext(
+            selected_items=[
+                selected_memory_item(
+                    title="SCOPED_OVERRIDE_ONE_SHOT_TITLE",
+                    claim="SCOPED_OVERRIDE_ONE_SHOT_CLAIM",
+                )
+            ]
+        )
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=False,
+        now=fixed_now,
+    )
+
+    first = builder.build_request(
+        turn_id="turn-first",
+        conversation_id="conversation-1",
+        input_text="First",
+        compiled_memory_enabled_override=True,
+    )
+    second = builder.build_request(
+        turn_id="turn-second",
+        conversation_id="conversation-1",
+        input_text="Second",
+    )
+
+    assert compiler.calls == 1
+    assert builder._compiled_memory_enabled is False
+    assert len(compiled_memory_messages(first.request)) == 1
+    assert compiled_memory_messages(second.request) == []
+    assert compiled_memory_diagnostics(first)["compiled_memory_enabled"] is True
+    assert compiled_memory_diagnostics(second) == {
+        "compiled_memory_enabled": False,
+        "compiler_available": True,
+        "compiled_memory_attempted": False,
+        "compiled_memory_section_present": False,
+        "selected_count": 0,
+        "skipped_count": 0,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {},
+    }
+
+
 def test_flag_on_includes_selected_compiled_memory(
     conn: sqlite3.Connection,
     persona_path: Path,
@@ -521,6 +689,117 @@ def test_context_governance_final_output_excludes_raw_internal_fields(
         "MemoryCompilerRequest(",
     )
     assert [marker for marker in forbidden_markers if marker in rendered] == []
+
+
+def test_scoped_override_true_keeps_governance_redaction_and_diagnostics_off_prompt(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    raw_evidence_quote = "RAW_SCOPED_OVERRIDE_EVIDENCE_QUOTE"
+    raw_observation_text = "RAW_SCOPED_OVERRIDE_OBSERVATION_TEXT"
+    raw_secret_marker = "sk-scopedoverride1234567890"
+    traceback_marker = "Traceback scoped override marker"
+    exception_text_marker = "SCOPED_OVERRIDE_EXCEPTION_TEXT_MARKER"
+    insert_memory_item(
+        conn,
+        memory_id="MEMORY_ID_SCOPED_OVERRIDE_RAW_MARKER",
+        canonical_key=f"CANONICAL_KEY_SCOPED_OVERRIDE_RAW_MARKER {raw_secret_marker}",
+        title="SAFE_SCOPED_OVERRIDE_TITLE",
+        claim=f"SAFE_SCOPED_OVERRIDE_CLAIM {raw_secret_marker}",
+        content="RAW_SCOPED_OVERRIDE_SELECTED_CONTENT",
+    )
+    insert_observation(
+        conn,
+        observation_id="observation-scoped-override-raw",
+        text=raw_observation_text,
+    )
+    insert_evidence(
+        conn,
+        memory_id="MEMORY_ID_SCOPED_OVERRIDE_RAW_MARKER",
+        observation_id="observation-scoped-override-raw",
+        quote=raw_evidence_quote,
+    )
+    insert_memory_item(
+        conn,
+        memory_id="mem-scoped-override-disabled",
+        status="disabled",
+        title=f"DISABLED_SCOPED_OVERRIDE_TITLE {traceback_marker}",
+        claim=f"DISABLED_SCOPED_OVERRIDE_CLAIM {exception_text_marker}",
+        content=f"DISABLED_SCOPED_OVERRIDE_CONTENT {raw_secret_marker}",
+    )
+    insert_evidence(conn, memory_id="mem-scoped-override-disabled")
+    insert_memory_item(
+        conn,
+        memory_id="mem-scoped-override-missing-provenance",
+        title="MISSING_PROVENANCE_SCOPED_OVERRIDE_TITLE",
+        claim="MISSING_PROVENANCE_SCOPED_OVERRIDE_CLAIM",
+        content="MISSING_PROVENANCE_SCOPED_OVERRIDE_CONTENT",
+    )
+    compiler = MemoryCompiler(MemoryItemRepository(conn))
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=False,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+        compiled_memory_enabled_override=True,
+    )
+
+    diagnostics = compiled_memory_diagnostics(result)
+    assert builder._compiled_memory_enabled is False
+    assert diagnostics == {
+        "compiled_memory_enabled": True,
+        "compiler_available": True,
+        "compiled_memory_attempted": True,
+        "compiled_memory_section_present": True,
+        "selected_count": 1,
+        "skipped_count": 2,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {"disabled": 1, "missing_provenance": 1},
+    }
+    compiled_text = compiled_memory_text(result.request)
+    assert "SAFE_SCOPED_OVERRIDE_TITLE" in compiled_text
+    assert "SAFE_SCOPED_OVERRIDE_CLAIM" in compiled_text
+    assert REDACTION_PLACEHOLDER in compiled_text
+
+    rendered = render_context(result.request, result.context_snapshot)
+    diagnostics_text = json.dumps(diagnostics, sort_keys=True)
+    combined_non_model_visible = rendered + diagnostics_text
+    assert "compiled_memory_diagnostics" not in rendered
+    forbidden_markers = (
+        "memory_id",
+        "canonical_key",
+        "audit_metadata",
+        "skipped_items",
+        "MEMORY_ID_SCOPED_OVERRIDE_RAW_MARKER",
+        "CANONICAL_KEY_SCOPED_OVERRIDE_RAW_MARKER",
+        raw_evidence_quote,
+        raw_observation_text,
+        raw_secret_marker,
+        traceback_marker,
+        exception_text_marker,
+        "RAW_SCOPED_OVERRIDE_SELECTED_CONTENT",
+        "DISABLED_SCOPED_OVERRIDE_TITLE",
+        "DISABLED_SCOPED_OVERRIDE_CLAIM",
+        "DISABLED_SCOPED_OVERRIDE_CONTENT",
+        "MISSING_PROVENANCE_SCOPED_OVERRIDE_TITLE",
+        "MISSING_PROVENANCE_SCOPED_OVERRIDE_CLAIM",
+        "MISSING_PROVENANCE_SCOPED_OVERRIDE_CONTENT",
+    )
+    assert [
+        marker
+        for marker in forbidden_markers
+        if marker in combined_non_model_visible
+    ] == []
 
 
 def test_context_governance_positive_control_renders_only_safe_selected_memory(
@@ -1327,6 +1606,58 @@ def test_compiled_memory_observe_failure_is_redacted_and_fail_closed(
     assert secret_marker not in diagnostics_text
     assert "compiler boom" not in rendered
     assert "compiler boom" not in diagnostics_text
+    assert "Traceback" not in rendered
+    assert "Traceback" not in diagnostics_text
+    assert "RuntimeError" not in rendered
+    assert "RuntimeError" not in diagnostics_text
+
+
+def test_scoped_override_true_compiler_failure_fails_closed_and_redacts(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    secret_marker = "SECRET_SCOPED_OVERRIDE_FAILURE_MARKER"
+    compiler = FailingCompiler(
+        f"SCOPED_OVERRIDE_COMPILER_BOOM {secret_marker}\nTraceback bait\nRuntimeError bait"
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=False,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+        compiled_memory_enabled_override=True,
+    )
+
+    diagnostics = compiled_memory_diagnostics(result)
+    assert compiler.calls == 1
+    assert builder._compiled_memory_enabled is False
+    assert compiled_memory_messages(result.request) == []
+    assert diagnostics == {
+        "compiled_memory_enabled": True,
+        "compiler_available": True,
+        "compiled_memory_attempted": True,
+        "compiled_memory_section_present": False,
+        "selected_count": 0,
+        "skipped_count": 0,
+        "fail_closed": True,
+        "failure_category": "compiler_error",
+        "skipped_categories": {},
+    }
+    rendered = render_context(result.request, result.context_snapshot)
+    diagnostics_text = json.dumps(diagnostics, sort_keys=True)
+    assert secret_marker not in rendered
+    assert secret_marker not in diagnostics_text
+    assert "SCOPED_OVERRIDE_COMPILER_BOOM" not in rendered
+    assert "SCOPED_OVERRIDE_COMPILER_BOOM" not in diagnostics_text
     assert "Traceback" not in rendered
     assert "Traceback" not in diagnostics_text
     assert "RuntimeError" not in rendered
