@@ -157,6 +157,33 @@ def test_mlx_engine_transcribe_times_out_and_recycles_the_worker(tmp_path: Path)
         engine.stop()
 
 
+def test_mlx_engine_timeouts_are_clamped_and_differ_by_audio_length(tmp_path: Path) -> None:
+    engine = build_stt_engine(
+        "mlx_whisper",
+        config=mlx_config(
+            tmp_path,
+            stt_timeout_seconds=-0.5,
+            stt_timeout_per_audio_second=-10,
+        ),
+    )
+    try:
+        # Defensive clamping keeps the base timeout usable and ignores negative
+        # per-second budget values.
+        assert engine._base_timeout == 0.1
+        assert engine._timeout_per_second == 0.0
+        assert engine._timeout_for(b"x" * 32000) == 0.1
+
+        # Then confirm the budget grows with captured audio duration.
+        engine._base_timeout = 0.25
+        engine._timeout_per_second = 0.5
+        short = engine._timeout_for(b"x" * 32000)
+        long = engine._timeout_for(b"x" * 128000)
+        assert short == 0.75
+        assert long == 2.25
+    finally:
+        engine.stop()
+
+
 def test_mlx_engine_model_failure_raises_engine_error_and_cleans(tmp_path: Path) -> None:
     engine = build_stt_engine("mlx_whisper", config=mlx_config(tmp_path))
 

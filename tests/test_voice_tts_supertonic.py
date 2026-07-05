@@ -171,6 +171,59 @@ def test_synthesize_strips_typographic_quotes(tmp_path: Path) -> None:
     assert chunk.text == "On powiedział „dość” i wyszedł."
 
 
+def test_supertonic_resolves_binaries_from_path_and_synthesize(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Constructor path policy must honor PATH fallback when config entries are
+    # command names. This prevents "No binary" regressions after deployment
+    # where absolute paths are not injected into config.
+    system_bin = tmp_path / "system-bin"
+    system_bin.mkdir()
+    binary_src, _ = fake_supertonic(tmp_path)
+    player_src, _ = fake_player(tmp_path)
+    binary = system_bin / "supertonic"
+    player = system_bin / "supertonic-player"
+    binary.write_text(binary_src.read_text())
+    binary.chmod(0o700)
+    player.write_text(player_src.read_text())
+    player.chmod(0o700)
+
+    original_path = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", f"{system_bin}:{original_path}")
+    engine = build_tts_engine(
+        "supertonic",
+        config=full_config(
+            tmp_path,
+            tmp_path / "ignored",
+            tmp_path / "ignored",
+            supertonic_binary="",
+            playback_binary="supertonic-player",
+        ),
+    )
+
+    chunk = engine.synthesize("Wypowiedź z PATH.")
+    assert isinstance(chunk.text, str)
+    assert len(chunk.audio) == 2000
+
+
+def test_synthesize_applies_longer_pronunciation_key_first(tmp_path: Path) -> None:
+    # Longest-to-shortest replacement order must win for overlapping keys.
+    binary, args_file = fake_supertonic(tmp_path)
+    player, _ = fake_player(tmp_path)
+    engine = build_tts_engine(
+        "supertonic",
+        config=full_config(
+            tmp_path,
+            binary,
+            player,
+            tts_pronunciations={"run": "rwn", "runtime": "rantajm"},
+        ),
+    )
+
+    engine.synthesize("Runtime.")
+    spoken = args_file.read_text().splitlines()[1]
+    assert "rantajm" in spoken
+    assert "rwn" not in spoken
+
+
 def test_synthesize_nothing_speakable_raises(tmp_path: Path) -> None:
     engine, _, _ = build_engine(tmp_path)
     with pytest.raises(TTSEngineError, match="speakable"):
