@@ -1,7 +1,9 @@
 # Memory OS Architecture
 
 Classification: technical architecture.
-Scope: Memory OS as implemented and tested on branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `2aa7eb1`.
+Scope: Memory OS as implemented and tested on branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `171fb11 docs: formalize compiled memory context policy`.
+
+Current rollout snapshot: `MEMORY-CONTEXT-ROLLOUT-READINESS-01` completed as a read-only audit with focused validation 176 passed, memory/context regression 426 passed, no files changed, and no commit made. Runtime/tests/policy are ready for the next phase; `MEMORY-CONTEXT-ENABLE-SESSION-01` remains blocked until the docs refresh is committed.
 
 ## Purpose
 
@@ -260,7 +262,7 @@ A safe diagnostics object records coarse failure state. It must not include exce
 
 ## Observability
 
-At HEAD `bd18d3b`, `MEMORY-CONTEXT-OBSERVE-01` is implemented. `ContextBuildResult` includes `CompiledMemoryDiagnostics` and exposes coarse fields only.
+`MEMORY-CONTEXT-OBSERVE-01` is implemented. `ContextBuildResult` includes `CompiledMemoryDiagnostics` and exposes coarse fields only.
 
 Diagnostics are not prompt-visible and must not include raw IDs, canonical keys, evidence, observations, secrets, user input, exception text, or traceback.
 

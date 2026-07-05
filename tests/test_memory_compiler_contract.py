@@ -13,6 +13,7 @@ POLICY_DOC = ROOT / "docs" / "MEMORY_OS_ARCHITECTURE.md"
 PROJECT_RULES_DOC = ROOT / "docs" / "JARVIS_PROJECT_RULES.md"
 CHANGE_GUARDS_DOC = ROOT / "docs" / "JARVIS_CHANGE_GUARDS.md"
 CURRENT_STATE_DOC = ROOT / "docs" / "JARVIS_CURRENT_STATE.md"
+STATUS_DOC = ROOT / "docs" / "STATUS.md"
 ROADMAP_DOC = ROOT / "docs" / "JARVIS_ROADMAP.md"
 
 
@@ -192,6 +193,29 @@ def test_current_state_documents_compiled_memory_policy_status() -> None:
             "No env, panel, API, or user-facing enablement exists",
         ),
     )
+
+
+def test_memory_status_docs_do_not_publish_stale_rollout_snapshot_metadata() -> None:
+    docs = {
+        "status": read_doc(STATUS_DOC).casefold(),
+        "current_state": read_doc(CURRENT_STATE_DOC).casefold(),
+        "architecture": read_doc(POLICY_DOC).casefold(),
+    }
+    stale = (
+        "rescue/" + "audit-8a5a0f0",
+        "1411" + "a16",
+        "2aa7" + "eb1",
+        "policy work " + "uncommitted",
+        "design" + "-phase",
+        "memory os is in design/contract phase",
+    )
+
+    present = {
+        name: [snippet for snippet in stale if snippet in text]
+        for name, text in docs.items()
+    }
+
+    assert present == {"status": [], "current_state": [], "architecture": []}
 
 
 def test_roadmap_keeps_user_facing_enablement_future() -> None:

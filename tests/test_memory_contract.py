@@ -256,15 +256,43 @@ def test_docs_index_references_memory_design_docs() -> None:
     assert "docs/adr/ADR-001-memory-os-data-model.md" in text
 
 
-def test_status_declares_design_only_and_runtime_unchanged() -> None:
-    text = read_doc(STATUS).casefold()
+def test_status_declares_current_compiled_memory_rollout_state() -> None:
+    raw_text = read_doc(STATUS).casefold()
+    text = " ".join(raw_text.replace("`", "").split())
 
     required = (
-        "memory os is in design/contract phase",
-        "current memory_blocks remain v0 infrastructure",
-        "auto-memory extraction is not implemented yet",
-        "no runtime behavior changed by memory-design-01",
+        "branch: rescue/audt-gpt5.5pro-limit-cdn",
+        "head: 171fb11 docs: formalize compiled memory context policy",
+        "memory-context-rollout-readiness-01 completed as a read-only audit",
+        "focused validation: 176 passed",
+        "memory/context regression: 426 passed",
+        "no files changed",
+        "no commit made",
+        "runtime/tests/policy are ready for the next phase",
+        "next feature task remains blocked until this docs refresh is committed",
+        "memory-context-enable-session-01",
+        "compiled memory remains default-off",
+        "config-based dev/local enablement exists",
+        "request-scoped override exists and is internal-only",
+        "no env, panel, api, or user-facing enablement exists",
+        "memory.enabled=false blocks compiled memory",
+        "request override true/false are per-request and non-mutating",
+        "final brainrequest output is prompt-safe",
+        "diagnostics are redacted and outside model-visible context",
+        "compiler failure fails closed",
+        "policy docs are protected by contract tests",
     )
     missing = [snippet for snippet in required if snippet not in text]
+    stale = (
+        "rescue/" + "audit-8a5a0f0",
+        "head: `" + "1411" + "a16",
+        "head `" + "2aa7" + "eb1",
+        "current uncommitted work",
+        "policy work " + "uncommitted",
+        "memory os is in design/contract phase",
+        "design" + "-phase",
+    )
+    present = [snippet for snippet in stale if snippet in raw_text]
 
     assert missing == []
+    assert present == []

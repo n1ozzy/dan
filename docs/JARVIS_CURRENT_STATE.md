@@ -1,21 +1,22 @@
 # Jarvis Current State
 
 Classification: current handoff.
-Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `2aa7eb1` in the local checkout.
+Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `171fb11 docs: formalize compiled memory context policy` in the local checkout.
 Public reference: `https://github.com/n1ozzy/jarvis` public `main`, used only as a secondary reference.
 
 ## Overview
 
 Jarvis is a local, single-user runtime centered on `jarvisd`. The daemon owns durable truth: conversations, turns, events, memory, approvals, tool runs, worker jobs, voice queue, listening leases, settings, and runtime state. UI surfaces such as the panel or cockpit are clients only.
 
-The active local branch is not public `main`. The branch under review is `rescue/audt-gpt5.5pro-limit-cdn`. The branch contains the Memory OS rescue/audit line after the v4.2 runtime work.
+The active local branch is not public `main`. The branch under review is `rescue/audt-gpt5.5pro-limit-cdn`. The branch contains the Memory OS rollout line after the v4.2 runtime work.
 
 ## Repository status
 
 - Branch: `rescue/audt-gpt5.5pro-limit-cdn`
-- HEAD: `2aa7eb1`
-- HEAD commit: `feat: add request-scoped compiled memory override`
-- Current uncommitted work: `MEMORY-CONTEXT-POLICY-01` docs and contract tests only.
+- HEAD: `171fb11`
+- HEAD commit: `docs: formalize compiled memory context policy`
+- Current committed state: `MEMORY-CONTEXT-POLICY-01` docs and contract tests are committed at HEAD.
+- Latest read-only audit: `MEMORY-CONTEXT-ROLLOUT-READINESS-01` completed with focused validation 176 passed, memory/context regression 426 passed, no files changed, and no commit made.
 - Public repo `main`: secondary reference only.
 - Local branch checkout is the source of truth for this package.
 
@@ -62,14 +63,18 @@ The active local branch is not public `main`. The branch under review is `rescue
 - `MEMORY-CONTEXT-SNAPSHOT-01`: final BrainRequest/context shape tests.
 - `MEMORY-CONTEXT-GOVERNANCE-01`: final-context governance tests.
 - `MEMORY-CONTEXT-OBSERVE-01`: safe compiled-memory context diagnostics, committed at `bd18d3b`.
+- `MEMORY-CONTEXT-POLICY-01`: formal compiled memory context policy docs and contract tests, committed at `171fb11`.
+- `MEMORY-CONTEXT-ROLLOUT-READINESS-01`: read-only readiness audit completed with focused validation 176 passed, memory/context regression 426 passed, no files changed, and no commit made.
 - Config-based dev/local compiled memory enablement exists while default-off.
 - Request-scoped override support exists for one request at a time.
 
 ## Current workstream
 
-The active workstream is `MEMORY-CONTEXT-POLICY-01`: formal compiled memory context policy docs and contract tests.
+The active workstream is `MEMORY-CONTEXT-DOCS-STATUS-REFRESH-01`: docs-only status snapshot refresh after `MEMORY-CONTEXT-ROLLOUT-READINESS-01` found stale authoritative metadata.
 
-`MEMORY-CONTEXT-OBSERVE-01` is implemented at `bd18d3b`. It adds a safe, read-only diagnostics surface for the compiled memory context path without making diagnostics prompt-visible. The later `2aa7eb1` state adds request-scoped override support without making compiled memory globally or user-facing enabled.
+Runtime/tests/policy are ready for the next phase. The next feature task remains blocked until this docs refresh is committed. The next intended task after this docs refresh is `MEMORY-CONTEXT-ENABLE-SESSION-01`.
+
+`MEMORY-CONTEXT-OBSERVE-01` adds a safe, read-only diagnostics surface for the compiled memory context path without making diagnostics prompt-visible. Request-scoped override support also exists without making compiled memory globally or user-facing enabled.
 
 ## Implemented capabilities
 
@@ -153,10 +158,11 @@ Current safety posture is conservative.
 
 ## Immediate next steps
 
-1. Review and commit `MEMORY-CONTEXT-POLICY-01`.
-2. Keep compiled memory default-off.
-3. Keep env/panel/API/user-facing enablement future-scoped.
-4. Add broader runtime smoke only when the next scoped enablement task requires it.
+1. Review and commit `MEMORY-CONTEXT-DOCS-STATUS-REFRESH-01`.
+2. Start `MEMORY-CONTEXT-ENABLE-SESSION-01` only after the docs refresh is committed.
+3. Keep compiled memory default-off.
+4. Keep env/panel/API/user-facing enablement future-scoped.
+5. Add broader runtime smoke only when the next scoped enablement task requires it.
 
 ## Operational rules
 
