@@ -1,7 +1,7 @@
 # Jarvis Current State
 
 Classification: current handoff.
-Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `bd18d3b` in the local checkout.
+Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `2aa7eb1` in the local checkout.
 Public reference: `https://github.com/n1ozzy/jarvis` public `main`, used only as a secondary reference.
 
 ## Overview
@@ -13,9 +13,9 @@ The active local branch is not public `main`. The branch under review is `rescue
 ## Repository status
 
 - Branch: `rescue/audt-gpt5.5pro-limit-cdn`
-- HEAD: `bd18d3b`
-- HEAD commit: `feat: add compiled memory context observability`
-- Current uncommitted work: docs-only package integration/review in `docs/`.
+- HEAD: `2aa7eb1`
+- HEAD commit: `feat: add request-scoped compiled memory override`
+- Current uncommitted work: `MEMORY-CONTEXT-POLICY-01` docs and contract tests only.
 - Public repo `main`: secondary reference only.
 - Local branch checkout is the source of truth for this package.
 
@@ -62,12 +62,14 @@ The active local branch is not public `main`. The branch under review is `rescue
 - `MEMORY-CONTEXT-SNAPSHOT-01`: final BrainRequest/context shape tests.
 - `MEMORY-CONTEXT-GOVERNANCE-01`: final-context governance tests.
 - `MEMORY-CONTEXT-OBSERVE-01`: safe compiled-memory context diagnostics, committed at `bd18d3b`.
+- Config-based dev/local compiled memory enablement exists while default-off.
+- Request-scoped override support exists for one request at a time.
 
 ## Current workstream
 
-The active workstream is docs-only integration/review for this documentation package.
+The active workstream is `MEMORY-CONTEXT-POLICY-01`: formal compiled memory context policy docs and contract tests.
 
-`MEMORY-CONTEXT-OBSERVE-01` is implemented at `bd18d3b`. It adds a safe, read-only diagnostics surface for the compiled memory context path without making diagnostics prompt-visible.
+`MEMORY-CONTEXT-OBSERVE-01` is implemented at `bd18d3b`. It adds a safe, read-only diagnostics surface for the compiled memory context path without making diagnostics prompt-visible. The later `2aa7eb1` state adds request-scoped override support without making compiled memory globally or user-facing enabled.
 
 ## Implemented capabilities
 
@@ -98,14 +100,18 @@ The active workstream is docs-only integration/review for this documentation pac
 - Preview API exposes compiler results for inspection.
 - ContextBuilder can include compiled memory only when explicitly enabled.
 - Runtime can wire compiler dependencies, still default-off.
+- Config-based dev/local enablement exists and can enable compiled memory only when `memory.enabled=true`.
+- Request-scoped override support exists; override True or False applies to one request and must not mutate builder/runtime state.
 - Final-context tests cover safe shape, governance exclusions, and fail-closed behavior.
 - Context-build diagnostics expose only coarse compiled-memory status and counts; they must not include raw memory content, IDs, user input, exception text, or traceback.
 
 ## Default-off capabilities
 
-- Compiled memory in prompt context is default-off.
+- Compiled memory remains default-off.
 - Runtime dependency wiring does not equal global enablement.
-- No env/config/panel/API enablement exists for compiled memory in this branch; current enablement is explicit constructor/test wiring only.
+- Config-based dev/local enablement exists, but config defaults keep compiled memory off and `memory.enabled=false` blocks it.
+- Request-scoped override support exists, but it is one-request internal wiring and does not persist.
+- No env, panel, API, or user-facing enablement exists for compiled memory.
 - Provider CLI adapters are configured disabled by default unless enabled in config.
 - Voice is configured disabled by default in `config/jarvis.example.toml`.
 - Launchd auto-install is disabled by default.
@@ -115,13 +121,12 @@ The active workstream is docs-only integration/review for this documentation pac
 ## Not implemented yet
 
 - Global compiled memory enablement.
-- Dev/local compiled memory enablement flag.
-- Session/profile-scoped compiled memory enablement.
-- User-facing memory switch in panel/API.
+- Env-based compiled memory enablement.
+- Panel/API/user-facing compiled memory switch.
+- Broader session/profile-scoped compiled memory enablement beyond the request-scoped internal override.
 - Usage ledger for compiled memory selection events.
 - Topic documents runtime.
 - Automatic background memory summarization/consolidation.
-- Formal Memory OS policy document beyond current contracts and tests.
 - Production telemetry beyond the current coarse compiled-memory diagnostics.
 
 ## Deferred or backlog areas
@@ -148,10 +153,10 @@ Current safety posture is conservative.
 
 ## Immediate next steps
 
-1. Review and commit this docs-only package.
+1. Review and commit `MEMORY-CONTEXT-POLICY-01`.
 2. Keep compiled memory default-off.
-3. Then consider `MEMORY-CONTEXT-ENABLE-DEV-01`.
-4. Add runtime smoke only after explicit dev/local enablement exists.
+3. Keep env/panel/API/user-facing enablement future-scoped.
+4. Add broader runtime smoke only when the next scoped enablement task requires it.
 
 ## Operational rules
 

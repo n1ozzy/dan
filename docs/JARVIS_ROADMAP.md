@@ -71,31 +71,35 @@ This document does not override code, tests, `AGENTS.md`, or project rules.
 - Final context shape tests.
 - Governance tests.
 - Safe compiled-memory context diagnostics.
+- Config-based dev/local compiled memory enablement.
+- Request-scoped compiled memory override.
+- Formal compiled memory context policy contract.
 
 ## Now
 
-### Documentation package integration
+### Compiled memory policy contract
 
-`MEMORY-CONTEXT-OBSERVE-01` is implemented at `bd18d3b`. The current work is docs-only integration/review for the generated Jarvis documentation package.
+`MEMORY-CONTEXT-POLICY-01` formalizes the compiled memory context policy after config-based dev/local enablement and request-scoped override support.
 
 Goal:
 
-- Keep branch/head references current.
-- Keep implemented, planned, deferred, and unknown states separate.
 - Preserve compiled-memory default-off status.
-- Avoid claiming env/config/panel/API enablement exists.
+- Keep implemented, planned, deferred, and unknown states separate.
+- Document prompt-visible output, governance exclusions, diagnostics redaction, and fail-closed/read-only behavior.
+- Make clear that env/panel/API/user-facing enablement remains future.
 
 ## Next
 
-### Dev/local compiled memory enablement
+### Additional compiled memory smoke
 
-Add explicit local enablement only after the docs package is reviewed and committed.
+Extend runtime smoke coverage only when a scoped task needs broader proof around existing config-based local enablement or request-scoped override behavior.
 
 Rules:
 
 - Default remains off.
 - No production default-on.
-- No panel/global switch yet.
+- No env/global switch yet.
+- No panel/API/user-facing switch yet.
 - Smoke tests must prove safe behavior.
 
 ### Runtime smoke for compiled memory
@@ -111,7 +115,7 @@ Prove:
 
 ### Scoped enablement
 
-Add session/profile/allowlist enablement after dev/local path is stable.
+Add broader session/profile/allowlist enablement after the request-scoped internal path is stable.
 
 ## Later
 
@@ -119,7 +123,7 @@ Add session/profile/allowlist enablement after dev/local path is stable.
 - Memory audit UI.
 - Topic documents and background consolidation.
 - Panel controls for memory review and enablement.
-- Formal Memory OS policy document.
+- Env/panel/API/user-facing enablement remains future.
 - Provider hardening and manual smoke coverage.
 - Runtime ergonomics and packaging.
 - More complete docs maintenance pipeline.
@@ -127,7 +131,7 @@ Add session/profile/allowlist enablement after dev/local path is stable.
 ## Do not do yet
 
 - Do not enable compiled memory globally.
-- Do not add user-facing compiled-memory switch before dev/local smoke.
+- Do not add env, panel, API, or user-facing compiled-memory enablement casually.
 - Do not start G5 voice clone work.
 - Do not treat provider sessions as memory.
 - Do not let workers commit facts directly.

@@ -148,6 +148,31 @@ Forbidden by default:
 - provider adapters
 - tools/voice/panel/config/CI
 
+### Compiled memory context policy tasks
+
+Allowed by explicit scope only:
+
+- `docs/MEMORY_OS_ARCHITECTURE.md`
+- current-state or roadmap docs named by the task
+- contract tests in `tests/test_memory_compiler_contract.py`
+- narrow wiring/config tests only when the task explicitly requires them
+
+Forbidden by default:
+
+- ContextBuilder prompt-visible output
+- MemoryCompiler selection logic
+- schema/migrations
+- API routes
+- config defaults
+- env/panel/API/user-facing enablement
+
+Use this guard set unless the task gives a stricter one:
+
+```sh
+git diff --name-only | grep -E '^jarvis/brain/context_builder.py|^jarvis/memory/compiler.py|^jarvis/store/|^jarvis/api/|^config/|^jarvis/(tools|voice|panel)/|^jarvis/brain/provider|^\.github/|^scripts/|^launchd/|^README.md' \
+  && echo "ERROR: compiled memory policy boundary changed unexpectedly" && exit 1 || true
+```
+
 ### Runtime/daemon tasks
 
 Allowed by explicit scope only:

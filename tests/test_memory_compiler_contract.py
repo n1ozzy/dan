@@ -9,10 +9,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 COMPILER_DOC = ROOT / "docs" / "MEMORY_COMPILER.md"
 GOVERNANCE_DOC = ROOT / "docs" / "MEMORY_GOVERNANCE.md"
+POLICY_DOC = ROOT / "docs" / "MEMORY_OS_ARCHITECTURE.md"
+PROJECT_RULES_DOC = ROOT / "docs" / "JARVIS_PROJECT_RULES.md"
+CHANGE_GUARDS_DOC = ROOT / "docs" / "JARVIS_CHANGE_GUARDS.md"
+CURRENT_STATE_DOC = ROOT / "docs" / "JARVIS_CURRENT_STATE.md"
+ROADMAP_DOC = ROOT / "docs" / "JARVIS_ROADMAP.md"
 
 
 def read_compiler_doc() -> str:
     return COMPILER_DOC.read_text(encoding="utf-8")
+
+
+def read_doc(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
 
 
 def read_governance_addendum() -> str:
@@ -39,6 +48,164 @@ def assert_normalized_contains_all(text: str, required: tuple[str, ...]) -> None
 
 def test_memory_compiler_doc_exists() -> None:
     assert COMPILER_DOC.is_file()
+
+
+def test_memory_os_policy_doc_exists() -> None:
+    assert POLICY_DOC.is_file()
+
+
+def test_memory_os_policy_defines_enablement_precedence() -> None:
+    text = read_doc(POLICY_DOC)
+
+    assert_contains_all(
+        text,
+        (
+            "## Compiled memory context policy",
+            "### Enablement precedence",
+        ),
+    )
+    assert_normalized_contains_all(
+        text,
+        (
+            "global default is off",
+            "config dev/local enablement can enable compiled memory when memory.enabled=true",
+            "memory.enabled=false blocks compiled memory",
+            "request-scoped override True can enable compiled memory for one request",
+            "request-scoped override False disables compiled memory for one request",
+            "request-scoped override must not mutate builder/runtime state",
+            "No env, panel, API, or user-facing enablement exists yet",
+        ),
+    )
+
+
+def test_memory_os_policy_defines_prompt_visible_output_contract() -> None:
+    text = read_doc(POLICY_DOC)
+
+    assert_contains_all(
+        text,
+        (
+            "### Prompt-visible output contract",
+            "### Forbidden prompt-visible data",
+        ),
+    )
+    assert_normalized_contains_all(
+        text,
+        (
+            "compiled memory is represented only as safe compiled_memory context message",
+            "metadata remains kind=compiled_memory and untrusted=True",
+            "safe fields are title, claim, evidence_count",
+            "raw IDs, canonical keys, audit metadata, and skipped items must not appear",
+            "raw evidence quotes and raw observations must not appear",
+            "raw secrets must not appear",
+            "exception text and tracebacks must not appear",
+        ),
+    )
+
+
+def test_memory_os_policy_defines_governance_exclusions() -> None:
+    text = read_doc(POLICY_DOC)
+
+    assert_contains_all(text, ("### Governance exclusions",))
+    assert_normalized_contains_all(
+        text,
+        (
+            "disabled excluded",
+            "superseded excluded",
+            "forgotten excluded",
+            "conflict excluded",
+            "missing provenance/evidence excluded",
+            "procedural excluded by default",
+        ),
+    )
+
+
+def test_memory_os_policy_defines_diagnostics_redaction_contract() -> None:
+    text = read_doc(POLICY_DOC)
+
+    assert_contains_all(text, ("### Diagnostics and redaction",))
+    assert_normalized_contains_all(
+        text,
+        (
+            "diagnostics are outside model-visible context",
+            "diagnostics are coarse/redacted",
+            "diagnostics reflect final post-budget BrainRequest",
+            "diagnostics must not contain claim, title, evidence, observation, user input, or secret text",
+        ),
+    )
+
+
+def test_memory_os_policy_defines_fail_closed_read_only_contract() -> None:
+    text = read_doc(POLICY_DOC)
+
+    assert_contains_all(text, ("### Fail-closed and read-only context build",))
+    assert_normalized_contains_all(
+        text,
+        (
+            "compiler failure omits compiled memory",
+            "compiler failure does not leak exception details",
+            "context build remains read-only",
+            "no usage ledger, events, or timestamp writes during context build",
+            "future work must not change casually",
+        ),
+    )
+
+
+def test_project_rules_restate_scoped_workflow_and_refactor_limits() -> None:
+    text = read_doc(PROJECT_RULES_DOC)
+
+    assert_normalized_contains_all(
+        text,
+        (
+            "one task at a time",
+            "one scope per task",
+            "no broad refactors",
+        ),
+    )
+
+
+def test_change_guards_cover_compiled_memory_policy_boundaries() -> None:
+    text = read_doc(CHANGE_GUARDS_DOC)
+
+    assert_contains_all(text, ("### Compiled memory context policy tasks",))
+    assert_normalized_contains_all(
+        text,
+        (
+            "ContextBuilder prompt-visible output",
+            "MemoryCompiler selection logic",
+            "schema/migrations",
+            "API routes",
+            "config defaults",
+            "env/panel/API/user-facing enablement",
+        ),
+    )
+
+
+def test_current_state_documents_compiled_memory_policy_status() -> None:
+    text = read_doc(CURRENT_STATE_DOC)
+
+    assert_normalized_contains_all(
+        text,
+        (
+            "Compiled memory remains default-off",
+            "config-based dev/local enablement exists",
+            "request-scoped override support exists",
+            "No env, panel, API, or user-facing enablement exists",
+        ),
+    )
+
+
+def test_roadmap_keeps_user_facing_enablement_future() -> None:
+    text = read_doc(ROADMAP_DOC)
+
+    assert_normalized_contains_all(
+        text,
+        (
+            "Config-based dev/local compiled memory enablement",
+            "Request-scoped compiled memory override",
+            "env/panel/API/user-facing enablement remains future",
+            "Do not add env, panel, API, or user-facing compiled-memory enablement casually",
+        ),
+    )
 
 
 def test_memory_compiler_doc_defines_contract_sections() -> None:

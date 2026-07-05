@@ -123,6 +123,13 @@ Default-off means:
 - no user-facing switch added casually;
 - no hidden runtime behavior change.
 
+Compiled memory context policy also requires:
+
+- `memory.enabled=false` blocks compiled memory;
+- config dev/local enablement stays explicit and default-off;
+- request-scoped overrides do not persist or mutate builder/runtime state;
+- env, panel, API, and user-facing enablement require their own scoped task.
+
 ## Fail-closed policy
 
 Safety-sensitive failures must fail closed.
@@ -161,6 +168,9 @@ Examples:
 - permission policy in `jarvis/tools/permissions.py`
 - approval execution path in `jarvis/tools/registry.py`
 - ContextBuilder prompt-visible output
+- compiled memory enablement precedence
+- compiled memory diagnostics redaction contract
+- compiled memory read-only context build contract
 - MemoryCompiler governance logic
 - secret redaction behavior
 - voice broker sole-speaker contract

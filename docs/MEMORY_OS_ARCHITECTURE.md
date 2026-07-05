@@ -1,7 +1,7 @@
 # Memory OS Architecture
 
 Classification: technical architecture.
-Scope: Memory OS as implemented and tested on branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `bd18d3b`.
+Scope: Memory OS as implemented and tested on branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `2aa7eb1`.
 
 ## Purpose
 
@@ -179,9 +179,65 @@ untrusted = True
 
 Runtime dependency wiring exists so daemon-created ContextBuilder instances can receive compiler dependencies. That is not global enablement.
 
-Compiled memory remains default-off until a specific enablement task adds explicit dev/local or scoped activation.
+Compiled memory remains default-off. Config-based dev/local enablement exists, but it can enable compiled memory only when `memory.enabled=true` and compiled-memory context is explicitly enabled in config.
 
-No env/config/panel/API enablement exists for compiled memory in this branch. Current enablement is explicit constructor/test wiring only.
+Request-scoped internal override support exists for one request at a time. It does not mutate builder or runtime state.
+
+No env, panel, API, or user-facing enablement exists yet.
+
+## Compiled memory context policy
+
+This section is the formal rollout and safety contract for compiled memory in prompt context. Future work must preserve it unless a task explicitly scopes a policy change and updates the contract tests.
+
+### Enablement precedence
+
+- The global default is off.
+- Config dev/local enablement can enable compiled memory when `memory.enabled=true`.
+- `memory.enabled=false` blocks compiled memory.
+- Request-scoped override True can enable compiled memory for one request.
+- Request-scoped override False disables compiled memory for one request.
+- Request-scoped override must not mutate builder/runtime state.
+- No env, panel, API, or user-facing enablement exists yet.
+
+### Prompt-visible output contract
+
+- Compiled memory is represented only as safe compiled_memory context message.
+- Metadata remains `kind=compiled_memory` and `untrusted=True`.
+- Safe fields are `title`, `claim`, `evidence_count`.
+- Existing `memory_blocks` behavior remains separate and unchanged.
+
+### Forbidden prompt-visible data
+
+- Raw IDs, canonical keys, audit metadata, and skipped items must not appear.
+- Raw evidence quotes and raw observations must not appear.
+- Raw secrets must not appear.
+- Exception text and tracebacks must not appear.
+- Compiler diagnostics must not be rendered into model-visible context.
+
+### Governance exclusions
+
+- Disabled excluded.
+- Superseded excluded.
+- Forgotten excluded.
+- Conflict excluded.
+- Missing provenance/evidence excluded.
+- Procedural excluded by default.
+
+### Diagnostics and redaction
+
+- Diagnostics are outside model-visible context.
+- Diagnostics are coarse/redacted.
+- Diagnostics reflect final post-budget BrainRequest.
+- Diagnostics must not contain claim, title, evidence, observation, user input, or secret text.
+- Diagnostics must not contain raw IDs, canonical keys, raw skipped reasons, exception text, or traceback.
+
+### Fail-closed and read-only context build
+
+- Compiler failure omits compiled memory.
+- Compiler failure does not leak exception details.
+- Context build remains read-only.
+- No usage ledger, events, or timestamp writes during context build.
+- Future work must not change casually: enablement precedence, prompt-visible fields, governance exclusions, diagnostics redaction, fail-closed behavior, or read-only context build behavior.
 
 ## Prompt-visible output contract
 
@@ -230,10 +286,8 @@ Test focus has moved from compiler internals to final BrainRequest/context outpu
 
 ## Future work
 
-- Add dev/local enablement.
-- Add runtime smoke around explicit enablement.
-- Add scoped enablement.
+- Keep env/panel/API/user-facing enablement out until a scoped future task defines it.
+- Add broader session/profile enablement only after internal override behavior remains stable.
 - Add usage ledger/audit events for memory selection.
 - Add production telemetry beyond the current coarse diagnostics.
-- Add formal policy document after behavior stabilizes.
 - Add panel UX only after safe enablement is proven.
