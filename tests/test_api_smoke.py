@@ -1457,6 +1457,40 @@ def test_get_state_returns_current_state_and_allowed_targets(app: DaemonApp) -> 
     assert set(payload["allowed_state_targets"]) == {"LISTENING", "THINKING", "ERROR", "STOPPING"}
 
 
+def test_get_voice_queue_returns_bounded_redacted_status(app: DaemonApp) -> None:
+    from jarvis.store.event_store import create_event_store
+    from jarvis.voice.queue import VoiceQueue
+
+    app.start()
+    queue = VoiceQueue(app.conn, event_store=create_event_store(app.conn))
+    request = queue.enqueue(
+        text="Playback status for sk-live-secret-token-that-must-not-leak",
+        turn_id="turn-voice-status",
+        kind="sentence",
+        seq=0,
+    )
+    queue.claim_next()
+    queue.mark_failed(request.id, error="playback failed: mock stopped")
+
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/voice/queue?limit=5")
+
+    encoded = json.dumps(payload)
+    assert status == 200
+    assert payload["limit"] == 5
+    assert len(payload["voice_queue"]) == 1
+    row = payload["voice_queue"][0]
+    assert row["id"] == request.id
+    assert row["turn_id"] == "turn-voice-status"
+    assert row["status"] == "failed"
+    assert row["kind"] == "sentence"
+    assert row["seq"] == 0
+    assert row["text_length"] > 0
+    assert "text_preview" in row
+    assert "playback failed" in row["error"]
+    assert "sk-live-secret" not in encoded
+
+
 def test_get_events_returns_ascending_events_after_after_id(app: DaemonApp) -> None:
     app.start()
     app.stop(reason="done")

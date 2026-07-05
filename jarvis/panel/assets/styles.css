@@ -578,6 +578,10 @@ body.offline .state-pill {
   overflow: hidden;
 }
 
+.voice-queue-list {
+  margin-top: 8px;
+}
+
 .mode-button {
   min-height: 30px;
   padding: 5px 12px;
@@ -829,6 +833,24 @@ details.card.collapsible[open] summary::after {
 .final-line {
   color: #c3cedd;
   font-size: 12px;
+}
+
+.payload-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.error-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .argument-line {

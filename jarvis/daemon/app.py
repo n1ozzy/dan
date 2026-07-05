@@ -46,6 +46,7 @@ from jarvis.memory import (
 )
 from jarvis.paths import RuntimePaths, ensure_runtime_dirs, resolve_runtime_paths
 from jarvis.runtime.supervisor import RuntimeSupervisor
+from jarvis.security.redaction import redact_secrets
 from jarvis.security.transport import ensure_api_token
 from jarvis.store.db import (
     ThreadLocalConnection,
@@ -481,6 +482,40 @@ class DaemonApp:
             return self._listening_manager(conn).active()
         finally:
             close_quietly(conn)
+
+    def cancel_active_speech(self, *, reason: str) -> dict[str, Any]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        if self.voice_cancellation is None:
+            return {
+                "reason": reason,
+                "generation_cancelled": 0,
+                "queue_cancelled": 0,
+                "playback_stopped": False,
+                "tombstoned_turns": 0,
+            }
+        return self.voice_cancellation.cancel_active_speech(reason=reason)
+
+    def list_voice_queue(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        bounded_limit = _bounded_voice_queue_limit(limit)
+        conn = self._connect_existing()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, created_at, updated_at, turn_id, text, priority,
+                       voice_id, interrupt_policy, status, error,
+                       metadata_json, spoken_at
+                FROM voice_queue
+                ORDER BY rowid DESC
+                LIMIT ?
+                """,
+                (bounded_limit,),
+            ).fetchall()
+        finally:
+            close_quietly(conn)
+        return [_voice_queue_row(row) for row in rows]
 
     def get_audio_devices(self):
         """Observe audio devices through the owning manager (CONTRACTS §9)."""
@@ -1934,6 +1969,51 @@ def _tool_request_from_approval(approval: Mapping[str, Any]) -> ToolRequest:
         turn_id=turn_id,
         metadata={"approval_id": str(approval["id"])},
     )
+
+
+def _bounded_voice_queue_limit(limit: int) -> int:
+    if type(limit) is not int or limit <= 0:
+        raise DaemonAppError("limit must be a positive integer.")
+    if limit > 100:
+        raise DaemonAppError("limit must be at most 100.")
+    return limit
+
+
+def _voice_queue_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
+    metadata = _safe_json_mapping(row[10])
+    text = str(row[4] or "")
+    preview = str(redact_secrets(text)).replace("\n", " ").strip()
+    if len(preview) > 160:
+        preview = f"{preview[:160]}..."
+    seq = metadata.get("seq")
+    try:
+        normalized_seq = int(seq) if seq is not None else None
+    except (TypeError, ValueError):
+        normalized_seq = None
+    return {
+        "id": str(row[0]),
+        "created_at": str(row[1]),
+        "updated_at": str(row[2]),
+        "turn_id": str(row[3]) if row[3] else None,
+        "status": str(row[8]),
+        "kind": str(metadata.get("kind") or "sentence"),
+        "seq": normalized_seq,
+        "priority": int(row[5]),
+        "voice_id": str(row[6]) if row[6] else None,
+        "interrupt_policy": str(row[7]),
+        "spoken_at": str(row[11]) if row[11] else None,
+        "error": str(redact_secrets(row[9])) if row[9] else None,
+        "text_length": len(text),
+        "text_preview": preview,
+    }
+
+
+def _safe_json_mapping(value: Any) -> dict[str, Any]:
+    try:
+        decoded = json.loads(str(value or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return dict(decoded) if isinstance(decoded, Mapping) else {}
 
 
 def _required_text(value: Any, label: str) -> str:

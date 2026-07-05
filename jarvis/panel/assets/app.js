@@ -34,8 +34,13 @@ const cockpit = {
     retryMs: 2000,
     reconnectTimer: null,
     approvalsTimer: null,
+    historyTimer: null,
+    memoryTimer: null,
+    runtimeTimer: null,
     settingsTimer: null,
     voiceTimer: null,
+    voiceQueueTimer: null,
+    connected: false,
   },
 };
 
@@ -51,6 +56,11 @@ const HEALTH_RETRY_MS = 2000;
 // is never stuck on a stale "unknown" after a startup race or a daemon restart
 // under a live panel. On a fresh reconnect it triggers a full refreshAll().
 const HEALTH_POLL_MS = 3000;
+// Fallback refresh for core live panes when the websocket stream is down.
+const LIVE_FALLBACK_POLL_MS = 5000;
+const RUNTIME_OVERVIEW_UNKNOWN = "unknown";
+const RUNTIME_OVERVIEW_NOT_EXPOSED = "not exposed by current API";
+const RUNTIME_OVERVIEW_READ_ONLY = "read-only";
 
 // Ludzkie nazwy narzędzi (rejestr daemona) — używane w kartach zgód i w
 // sekcji „Możliwości Jarvisa”. Fallback dla rodzin ui_/screen_/terminal_,
@@ -265,6 +275,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindEvents();
   refreshAll();
   window.setInterval(pollHealth, HEALTH_POLL_MS);
+  window.setInterval(pollLiveFallback, LIVE_FALLBACK_POLL_MS);
   window.setInterval(refreshRelativeTimes, RELATIVE_TIME_TICK_MS);
 });
 
@@ -276,6 +287,22 @@ async function pollHealth() {
   if (ok && !wasOnline) {
     refreshAll();
   }
+}
+
+async function pollLiveFallback() {
+  if (!cockpit.online || cockpit.stream.connected) {
+    return;
+  }
+  await Promise.allSettled([
+    refreshHistory(),
+    refreshMemory(),
+    refreshToolsAndApprovals(),
+    refreshVoice(),
+    refreshVoiceQueue(),
+    refreshRuntimeOverview(),
+    refreshEvents(),
+    refreshRuntime(),
+  ]);
 }
 
 function bindElements() {
@@ -311,6 +338,9 @@ function bindElements() {
     "approvalNudge",
     "toolsError",
     "refreshSettingsButton",
+    "refreshRuntimeOverviewButton",
+    "runtimeOverviewList",
+    "runtimeOverviewError",
     "brainAdapterSelect",
     "switchBrainButton",
     "brainAdapterLabel",
@@ -333,6 +363,7 @@ function bindElements() {
     "voiceStatus",
     "voiceStatusText",
     "voiceError",
+    "voiceQueueList",
   ];
 
   for (const id of ids) {
@@ -360,6 +391,7 @@ function bindEvents() {
   el.refreshMemoryButton.addEventListener("click", refreshMemory);
   el.refreshToolsButton.addEventListener("click", refreshToolsAndApprovals);
   el.refreshSettingsButton.addEventListener("click", refreshSettings);
+  el.refreshRuntimeOverviewButton.addEventListener("click", refreshRuntimeOverview);
   el.switchBrainButton.addEventListener("click", switchBrain);
   el.settingsForm.addEventListener("submit", saveSetting);
   el.refreshEventsButton.addEventListener("click", refreshEvents);
@@ -418,10 +450,12 @@ async function refreshAll() {
 
   await Promise.all([
     refreshVoice(),
+    refreshVoiceQueue(),
     refreshHistory(),
     refreshMemory(),
     refreshToolsAndApprovals(),
     refreshSettings(),
+    refreshRuntimeOverview(),
     refreshEvents(),
     refreshRuntime(),
   ]);
@@ -462,6 +496,59 @@ async function refreshVoice() {
     renderError(el.voiceError, error);
   }
   renderVoice();
+}
+
+async function refreshVoiceQueue() {
+  if (!el.voiceQueueList) {
+    return;
+  }
+  try {
+    const payload = await requestJson("/voice/queue?limit=12");
+    renderVoiceQueue(Array.isArray(payload.voice_queue) ? payload.voice_queue : []);
+  } catch (error) {
+    clearNode(el.voiceQueueList);
+    const row = document.createElement("div");
+    row.className = "list-row";
+    appendLine(row, "Kolejka głosu niedostępna", "input-line");
+    appendLine(row, error.message || "request failed", "muted");
+    el.voiceQueueList.appendChild(row);
+  }
+}
+
+function renderVoiceQueue(rows) {
+  clearNode(el.voiceQueueList);
+  if (rows.length === 0) {
+    renderEmpty(el.voiceQueueList, "Kolejka głosu pusta");
+    return;
+  }
+  for (const item of rows) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+    appendLine(
+      row,
+      `${item.status || "unknown"} · ${item.kind || "sentence"} #${item.seq ?? "?"}`,
+      "input-line",
+    );
+    appendLine(
+      row,
+      `${shortId(item.id)} · turn ${shortId(item.turn_id)} · ${item.interrupt_policy || "no_interrupt"}`,
+      "muted",
+    );
+    if (item.text_preview) {
+      appendLine(row, item.text_preview, "payload-line");
+    }
+    if (item.error) {
+      appendLine(row, item.error, "error-line");
+    }
+    const timing = [
+      item.created_at ? `utworzono ${formatRelative(item.created_at)}` : null,
+      item.spoken_at ? `start audio ${formatRelative(item.spoken_at)}` : null,
+    ].filter(Boolean);
+    if (timing.length > 0) {
+      appendLine(row, timing.join(" · "), "muted");
+    }
+    el.voiceQueueList.appendChild(row);
+  }
 }
 
 function renderVoice() {
@@ -574,6 +661,297 @@ function renderHealthHuman(merged) {
     ["Wersja schematu", merged.schema_version],
     ["Głos", merged.voice_enabled ? "włączony" : "wyłączony"],
   ]);
+}
+
+async function refreshRuntimeOverview() {
+  if (!el.runtimeOverviewList) {
+    return;
+  }
+  clearError(el.runtimeOverviewError);
+
+  const endpoints = [
+    ["health", "/health"],
+    ["state", "/state"],
+    ["settings", "/settings"],
+    ["brain", "/brain/adapters"],
+    ["audio", "/audio/devices"],
+    ["voice", "/voice/listening"],
+    ["voiceQueue", "/voice/queue?limit=12"],
+    ["tools", "/tools"],
+    ["events", "/events?after_id=0&limit=50"],
+  ];
+  const settled = await Promise.allSettled(
+    endpoints.map((entry) => requestJson(entry[1])),
+  );
+  const snapshot = { failures: [] };
+  for (let index = 0; index < endpoints.length; index += 1) {
+    const [key, path] = endpoints[index];
+    const result = settled[index];
+    if (result.status === "fulfilled") {
+      snapshot[key] = result.value || {};
+    } else {
+      snapshot.failures.push(path);
+    }
+  }
+
+  renderRuntimeOverview(snapshot);
+}
+
+function renderRuntimeOverview(snapshot) {
+  clearNode(el.runtimeOverviewList);
+
+  const sections = runtimeOverviewSections(snapshot || {});
+  for (const section of sections) {
+    const row = document.createElement("article");
+    row.className = "list-row";
+    appendLine(row, section.title, "input-line");
+
+    const values = document.createElement("dl");
+    values.className = "kv-list";
+    renderKeyValues(values, section.rows);
+    row.appendChild(values);
+    el.runtimeOverviewList.appendChild(row);
+  }
+
+  const failures = Array.isArray(snapshot.failures) ? snapshot.failures : [];
+  if (failures.length > 0) {
+    el.runtimeOverviewError.hidden = false;
+    setText(
+      el.runtimeOverviewError,
+      `Some runtime overview sources failed: ${failures.join(", ")}`,
+    );
+  }
+}
+
+function runtimeOverviewSections(snapshot) {
+  const settings = overviewSettings(snapshot.settings);
+  const brain = safeObject(snapshot.brain);
+  const health = safeObject(snapshot.health);
+  const audio = safeObject(snapshot.audio).audio || {};
+  const voice = safeObject(snapshot.voice);
+  const queueRows = Array.isArray(safeObject(snapshot.voiceQueue).voice_queue)
+    ? snapshot.voiceQueue.voice_queue
+    : [];
+  const tools = Array.isArray(safeObject(snapshot.tools).tools) ? snapshot.tools.tools : [];
+  const events = Array.isArray(safeObject(snapshot.events).events) ? snapshot.events.events : [];
+  const adapters = Array.isArray(brain.adapters) ? brain.adapters : [];
+  const activeAdapter = firstPresent(brain.current, health.brain_adapter);
+
+  return [
+    {
+      title: "Voice / Audio",
+      rows: [
+        ["overview mode", RUNTIME_OVERVIEW_READ_ONLY],
+        ["voice enabled", yesNoUnknown(firstPresent(voice.voice_enabled, health.voice_enabled))],
+        ["listening now", yesNoUnknown(voice.listening)],
+        ["audio backend", overviewValue(audio.backend)],
+        ["input device", overviewValue(firstPresent(audio.input_device, audio.preferred_input))],
+        ["output device", overviewValue(firstPresent(audio.output_device, audio.output_policy))],
+        ["bluetooth mic allowed", yesNoUnknown(audio.allow_bluetooth_microphone)],
+        ["TTS engine/provider", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["STT/transcription engine", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["voice/model/speaker", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["speech speed/rate", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["pauses/timing/chunking", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["PTT mode/hotkey", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["mute mic on PTT", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["barge-in/cancel policy", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["voice queue", voiceQueueSummary(queueRows, snapshot.voiceQueue)],
+      ],
+    },
+    {
+      title: "Brain / Provider",
+      rows: [
+        ["active adapter/provider", overviewValue(activeAdapter)],
+        ["default adapter", overviewValue(brain.default)],
+        ["current model(s)", adapterModels(adapters, activeAdapter)],
+        ["registered adapters", adapterNames(adapters)],
+        ["effort", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["fast mode", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["context budget/window", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["provider sessions are memory", RUNTIME_OVERVIEW_NOT_EXPOSED],
+        ["Claude config", adapterRegistration(adapters, ["claude_cli", "claude_cli_warm"])],
+        ["Codex config", adapterRegistration(adapters, ["codex_cli"])],
+        ["Grok/local/Bielik/Mistral/Ollama", adapterRegistration(adapters, ["grok", "local", "bielik", "mistral", "ollama"])],
+        ["mock", adapterRegistration(adapters, ["mock"], "Developer/Test registered")],
+      ],
+    },
+    {
+      title: "Personality",
+      rows: [
+        ["active persona/profile", overviewPersona(settings)],
+        ["runtime change without restart", "persona.profile is read per turn when set"],
+        ["style config", RUNTIME_OVERVIEW_NOT_EXPOSED],
+      ],
+    },
+    {
+      title: "Tools / Internet",
+      rows: [
+        ["registered tools", tools.length > 0 ? `${tools.length} registered` : "none registered"],
+        ["visible risk classes", toolRiskSummary(tools)],
+        ["approval-required tools", "policy not exposed; risk classes visible"],
+        ["internet/network capability", networkToolSummary(tools)],
+        ["missing credentials/config status", RUNTIME_OVERVIEW_NOT_EXPOSED],
+      ],
+    },
+    {
+      title: "Logs / Errors",
+      rows: [
+        ["latest runtime error", latestEventIssue(events, ["runtime", "state", "daemon"])],
+        ["latest voice error", latestEventIssue(events, ["voice", "audio", "speech", "stt", "tts", "listening"])],
+        ["latest provider error", latestEventIssue(events, ["brain", "provider", "adapter"])],
+        ["latest approval/tool error", latestEventIssue(events, ["approval", "tool"])],
+        ["test/debug status", RUNTIME_OVERVIEW_NOT_EXPOSED],
+      ],
+    },
+  ];
+}
+
+function overviewSettings(payload) {
+  const settings = safeObject(payload).settings;
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return {};
+  }
+  return settings;
+}
+
+function safeObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value;
+}
+
+function overviewPersona(settings) {
+  if (Object.prototype.hasOwnProperty.call(settings, "persona.profile")) {
+    return overviewValue(settings["persona.profile"]);
+  }
+  return "default profile (persona.profile not set)";
+}
+
+function overviewValue(value) {
+  if (value === undefined || value === null || value === "") {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  if (Array.isArray(value)) {
+    const shown = value.map(overviewValue).filter((item) => item !== RUNTIME_OVERVIEW_UNKNOWN);
+    return shown.length > 0 ? shown.join(", ") : "none";
+  }
+  if (typeof value === "string") {
+    return redactEventSummaryText(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "object not displayed";
+}
+
+function yesNoUnknown(value) {
+  if (value === true) {
+    return "yes";
+  }
+  if (value === false) {
+    return "no";
+  }
+  return RUNTIME_OVERVIEW_UNKNOWN;
+}
+
+function firstPresent(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function adapterNames(adapters) {
+  if (!Array.isArray(adapters) || adapters.length === 0) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return adapters.map((adapter) => overviewValue(adapter.name)).join(", ");
+}
+
+function adapterRegistration(adapters, names, presentLabel = "registered") {
+  const found = names.filter((name) => adapterByName(adapters, name));
+  if (found.length === 0) {
+    return "not registered";
+  }
+  return found.length === 1 ? presentLabel : `${presentLabel}: ${found.join(", ")}`;
+}
+
+function adapterModels(adapters, name) {
+  const adapter = adapterByName(adapters, name);
+  const models = adapter && Array.isArray(adapter.models) ? adapter.models : [];
+  return models.length > 0 ? models.map(overviewValue).join(", ") : RUNTIME_OVERVIEW_UNKNOWN;
+}
+
+function adapterByName(adapters, name) {
+  if (!name || !Array.isArray(adapters)) {
+    return null;
+  }
+  return adapters.find((adapter) => adapter && adapter.name === name) || null;
+}
+
+function voiceQueueSummary(rows, payload) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return "empty";
+  }
+  const counts = {};
+  for (const row of rows) {
+    const status = overviewValue(row && row.status);
+    counts[status] = (counts[status] || 0) + 1;
+  }
+  const statusSummary = Object.entries(counts)
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(", ");
+  const limit = safeObject(payload).limit;
+  return `${rows.length}${limit ? ` of ${limit}` : ""} rows (${statusSummary})`;
+}
+
+function toolRiskSummary(tools) {
+  if (!Array.isArray(tools) || tools.length === 0) {
+    return "none";
+  }
+  const risks = [...new Set(tools.map((tool) => overviewValue(tool.risk)))].sort();
+  return risks.join(", ");
+}
+
+function networkToolSummary(tools) {
+  const networkTools = Array.isArray(tools)
+    ? tools.filter((tool) => String(tool.risk || "").toLowerCase() === "network")
+    : [];
+  if (networkTools.length === 0) {
+    return "no network-risk tool registered";
+  }
+  return networkTools.map((tool) => overviewValue(tool.name)).join(", ");
+}
+
+function latestEventIssue(events, families) {
+  const candidates = Array.isArray(events) ? [...events] : [];
+  candidates.sort((left, right) => Number(right.id || 0) - Number(left.id || 0));
+  const event = candidates.find((item) => eventMatchesIssue(item, families));
+  if (!event) {
+    return "none in recent events";
+  }
+  const summary = eventPayloadSummary(event.payload || {});
+  return summary ? `${eventLabel(event.type)} · ${summary}` : eventLabel(event.type);
+}
+
+function eventMatchesIssue(event, families) {
+  const type = String(event && event.type ? event.type : "").toLowerCase();
+  if (!families.some((family) => type.includes(family))) {
+    return false;
+  }
+  const payload = safeObject(event.payload);
+  const status = String(payload.status || "").toLowerCase();
+  return (
+    type.includes("error") ||
+    type.includes("failed") ||
+    type.includes("failure") ||
+    status === "failed" ||
+    Boolean(payload.error)
+  );
 }
 
 async function sendTextInput(event) {
@@ -825,13 +1203,40 @@ async function refreshMemory() {
   clearError(el.memoryError);
 
   try {
-    const payload = await requestJson("/memory?active_only=true&limit=25");
+    const [payload, itemsPayload] = await Promise.all([
+      requestJson("/memory?active_only=true&limit=25"),
+      requestJson("/memory/items"),
+    ]);
     const blocks = Array.isArray(payload.memory) ? payload.memory : [];
-    renderMemory(blocks);
+    const legacyBlocks = blocks.map((block) => ({ ...block, panel_source: "legacy_block" }));
+    const items = Array.isArray(itemsPayload.items) ? itemsPayload.items : [];
+    const activeItems = items
+      .filter((item) => String(item.status || "").toLowerCase() === "active")
+      .map(memoryItemToPanelRow);
+    renderMemory([...activeItems, ...legacyBlocks]);
   } catch (error) {
     clearNode(el.memoryList);
     renderError(el.memoryError, error);
   }
+}
+
+function memoryItemToPanelRow(item) {
+  return {
+    id: item.id,
+    kind: item.kind,
+    title: item.title || item.canonical_key || shortId(item.id),
+    body: item.content || item.claim || "",
+    priority: null,
+    active: item.status === "active",
+    panel_source: "memory_os_item",
+    status: item.status || "unknown",
+    metadata: {
+      memory_os_status: item.status || "unknown",
+      namespace: item.namespace || "",
+      scope: item.scope || "",
+      promoted_by: item.source_policy || "approval",
+    },
+  };
 }
 
 async function createMemoryBlock(event) {
@@ -888,8 +1293,17 @@ function renderMemory(blocks) {
     setText(kindChip, memoryKindLabel(block.kind));
     const priorityChip = document.createElement("span");
     priorityChip.className = "mem-chip";
-    setText(priorityChip, `priorytet ${block.priority ?? 0}`);
+    setText(
+      priorityChip,
+      block.panel_source === "memory_os_item" ? "Memory OS" : `priorytet ${block.priority ?? 0}`,
+    );
     chips.append(kindChip, priorityChip);
+    if (block.status) {
+      const statusChip = document.createElement("span");
+      statusChip.className = "mem-chip";
+      setText(statusChip, block.status);
+      chips.appendChild(statusChip);
+    }
     row.appendChild(chips);
 
     // Pochodzenie bloku po ludzku: kto zaproponował i kto zatwierdził
@@ -897,6 +1311,12 @@ function renderMemory(blocks) {
     const metadata = block.metadata || {};
     if (metadata.proposed_by || metadata.promoted_by) {
       appendLine(row, memorySourceLine(metadata), "muted");
+    }
+
+    if (block.panel_source === "memory_os_item") {
+      appendLine(row, "Memory OS item — widoczny w panelu; dobór do promptu zależy od polityki pamięci.", "muted");
+      el.memoryList.appendChild(row);
+      continue;
     }
 
     const actions = document.createElement("div");
@@ -1173,13 +1593,17 @@ function approvalCard(approval, mode) {
   const card = document.createElement("article");
   card.className = `approval-card ${mode}`;
   const payload = approval.payload || {};
+  const status = approval.status || mode;
 
   // Eyebrow: jednoznaczny kontekst, że to prośba czekająca na Twoją decyzję
   // (albo już zatwierdzona, gotowa do wykonania) — żeby wiadomo było, co się
   // dzieje, zanim spojrzysz na przyciski.
   const eyebrow = document.createElement("p");
   eyebrow.className = "approval-eyebrow";
-  setText(eyebrow, mode === "pending" ? "Jarvis prosi o zgodę na:" : "Zatwierdzone — gotowe do wykonania:");
+  setText(
+    eyebrow,
+    mode === "pending" ? "Jarvis prosi o zgodę na:" : "Zatwierdzone — gotowe do wykonania:",
+  );
   card.appendChild(eyebrow);
 
   const head = document.createElement("div");
@@ -1208,6 +1632,34 @@ function approvalCard(approval, mode) {
     card.appendChild(table);
   }
 
+  const summary = approvalSummary(approval);
+  if (summary) {
+    appendLine(card, summary, "payload-line");
+  }
+
+  const details = document.createElement("dl");
+  details.className = "approval-args";
+  for (const [key, value] of [
+    ["id", approval.id],
+    ["status", status],
+    ["typ", approval.action_type],
+    ["narzędzie", payload.tool_name],
+    ["źródło", approval.requested_by],
+  ]) {
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+    const dt = document.createElement("dt");
+    setText(dt, key);
+    const dd = document.createElement("dd");
+    dd.className = "approval-arg";
+    setText(dd, argumentPreview(value));
+    details.append(dt, dd);
+  }
+  if (details.children.length > 0) {
+    card.appendChild(details);
+  }
+
   const meta = document.createElement("p");
   meta.className = "approval-meta";
   const modeLabel = mode === "pending" ? "czeka na decyzję" : "zatwierdzona";
@@ -1220,9 +1672,15 @@ function approvalCard(approval, mode) {
   const actions = document.createElement("div");
   actions.className = "row-actions";
   if (mode === "pending") {
-    const approveButton = smallButton("Zatwierdź");
+    const approveButton = smallButton(isMemoryApproval(approval) ? "Zatwierdź i zapisz" : "Zatwierdź");
     approveButton.classList.add("strong");
-    approveButton.addEventListener("click", () => decideApproval(approval.id, "approve", approveButton));
+    approveButton.addEventListener("click", () => {
+      if (isMemoryApproval(approval)) {
+        approveAndExecuteApproval(approval.id, approveButton);
+      } else {
+        decideApproval(approval.id, "approve", approveButton);
+      }
+    });
     const rejectButton = smallButton("Odrzuć");
     rejectButton.classList.add("reject");
     rejectButton.addEventListener("click", () => decideApproval(approval.id, "reject", rejectButton));
@@ -1235,6 +1693,31 @@ function approvalCard(approval, mode) {
   }
   card.appendChild(actions);
   return card;
+}
+
+function approvalSummary(approval) {
+  const payload = approval.payload || {};
+  const args = payload.arguments || {};
+  if (typeof payload.summary === "string" && payload.summary.trim()) {
+    return payload.summary.trim();
+  }
+  if (isMemoryApproval(approval)) {
+    const title = typeof args.title === "string" ? args.title.trim() : "";
+    const body = typeof args.body === "string" ? args.body.trim() : "";
+    return [title, body].filter(Boolean).join(" — ").slice(0, 220);
+  }
+  if (typeof args.command === "string") {
+    return args.command.slice(0, 220);
+  }
+  if (typeof args.path === "string") {
+    return args.path.slice(0, 220);
+  }
+  return "";
+}
+
+function isMemoryApproval(approval) {
+  const payload = approval.payload || {};
+  return payload.tool_name === "memory_save" || approval.action_type === "tool:memory_save";
 }
 
 // Kto prosi o zgodę — po ludzku, bez surowego identyfikatora źródła.
@@ -1252,7 +1735,7 @@ function requesterLabel(requestedBy) {
 
 async function decideApproval(approvalId, action, button) {
   clearError(el.approvalsError);
-  setBusy(button, true);
+  setApprovalCardBusy(button, true);
   try {
     const payload = await requestJson(`/approvals/${encodeURIComponent(approvalId)}/${action}`, {
       method: "POST",
@@ -1268,23 +1751,92 @@ async function decideApproval(approvalId, action, button) {
   } catch (error) {
     renderError(el.approvalsError, error);
   } finally {
-    setBusy(button, false);
+    setApprovalCardBusy(button, false);
+  }
+}
+
+async function approveAndExecuteApproval(approvalId, button) {
+  clearError(el.approvalsError);
+  setApprovalCardBusy(button, true);
+  let approveSucceeded = false;
+  try {
+    const payload = await requestJson(`/approvals/${encodeURIComponent(approvalId)}/approve`, {
+      method: "POST",
+      body: { reason: "panel approve and save" },
+    });
+    approveSucceeded = true;
+    if (payload.approval) {
+      cockpit.approvedApprovals.set(approvalId, payload.approval);
+    }
+    await executeApprovalRequest(approvalId);
+    cockpit.approvedApprovals.delete(approvalId);
+    await refreshAfterApprovalExecution();
+  } catch (error) {
+    if (isAlreadyExecutedConflict(error)) {
+      cockpit.approvedApprovals.delete(approvalId);
+      await refreshAfterApprovalExecution();
+      return;
+    }
+    if (approveSucceeded) {
+      await refreshApprovals();
+    }
+    renderError(el.approvalsError, error);
+  } finally {
+    setApprovalCardBusy(button, false);
   }
 }
 
 async function executeApproval(approvalId, button) {
   clearError(el.approvalsError);
-  setBusy(button, true);
+  setApprovalCardBusy(button, true);
   try {
-    await requestJson(`/approvals/${encodeURIComponent(approvalId)}/execute`, {
-      method: "POST",
-    });
+    await executeApprovalRequest(approvalId);
     cockpit.approvedApprovals.delete(approvalId);
-    await Promise.all([refreshApprovals(), refreshEvents()]);
+    await refreshAfterApprovalExecution();
   } catch (error) {
+    if (isAlreadyExecutedConflict(error)) {
+      cockpit.approvedApprovals.delete(approvalId);
+      await refreshAfterApprovalExecution();
+      return;
+    }
     renderError(el.approvalsError, error);
   } finally {
-    setBusy(button, false);
+    setApprovalCardBusy(button, false);
+  }
+}
+
+async function executeApprovalRequest(approvalId) {
+  return requestJson(`/approvals/${encodeURIComponent(approvalId)}/execute`, {
+    method: "POST",
+  });
+}
+
+async function refreshAfterApprovalExecution() {
+  await Promise.all([
+    refreshApprovals(),
+    refreshEvents(),
+    refreshMemory(),
+    refreshHistory(),
+    refreshHealthAndState(),
+  ]);
+}
+
+function isAlreadyExecutedConflict(error) {
+  const detail = error && error.detail ? error.detail : {};
+  const payload = detail.payload || {};
+  const text = `${error?.message || ""} ${payload.error || ""}`.toLowerCase();
+  return detail.status === 409 && text.includes("already executed");
+}
+
+function setApprovalCardBusy(button, busy) {
+  const card = button.closest(".approval-card");
+  if (card) {
+    for (const item of card.querySelectorAll("button")) {
+      item.disabled = busy;
+      item.classList.toggle("busy", busy);
+    }
+  } else {
+    setBusy(button, busy);
   }
 }
 
@@ -1462,6 +2014,10 @@ function eventRow(event) {
   const row = document.createElement("div");
   row.className = "list-row";
   appendLine(row, eventLabel(event.type), "input-line");
+  const summary = eventPayloadSummary(event.payload || {});
+  if (summary) {
+    appendLine(row, summary, "payload-line");
+  }
 
   const meta = document.createElement("p");
   meta.className = "event-meta";
@@ -1470,6 +2026,68 @@ function eventRow(event) {
   meta.append(metaText, timeNode(event.created_at));
   row.appendChild(meta);
   return row;
+}
+
+const EVENT_PAYLOAD_SUMMARY_KEYS = [
+  "turn_id",
+  "conversation_id",
+  "request_id",
+  "approval_id",
+  "tool_name",
+  "status",
+  "kind",
+  "seq",
+  "reason",
+  "error",
+  "duration_seconds",
+  "voiced_seconds",
+  "rms",
+];
+const EVENT_PAYLOAD_REDACTION = "[REDACTED]";
+
+function eventPayloadSummary(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+  const parts = [];
+  for (const key of EVENT_PAYLOAD_SUMMARY_KEYS) {
+    const value = eventPayloadSummaryValue(payload[key]);
+    if (value === "") {
+      continue;
+    }
+    parts.push(`${key}: ${argumentPreview(value)}`);
+  }
+  return parts.join(" · ");
+}
+
+function eventPayloadSummaryValue(value) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  if (typeof value === "string") {
+    return redactEventSummaryText(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  return "";
+}
+
+function redactEventSummaryText(value) {
+  return value
+    .replace(/(\bAuthorization\s*[:=]\s*Bearer\s+)[^\s,;"']+/gi, `$1${EVENT_PAYLOAD_REDACTION}`)
+    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]+/gi, `$1${EVENT_PAYLOAD_REDACTION}`)
+    .replace(/(\bAuthorization\s*[:=]\s*Basic\s+)[A-Za-z0-9+/=._-]+/gi, `$1${EVENT_PAYLOAD_REDACTION}`)
+    .replace(/(\bBasic\s+)[A-Za-z0-9+/=._-]{8,}/gi, `$1${EVENT_PAYLOAD_REDACTION}`)
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{8,}/g, EVENT_PAYLOAD_REDACTION)
+    .replace(/\bgh[oprsu]_[A-Za-z0-9_]{8,}/g, EVENT_PAYLOAD_REDACTION)
+    .replace(/\bsk-[A-Za-z0-9][A-Za-z0-9._-]*/g, EVENT_PAYLOAD_REDACTION)
+    .replace(/\bxox[abps]-[A-Za-z0-9-]{8,}/g, EVENT_PAYLOAD_REDACTION)
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, EVENT_PAYLOAD_REDACTION)
+    .replace(
+      /\b(password|passwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token|private[_-]?key|client[_-]?secret|credentials?)\b\s*[:=]\s*["']?[^\s"']{4,}["']?/gi,
+      `$1=${EVENT_PAYLOAD_REDACTION}`,
+    );
 }
 
 // --- Live event stream (GET /stream WebSocket, read-only; ADR-019) ---
@@ -1517,6 +2135,7 @@ function connectStream() {
 
   socket.addEventListener("open", () => {
     stream.retryMs = 2000;
+    stream.connected = true;
     setStreamStatus("live");
   });
   socket.addEventListener("message", (message) => {
@@ -1525,6 +2144,7 @@ function connectStream() {
   socket.addEventListener("close", () => {
     if (stream.socket === socket) {
       stream.socket = null;
+      stream.connected = false;
       setStreamStatus(apiToken() ? "stream off" : "stream off (token?)");
       scheduleStreamReconnect();
     }
@@ -1540,6 +2160,7 @@ function disconnectStream(reason) {
   if (stream.socket) {
     const socket = stream.socket;
     stream.socket = null;
+    stream.connected = false;
     try {
       socket.close(1000, reason || "cockpit disconnect");
     } catch (error) {
@@ -1597,15 +2218,57 @@ function handleStreamMessage(raw) {
     cockpit.runtimeState = event.payload.new_state;
     applyStateFrame();
   }
+  if (type.startsWith("input.") || type.startsWith("turn.")) {
+    scheduleHistoryRefresh();
+  }
+  if (type.startsWith("memory.") || type === "tool.finished") {
+    scheduleMemoryRefresh();
+  }
   if (type.startsWith("approval.") || type.startsWith("tool.")) {
     scheduleApprovalsRefresh();
   }
   if (type.startsWith("brain.")) {
     scheduleSettingsRefresh();
   }
-  if (type.startsWith("listening.")) {
+  if (type.startsWith("listening.") || type.startsWith("voice.")) {
     scheduleVoiceRefresh();
   }
+  if (type.startsWith("voice.")) {
+    scheduleVoiceQueueRefresh();
+  }
+  if (type.startsWith("daemon.") || type === "state.changed") {
+    scheduleRuntimeRefresh();
+  }
+}
+
+function scheduleHistoryRefresh() {
+  const stream = cockpit.stream;
+  if (stream.historyTimer !== null) {
+    return;
+  }
+  stream.historyTimer = setTimeout(async () => {
+    stream.historyTimer = null;
+    try {
+      await refreshHistory();
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function scheduleMemoryRefresh() {
+  const stream = cockpit.stream;
+  if (stream.memoryTimer !== null) {
+    return;
+  }
+  stream.memoryTimer = setTimeout(async () => {
+    stream.memoryTimer = null;
+    try {
+      await refreshMemory();
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
 }
 
 function scheduleVoiceRefresh() {
@@ -1617,6 +2280,21 @@ function scheduleVoiceRefresh() {
     stream.voiceTimer = null;
     try {
       await refreshVoice();
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function scheduleVoiceQueueRefresh() {
+  const stream = cockpit.stream;
+  if (stream.voiceQueueTimer !== null) {
+    return;
+  }
+  stream.voiceQueueTimer = setTimeout(async () => {
+    stream.voiceQueueTimer = null;
+    try {
+      await refreshVoiceQueue();
     } catch (error) {
       // section renders its own errors
     }
@@ -1668,6 +2346,21 @@ function scheduleSettingsRefresh() {
     stream.settingsTimer = null;
     try {
       await Promise.all([refreshSettings(), refreshHealthAndState()]);
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function scheduleRuntimeRefresh() {
+  const stream = cockpit.stream;
+  if (stream.runtimeTimer !== null) {
+    return;
+  }
+  stream.runtimeTimer = setTimeout(async () => {
+    stream.runtimeTimer = null;
+    try {
+      await Promise.all([refreshHealthAndState(), refreshRuntime()]);
     } catch (error) {
       // section renders its own errors
     }
@@ -1825,6 +2518,12 @@ function setOnline(online) {
   document.body.classList.toggle("offline", !online);
   applyStateFrame();
   setInteractiveEnabled(online);
+  if (!online) {
+    cockpit.voice.enabled = false;
+    cockpit.voice.listening = false;
+    cockpit.voice.leases = [];
+    renderVoice();
+  }
 }
 
 function setInteractiveEnabled(enabled) {
@@ -1860,6 +2559,7 @@ function clearDynamicSections() {
     el.memoryError,
     el.toolsError,
     el.settingsError,
+    el.runtimeOverviewError,
     el.eventsError,
     el.runtimeError,
   ]) {
@@ -1872,10 +2572,14 @@ function clearDynamicSections() {
   clearNode(el.toolList);
   clearNode(el.approvalList);
   clearNode(el.settingsList);
+  clearNode(el.runtimeOverviewList);
   clearNode(el.brainAdapterSelect);
   clearNode(el.eventList);
   clearNode(el.runtimeList);
   clearNode(el.runtimeObservationList);
+  if (el.voiceQueueList) {
+    clearNode(el.voiceQueueList);
+  }
   setText(el.brainAdapterLabel, "");
   cockpit.voice.listening = false;
   cockpit.voice.leases = [];
@@ -2082,4 +2786,3 @@ function formatClock(iso) {
   const day = date.toLocaleDateString("pl-PL", { day: "2-digit", month: "2-digit" });
   return `${day} ${clock}`;
 }
-

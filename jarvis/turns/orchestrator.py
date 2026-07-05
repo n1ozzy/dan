@@ -312,7 +312,10 @@ class TurnOrchestrator:
                 and self._brain_manager.supports_streaming()
                 and not is_live_voice
             )
-            filler_timer = self._arm_filler(turn.id) if streaming_enabled else None
+            # Live UX spike: filler is not isolated from the persisted speech
+            # queue, and text/API turns must never enqueue spoken filler. Keep
+            # streamed sentence speech, but do not arm the filler timer here.
+            filler_timer = None
             speech_session = (
                 self._start_speech_stream(turn.id, filler_timer)
                 if streaming_enabled

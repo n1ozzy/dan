@@ -61,6 +61,46 @@ class StreamingFakeAdapter:
         return BrainResponse(text=self._final_text, model=self.default_model)
 
 
+class SpyFillerTimer:
+    def __init__(self) -> None:
+        self.disarmed = 0
+
+    def disarm(self) -> None:
+        self.disarmed += 1
+
+
+class SpySpeechSession:
+    def __init__(self) -> None:
+        self.deltas: list[str] = []
+        self.final_texts: list[str] = []
+
+    def feed(self, delta: str) -> None:
+        self.deltas.append(delta)
+
+    def finalize(self, final_text: str) -> int:
+        self.final_texts.append(final_text)
+        return 0
+
+
+class SpySpeechPipeline:
+    def __init__(self) -> None:
+        self.armed_fillers = 0
+        self.started_streams = 0
+        self.session = SpySpeechSession()
+
+    def arm_filler(self, *, turn_id: str) -> SpyFillerTimer:
+        self.armed_fillers += 1
+        return SpyFillerTimer()
+
+    def start_stream(self, *, turn_id: str, filler_timer=None) -> SpySpeechSession:
+        self.started_streams += 1
+        return self.session
+
+    def speak_text(self, *, turn_id: str, text: str) -> int:
+        self.session.finalize(text)
+        return 0
+
+
 def voice_config(**overrides) -> SimpleNamespace:
     values = {
         "enabled": True,
@@ -135,6 +175,36 @@ def test_deltas_reach_the_voice_queue_during_generation(db_path: Path) -> None:
         "Drugie zdanie odpowiedzi.",
     ]
     assert result.final_text == "Pierwsze zdanie odpowiedzi. Drugie zdanie odpowiedzi."
+    close_quietly(conn)
+
+
+def test_panel_text_turn_streams_without_arming_filler(db_path: Path) -> None:
+    conn = connect(db_path)
+    adapter = StreamingFakeAdapter(
+        deltas=["Pierwsze zdanie odpowiedzi."],
+        final_text="Pierwsze zdanie odpowiedzi.",
+    )
+    speech = SpySpeechPipeline()
+    event_store = create_event_store(conn)
+    state_machine = RuntimeStateMachine(
+        event_store, event_bus=None, initial_state=RuntimeState.IDLE
+    )
+    orchestrator = TurnOrchestrator(
+        conn=conn,
+        event_store=event_store,
+        event_bus=None,
+        state_machine=state_machine,
+        brain_manager=BrainManager([adapter], default_adapter=adapter.name),
+        context_builder=ContextBuilder(conn),
+        speech_pipeline=speech,
+    )
+
+    orchestrator.handle_text(text="Panel chat must not speak filler.", source="panel")
+
+    assert adapter.saw_on_delta
+    assert speech.started_streams == 1
+    assert speech.armed_fillers == 0
+    assert speech.session.deltas == ["Pierwsze zdanie odpowiedzi."]
     close_quietly(conn)
 
 

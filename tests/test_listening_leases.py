@@ -366,7 +366,7 @@ def test_ptt_lifecycle_through_the_api(tmp_path: Path) -> None:
         daemon_app.close()
 
 
-def test_ptt_down_acquires_hold_lease_without_cancelling_pending_speech(tmp_path: Path) -> None:
+def test_ptt_down_acquires_hold_lease_and_cancels_active_speech(tmp_path: Path) -> None:
     from jarvis.voice.queue import VoiceQueue
     from tests.test_api_smoke import request_json, running_server
 
@@ -390,22 +390,24 @@ def test_ptt_down_acquires_hold_lease_without_cancelling_pending_speech(tmp_path
         assert status == 200, payload
         assert payload["lease"]["mode"] == "hold"
         assert payload["lease"]["source"] == "ptt"
+        assert payload["cancellation"]["reason"] == "ptt_down"
+        assert payload["cancellation"]["queue_cancelled"] == 1
         status_row = daemon_app.conn.execute(
             "SELECT status FROM voice_queue WHERE id = ?",
             (request.id,),
         ).fetchone()
-        assert status_row == ("queued",)
+        assert status_row == ("cancelled",)
         cancelled_events = daemon_app.conn.execute(
             "SELECT COUNT(*) FROM events WHERE type = 'voice.speak.cancelled'"
         ).fetchone()[0]
-        assert cancelled_events == 0
+        assert cancelled_events == 1
         event_types = [
             str(row[0])
             for row in daemon_app.conn.execute(
                 "SELECT type FROM events ORDER BY id"
             ).fetchall()
         ]
-        assert "voice.speak.cancelled" not in event_types
+        assert "voice.speak.cancelled" in event_types
         assert "listening.lease.created" in event_types
     finally:
         daemon_app.close()
@@ -414,18 +416,42 @@ def test_ptt_down_acquires_hold_lease_without_cancelling_pending_speech(tmp_path
 def test_ptt_unknown_source_is_bad_request(tmp_path: Path) -> None:
     # An unknown `source` is bad client input, not a server fault: the
     # ListeningLeaseError acquire() raises must map to 400, not 500 (FIX-17).
+    from jarvis.voice.queue import VoiceQueue
     from tests.test_api_smoke import request_json, running_server
 
     daemon_app = _daemon(tmp_path, voice_enabled=True)
     try:
+        assert daemon_app.conn is not None
+        queue = VoiceQueue(daemon_app.conn)
+        request = queue.enqueue(
+            text="Nie wolno anulować przy błędnym źródle PTT.",
+            turn_id="turn-bad-ptt-source",
+            seq=0,
+        )
+
         with running_server(daemon_app) as base_url:
             status, payload = request_json(
                 "POST",
                 f"{base_url}/voice/ptt/down",
-                {"source": "nope"},
+                {"source": "bogus"},
             )
             assert status == 400, payload
-            assert "nope" in payload["error"]
+            assert "bogus" in payload["error"]
+
+            status_row = daemon_app.conn.execute(
+                "SELECT status FROM voice_queue WHERE id = ?",
+                (request.id,),
+            ).fetchone()
+            assert status_row == ("queued",)
+            tombstones = daemon_app.conn.execute(
+                "SELECT COUNT(*) FROM cancelled_turns WHERE turn_id = ?",
+                ("turn-bad-ptt-source",),
+            ).fetchone()[0]
+            assert tombstones == 0
+            cancelled_events = daemon_app.conn.execute(
+                "SELECT COUNT(*) FROM events WHERE type = 'voice.speak.cancelled'"
+            ).fetchone()[0]
+            assert cancelled_events == 0
 
             # A valid source still succeeds — no regression.
             status, ok = request_json(

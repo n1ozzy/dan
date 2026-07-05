@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import textwrap
 from pathlib import Path
 
 from tests.git_guards import assert_schema_and_migrations_unchanged
@@ -23,14 +25,17 @@ REQUIRED_ROUTES = (
     "/voice/listen/lock",
     "/voice/listen/unlock",
     "/voice/listening",
+    "/voice/queue",
     "/conversations",
     "/turns",
     "/memory",
+    "/memory/items",
     "/tools",
     "/approvals",
     "/events",
     "/stream",
     "/runtime/processes",
+    "/audio/devices",
     "/settings",
     "/brain/adapters",
     "/brain/switch",
@@ -230,6 +235,41 @@ def test_app_settings_are_rendered_from_daemon_truth_only() -> None:
     assert len(setter_calls) >= 1
 
 
+def test_runtime_overview_is_read_only_inventory_from_existing_safe_routes() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "runtimeOverviewHeading" in markup
+    assert "runtimeOverviewList" in markup
+
+    assert "refreshRuntimeOverview" in script
+    assert "renderRuntimeOverview" in script
+    for route in (
+        "/health",
+        "/state",
+        "/settings",
+        "/brain/adapters",
+        "/audio/devices",
+        "/voice/listening",
+        "/voice/queue?limit=12",
+        "/tools",
+        "/events?after_id=0&limit=50",
+    ):
+        assert route in script
+
+    for heading in (
+        "Voice / Audio",
+        "Brain / Provider",
+        "Personality",
+        "Tools / Internet",
+        "Logs / Errors",
+    ):
+        assert heading in script
+    assert "not exposed by current API" in script
+    assert "unknown" in script
+    assert "read-only" in script
+
+
 def test_panel_cockpit_runbook_documents_settings_section() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     lowered = text.lower()
@@ -337,6 +377,338 @@ def test_approvals_refresh_rides_stream_with_heartbeat_fallback() -> None:
     assert "pending_approval_count" in script
 
 
+def test_live_stream_refreshes_chat_memory_voice_and_runtime_views() -> None:
+    # Runtime truth changes arrive as persisted events. The panel must use them
+    # to refresh visible state, not require manual tab clicks after each turn,
+    # memory write, queue change, or daemon runtime update.
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "scheduleHistoryRefresh" in script
+    assert "scheduleMemoryRefresh" in script
+    assert "scheduleRuntimeRefresh" in script
+    assert 'type.startsWith("turn.")' in script
+    assert 'type.startsWith("input.")' in script
+    assert 'type.startsWith("memory.")' in script
+    assert 'type.startsWith("voice.")' in script
+
+
+def test_approval_cards_support_memory_save_one_click_and_idempotent_execute() -> None:
+    # Memory-save approvals should feel like one operator action while the
+    # backend keeps explicit approve+execute semantics. Duplicate execute 409s
+    # are a completed state in the UI, not a red error.
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "Zatwierdź i zapisz" in script
+    assert "approveAndExecuteApproval" in script
+    assert "isMemoryApproval" in script
+    assert "isAlreadyExecutedConflict" in script
+    assert "already executed" in script
+    assert "approval.status" in script
+    assert "approval.action_type" in script
+
+
+def test_memory_approve_execute_failure_preserves_approved_retry_state(tmp_path: Path) -> None:
+    # The one-click memory flow is approve + explicit execute. If execute fails
+    # after approve succeeds, retry must execute the approved row instead of
+    # sending approve again and hitting "Approval is not pending".
+    harness = tmp_path / "approval-flow-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            class FakeNode {{
+              constructor(tagName, id = "") {{
+                this.tagName = tagName;
+                this.id = id;
+                this.children = [];
+                this.parentNode = null;
+                this.dataset = {{}};
+                this.hidden = false;
+                this.disabled = false;
+                this.className = "";
+                this.textContent = "";
+                this.listeners = {{}};
+                this.attributes = {{}};
+                this.classList = {{
+                  add: (name) => this._addClass(name),
+                  remove: (name) => this._removeClass(name),
+                  toggle: (name, force) => this._toggleClass(name, force),
+                }};
+              }}
+              get firstChild() {{
+                return this.children[0] || null;
+              }}
+              append(...items) {{
+                for (const item of items) {{
+                  this.appendChild(item);
+                }}
+              }}
+              appendChild(item) {{
+                if (item === null || item === undefined) {{
+                  return item;
+                }}
+                item.parentNode = this;
+                this.children.push(item);
+                return item;
+              }}
+              removeChild(item) {{
+                this.children = this.children.filter((child) => child !== item);
+                item.parentNode = null;
+                return item;
+              }}
+              setAttribute(name, value) {{
+                this.attributes[name] = String(value);
+              }}
+              addEventListener(name, callback) {{
+                this.listeners[name] = callback;
+              }}
+              querySelectorAll(selector) {{
+                const matches = [];
+                const visit = (node) => {{
+                  for (const child of node.children) {{
+                    if (selector === "button" && child.tagName === "button") {{
+                      matches.push(child);
+                    }}
+                    visit(child);
+                  }}
+                }};
+                visit(this);
+                return matches;
+              }}
+              closest(selector) {{
+                let node = this;
+                while (node) {{
+                  const classes = String(node.className || "").split(/\\s+/);
+                  if (selector === ".approval-card" && classes.includes("approval-card")) {{
+                    return node;
+                  }}
+                  node = node.parentNode;
+                }}
+                return null;
+              }}
+              _addClass(name) {{
+                const classes = new Set(String(this.className || "").split(/\\s+/).filter(Boolean));
+                classes.add(name);
+                this.className = Array.from(classes).join(" ");
+              }}
+              _removeClass(name) {{
+                const classes = new Set(String(this.className || "").split(/\\s+/).filter(Boolean));
+                classes.delete(name);
+                this.className = Array.from(classes).join(" ");
+              }}
+              _toggleClass(name, force) {{
+                const enabled = force === undefined ? !String(this.className).split(/\\s+/).includes(name) : Boolean(force);
+                if (enabled) {{
+                  this._addClass(name);
+                }} else {{
+                  this._removeClass(name);
+                }}
+                return enabled;
+              }}
+            }}
+
+            const nodes = new Map();
+            const node = (id) => {{
+              if (!nodes.has(id)) {{
+                nodes.set(id, new FakeNode("div", id));
+              }}
+              return nodes.get(id);
+            }};
+            const flatten = (root) => [
+              root,
+              ...root.children.flatMap((child) => flatten(child)),
+            ];
+            const response = (status, payload) => ({{
+              status,
+              ok: status >= 200 && status < 300,
+              text: async () => JSON.stringify(payload),
+            }});
+            const calls = [];
+            const approvedApproval = {{
+              id: "ap-1",
+              status: "approved",
+              action_type: "tool:memory_save",
+              risk: "memory_write",
+              requested_by: "model",
+              created_at: "2026-07-05T12:00:00+00:00",
+              payload: {{
+                tool_name: "memory_save",
+                arguments: {{ title: "Projekt", body: "zapamiętaj fakt" }},
+              }},
+            }};
+
+            const context = {{
+              console,
+              URL,
+              setTimeout: () => 0,
+              clearTimeout: () => {{}},
+              window: {{
+                localStorage: {{
+                  getItem: () => "token",
+                  setItem: () => {{}},
+                  removeItem: () => {{}},
+                }},
+                prompt: () => "",
+                setInterval: () => 0,
+              }},
+              document: {{
+                body: node("body"),
+                addEventListener: () => {{}},
+                getElementById: (id) => node(id),
+                querySelectorAll: () => [],
+                createElement: (tagName) => new FakeNode(tagName),
+              }},
+              fetch: async (url, init = {{}}) => {{
+                const parsed = new URL(url);
+                const path = `${{parsed.pathname}}${{parsed.search}}`;
+                calls.push({{ path, method: init.method || "GET" }});
+                if (path === "/approvals/ap-1/approve") {{
+                  return response(200, {{ approval: approvedApproval }});
+                }}
+                if (path === "/approvals/ap-1/execute") {{
+                  return response(500, {{ error: "execute failed" }});
+                }}
+                if (path === "/approvals?limit=25") {{
+                  return response(200, {{ approvals: [] }});
+                }}
+                return response(200, {{}});
+              }},
+            }};
+            context.globalThis = context;
+            vm.runInNewContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+            context.bindElements();
+
+            (async () => {{
+              await context.approveAndExecuteApproval("ap-1", new FakeNode("button"));
+
+              assert.deepStrictEqual(
+                calls.map((call) => call.path),
+                ["/approvals/ap-1/approve", "/approvals/ap-1/execute", "/approvals?limit=25"],
+              );
+              assert.match(node("approvalsError").textContent, /execute failed/);
+              const buttons = flatten(node("approvalList")).filter((item) => item.tagName === "button");
+              assert.strictEqual(
+                buttons.some((button) => button.textContent === "Zatwierdź i zapisz"),
+                false,
+              );
+              const executeButton = buttons.find((button) => button.textContent === "Wykonaj zatwierdzone");
+              assert.ok(executeButton, "approved card should render execute retry");
+
+              await executeButton.listeners.click();
+              assert.strictEqual(
+                calls.filter((call) => call.path === "/approvals/ap-1/approve").length,
+                1,
+              );
+              assert.strictEqual(
+                calls.filter((call) => call.path === "/approvals/ap-1/execute").length,
+                2,
+              );
+            }})().catch((error) => {{
+              console.error(error && error.stack ? error.stack : error);
+              process.exit(1);
+            }});
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_logs_and_system_show_voice_cutoff_diagnostics() -> None:
+    # Voice cutoff triage needs enough data in-panel to see whether a row was
+    # queued, started, finished, failed, or cancelled without exposing full
+    # secret-bearing payloads as raw blobs.
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "voiceQueueList" in markup
+    assert "/voice/queue" in script
+    assert "refreshVoiceQueue" in script
+    assert "eventPayloadSummary" in script
+    assert "payload-line" in script
+    assert "payload-line" in styles
+
+
+def test_event_payload_summary_is_whitelisted_and_redacted(tmp_path: Path) -> None:
+    harness = tmp_path / "event-summary-redaction-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            const context = {{
+              console,
+              document: {{
+                addEventListener: () => {{}},
+              }},
+              window: {{}},
+            }};
+            context.globalThis = context;
+            vm.runInNewContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            const secretValue = "sk-" + "panel-event-secret";
+            const arbitrary = context.eventPayloadSummary({{
+              detail: `Authorization: Bearer ${{secretValue}}`,
+              token: secretValue,
+              secret: secretValue,
+              password: secretValue,
+              auth: `Bearer ${{secretValue}}`,
+              headers: {{ authorization: `Bearer ${{secretValue}}` }},
+              cookies: `jarvis=${{secretValue}}`,
+              api_key: secretValue,
+            }});
+            assert.strictEqual(arbitrary, "");
+
+            const whitelisted = context.eventPayloadSummary({{
+              status: "failed",
+              reason: "tool_failed",
+              error: `password=${{secretValue}} Authorization: Bearer ${{secretValue}}`,
+              detail: `must not render ${{secretValue}}`,
+              token: secretValue,
+            }});
+            assert.match(whitelisted, /status: failed/);
+            assert.match(whitelisted, /reason: tool_failed/);
+            assert.match(whitelisted, /error:/);
+            assert.match(whitelisted, /\\[REDACTED\\]/);
+            assert.ok(!whitelisted.includes(secretValue), whitelisted);
+            assert.ok(!whitelisted.includes("must not render"), whitelisted);
+            assert.ok(!whitelisted.includes("detail:"), whitelisted);
+            assert.ok(!whitelisted.includes("token:"), whitelisted);
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_app_renders_relative_times_with_full_date_tooltip() -> None:
     # "2 min temu" zamiast surowego ISO; pełna data w tooltipie; ticker
     # dosowieża etykiety, żeby otwarty panel nie kłamał po godzinie.
@@ -367,6 +739,18 @@ def test_memory_rows_expose_priority_and_disable_actions() -> None:
     assert "proposed_by" in script
     assert "promoted_by" in script
     assert "Wyłącz" in script
+
+
+def test_memory_view_reads_legacy_blocks_and_memory_os_items() -> None:
+    # Approved memory_save activates Memory OS items, while manual panel notes
+    # still use legacy memory_blocks. The panel should show both surfaces
+    # without changing prompt-selection policy.
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "/memory/items" in script
+    assert "memoryItemToPanelRow" in script
+    assert "legacy_block" in script
+    assert "memory_os_item" in script
 
 
 def test_memory_view_is_obvious_on_arrival() -> None:
