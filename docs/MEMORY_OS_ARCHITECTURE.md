@@ -1,9 +1,9 @@
 # Memory OS Architecture
 
 Classification: technical architecture.
-Scope: Memory OS as implemented and tested on branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `171fb11 docs: formalize compiled memory context policy`.
+Scope: Memory OS as implemented and tested on branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `802f6e8 test: cover compiled memory rollout precedence matrix`.
 
-Current rollout snapshot: `MEMORY-CONTEXT-ROLLOUT-READINESS-01` completed as a read-only audit with focused validation 176 passed, memory/context regression 426 passed, no files changed, and no commit made. Runtime/tests/policy are ready for the next phase; `MEMORY-CONTEXT-ENABLE-SESSION-01` remains blocked until the docs refresh is committed.
+Current rollout snapshot: Memory OS compiled-memory rollout safety workstream is complete through compiled-memory policy docs, docs status refresh, session/profile scoped enablement, compiled-memory force-disable, and rollout precedence matrix tests. This document describes the current safety contract; future env/API/panel/production rollout work remains separately scoped.
 
 ## Purpose
 
@@ -160,12 +160,13 @@ Procedural rules must not be mixed blindly with semantic facts. Safety-relevant 
 
 ## ContextBuilder integration
 
-`ContextBuilder` accepts optional memory compiler dependencies and a default-off flag.
+`ContextBuilder` accepts optional memory compiler dependencies, explicit enablement gates, session/profile scoped internal enablement, request-scoped internal override, and a force-disable kill switch.
 
 Key behavior:
 
 - Flag off: no compiler call, no compiled memory context message.
 - Flag on: compiler may run and produce a safe compiled memory context message.
+- `[memory].enabled=false` and `compiled_memory_force_disabled` prevent compiler calls.
 - Compiler failure: fail closed by omitting compiled memory.
 - Existing `memory_blocks` behavior is preserved.
 - User input must survive unchanged except for existing budget-capping behavior.
@@ -181,11 +182,13 @@ untrusted = True
 
 Runtime dependency wiring exists so daemon-created ContextBuilder instances can receive compiler dependencies. That is not global enablement.
 
-Compiled memory remains default-off. Config-based dev/local enablement exists, but it can enable compiled memory only when `memory.enabled=true` and compiled-memory context is explicitly enabled in config.
+Compiled memory remains default-off. Config-based dev/local enablement exists, but it can enable compiled memory only when `[memory].enabled=true`, compiled-memory context is explicitly enabled in config, and the force-disable kill switch is off.
 
-Request-scoped internal override support exists for one request at a time. It does not mutate builder or runtime state.
+Session/profile scoped enablement exists and is internal-only. An empty session/profile allow-list enables zero sessions and does not globally leak; a `None` allow-list preserves established global config behavior.
 
-No env, panel, API, or user-facing enablement exists yet.
+Request-scoped internal override support exists for one request at a time. Request override False disables one request. Request override True cannot bypass `[memory].enabled=false` or `compiled_memory_force_disabled`. Overrides do not mutate builder or runtime state.
+
+No env, panel, public API, user-facing, or global production enablement exists yet.
 
 ## Compiled memory context policy
 
@@ -194,12 +197,16 @@ This section is the formal rollout and safety contract for compiled memory in pr
 ### Enablement precedence
 
 - The global default is off.
-- Config dev/local enablement can enable compiled memory when `memory.enabled=true`.
-- `memory.enabled=false` blocks compiled memory.
-- Request-scoped override True can enable compiled memory for one request.
+- Config dev/local enablement can enable compiled memory when `[memory].enabled=true`.
+- `[memory].enabled=false` is an absolute compiled-memory disable.
+- `compiled_memory_force_disabled` disables compiled memory regardless of config, session/profile, or request override.
+- Session/profile scoped enablement exists and is internal-only.
+- Empty session/profile allow-list enables zero sessions and does not globally leak.
+- `None` allow-list preserves established global config behavior.
+- Request-scoped override True can enable compiled memory for one request only when `[memory].enabled=true` and the kill switch is off.
 - Request-scoped override False disables compiled memory for one request.
 - Request-scoped override must not mutate builder/runtime state.
-- No env, panel, API, or user-facing enablement exists yet.
+- No env, panel, public API, user-facing, or global production enablement exists yet.
 
 ### Prompt-visible output contract
 
@@ -288,8 +295,8 @@ Test focus has moved from compiler internals to final BrainRequest/context outpu
 
 ## Future work
 
-- Keep env/panel/API/user-facing enablement out until a scoped future task defines it.
-- Add broader session/profile enablement only after internal override behavior remains stable.
+- Keep env, public API, panel, user-facing, and global production enablement out until scoped future tasks define them.
+- Treat optional env enablement, optional internal API enablement, optional panel toggle, production rollout plan, and any observability dashboard as separate tasks.
 - Add usage ledger/audit events for memory selection.
-- Add production telemetry beyond the current coarse diagnostics.
-- Add panel UX only after safe enablement is proven.
+- Add production telemetry or dashboards only after a scoped observability task.
+- Add panel UX only after a scoped panel task.

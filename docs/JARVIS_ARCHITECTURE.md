@@ -1,7 +1,7 @@
 # Jarvis Architecture
 
 Classification: technical architecture.
-Scope: whole Jarvis runtime as represented by branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `bd18d3b`.
+Scope: whole Jarvis runtime as represented by branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `802f6e8 test: cover compiled memory rollout precedence matrix`.
 
 ## System overview
 
@@ -139,9 +139,10 @@ Current Memory OS flow:
 3. Approval/rejection.
 4. Activation into `memory_items`.
 5. Deterministic compilation.
-6. Optional ContextBuilder inclusion behind default-off flag.
+6. Optional ContextBuilder inclusion behind default-off config, session/profile, and request-scoped internal gates.
+7. Absolute disable through `[memory].enabled=false` or `compiled_memory_force_disabled`.
 
-The MemoryCompiler path is read-only during context build.
+The MemoryCompiler path is read-only during context build. Final `BrainRequest.context_messages` expose only prompt-safe compiled memory fields; diagnostics remain outside model-visible context and are redacted/coarse.
 
 ## Tool and approval system
 
@@ -240,6 +241,7 @@ Do not bypass:
 - root containment
 - redaction
 - compiled memory default-off behavior
+- compiled memory kill-switch precedence
 - voice broker ownership
 
 ## Testing model
@@ -250,10 +252,12 @@ Live voice, mic, speaker, launchctl, provider CLIs, and network behavior do not 
 
 ## Known limitations
 
-- Compiled memory is not globally enabled.
+- Compiled memory is not globally or production enabled.
 - Memory OS does not yet have production usage ledger events.
-- Dev/local enablement has not been added.
-- Scoped enablement has not been added.
-- Formal Memory OS policy docs still need consolidation.
+- Dev/local config enablement exists, still default-off.
+- Session/profile scoped enablement exists and is internal-only.
+- Request-scoped override exists and is internal-only.
+- `compiled_memory_force_disabled` disables compiled memory regardless of config, session/profile, or request override.
+- No env, panel, public API, or user-facing compiled-memory toggle exists.
 - Panel controls for compiled memory do not exist.
 - Background memory summarization/consolidation is not active.

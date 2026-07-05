@@ -74,48 +74,44 @@ This document does not override code, tests, `AGENTS.md`, or project rules.
 - Config-based dev/local compiled memory enablement.
 - Request-scoped compiled memory override.
 - Formal compiled memory context policy contract.
+- Authoritative docs status refresh after readiness audit.
+- Session/profile scoped compiled memory enablement, internal-only.
+- Compiled memory force-disable / kill switch.
+- Compiled memory rollout precedence matrix tests.
 
 ## Now
 
-### Compiled memory policy contract
+### Final Memory OS handoff
 
-`MEMORY-CONTEXT-POLICY-01` formalizes the compiled memory context policy after config-based dev/local enablement and request-scoped override support.
+`MEMORY-OS-FINAL-HANDOFF-01` records the completed compiled-memory runtime rollout safety workstream in authoritative docs. Runtime/config/ContextBuilder/test work is complete through session/profile scoped enablement, compiled-memory force-disable, and rollout precedence matrix coverage.
 
 Goal:
 
 - Preserve compiled-memory default-off status.
-- Keep implemented, planned, deferred, and unknown states separate.
-- Document prompt-visible output, governance exclusions, diagnostics redaction, and fail-closed/read-only behavior.
-- Make clear that env/panel/API/user-facing enablement remains future.
+- Keep completed internal safety wiring separate from future rollout features.
+- Document prompt-visible output, governance exclusions, diagnostics redaction, fail-closed/read-only behavior, and kill-switch precedence.
+- Make clear that env, public API, panel, user-facing, and global production enablement remain future.
 
 ## Next
 
-### Additional compiled memory smoke
+### Future compiled memory rollout tasks
 
-Extend runtime smoke coverage only when a scoped task needs broader proof around existing config-based local enablement or request-scoped override behavior.
+Future compiled-memory rollout work must be split into separate scoped tasks:
+
+- optional env enablement;
+- optional internal API enablement;
+- optional panel toggle;
+- production rollout plan;
+- observability dashboard, if needed.
 
 Rules:
 
 - Default remains off.
+- `[memory].enabled=false` and `compiled_memory_force_disabled` remain absolute disables.
 - No production default-on.
-- No env/global switch yet.
-- No panel/API/user-facing switch yet.
+- No env/global switch without explicit scope.
+- No public API, panel, or user-facing switch without explicit scope.
 - Smoke tests must prove safe behavior.
-
-### Runtime smoke for compiled memory
-
-Prove:
-
-- daemon starts;
-- default path has no compiled memory;
-- explicit dev/local path includes only safe memory;
-- unsafe memory remains excluded;
-- fail-closed works;
-- diagnostics are redacted.
-
-### Scoped enablement
-
-Add broader session/profile/allowlist enablement after the request-scoped internal path is stable.
 
 ## Later
 
@@ -123,7 +119,7 @@ Add broader session/profile/allowlist enablement after the request-scoped intern
 - Memory audit UI.
 - Topic documents and background consolidation.
 - Panel controls for memory review and enablement.
-- Env/panel/API/user-facing enablement remains future.
+- Env/public API/panel/user-facing enablement remains future.
 - Provider hardening and manual smoke coverage.
 - Runtime ergonomics and packaging.
 - More complete docs maintenance pipeline.
@@ -131,7 +127,9 @@ Add broader session/profile/allowlist enablement after the request-scoped intern
 ## Do not do yet
 
 - Do not enable compiled memory globally.
-- Do not add env, panel, API, or user-facing compiled-memory enablement casually.
+- Do not add env, panel, public API, or user-facing compiled-memory enablement casually.
+- Do not bypass compiled-memory governance exclusions.
+- Do not expose raw evidence, IDs, secrets, diagnostics internals, skipped items, or compiler internals to the model.
 - Do not start G5 voice clone work.
 - Do not treat provider sessions as memory.
 - Do not let workers commit facts directly.

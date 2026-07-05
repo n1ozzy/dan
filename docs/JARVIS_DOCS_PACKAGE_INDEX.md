@@ -1,6 +1,6 @@
 # Jarvis Documentation Package Index
 
-This package contains new documentation for branch `rescue/audt-gpt5.5pro-limit-cdn`, reviewed against local HEAD `bd18d3b`, git history, public GitHub reference, and the Memory OS task history from the active sessions.
+This package contains current documentation for branch `rescue/audt-gpt5.5pro-limit-cdn`, reviewed against local HEAD `802f6e8`, git history, public GitHub reference, and the Memory OS task history from the active sessions.
 
 ## Files
 
@@ -27,10 +27,10 @@ Do not overwrite existing authoritative docs blindly. Review conflicts with:
 - `docs/MEMORY_CONTRACT.md`
 - `docs/MEMORY_COMPILER.md`
 
-## Suggested commit
+## Suggested docs-only commit scope
 
 ```sh
-git add docs/JARVIS_CURRENT_STATE.md   docs/JARVIS_ARCHITECTURE.md   docs/MEMORY_OS_ARCHITECTURE.md   docs/JARVIS_PROJECT_RULES.md   docs/JARVIS_CHANGE_GUARDS.md   docs/JARVIS_ROADMAP.md   docs/JARVIS_HISTORY.md   docs/JARVIS_DO_NOT_TOUCH.md   docs/JARVIS_DOCS_PACKAGE_INDEX.md
+git add docs/JARVIS_CURRENT_STATE.md docs/JARVIS_ARCHITECTURE.md docs/MEMORY_OS_ARCHITECTURE.md docs/JARVIS_PROJECT_RULES.md docs/JARVIS_ROADMAP.md docs/JARVIS_DO_NOT_TOUCH.md docs/JARVIS_DOCS_PACKAGE_INDEX.md docs/STATUS.md
 
-git commit -m "docs: document Jarvis architecture and project rules"
+git commit -m "docs: finalize Memory OS rollout handoff"
 ```

@@ -125,10 +125,16 @@ Default-off means:
 
 Compiled memory context policy also requires:
 
-- `memory.enabled=false` blocks compiled memory;
+- `[memory].enabled=false` blocks compiled memory absolutely;
+- `compiled_memory_force_disabled` blocks compiled memory regardless of config, session/profile, or request override;
 - config dev/local enablement stays explicit and default-off;
+- session/profile scoped enablement stays internal-only;
+- empty session/profile allow-list enables zero sessions and does not globally leak;
+- `None` allow-list preserves established global config behavior;
 - request-scoped overrides do not persist or mutate builder/runtime state;
-- env, panel, API, and user-facing enablement require their own scoped task.
+- request override False disables one request;
+- request override True cannot bypass `[memory].enabled=false` or the kill switch;
+- env, panel, public API, user-facing, and global production enablement require their own scoped task.
 
 ## Fail-closed policy
 
@@ -153,8 +159,9 @@ Examples:
 ## Safety rules
 
 - No raw secrets in prompt, logs, diagnostics, event payloads, or persisted tool output.
-- No raw evidence/observation in prompt-visible memory.
+- No raw evidence, observations, IDs, skipped items, diagnostics internals, compiler internals, or secrets in prompt-visible memory.
 - No writes during context build.
+- No bypassing MemoryCompiler governance exclusions.
 - Provider sessions are not Jarvis memory.
 - Workers cannot commit facts or speak.
 - Panel cannot own canonical state.
@@ -169,6 +176,7 @@ Examples:
 - approval execution path in `jarvis/tools/registry.py`
 - ContextBuilder prompt-visible output
 - compiled memory enablement precedence
+- compiled memory force-disable / kill-switch precedence
 - compiled memory diagnostics redaction contract
 - compiled memory read-only context build contract
 - MemoryCompiler governance logic

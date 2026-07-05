@@ -14,6 +14,8 @@ Do not casually:
 - change prompt-visible ContextBuilder output;
 - change MemoryCompiler eligibility/governance;
 - enable compiled memory globally;
+- bypass `[memory].enabled=false` or `compiled_memory_force_disabled`;
+- add env, panel, public API, user-facing, or global production compiled-memory toggles casually;
 - bypass approval gates;
 - bypass tool permission policy;
 - treat provider sessions as memory;
@@ -49,6 +51,8 @@ Rules:
 - User input must not be overwritten.
 - `memory_blocks` behavior must be preserved until explicit cutover.
 - Compiled memory must remain default-off unless enablement task says otherwise.
+- Session/profile and request-scoped compiled-memory enablement must remain internal-only unless a scoped task changes that.
+- Request override True must not bypass `[memory].enabled=false` or `compiled_memory_force_disabled`.
 - Diagnostics must not enter context messages.
 
 ## MemoryCompiler
@@ -64,6 +68,7 @@ Rules:
 - It must not call providers or embeddings.
 - It must not update timestamps or usage ledgers in context build.
 - It must not select disabled, superseded, forgotten, conflict, missing-evidence, or procedural-by-default memory.
+- It must not expose raw evidence, IDs, skipped items, diagnostics internals, compiler internals, or secrets to the model.
 
 ## Memory API
 
@@ -164,6 +169,7 @@ Rules:
 - Defaults are product behavior.
 - New risky features should default off.
 - Config parsing changes require focused tests.
+- Config dev/local compiled-memory gates must not become global production enablement.
 
 ## Docs
 

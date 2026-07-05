@@ -1,7 +1,7 @@
 # Jarvis Current State
 
 Classification: current handoff.
-Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `171fb11 docs: formalize compiled memory context policy` in the local checkout.
+Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `802f6e8 test: cover compiled memory rollout precedence matrix` in the local checkout.
 Public reference: `https://github.com/n1ozzy/jarvis` public `main`, used only as a secondary reference.
 
 ## Overview
@@ -13,10 +13,9 @@ The active local branch is not public `main`. The branch under review is `rescue
 ## Repository status
 
 - Branch: `rescue/audt-gpt5.5pro-limit-cdn`
-- HEAD: `171fb11`
-- HEAD commit: `docs: formalize compiled memory context policy`
-- Current committed state: `MEMORY-CONTEXT-POLICY-01` docs and contract tests are committed at HEAD.
-- Latest read-only audit: `MEMORY-CONTEXT-ROLLOUT-READINESS-01` completed with focused validation 176 passed, memory/context regression 426 passed, no files changed, and no commit made.
+- HEAD: `802f6e8`
+- HEAD commit: `test: cover compiled memory rollout precedence matrix`
+- Current committed state: Memory OS compiled-memory rollout safety workstream is complete through policy docs, docs status refresh, session/profile scoped enablement, kill switch, and rollout precedence matrix tests.
 - Public repo `main`: secondary reference only.
 - Local branch checkout is the source of truth for this package.
 
@@ -63,18 +62,20 @@ The active local branch is not public `main`. The branch under review is `rescue
 - `MEMORY-CONTEXT-SNAPSHOT-01`: final BrainRequest/context shape tests.
 - `MEMORY-CONTEXT-GOVERNANCE-01`: final-context governance tests.
 - `MEMORY-CONTEXT-OBSERVE-01`: safe compiled-memory context diagnostics, committed at `bd18d3b`.
-- `MEMORY-CONTEXT-POLICY-01`: formal compiled memory context policy docs and contract tests, committed at `171fb11`.
+- `MEMORY-CONTEXT-POLICY-01`: formal compiled memory context policy docs and contract tests.
 - `MEMORY-CONTEXT-ROLLOUT-READINESS-01`: read-only readiness audit completed with focused validation 176 passed, memory/context regression 426 passed, no files changed, and no commit made.
+- `MEMORY-CONTEXT-DOCS-STATUS-REFRESH-01`: authoritative docs status refresh after readiness audit, committed at `22c90d6`.
+- `MEMORY-CONTEXT-ENABLE-SESSION-01`: session/profile scoped compiled-memory enablement, committed at `6c05474`.
+- Compiled-memory force-disable / kill switch, committed at `5e56d1d`.
+- Rollout precedence matrix tests for compiled-memory enablement, committed at `802f6e8`.
 - Config-based dev/local compiled memory enablement exists while default-off.
 - Request-scoped override support exists for one request at a time.
 
 ## Current workstream
 
-The active workstream is `MEMORY-CONTEXT-DOCS-STATUS-REFRESH-01`: docs-only status snapshot refresh after `MEMORY-CONTEXT-ROLLOUT-READINESS-01` found stale authoritative metadata.
+The active workstream is `MEMORY-OS-FINAL-HANDOFF-01`: docs-only final handoff after the compiled-memory rollout safety workstream.
 
-Runtime/tests/policy are ready for the next phase. The next feature task remains blocked until this docs refresh is committed. The next intended task after this docs refresh is `MEMORY-CONTEXT-ENABLE-SESSION-01`.
-
-`MEMORY-CONTEXT-OBSERVE-01` adds a safe, read-only diagnostics surface for the compiled memory context path without making diagnostics prompt-visible. Request-scoped override support also exists without making compiled memory globally or user-facing enabled.
+Runtime/config/ContextBuilder/test work is complete through session/profile scoped enablement, compiled-memory force-disable, and rollout precedence matrix coverage. This handoff is documentation-only and does not change runtime behavior.
 
 ## Implemented capabilities
 
@@ -106,17 +107,36 @@ Runtime/tests/policy are ready for the next phase. The next feature task remains
 - ContextBuilder can include compiled memory only when explicitly enabled.
 - Runtime can wire compiler dependencies, still default-off.
 - Config-based dev/local enablement exists and can enable compiled memory only when `memory.enabled=true`.
-- Request-scoped override support exists; override True or False applies to one request and must not mutate builder/runtime state.
+- Session/profile scoped enablement exists and is internal-only.
+- Request-scoped override support exists and is internal-only; override True or False applies to one request and must not mutate builder/runtime state.
+- Compiled-memory force-disable / kill switch exists and overrides config, session/profile, and request enablement.
 - Final-context tests cover safe shape, governance exclusions, and fail-closed behavior.
 - Context-build diagnostics expose only coarse compiled-memory status and counts; they must not include raw memory content, IDs, user input, exception text, or traceback.
+
+## Compiled memory runtime guarantees
+
+- Compiled memory remains default-off.
+- `[memory].enabled=false` is an absolute compiled-memory disable.
+- `compiled_memory_force_disabled` disables compiled memory regardless of config, session/profile, or request override.
+- Config dev/local compiled context gate exists and remains explicit.
+- Session/profile scoped enablement exists, is internal-only, and does not add a public toggle.
+- Request-scoped override exists, is internal-only, and applies to one request.
+- Request override False disables compiled memory for one request.
+- Request override True cannot bypass the kill switch or `[memory].enabled=false`.
+- Empty session/profile allow-list enables zero sessions and does not globally leak.
+- `None` allow-list preserves established global config behavior.
+- Final `BrainRequest.context_messages` remain prompt-safe.
+- Diagnostics remain outside model-visible context and stay redacted/coarse.
+- Compiler failure fails closed by omitting compiled memory.
+- Context build remains read-only.
 
 ## Default-off capabilities
 
 - Compiled memory remains default-off.
 - Runtime dependency wiring does not equal global enablement.
-- Config-based dev/local enablement exists, but config defaults keep compiled memory off and `memory.enabled=false` blocks it.
-- Request-scoped override support exists, but it is one-request internal wiring and does not persist.
-- No env, panel, API, or user-facing enablement exists for compiled memory.
+- Config-based dev/local enablement exists, but config defaults keep compiled memory off and `[memory].enabled=false` blocks it.
+- Session/profile scoped enablement and request-scoped override support exist as internal-only wiring and do not persist a public user setting.
+- No env, panel, public API, user-facing, or global production enablement exists for compiled memory.
 - Provider CLI adapters are configured disabled by default unless enabled in config.
 - Voice is configured disabled by default in `config/jarvis.example.toml`.
 - Launchd auto-install is disabled by default.
@@ -127,12 +147,13 @@ Runtime/tests/policy are ready for the next phase. The next feature task remains
 
 - Global compiled memory enablement.
 - Env-based compiled memory enablement.
-- Panel/API/user-facing compiled memory switch.
-- Broader session/profile-scoped compiled memory enablement beyond the request-scoped internal override.
+- Panel toggle for compiled memory.
+- Public API/user-facing compiled memory toggle.
 - Usage ledger for compiled memory selection events.
 - Topic documents runtime.
 - Automatic background memory summarization/consolidation.
-- Production telemetry beyond the current coarse compiled-memory diagnostics.
+- Global production rollout plan.
+- Observability dashboard beyond the current coarse compiled-memory diagnostics.
 
 ## Deferred or backlog areas
 
@@ -158,11 +179,10 @@ Current safety posture is conservative.
 
 ## Immediate next steps
 
-1. Review and commit `MEMORY-CONTEXT-DOCS-STATUS-REFRESH-01`.
-2. Start `MEMORY-CONTEXT-ENABLE-SESSION-01` only after the docs refresh is committed.
-3. Keep compiled memory default-off.
-4. Keep env/panel/API/user-facing enablement future-scoped.
-5. Add broader runtime smoke only when the next scoped enablement task requires it.
+1. Keep compiled memory default-off.
+2. Keep env, public API, panel, user-facing, and global production enablement future-scoped.
+3. Treat optional env enablement, optional internal API enablement, optional panel toggle, production rollout plan, and any observability dashboard as separate tasks.
+4. Do not bypass governance exclusions or expose raw evidence, IDs, secrets, diagnostics internals, or compiler internals to the model.
 
 ## Operational rules
 
