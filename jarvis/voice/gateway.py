@@ -86,7 +86,9 @@ class VoiceTurnGateway:
             # Mic-side barge-in: the user spoke over Jarvis and it was NOT
             # an echo — kill generation, queue and playback before the new turn.
             try:
-                self._cancellation.cancel_active_speech(reason="barge_in")
+                self._cancellation.cancel_active_speech(
+                    reason="barge_in", source="voice"
+                )
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("barge-in cancellation failed; continuing to the turn.")
         try:

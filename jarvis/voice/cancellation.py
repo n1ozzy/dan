@@ -86,21 +86,41 @@ class CancellationCoordinator:
         self._registry = generation_registry
         self._engine = engine
 
-    def cancel_active_speech(self, *, reason: str) -> dict[str, Any]:
+    def cancel_active_speech(
+        self,
+        *,
+        reason: str,
+        source: str | None = None,
+    ) -> dict[str, Any]:
         generation_turn_ids = self._registry.cancel_all()
         # Tombstone the still-generating turns FIRST, before the cancel sweep:
         # a generation dying from the SIGTERM above can emit one last delta, and
         # this closes the window in which it could enqueue a fresh row (FIX-09).
         self._tombstone_turns(set(generation_turn_ids))
-        queue_cancelled, queue_turn_ids = self._cancel_queued()
+        queue_cancelled, queue_turn_ids, queue_speech_ids = self._cancel_queued(
+            reason=reason,
+            interruption_source=source,
+        )
         # Tombstone the queue turns too (a filler timer is not tied to a live
         # generation), so the UNION of everything cancelled refuses late rows.
         tombstoned = self._tombstone_turns(
             set(generation_turn_ids) | set(queue_turn_ids)
         )
         playback_stopped = self._stop_playback()
+        cancelled_speech_id = queue_speech_ids[0] if queue_speech_ids else None
+        previous_turn_id = queue_turn_ids[0] if queue_turn_ids else None
+        if source is None:
+            normalized_source = "voice"
+        else:
+            normalized_source = str(source).strip() or "voice"
         result = {
             "reason": reason,
+            "cancellation_reason": reason,
+            "interruption_reason": reason,
+            "interrupted_previous_response": queue_cancelled > 0,
+            "cancelled_speech_id": cancelled_speech_id,
+            "previous_turn_id": previous_turn_id,
+            "new_turn_source": "PTT" if (source or "") == "ptt" else normalized_source,
             "generation_cancelled": len(generation_turn_ids),
             "queue_cancelled": queue_cancelled,
             "playback_stopped": playback_stopped,
@@ -112,19 +132,35 @@ class CancellationCoordinator:
 
     # -- legs ------------------------------------------------------------------
 
-    def _cancel_queued(self) -> tuple[int, list[str]]:
+    def _cancel_queued(
+        self, *, reason: str, interruption_source: str | None
+    ) -> tuple[int, list[str], list[str]]:
         conn = self._connect()
         try:
             queue = VoiceQueue(conn, event_store=create_event_store(conn))
-            turn_ids = [
-                str(row[0])
+            rows = [
+                (str(row[0]), str(row[1]) if row[1] is not None else None)
                 for row in conn.execute(
-                    "SELECT DISTINCT turn_id FROM voice_queue "
-                    "WHERE status IN ('queued', 'speaking') AND turn_id IS NOT NULL"
+                    "SELECT id, turn_id FROM voice_queue "
+                    "WHERE status IN ('queued', 'speaking') AND turn_id IS NOT NULL "
+                    "ORDER BY rowid DESC"
                 ).fetchall()
             ]
-            cancelled = sum(queue.cancel_turn(turn_id) for turn_id in turn_ids)
-            return cancelled, turn_ids
+            queue_turn_ids: list[str] = []
+            for row_turn_id in [turn_id for (_, turn_id) in rows if turn_id is not None]:
+                if row_turn_id not in queue_turn_ids:
+                    queue_turn_ids.append(row_turn_id)
+            cancelled_request_ids: list[str] = []
+            for turn_id in queue_turn_ids:
+                cancelled_request_ids_for_turn: list[str] = []
+                queue.cancel_turn(
+                    turn_id,
+                    reason=reason,
+                    interruption_source=interruption_source,
+                    cancelled_request_ids=cancelled_request_ids_for_turn,
+                )
+                cancelled_request_ids.extend(cancelled_request_ids_for_turn)
+            return len(cancelled_request_ids), queue_turn_ids, cancelled_request_ids
         finally:
             close_quietly(conn)
 

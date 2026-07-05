@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from http.client import HTTPConnection
 from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -45,6 +46,8 @@ def config_text(
     compiled_context_max_items: int | None = None,
     compiled_context_max_chars: int | None = None,
     compiled_context_include_procedural: bool = False,
+    brain_default_adapter: str = "mock",
+    extra_toml: str = "",
 ) -> str:
     runtime_home = db_path.parent
     compiler_defaults = MemoryCompilerConfig()
@@ -58,7 +61,8 @@ def config_text(
         if compiled_context_max_chars is None
         else compiled_context_max_chars
     )
-    return f"""
+    return (
+        f"""
 [daemon]
 name = "jarvisd"
 host = "127.0.0.1"
@@ -70,9 +74,9 @@ path = "{db_path}"
 migrations = "manual"
 destroy_existing = false
 
-[brain]
-default_adapter = "mock"
-default_model = "mock-local"
+    [brain]
+    default_adapter = "{brain_default_adapter}"
+    default_model = "mock-local"
 timeout_seconds = 60
 context_budget_chars = 24000
 provider_sessions_are_memory = false
@@ -130,6 +134,8 @@ enabled = false
 label = "com.ozzy.jarvisd"
 install_automatically = false
 """
+        + extra_toml
+    )
 
 
 def write_config(
@@ -142,6 +148,8 @@ def write_config(
     compiled_context_max_items: int | None = None,
     compiled_context_max_chars: int | None = None,
     compiled_context_include_procedural: bool = False,
+    brain_default_adapter: str = "mock",
+    extra_toml: str = "",
 ) -> Path:
     path.write_text(
         config_text(
@@ -152,9 +160,26 @@ def write_config(
             compiled_context_max_items=compiled_context_max_items,
             compiled_context_max_chars=compiled_context_max_chars,
             compiled_context_include_procedural=compiled_context_include_procedural,
+            brain_default_adapter=brain_default_adapter,
+            extra_toml=extra_toml,
         ),
         encoding="utf-8",
     )
+    return path
+
+
+def rewrite_voice_section(path: Path, voice_toml: str) -> Path:
+    content = path.read_text(encoding="utf-8")
+    start = content.find("[voice]")
+    if start < 0:
+        raise ValueError("voice section not found in generated config")
+
+    end = content.find("\n[", start + len("[voice]"))
+    if end < 0:
+        end = len(content)
+
+    updated = content[:start] + "[voice]\n" + voice_toml.strip() + "\n" + content[end:]
+    path.write_text(updated, encoding="utf-8")
     return path
 
 
@@ -2152,6 +2177,518 @@ def test_unknown_runtime_route_returns_json_404(app: DaemonApp) -> None:
     assert "<html" not in body.lower()
     payload = json.loads(body)
     assert payload == {"error": "Not found", "status": 404}
+
+
+def _runtime_warning_messages(payload: dict[str, Any]) -> list[str]:
+    values = payload.get("voice_errors", {}).get("warnings", {}).get("value")
+    if not isinstance(values, list):
+        return []
+    return [str(item) for item in values]
+
+
+def test_get_runtime_settings_returns_typed_projection_groups_and_fields(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    for group in (
+        "runtime",
+        "brain",
+        "voice",
+        "audio",
+        "tools",
+        "memory",
+        "approvals",
+        "panel",
+        "latest_turn_trace",
+    ):
+        assert group in payload
+        assert isinstance(payload[group], dict)
+
+    for group in payload.values():
+        for field in group.values():
+            assert set(field.keys()) == {
+                "value",
+                "effective_value",
+                "source",
+                "status",
+                "editable_later",
+                "warning",
+            }
+            assert field["status"] in {"ok", "missing", "invalid", "unknown"}
+            assert field["source"] in {
+                "config",
+                "settings",
+                "default",
+                "runtime_detected",
+                "unknown",
+            }
+
+    assert payload["runtime"]["host"]["value"] == "127.0.0.1"
+    assert payload["runtime"]["host"]["source"] == "config"
+    assert payload["memory"]["enabled"]["source"] == "config"
+
+
+def test_get_runtime_settings_includes_latest_turn_trace_for_last_text_turn(
+    app: DaemonApp,
+) -> None:
+    app.start()
+
+    with running_server(app) as base_url:
+        status, input_payload = request_json(
+            "POST",
+            f"{base_url}/input/text",
+            {"text": "jarvis test latest turn", "source": "text"},
+        )
+        assert status == 200
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    trace = payload["latest_turn_trace"]
+    assert trace["turn_id"]["value"] == input_payload["turn_id"]
+    assert trace["source"]["value"] in {"text", "panel", "voice"}
+    assert trace["conversation_id"]["value"] == input_payload["conversation_id"]
+    assert trace["provider_adapter"]["value"] == input_payload["brain_adapter"]
+    assert trace["provider_model"]["value"] == input_payload["brain_model"]
+    assert trace["approvals_requested_count"]["value"] == 0
+    assert trace["approvals_executed_count"]["value"] == 0
+    assert trace["tools_attempted_count"]["value"] == 0
+    assert trace["voice_rows_created"]["value"] == {"filler": 0, "final": 0, "error": 0}
+    timestamps = trace["timestamps"]["value"]
+    assert isinstance(timestamps, dict)
+    assert "created_at" in timestamps
+    assert "completion_at" in timestamps
+
+
+def test_get_runtime_settings_turn_trace_records_ptt_down_barge_in(tmp_path: Path) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = true\ndefault_tts = 'mock'\ndefault_stt = 'mock'\n",
+    )
+    app = create_daemon_app(config_path)
+    try:
+        status = 0
+        runtime_payload: dict[str, Any] = {}
+        app.start()
+        from jarvis.store.event_store import create_event_store
+        from jarvis.store.repositories import utc_now_iso
+        from jarvis.voice.queue import VoiceQueue
+
+        now = utc_now_iso()
+        turn_id = "turn-ptt-barge-in"
+        insert_runtime_conversation(app)
+        assert app.conn is not None
+        app.conn.execute(
+            """
+            INSERT INTO turns (
+              id, conversation_id, created_at, updated_at, source, status,
+              input_text, final_text, brain_adapter, brain_model,
+              context_snapshot_json, error, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                turn_id,
+                "conversation-runtime",
+                now,
+                now,
+                "voice",
+                "done",
+                "Zapytanie do przechwyconego trybu.",
+                "Odpowiedź do przechwyconego trybu.",
+                "mock",
+                "mock-local",
+                "{}",
+                None,
+                "{}",
+            ),
+        )
+
+        queue = VoiceQueue(app.conn, event_store=create_event_store(app.conn))
+        queued = queue.enqueue(
+            text="To zdanie zostanie przerwane przez PTT.",
+            turn_id=turn_id,
+            seq=0,
+        )
+
+        with running_server(app) as base_url:
+            status, ptt_payload = request_json(
+                "POST",
+                f"{base_url}/voice/ptt/down",
+                {"source": "ptt"},
+            )
+            assert status == 200, ptt_payload
+            assert ptt_payload["cancellation"]["interrupted_previous_response"] is True
+            status, runtime_payload = request_json(
+                "GET",
+                f"{base_url}/runtime/settings",
+            )
+
+    finally:
+        app.close()
+
+    assert status == 200
+    trace = runtime_payload["latest_turn_trace"]
+    assert trace["turn_id"]["value"] == turn_id
+    assert trace["interrupted_previous_response"]["value"] is True
+    assert trace["cancelled_speech_id"]["value"] == queued.id
+    assert trace["previous_turn_id"]["value"] == turn_id
+    assert trace["new_turn_source"]["value"] == "PTT"
+    assert trace["cancellation_reason"]["value"] == "ptt_down"
+
+
+def test_get_runtime_settings_counts_turn_approvals_and_tool_attempts(
+    app: DaemonApp,
+) -> None:
+    fake = ApiFakeTool(name="needs_approval", risk="shell_read")
+    app.tool_registry.register(fake)
+    app.start()
+
+    with running_server(app) as base_url:
+        status, input_payload = request_json(
+            "POST",
+            f"{base_url}/input/text",
+            {"text": "approval count trace", "source": "text"},
+        )
+        assert status == 200
+        turn_id = input_payload["turn_id"]
+
+        _, requested = request_json(
+            "POST",
+            f"{base_url}/tools/request",
+            {
+                "tool_name": "needs_approval",
+                "arguments": {"command": "status"},
+                "requested_by": "api",
+                "turn_id": turn_id,
+            },
+        )
+        request_json(
+            "POST",
+            f"{base_url}/approvals/{requested['approval_id']}/approve",
+        )
+        request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/execute")
+
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    trace = payload["latest_turn_trace"]
+    assert trace["turn_id"]["value"] == turn_id
+    assert trace["approvals_requested_count"]["value"] == 1
+    assert trace["approvals_executed_count"]["value"] == 1
+    assert trace["tools_attempted_count"]["value"] == 1
+    assert trace["latest_safe_error"]["value"] is None
+
+
+def test_runtime_settings_warnings_include_tts_unavailable_when_voice_enabled(
+    tmp_path: Path,
+) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = true\ndefault_tts = 'does_not_exist'\nsupertonic_binary = '/this/path/does/not/exist.bin'\n",
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    warnings = _runtime_warning_messages(payload)
+    assert any("TTS" in message and "unavailable" in message.lower() for message in warnings) or any(
+        "not available" in message.lower() for message in warnings
+    )
+
+
+def test_runtime_settings_warnings_include_stt_unavailable_when_voice_enabled(
+    tmp_path: Path,
+) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = true\ndefault_stt = 'unknown_stt_engine'\n",
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    warnings = _runtime_warning_messages(payload)
+    assert any("STT package" in message for message in warnings)
+
+
+def test_runtime_settings_warnings_include_missing_stt_local_model_for_selected_provider(
+    tmp_path: Path,
+) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        'enabled = true\ndefault_stt = "mlx_whisper"\nstt_model = "/no/such/path/stt-model.ggml"\n',
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    warnings = _runtime_warning_messages(payload)
+    assert any("STT model" in message or "local model" in message for message in warnings)
+
+
+def test_runtime_settings_warns_when_supertonic_voice_is_not_in_cli_voice_list(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    def fake_run(command, **_: object) -> object:
+        assert command == ["/bin/echo", "list-voices"]
+
+        class _CompletedProcess:
+            returncode = 0
+            stdout = "M1 F1"
+            stderr = ""
+
+        return _CompletedProcess()
+
+    monkeypatch.setattr(routes_runtime.subprocess, "run", fake_run)
+
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        (
+            "enabled = true\n"
+            "default_tts = 'supertonic'\n"
+            "default_stt = 'mock'\n"
+            "supertonic_binary = '/bin/echo'\n"
+            "supertonic_voice = 'M2'\n"
+            "supertonic_lang = 'pl'\n"
+        ),
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    warnings = _runtime_warning_messages(payload)
+    assert any("Configured supertonic voice 'M2' is not available" in message for message in warnings)
+
+
+def test_runtime_settings_warnings_when_tools_are_shown_but_provider_does_not_support_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = true\n",
+    )
+    app = create_daemon_app(config_path)
+    monkeypatch.setattr(app.tool_registry, "list_specs", lambda: [type("ToolSpec", (), {"name": "demo", "risk": "low", "description": "demo"})])
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    warnings = _runtime_warning_messages(payload)
+    assert any("provider does not support tools" in message for message in warnings)
+
+
+def test_runtime_settings_warns_invalid_persona_profile_falls_back(
+    app: DaemonApp,
+) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/settings",
+            {"settings": {"persona.profile": "does-not-exist"}},
+        )
+        assert status == 200
+        assert payload["settings"]["persona.profile"] == "does-not-exist"
+
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    warnings = _runtime_warning_messages(payload)
+    assert any("Requested persona profile is missing" in message for message in warnings)
+
+
+def test_runtime_settings_warns_stale_brain_effort_and_fast_settings(
+    tmp_path: Path,
+) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = true\n",
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/settings",
+                {"settings": {"model": "invalid-model", "effort": "x-large", "fast": True}},
+            )
+            assert status == 200
+            assert payload["settings"]["model"] == "invalid-model"
+
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    warnings = _runtime_warning_messages(payload)
+    assert any("Current model configuration is not supported" in message for message in warnings)
+    assert any("Configured effort value is unsupported" in message for message in warnings)
+    assert any("Fast mode is unsupported" in message for message in warnings)
+
+
+def test_runtime_settings_warns_when_network_policy_enabled_without_network_tool(
+    app: DaemonApp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(
+        routes_runtime,
+        "_safe_probe_network_capability",
+        lambda: ("no", None),
+    )
+
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    warnings = _runtime_warning_messages(payload)
+    assert any("Internet policy is active" in message for message in warnings)
+
+
+def test_get_runtime_settings_includes_brain_provider_capabilities(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    providers = payload["brain"]["providers"]["value"]
+    assert isinstance(providers, list)
+    provider_names = {provider["name"] for provider in providers}
+    assert "mock" in provider_names
+
+    mock_provider = next(
+        provider for provider in providers if provider["name"] == "mock"
+    )
+    assert mock_provider["kind"] == "Developer/Test"
+    assert mock_provider["configured"] is True
+    assert mock_provider["current"] is True
+    assert mock_provider["current_model"]["status"] in {"ok", "unknown", "missing"}
+    assert mock_provider["current_model"]["value"] == app.config.brain.default_model
+    assert mock_provider["allowed_effort_values"]["status"] in {"unknown", "ok"}
+    assert mock_provider["fast_supported"]["value"] in {"yes", "no", "unknown"}
+    assert mock_provider["streaming_support"]["value"] in {"yes", "no", "unknown"}
+    assert mock_provider["tools_support"]["value"] in {"yes", "no", "unknown"}
+    assert mock_provider["provider_credentials_status"]["value"] in {"yes", "no", "unknown"}
+
+
+def test_post_runtime_settings_is_readonly(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json("POST", f"{base_url}/runtime/settings", {"x": 1})
+
+    assert status == 404
+    assert payload["error"] == "Not found"
+
+
+def test_runtime_settings_marks_invalid_stale_effort_and_fast_state_for_current_provider(
+    app: DaemonApp,
+) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/settings",
+            {"settings": {"model": "invalid-model", "effort": "x-large", "fast": True}},
+        )
+        assert status == 200
+        assert payload["settings"]["model"] == "invalid-model"
+
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    providers = payload["brain"]["providers"]["value"]
+    mock_provider = next(
+        provider for provider in providers if provider["name"] == "mock"
+    )
+    assert mock_provider["current_model"]["status"] == "invalid"
+    assert mock_provider["effort"]["status"] == "invalid"
+    assert mock_provider["fast"]["status"] == "invalid"
+
+
+def test_runtime_settings_shows_configured_provider_capabilities_for_claude_and_codex(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        db_path,
+        brain_default_adapter="claude_cli",
+        extra_toml='\n[brain.codex_cli]\nenabled = true\n',
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+        assert status == 200
+        providers = payload["brain"]["providers"]["value"]
+        names = {provider["name"] for provider in providers}
+        assert {"mock", "claude_cli", "codex_cli"}.issubset(names)
+
+        claude = next(
+            provider for provider in providers if provider["name"] == "claude_cli"
+        )
+        codex = next(
+            provider for provider in providers if provider["name"] == "codex_cli"
+        )
+        assert claude["display_name"] == "Claude CLI"
+        assert codex["display_name"] == "Codex CLI"
+        assert claude["fast_supported"]["value"] in {"yes", "no", "unknown"}
+        assert codex["streaming_support"]["value"] in {"yes", "no", "unknown"}
+        assert claude["tools_support"]["value"] in {"yes", "no", "unknown"}
+    finally:
+        daemon_app.close()
+
+
 
 
 def test_cli_health_state_and_events_can_query_ephemeral_server(

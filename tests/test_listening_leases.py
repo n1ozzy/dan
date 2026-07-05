@@ -391,6 +391,12 @@ def test_ptt_down_acquires_hold_lease_and_cancels_active_speech(tmp_path: Path) 
         assert payload["lease"]["mode"] == "hold"
         assert payload["lease"]["source"] == "ptt"
         assert payload["cancellation"]["reason"] == "ptt_down"
+        assert payload["cancellation"]["interruption_reason"] == "ptt_down"
+        assert payload["cancellation"]["cancellation_reason"] == "ptt_down"
+        assert payload["cancellation"]["interrupted_previous_response"] is True
+        assert payload["cancellation"]["previous_turn_id"] == "turn-before-ptt"
+        assert payload["cancellation"]["cancelled_speech_id"] == request.id
+        assert payload["cancellation"]["new_turn_source"] == "PTT"
         assert payload["cancellation"]["queue_cancelled"] == 1
         status_row = daemon_app.conn.execute(
             "SELECT status FROM voice_queue WHERE id = ?",

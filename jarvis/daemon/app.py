@@ -483,18 +483,32 @@ class DaemonApp:
         finally:
             close_quietly(conn)
 
-    def cancel_active_speech(self, *, reason: str) -> dict[str, Any]:
+    def cancel_active_speech(
+        self,
+        *,
+        reason: str,
+        source: str | None = None,
+    ) -> dict[str, Any]:
         if not self.started:
             raise DaemonAppNotStartedError("Daemon app is not started.")
         if self.voice_cancellation is None:
             return {
                 "reason": reason,
+                "cancellation_reason": reason,
+                "interruption_reason": reason,
+                "interrupted_previous_response": False,
+                "cancelled_speech_id": None,
+                "previous_turn_id": None,
+                "new_turn_source": "PTT" if source == "ptt" else (source or "voice"),
                 "generation_cancelled": 0,
                 "queue_cancelled": 0,
                 "playback_stopped": False,
                 "tombstoned_turns": 0,
             }
-        return self.voice_cancellation.cancel_active_speech(reason=reason)
+        return self.voice_cancellation.cancel_active_speech(
+            reason=reason,
+            source=source,
+        )
 
     def list_voice_queue(self, *, limit: int = 20) -> list[dict[str, Any]]:
         if not self.started:
