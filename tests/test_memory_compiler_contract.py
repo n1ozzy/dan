@@ -69,12 +69,16 @@ def test_memory_os_policy_defines_enablement_precedence() -> None:
         text,
         (
             "global default is off",
-            "config dev/local enablement can enable compiled memory when memory.enabled=true",
-            "memory.enabled=false blocks compiled memory",
-            "request-scoped override True can enable compiled memory for one request",
+            "config dev/local enablement can enable compiled memory when [memory].enabled=true",
+            "[memory].enabled=false is an absolute compiled-memory disable",
+            "compiled_memory_force_disabled disables compiled memory regardless of config, session/profile, or request override",
+            "Session/profile scoped enablement exists and is internal-only",
+            "Empty session/profile allow-list enables zero sessions and does not globally leak",
+            "None allow-list preserves established global config behavior",
+            "Request-scoped override True can enable compiled memory for one request only when [memory].enabled=true and the kill switch is off",
             "request-scoped override False disables compiled memory for one request",
             "request-scoped override must not mutate builder/runtime state",
-            "No env, panel, API, or user-facing enablement exists yet",
+            "No env, panel, public API, user-facing, or global production enablement exists yet",
         ),
     )
 
@@ -190,7 +194,7 @@ def test_current_state_documents_compiled_memory_policy_status() -> None:
             "Compiled memory remains default-off",
             "config-based dev/local enablement exists",
             "request-scoped override support exists",
-            "No env, panel, API, or user-facing enablement exists",
+            "No env, panel, public API, user-facing, or global production enablement exists",
         ),
     )
 
@@ -226,8 +230,8 @@ def test_roadmap_keeps_user_facing_enablement_future() -> None:
         (
             "Config-based dev/local compiled memory enablement",
             "Request-scoped compiled memory override",
-            "env/panel/API/user-facing enablement remains future",
-            "Do not add env, panel, API, or user-facing compiled-memory enablement casually",
+            "Env/public API/panel/user-facing enablement remains future",
+            "Do not add env, panel, public API, or user-facing compiled-memory enablement casually",
         ),
     )
 

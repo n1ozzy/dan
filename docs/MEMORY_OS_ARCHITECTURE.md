@@ -1,7 +1,7 @@
 # Memory OS Architecture
 
 Classification: technical architecture.
-Scope: Memory OS as implemented and tested on branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `802f6e8 test: cover compiled memory rollout precedence matrix`.
+Scope: Memory OS as implemented and tested on branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `58cca12 docs: finalize Memory OS rollout handoff`.
 
 Current rollout snapshot: Memory OS compiled-memory rollout safety workstream is complete through compiled-memory policy docs, docs status refresh, session/profile scoped enablement, compiled-memory force-disable, and rollout precedence matrix tests. This document describes the current safety contract; future env/API/panel/production rollout work remains separately scoped.
 

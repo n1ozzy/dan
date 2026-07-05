@@ -1,7 +1,7 @@
 # Jarvis Architecture
 
 Classification: technical architecture.
-Scope: whole Jarvis runtime as represented by branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `802f6e8 test: cover compiled memory rollout precedence matrix`.
+Scope: whole Jarvis runtime as represented by branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `58cca12 docs: finalize Memory OS rollout handoff`.
 
 ## System overview
 

@@ -1,7 +1,7 @@
 # Jarvis Current State
 
 Classification: current handoff.
-Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `802f6e8 test: cover compiled memory rollout precedence matrix` in the local checkout.
+Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `58cca12 docs: finalize Memory OS rollout handoff` in the local checkout.
 Public reference: `https://github.com/n1ozzy/jarvis` public `main`, used only as a secondary reference.
 
 ## Overview
@@ -13,9 +13,9 @@ The active local branch is not public `main`. The branch under review is `rescue
 ## Repository status
 
 - Branch: `rescue/audt-gpt5.5pro-limit-cdn`
-- HEAD: `802f6e8`
-- HEAD commit: `test: cover compiled memory rollout precedence matrix`
-- Current committed state: Memory OS compiled-memory rollout safety workstream is complete through policy docs, docs status refresh, session/profile scoped enablement, kill switch, and rollout precedence matrix tests.
+- HEAD: `58cca12`
+- HEAD commit: `docs: finalize Memory OS rollout handoff`
+- Current committed state: Memory OS compiled-memory rollout safety workstream is complete through policy docs, docs status refresh, session/profile scoped enablement, kill switch, rollout precedence matrix tests, and final handoff docs.
 - Public repo `main`: secondary reference only.
 - Local branch checkout is the source of truth for this package.
 
