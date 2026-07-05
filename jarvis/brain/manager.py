@@ -119,6 +119,12 @@ class BrainManager:
         # call; the caller sentence-cuts the final text after the fact.
         return adapter.generate(request)
 
+    def supports_streaming(self, adapter_name: str | None = None) -> bool:
+        """Whether the selected adapter can accept on_delta callbacks."""
+
+        adapter = self.get_adapter(adapter_name)
+        return _accepts_on_delta(adapter)
+
 
 def _accepts_on_delta(adapter: BrainAdapter) -> bool:
     """Feature detection instead of a TypeError probe: a signature check can

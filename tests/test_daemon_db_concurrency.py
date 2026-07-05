@@ -9,6 +9,7 @@ memory mutation + audit event in one transaction.
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from collections.abc import Iterator
@@ -18,6 +19,7 @@ import pytest
 
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.events.models import utc_now_iso
+from jarvis.store.db import ThreadLocalConnection
 from jarvis.workers.jobs import WorkerJob, WorkerResult
 from tests.test_api_smoke import write_config
 
@@ -47,6 +49,33 @@ def _event_count(conn, marker: str) -> int:
         "SELECT COUNT(*) FROM events WHERE source = ?", (marker,)
     ).fetchone()
     return int(row[0])
+
+
+def test_thread_local_connection_releases_finished_request_thread(tmp_path: Path) -> None:
+    conn = ThreadLocalConnection(tmp_path / "jarvis.db")
+    raw_connections = []
+    errors: list[BaseException] = []
+
+    def request_thread() -> None:
+        try:
+            conn.execute("SELECT 1").fetchone()
+            raw = conn._connection()
+            raw_connections.append(raw)
+            assert conn.close_current_thread() is True
+            with pytest.raises(sqlite3.ProgrammingError):
+                raw.execute("SELECT 1")
+        except BaseException as exc:  # noqa: BLE001 - surfaced in main thread
+            errors.append(exc)
+
+    thread = threading.Thread(target=request_thread)
+    thread.start()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert len(raw_connections) == 1
+    assert conn._all == []
+    assert conn.close_current_thread() is False
 
 
 def test_rollback_in_other_thread_does_not_discard_pending_write(app: DaemonApp) -> None:

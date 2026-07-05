@@ -191,16 +191,16 @@ def _make_handler(app: DaemonApp) -> type[BaseHTTPRequestHandler]:
         timeout = HANDLER_TIMEOUT_SECONDS
 
         def do_GET(self) -> None:
-            _dispatch(self, app, "GET")
+            self._dispatch_request("GET")
 
         def do_POST(self) -> None:
-            _dispatch(self, app, "POST")
+            self._dispatch_request("POST")
 
         def do_PATCH(self) -> None:
-            _dispatch(self, app, "PATCH")
+            self._dispatch_request("PATCH")
 
         def do_DELETE(self) -> None:
-            _dispatch(self, app, "DELETE")
+            self._dispatch_request("DELETE")
 
         def do_OPTIONS(self) -> None:
             if self.headers.get("Origin") is None:
@@ -240,7 +240,19 @@ def _make_handler(app: DaemonApp) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None:
             return None
 
+        def _dispatch_request(self, method: str) -> None:
+            try:
+                _dispatch(self, app, method)
+            finally:
+                _release_request_connection(app)
+
     return JarvisRequestHandler
+
+
+def _release_request_connection(app: DaemonApp) -> None:
+    release = getattr(app.conn, "close_current_thread", None)
+    if callable(release):
+        release()
 
 
 def _host_header_is_local(handler: BaseHTTPRequestHandler) -> bool:

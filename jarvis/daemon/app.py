@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import json
 import sqlite3
 import threading
@@ -50,6 +51,7 @@ from jarvis.store.db import (
     ThreadLocalConnection,
     close_quietly,
     connect_db,
+    DatabaseError,
     get_schema_version,
     initialize_database,
 )
@@ -1236,9 +1238,26 @@ class DaemonApp:
         }
 
     def _connect_existing(self) -> sqlite3.Connection:
-        if not self.paths.db_path.is_file():
-            raise DaemonAppError(f"Database does not exist: {self.paths.db_path}")
-        return connect_db(self.paths.db_path)
+        db_path = self.paths.db_path
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not db_path.is_file():
+            get_logger(__name__).warning("Database missing in worker path; initializing on demand: %s", db_path)
+            return initialize_database(db_path)
+        try:
+            return connect_db(db_path)
+        except DatabaseError as exc:
+            logger = get_logger(__name__)
+            logger.warning(
+                "DB connect failed; path=%s cwd=%s home=%s parent_exists=%s parent_writable=%s file_exists=%s file_writable=%s",
+                db_path,
+                os.getcwd(),
+                os.getenv("HOME"),
+                db_path.parent.exists(),
+                os.access(db_path.parent, os.W_OK),
+                db_path.exists(),
+                os.access(db_path, os.W_OK),
+            )
+            raise
 
     def _resolve_recorder_input_device(self) -> str | None:
         """Audio policy decides which input the recorder uses (ADR-012).

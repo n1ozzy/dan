@@ -31,6 +31,7 @@ def connect_db(path: str | Path) -> sqlite3.Connection:
     """Connect to a SQLite database and enable Jarvis connection pragmas."""
 
     db_path = Path(path).expanduser()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         conn = sqlite3.connect(db_path)
         _configure_connection(conn)
@@ -150,6 +151,21 @@ class ThreadLocalConnection:
 
     def __exit__(self, *exc_info: Any) -> bool:
         return bool(self._connection().__exit__(*exc_info))
+
+    def close_current_thread(self) -> bool:
+        """Close the SQLite connection cached for the calling thread, if any."""
+
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            return False
+        try:
+            delattr(self._local, "conn")
+        except AttributeError:
+            pass
+        with self._lock:
+            self._all = [existing for existing in self._all if existing is not conn]
+        close_quietly(conn)
+        return True
 
     def close(self) -> None:
         self._closed = True

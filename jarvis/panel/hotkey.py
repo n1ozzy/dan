@@ -18,6 +18,7 @@ not.
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any
@@ -96,8 +97,35 @@ class HotkeyEdgeDetector:
 
 def _urllib_poster(url: str, *, data: bytes, headers: dict[str, str]) -> None:
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(request, timeout=3) as response:  # noqa: S310 - localhost
-        response.read()
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:  # noqa: S310 - localhost
+            response.read()
+    except urllib.error.HTTPError as exc:
+        _close_http_error(exc)
+        raise
+
+
+def _urllib_health_checker(base_url: str) -> bool:
+    request = urllib.request.Request(f"{base_url.rstrip('/')}/health", method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=1) as response:  # noqa: S310 - localhost
+            response.read()
+            return 200 <= int(response.status) < 300
+    except urllib.error.HTTPError as exc:
+        _close_http_error(exc)
+        return False
+    except Exception:
+        return False
+
+
+def _close_http_error(exc: urllib.error.HTTPError) -> None:
+    close = getattr(exc, "close", None)
+    if callable(close):
+        close()
+        return
+    fp = getattr(exc, "fp", None)
+    if fp is not None:
+        fp.close()
 
 
 class PttHotkeyClient:
@@ -113,20 +141,38 @@ class PttHotkeyClient:
         token: str | None,
         *,
         poster: Callable[..., Any] = _urllib_poster,
+        health_checker: Callable[[], bool] | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._token = token
         self._poster = poster
+        self._health_checker = health_checker or (
+            lambda: _urllib_health_checker(self._base)
+        )
+        self._last_backend_available: bool | None = None
 
     def _post(self, path: str) -> None:
+        if not self._backend_available():
+            return
         headers = {"Content-Type": "application/json"}
         if self._token:
             headers["X-Jarvis-Token"] = self._token
         data = json.dumps({"source": PTT_SOURCE}).encode("utf-8")
         try:
             self._poster(f"{self._base}{path}", data=data, headers=headers)
-        except Exception:  # noqa: BLE001 - a transport hiccup must not kill the panel
-            logger.exception("PTT hotkey POST to %s failed; ignoring.", path)
+        except Exception as exc:  # noqa: BLE001 - a transport hiccup must not kill the panel
+            logger.warning("PTT hotkey request skipped after %s failed: %s", path, exc)
+            self._last_backend_available = False
+
+    def _backend_available(self) -> bool:
+        ok = bool(self._health_checker())
+        if not ok:
+            if self._last_backend_available is not False:
+                logger.warning("PTT hotkey disabled: Jarvis backend is offline or unhealthy.")
+            self._last_backend_available = False
+            return False
+        self._last_backend_available = True
+        return True
 
     def down(self) -> None:
         self._post("/voice/ptt/down")

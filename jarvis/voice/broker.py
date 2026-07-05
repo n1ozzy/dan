@@ -97,72 +97,82 @@ class VoiceBroker:
         current = self._claim()
         prefetched: Future | None = None
         while current is not None:
+            try:
+                # Keep one request's failure from killing the worker; mark it
+                # failed and continue draining the rest of the queue.
+                try:
+                    chunk = (
+                        prefetched.result()
+                        if prefetched is not None
+                        else self._engine.synthesize(current.text)
+                    )
+                except Exception as exc:
+                    self._mark_failed(current, str(exc))
+                    current = self._claim()
+                    prefetched = None
+                    continue
+
+                # Claim and start synthesizing the NEXT chunk before playback,
+                # so audio for it is ready the moment this one finishes.
+                next_request = self._claim()
+                prefetched = (
+                    self._executor.submit(self._engine.synthesize, next_request.text)
+                    if next_request is not None
+                    else None
+                )
+
+                # Barge-in (G4c): a claimed row may have been flipped to
+                # 'cancelled' while the previous chunk was playing — re-check DB
+                # truth so a cancelled row is never played.
+                if not self._still_speaking(current):
+                    current = next_request
+                    continue
+
+                # Committed to play this chunk: stamp spoken_at BEFORE playback so
+                # the anti-echo corpus counts it even if the player is killed
+                # mid-play (a partial that still put audio in the air — FIX-09).
+                self._mark_spoken(current)
+                watcher = self._start_interrupt_watcher(current)
+                interrupted = False
+                try:
+                    # should_play is re-checked inside the engine under its player
+                    # lock, right before spawning — closes the barge-in TOCTOU the
+                    # pre-play check above cannot (FIX-09).
+                    self._play(chunk, should_play=lambda: self._still_speaking(current))
+                except PlaybackCancelled:
+                    # Cancelled in the check->spawn gap: the row is already
+                    # 'cancelled' (leg 2), so skip cleanly — no done, no failure.
+                    interrupted = True
+                except Exception as exc:  # playback must never kill the loop
+                    if self._still_speaking(current):
+                        self._mark_failed(current, f"playback failed: {exc}")
+                    else:
+                        interrupted = True
+                else:
+                    if self._still_speaking(current):
+                        self._mark_done(current)
+                        played += 1
+                    else:
+                        interrupted = True
+                finally:
+                    self._stop_interrupt_watcher(watcher)
+                if interrupted and next_request is None:
+                    next_request = self._claim()
+                current = next_request
+            except Exception:
+                _LOGGER.exception("Voice broker failed processing request %s; moving on", current.id if current else "unknown")
+                if current is not None:
+                    self._mark_failed(current, "broker loop failed")
+                    current = self._claim()
+                    prefetched = None
+                else:
+                    current = None
+                    prefetched = None
             # Honour stop() between chunks: a long queue must not keep the
             # drain loop alive past shutdown (FIX-04d). The claimed row goes
             # back to 'queued' via recover_orphans on the next start.
             if self._stop.is_set():
                 return played
-            try:
-                chunk = (
-                    prefetched.result()
-                    if prefetched is not None
-                    else self._engine.synthesize(current.text)
-                )
-            except Exception as exc:
-                # Not only TTSEngineError: a sqlite error or missing binary in
-                # synthesis must fail the row, not the loop (FIX-04c).
-                self._mark_failed(current, str(exc))
-                current = self._claim()
-                prefetched = None
-                continue
-
-            # Claim and start synthesizing the NEXT chunk before playback,
-            # so audio for it is ready the moment this one finishes.
-            next_request = self._claim()
-            prefetched = (
-                self._executor.submit(self._engine.synthesize, next_request.text)
-                if next_request is not None
-                else None
-            )
-
-            # Barge-in (G4c): a claimed row may have been flipped to
-            # 'cancelled' while the previous chunk was playing — re-check DB
-            # truth so a cancelled row is never played.
-            if not self._still_speaking(current):
-                current = next_request
-                continue
-
-            # Committed to play this chunk: stamp spoken_at BEFORE playback so
-            # the anti-echo corpus counts it even if the player is killed
-            # mid-play (a partial that still put audio in the air — FIX-09).
-            self._mark_spoken(current)
-            watcher = self._start_interrupt_watcher(current)
-            interrupted = False
-            try:
-                # should_play is re-checked inside the engine under its player
-                # lock, right before spawning — closes the barge-in TOCTOU the
-                # pre-play check above cannot (FIX-09).
-                self._play(chunk, should_play=lambda: self._still_speaking(current))
-            except PlaybackCancelled:
-                # Cancelled in the check->spawn gap: the row is already
-                # 'cancelled' (leg 2), so skip cleanly — no done, no failure.
-                interrupted = True
-            except Exception as exc:  # playback must never kill the loop
-                if self._still_speaking(current):
-                    self._mark_failed(current, f"playback failed: {exc}")
-                else:
-                    interrupted = True
-            else:
-                if self._still_speaking(current):
-                    self._mark_done(current)
-                    played += 1
-                else:
-                    interrupted = True
-            finally:
-                self._stop_interrupt_watcher(watcher)
-            if interrupted and next_request is None:
-                next_request = self._claim()
-            current = next_request
         return played
 
     # -- internals ------------------------------------------------------------

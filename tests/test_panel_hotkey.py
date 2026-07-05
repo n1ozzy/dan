@@ -95,7 +95,12 @@ class _FakePoster:
 
 def test_client_down_posts_to_ptt_down_with_source_and_token():
     poster = _FakePoster()
-    client = PttHotkeyClient("http://127.0.0.1:41741", "tok123", poster=poster)
+    client = PttHotkeyClient(
+        "http://127.0.0.1:41741",
+        "tok123",
+        poster=poster,
+        health_checker=lambda: True,
+    )
     client.down()
     assert len(poster.calls) == 1
     call = poster.calls[0]
@@ -106,17 +111,42 @@ def test_client_down_posts_to_ptt_down_with_source_and_token():
 
 def test_client_up_posts_to_ptt_up():
     poster = _FakePoster()
-    client = PttHotkeyClient("http://127.0.0.1:41741/", "tok", poster=poster)
+    client = PttHotkeyClient(
+        "http://127.0.0.1:41741/",
+        "tok",
+        poster=poster,
+        health_checker=lambda: True,
+    )
     client.up()
     # trailing slash on base must not double up in the path
     assert poster.calls[0]["url"] == "http://127.0.0.1:41741/voice/ptt/up"
+
+
+def test_client_skips_ptt_when_backend_is_unhealthy():
+    poster = _FakePoster()
+    client = PttHotkeyClient(
+        "http://127.0.0.1:41741",
+        "tok",
+        poster=poster,
+        health_checker=lambda: False,
+    )
+
+    client.down()
+    client.up()
+
+    assert poster.calls == []
 
 
 def test_client_swallows_poster_errors():
     def boom(url, *, data, headers):
         raise OSError("daemon down")
 
-    client = PttHotkeyClient("http://127.0.0.1:41741", "tok", poster=boom)
+    client = PttHotkeyClient(
+        "http://127.0.0.1:41741",
+        "tok",
+        poster=boom,
+        health_checker=lambda: True,
+    )
     # a dead daemon must never crash the panel's key handler
     client.down()
     client.up()
@@ -124,7 +154,12 @@ def test_client_swallows_poster_errors():
 
 def test_client_dispatch_maps_edge_to_method():
     poster = _FakePoster()
-    client = PttHotkeyClient("http://127.0.0.1:41741", "tok", poster=poster)
+    client = PttHotkeyClient(
+        "http://127.0.0.1:41741",
+        "tok",
+        poster=poster,
+        health_checker=lambda: True,
+    )
     client.dispatch("down")
     client.dispatch("up")
     client.dispatch(None)  # no edge -> no call

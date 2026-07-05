@@ -201,6 +201,7 @@ class TurnOrchestrator:
         normalized_text = _required_text(text, "text")
         normalized_metadata = _metadata(metadata)
         normalized_source = _turn_source(source)
+        is_live_voice = normalized_source == TurnSource.VOICE
 
         if self._state_machine.state is not RuntimeState.IDLE:
             raise TurnOrchestratorBusyError(
@@ -306,8 +307,17 @@ class TurnOrchestrator:
                 model=request_model,
             )
 
-            filler_timer = self._arm_filler(turn.id)
-            speech_session = self._start_speech_stream(turn.id, filler_timer)
+            streaming_enabled = (
+                self._speech is not None
+                and self._brain_manager.supports_streaming()
+                and not is_live_voice
+            )
+            filler_timer = self._arm_filler(turn.id) if streaming_enabled else None
+            speech_session = (
+                self._start_speech_stream(turn.id, filler_timer)
+                if streaming_enabled
+                else None
+            )
             try:
                 response = self._brain_manager.generate(
                     context_result.request,
@@ -579,7 +589,13 @@ class TurnOrchestrator:
                 correlation_id=correlation_id,
                 turn_id=turn.id,
             )
-            speech_session = self._start_speech_stream(turn.id, None)
+            streaming_enabled = (
+                self._speech is not None
+                and self._brain_manager.supports_streaming()
+            )
+            speech_session = (
+                self._start_speech_stream(turn.id, None) if streaming_enabled else None
+            )
             response = self._brain_manager.generate(
                 request,
                 on_delta=speech_session.feed if speech_session is not None else None,
