@@ -169,177 +169,251 @@ class DaemonApp:
     # daemon.stopped event (FIX-03 DoD).
     worker_threads: list[threading.Thread] = field(default_factory=list)
     _worker_threads_lock: Any = field(default_factory=threading.Lock)
+    _lifecycle_lock: Any = field(default_factory=threading.Lock)
 
     def start(self) -> None:
         """Start app-level state without running the long-lived HTTP loop."""
 
         if self.started:
             return
-        event_store = self._require_event_store()
-        state_machine = self._require_state_machine()
 
-        # Constructing the manager validates the configured backend, so a
-        # bad audio backend kills the daemon at startup (established rule).
-        # Requests build their own manager on a per-request connection.
-        from jarvis.audio.devices import AudioDeviceManager
-        from jarvis.voice.recorder import build_recorder
+        with self._lifecycle_lock:
+            if self.started:
+                return
+            event_store = self._require_event_store()
+            state_machine = self._require_state_machine()
 
-        AudioDeviceManager(self._require_conn(), config=self.config.audio)
+            on_capture = None
+            tts_engine = None
+            voice_stt = None
+            voice_gateway = None
+            voice_cancellation = None
+            voice_recorder = None
+            voice_broker = None
+            voice_lease_sweeper = None
 
-        # STT pipeline first (the recorder needs its capture sink). Building
-        # the engine validates the name, so an unknown or unavailable STT
-        # engine kills the daemon at startup (established rule). Transcripts
-        # end as `input.voice.transcribed` events and flow to the gateway:
-        # anti-echo gate -> mic-side barge-in -> the same TurnOrchestrator
-        # as panel text (ADR-011). The gate sits BEFORE turn creation, so an
-        # echo of Jarvis's own TTS can never become a turn by construction.
-        on_capture = None
-        tts_engine = None
-        if self.config.voice.enabled:
-            from jarvis.voice.anti_echo import AntiEchoGate
-            from jarvis.voice.cancellation import CancellationCoordinator
-            from jarvis.voice.gateway import VoiceTurnGateway
-            from jarvis.voice.stt import build_stt_engine
-            from jarvis.voice.transcription import TranscriptionPipeline
-            from jarvis.voice.tts import build_tts_engine
-            from jarvis.turns.orchestrator import (
-                TurnCancelledError,
-                TurnOrchestratorBusyError,
-            )
-
-            # Engine construction validates the name: a banned or unknown
-            # TTS engine kills the daemon at startup (decree §7.3), and so
-            # does a real engine whose binary/player cannot be found.
-            tts_engine = build_tts_engine(self.config.voice.default_tts, config=self.config)
-
-            # The registry itself is daemon-lifetime (streaming adapters hold
-            # a reference from create_daemon_app); voice only wires the
-            # coordinator that fires it.
-            self.voice_cancellation = CancellationCoordinator(
-                self._connect_existing,
-                generation_registry=self.voice_generation_registry,
-                engine=tts_engine,
-            )
-            self.voice_gateway = VoiceTurnGateway(
-                anti_echo=AntiEchoGate(self._connect_existing, config=self.config.voice),
-                cancellation=self.voice_cancellation,
-                turn_starter=self._start_voice_turn,
-                speech_active=self._voice_speech_active,
-                busy_exceptions=(DaemonAppBusyError, TurnOrchestratorBusyError),
-                cancelled_exceptions=(TurnCancelledError,),
-                retry_seconds=float(self.config.voice.transcript_turn_retry_seconds),
-            )
-
-            stt_engine = build_stt_engine(self.config.voice.default_stt, config=self.config)
-            self.voice_stt = TranscriptionPipeline(
-                self._connect_existing,
-                config=self.config.voice,
-                engine=stt_engine,
-                on_transcript=self.voice_gateway.handle_transcript,
-            )
-            on_capture = self.voice_stt.accept_capture
-
-        # One stateful recorder for the whole daemon: leases decide when it
-        # runs, so per-request lease managers must share it. Building it
-        # validates the backend (a missing sox binary kills the daemon at
-        # startup — established rule); the input device comes from audio
-        # policy at every start (ADR-012).
-        self.voice_recorder = build_recorder(
-            self.config.voice.recorder,
-            config=self.config,
-            input_device_provider=self._resolve_recorder_input_device,
-            on_capture=on_capture,
-        )
-
-        if self.config.voice.enabled and self.config.voice.broker_enabled:
-            from jarvis.voice.broker import VoiceBroker
-
-            # The broker shares the engine with the cancellation coordinator:
-            # one engine, one player, one kill target (ADR-005).
-            self.voice_broker = VoiceBroker(
-                self._connect_existing,
-                config=self.config.voice,
-                engine=tts_engine,
-            )
-            self.voice_broker.start()
-
-        event_store.append(EventType.DAEMON_STARTED, "daemon", {"service": "jarvisd"})
-        state_machine.transition(RuntimeState.IDLE, reason="daemon started")
-        self.started = True
-
-        # Daemon-side lease TTL enforcement (FIX-04b): a crashed panel that
-        # never sends button-up must not leave the microphone hot until the
-        # next API call happens to run _expire_stale.
-        from jarvis.voice.listening import ListeningLeaseSweeper
-
-        self.voice_lease_sweeper = ListeningLeaseSweeper(
-            self._sweep_listening_leases,
-            interval_seconds=float(
-                getattr(self.config.voice, "lease_sweep_interval_seconds", 5.0)
-            ),
-        )
-        self.voice_lease_sweeper.start()
-
-    def stop(self, reason: str | None = None) -> None:
-        event_store = self._require_event_store()
-        state_machine = self._require_state_machine()
-
-        # Sweeper first: it pokes the recorder via _sync_recorder and must
-        # not race the shutdown below.
-        if self.voice_lease_sweeper is not None:
-            self.voice_lease_sweeper.stop()
-            self.voice_lease_sweeper = None
-
-        if self.voice_broker is not None:
-            self.voice_broker.stop()
-            self.voice_broker = None
-
-        # Recorder before STT (FIX-04a): stop() must never leave an orphaned
-        # sox recording after an in-process restart (hot mic), and stopping
-        # it first lets the final capture reach the STT pipeline below.
-        if self.voice_recorder is not None:
+            # Build every dependency first; if startup fails, tear down any
+            # partially-built pieces instead of leaving hot processes alive.
             try:
-                self.voice_recorder.stop()
-            except Exception:
-                get_logger(__name__).exception("Voice recorder stop failed during shutdown.")
-            self.voice_recorder = None
+                from jarvis.audio.devices import AudioDeviceManager
+                from jarvis.voice.recorder import build_recorder
 
-        # STT first (no new transcripts), then the gateway — its stop()
-        # WAITS for the in-flight voice turn, which writes through the
-        # shared daemon connection; the daemon.stopped event below must
-        # never race it on that connection.
-        if self.voice_stt is not None:
-            self.voice_stt.stop()
-            self.voice_stt = None
+                AudioDeviceManager(self._require_conn(), config=self.config.audio)
 
-        if self.voice_gateway is not None:
-            self.voice_gateway.stop()
-            self.voice_gateway = None
-        # The generation registry stays: it is daemon-lifetime and shared
-        # with the brain adapters built in create_daemon_app.
-        self.voice_cancellation = None
+                # STT pipeline first (the recorder needs its capture sink). Building
+                # the engine validates the name, so an unknown or unavailable STT
+                # engine kills the daemon at startup (established rule). Transcripts
+                # end as `input.voice.transcribed` events and flow to the gateway:
+                # anti-echo gate -> mic-side barge-in -> the same TurnOrchestrator
+                # as panel text (ADR-011). The gate sits BEFORE turn creation, so an
+                # echo of Jarvis's own TTS can never become a turn by
+                # construction.
+                if self.config.voice.enabled:
+                    from jarvis.voice.anti_echo import AntiEchoGate
+                    from jarvis.voice.cancellation import CancellationCoordinator
+                    from jarvis.voice.gateway import VoiceTurnGateway
+                    from jarvis.voice.stt import build_stt_engine
+                    from jarvis.voice.transcription import TranscriptionPipeline
+                    from jarvis.voice.tts import build_tts_engine
+                    from jarvis.turns.orchestrator import (
+                        TurnCancelledError,
+                        TurnOrchestratorBusyError,
+                    )
 
-        # Drain worker job threads before daemon.stopped: their writes go
-        # through the daemon store and must land before the final event.
-        with self._worker_threads_lock:
-            pending_workers = [t for t in self.worker_threads if t.is_alive()]
-            self.worker_threads = []
-        for thread in pending_workers:
-            thread.join(timeout=10)
-            if thread.is_alive():
-                get_logger(__name__).warning(
-                    "Worker thread %s did not finish before daemon stop.", thread.name
+                    # Engine construction validates the name: a banned or unknown
+                    # TTS engine kills the daemon at startup (decree §7.3), and so
+                    # does a real engine whose binary/player cannot be found.
+                    tts_engine = build_tts_engine(self.config.voice.default_tts, config=self.config)
+
+                    # The registry itself is daemon-lifetime (streaming adapters hold
+                    # a reference from create_daemon_app); voice only wires the
+                    # coordinator that fires it.
+                    voice_cancellation = CancellationCoordinator(
+                        self._connect_existing,
+                        generation_registry=self.voice_generation_registry,
+                        engine=tts_engine,
+                    )
+                    voice_gateway = VoiceTurnGateway(
+                        anti_echo=AntiEchoGate(self._connect_existing, config=self.config.voice),
+                        cancellation=voice_cancellation,
+                        turn_starter=self._start_voice_turn,
+                        speech_active=self._voice_speech_active,
+                        busy_exceptions=(DaemonAppBusyError, TurnOrchestratorBusyError),
+                        cancelled_exceptions=(TurnCancelledError,),
+                        retry_seconds=float(self.config.voice.transcript_turn_retry_seconds),
+                    )
+
+                    stt_engine = build_stt_engine(self.config.voice.default_stt, config=self.config)
+                    voice_stt = TranscriptionPipeline(
+                        self._connect_existing,
+                        config=self.config.voice,
+                        engine=stt_engine,
+                        on_transcript=voice_gateway.handle_transcript,
+                    )
+                    on_capture = voice_stt.accept_capture
+
+                # One stateful recorder for the whole daemon: leases decide when it
+                # runs, so per-request lease managers must share it. Building it
+                # validates the backend (a missing sox binary kills the daemon at
+                # startup — established rule); the input device comes from audio
+                # policy at every start (ADR-012).
+                voice_recorder = build_recorder(
+                    self.config.voice.recorder,
+                    config=self.config,
+                    input_device_provider=self._resolve_recorder_input_device,
+                    on_capture=on_capture,
                 )
 
-        if self.started:
-            event_store.append(
-                EventType.DAEMON_STOPPED,
-                "daemon",
-                {"service": "jarvisd", "reason": reason},
-            )
-        if state_machine.state is not RuntimeState.STOPPING:
-            state_machine.transition(RuntimeState.STOPPING, reason=reason or "daemon stopped")
-        self.started = False
+                if self.config.voice.enabled and self.config.voice.broker_enabled:
+                    from jarvis.voice.broker import VoiceBroker
+
+                    # The broker shares the engine with the cancellation
+                    # coordinator: one engine, one player, one kill target
+                    # (ADR-005).
+                    voice_broker = VoiceBroker(
+                        self._connect_existing,
+                        config=self.config.voice,
+                        engine=tts_engine,
+                    )
+                    voice_broker.start()
+
+                # Daemon-side lease TTL enforcement (FIX-04b): a crashed panel that
+                # never sends button-up must not leave the microphone hot until the
+                # next API call happens to run _expire_stale.
+                from jarvis.voice.listening import ListeningLeaseSweeper
+
+                voice_lease_sweeper = ListeningLeaseSweeper(
+                    self._sweep_listening_leases,
+                    interval_seconds=float(
+                        getattr(self.config.voice, "lease_sweep_interval_seconds", 5.0)
+                    ),
+                )
+
+                self.voice_stt = voice_stt
+                self.voice_gateway = voice_gateway
+                self.voice_cancellation = voice_cancellation
+                self.voice_recorder = voice_recorder
+                self.voice_broker = voice_broker
+                self.voice_lease_sweeper = voice_lease_sweeper
+
+                voice_lease_sweeper.start()
+
+                event_store.append(EventType.DAEMON_STARTED, "daemon", {"service": "jarvisd"})
+                state_machine.transition(RuntimeState.IDLE, reason="daemon started")
+                self.started = True
+            except Exception:
+                if voice_lease_sweeper is not None:
+                    try:
+                        voice_lease_sweeper.stop()
+                    except Exception:
+                        get_logger(__name__).exception("Voice lease sweeper startup stop failed.")
+                if voice_broker is not None:
+                    try:
+                        voice_broker.stop()
+                    except Exception:
+                        get_logger(__name__).exception("Voice broker startup stop failed.")
+                if voice_recorder is not None:
+                    try:
+                        voice_recorder.stop()
+                    except Exception:
+                        get_logger(__name__).exception("Voice recorder startup stop failed.")
+                if voice_stt is not None:
+                    try:
+                        voice_stt.stop()
+                    except Exception:
+                        get_logger(__name__).exception("Voice STT startup stop failed.")
+                if voice_gateway is not None:
+                    try:
+                        voice_gateway.stop()
+                    except Exception:
+                        get_logger(__name__).exception("Voice gateway startup stop failed.")
+
+                self.voice_stt = None
+                self.voice_gateway = None
+                self.voice_cancellation = None
+                self.voice_recorder = None
+                self.voice_broker = None
+                self.voice_lease_sweeper = None
+                self.started = False
+                raise
+
+    def stop(self, reason: str | None = None, *, emit_event: bool = True) -> None:
+        with self._lifecycle_lock:
+            event_store = self._require_event_store()
+            state_machine = self._require_state_machine()
+
+            # Sweeper first: it pokes the recorder via _sync_recorder and must
+            # not race the shutdown below.
+            if self.voice_lease_sweeper is not None:
+                try:
+                    self.voice_lease_sweeper.stop()
+                except Exception:
+                    get_logger(__name__).exception("Voice lease sweeper stop failed.")
+            self.voice_lease_sweeper = None
+
+            if self.voice_broker is not None:
+                try:
+                    self.voice_broker.stop()
+                except Exception:
+                    get_logger(__name__).exception("Voice broker stop failed.")
+            self.voice_broker = None
+
+            # Recorder before STT (FIX-04a): stop() must never leave an
+            # orphaned sox recording after an in-process restart (hot mic), and
+            # stopping it first lets the final capture reach the STT pipeline
+            # below.
+            if self.voice_recorder is not None:
+                try:
+                    self.voice_recorder.stop()
+                except Exception:
+                    get_logger(__name__).exception("Voice recorder stop failed during shutdown.")
+            self.voice_recorder = None
+
+            # STT first (no new transcripts), then the gateway — its stop()
+            # WAITS for the in-flight voice turn, which writes through the
+            # shared daemon connection; the daemon.stopped event below must
+            # never race it on that connection.
+            if self.voice_stt is not None:
+                try:
+                    self.voice_stt.stop()
+                except Exception:
+                    get_logger(__name__).exception("STT stop failed during shutdown.")
+            self.voice_stt = None
+
+            if self.voice_gateway is not None:
+                try:
+                    self.voice_gateway.stop()
+                except Exception:
+                    get_logger(__name__).exception("Voice gateway stop failed during shutdown.")
+            self.voice_gateway = None
+
+            # The generation registry stays: it is daemon-lifetime and shared
+            # with the brain adapters built in create_daemon_app.
+            self.voice_cancellation = None
+
+            # Drain worker job threads before daemon.stopped: their writes go
+            # through the daemon store and must land before the final event.
+            with self._worker_threads_lock:
+                pending_workers = [t for t in self.worker_threads if t.is_alive()]
+                self.worker_threads = []
+            for thread in pending_workers:
+                thread.join(timeout=10)
+                if thread.is_alive():
+                    get_logger(__name__).warning(
+                        "Worker thread %s did not finish before daemon stop.", thread.name
+                    )
+
+            was_started = self.started
+            self.started = False
+
+            if emit_event and was_started:
+                event_store.append(
+                    EventType.DAEMON_STOPPED,
+                    "daemon",
+                    {"service": "jarvisd", "reason": reason},
+                )
+            if state_machine.state is not RuntimeState.STOPPING:
+                state_machine.transition(RuntimeState.STOPPING, reason=reason or "daemon stopped")
 
     def snapshot_state(self) -> dict[str, Any]:
         state = self.state_machine.state.value if self.state_machine is not None else RuntimeState.BOOTING.value

@@ -51,6 +51,7 @@ from jarvis.api.routes_memory import (
 )
 from jarvis.api.routes_runtime import (
     get_runtime_legacy,
+    get_runtime_settings,
     get_runtime_processes,
     get_runtime_startup,
 )
@@ -121,7 +122,12 @@ TOKEN_PROTECTED_GET_PATHS = {
     "/memory",
     "/memory/candidates",
     "/memory/items",
+    "/workers/jobs",
+    "/runtime/legacy",
+    "/runtime/processes",
+    "/runtime/startup",
     "/settings",
+    "/runtime/settings",
     "/voice/queue",
 }
 
@@ -267,7 +273,7 @@ def _host_header_is_local(handler: BaseHTTPRequestHandler) -> bool:
     host = handler.headers.get("Host")
     if not host:
         return False
-    hostname = host.strip()
+    hostname = host.strip().lower()
     if hostname.startswith("["):  # bracketed IPv6, e.g. [::1] or [::1]:41800
         end = hostname.find("]")
         if end == -1:
@@ -284,6 +290,8 @@ def _is_token_protected_read(method: str, path: str) -> bool:
     if method != "GET":
         return False
     if path in TOKEN_PROTECTED_GET_PATHS:
+        return True
+    if _worker_job_resource_id(path) is not None:
         return True
     if _memory_candidate_evidence_resource_id(path) is not None:
         return True
@@ -391,6 +399,10 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
 
         if method == "GET" and path == "/runtime/legacy":
             _write_json(handler, 200, get_runtime_legacy(app))
+            return
+
+        if method == "GET" and path == "/runtime/settings":
+            _write_json(handler, 200, get_runtime_settings(app))
             return
 
         if method == "GET" and path == "/tools":
@@ -725,9 +737,12 @@ def _query_int(query: dict[str, list[str]], key: str, *, default: int) -> int:
         return default
     raw_value = query[key][0]
     try:
-        return int(raw_value)
+        value = int(raw_value)
     except ValueError as exc:
         raise ValueError(f"{key} must be an integer.") from exc
+    if value < 0:
+        raise ValueError(f"{key} must be a non-negative integer.")
+    return value
 
 
 def _query_bool(query: dict[str, list[str]], key: str, *, default: bool) -> bool:

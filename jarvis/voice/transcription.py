@@ -85,14 +85,22 @@ class TranscriptionPipeline:
     def accept_capture(self, audio: bytes) -> None:
         """Recorder handoff; returns immediately, work happens on the worker."""
 
-        self._executor.submit(self._process, audio)
+        try:
+            self._executor.submit(self._process, audio)
+        except RuntimeError:
+            # If the pipeline is already stopping, drop the capture instead of
+            # raising into recorder callbacks.
+            _LOGGER.debug("STT pipeline is stopped; dropping late capture.")
 
     def flush(self, timeout: float = 30.0) -> bool:
         """Wait until everything accepted so far is processed (tests/stop)."""
 
         done = threading.Event()
-        self._executor.submit(done.set)
-        return done.wait(timeout)
+        try:
+            self._executor.submit(done.set)
+            return done.wait(timeout)
+        except RuntimeError:
+            return False
 
     def stop(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)

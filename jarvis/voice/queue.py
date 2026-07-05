@@ -100,8 +100,7 @@ class VoiceQueue:
     def claim_next(self) -> VoiceRequest | None:
         """Move the next queued request to speaking (broker-only path)."""
 
-        row = self._conn.execute(
-            """
+        order_clause = """
             SELECT id FROM voice_queue AS vq
             WHERE status = 'queued'
             ORDER BY priority DESC,
@@ -113,19 +112,39 @@ class VoiceQueue:
                      CAST(json_extract(vq.metadata_json, '$.seq') AS INTEGER) ASC,
                      vq.rowid ASC
             LIMIT 1
-            """
-        ).fetchone()
+        """
+        try:
+            row = self._conn.execute(
+                f"""
+                WITH candidate AS ({order_clause})
+                UPDATE voice_queue
+                SET status = 'speaking', updated_at = ?
+                WHERE id = (SELECT id FROM candidate)
+                RETURNING id
+                """,
+                (self._now(),),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            # Fallback for older SQLite versions without RETURNING support.
+            if "RETURNING" not in str(exc):
+                raise
+            row = self._conn.execute(order_clause).fetchone()
+            if row is None:
+                return None
+            request_id = str(row[0])
+            with self._conn:
+                updated = self._conn.execute(
+                    "UPDATE voice_queue SET status = 'speaking', updated_at = ? "
+                    "WHERE id = ? AND status = 'queued'",
+                    (self._now(), request_id),
+                ).rowcount
+            if updated != 1:
+                return None
+            self._append_event(EventType.VOICE_SPEAK_STARTED, {"request_id": request_id})
+            return self._by_id(request_id)
         if row is None:
             return None
         request_id = str(row[0])
-        with self._conn:
-            updated = self._conn.execute(
-                "UPDATE voice_queue SET status = 'speaking', updated_at = ? "
-                "WHERE id = ? AND status = 'queued'",
-                (self._now(), request_id),
-            ).rowcount
-        if updated != 1:
-            return None
         self._append_event(EventType.VOICE_SPEAK_STARTED, {"request_id": request_id})
         return self._by_id(request_id)
 
@@ -149,11 +168,23 @@ class VoiceQueue:
     def mark_failed(self, request_id: str, *, error: str) -> None:
         self._finish(request_id, "failed", EventType.VOICE_SPEAK_FAILED, error)
 
-    def cancel_turn(self, turn_id: str) -> int:
+    def cancel_turn(
+        self,
+        turn_id: str,
+        *,
+        reason: str | None = None,
+        interruption_source: str | None = None,
+        cancelled_request_ids: list[str] | None = None,
+    ) -> int:
         """Cancel every unfinished request of one turn (barge-in leg 2)."""
 
         rows = self._conn.execute(
-            "SELECT id FROM voice_queue WHERE turn_id = ? AND status IN ('queued', 'speaking')",
+            """
+            SELECT id
+            FROM voice_queue
+            WHERE turn_id = ? AND status IN ('queued', 'speaking')
+            ORDER BY rowid DESC
+            """,
             (turn_id,),
         ).fetchall()
         now = self._now()
@@ -165,11 +196,24 @@ class VoiceQueue:
                 )
             self._append_event(
                 EventType.VOICE_SPEAK_CANCELLED,
-                {"request_id": str(request_id), "turn_id": turn_id},
+                {
+                    "request_id": str(request_id),
+                    "turn_id": turn_id,
+                    "reason": reason,
+                    "interruption_source": interruption_source,
+                },
             )
+            if cancelled_request_ids is not None:
+                cancelled_request_ids.append(str(request_id))
         return len(rows)
 
-    def cancel_request(self, request_id: str) -> bool:
+    def cancel_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None = None,
+        interruption_source: str | None = None,
+    ) -> bool:
         """Cancel exactly one unfinished request without touching its turn."""
 
         row = self._conn.execute(
@@ -188,7 +232,12 @@ class VoiceQueue:
             return False
         self._append_event(
             EventType.VOICE_SPEAK_CANCELLED,
-            {"request_id": request_id, "turn_id": str(row[0]) if row[0] else None},
+            {
+                "request_id": request_id,
+                "turn_id": str(row[0]) if row[0] else None,
+                "reason": reason,
+                "interruption_source": interruption_source,
+            },
         )
         return True
 
