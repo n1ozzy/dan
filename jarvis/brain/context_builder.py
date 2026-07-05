@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -94,6 +94,8 @@ class ContextBuilder:
         memory_manager: MemoryManager | None = None,
         memory_compiler: Any | None = None,
         compiled_memory_enabled: bool = False,
+        compiled_memory_scope_gate_enabled: bool | None = None,
+        compiled_memory_enabled_session_profiles: Iterable[tuple[str, str]] | None = None,
         compiled_memory_config: MemoryCompilerConfig | None = None,
         event_store: Any | None = None,
         now: Callable[[], str] | None = None,
@@ -105,6 +107,16 @@ class ContextBuilder:
         self._memory_manager = memory_manager or MemoryManager(conn)
         self._memory_compiler = memory_compiler
         self._compiled_memory_enabled = bool(compiled_memory_enabled)
+        self._compiled_memory_scope_gate_enabled = (
+            bool(compiled_memory_scope_gate_enabled)
+            if compiled_memory_scope_gate_enabled is not None
+            else self._compiled_memory_enabled
+        )
+        self._compiled_memory_enabled_session_profiles = (
+            _normalize_compiled_memory_session_profiles(
+                compiled_memory_enabled_session_profiles
+            )
+        )
         self._compiled_memory_config = compiled_memory_config or MemoryCompilerConfig()
         self._event_store = event_store
         self._now = now or utc_now_iso
@@ -147,10 +159,10 @@ class ContextBuilder:
         job_message = self._build_job_message(active_jobs)
         if job_message is not None:
             core_messages.append(job_message)
-        compiled_memory_enabled = (
-            self._compiled_memory_enabled
-            if compiled_memory_enabled_override is None
-            else compiled_memory_enabled_override
+        compiled_memory_enabled = self._resolve_compiled_memory_enabled(
+            conversation_id=normalized_conversation_id,
+            persona_profile=persona_profile,
+            override=compiled_memory_enabled_override,
         )
         compiled_memory = self._build_compiled_memory(
             conversation_id=normalized_conversation_id,
@@ -318,6 +330,26 @@ class ContextBuilder:
                 skipped_categories=_compiled_memory_skipped_categories(compiled),
             ),
         )
+
+    def _resolve_compiled_memory_enabled(
+        self,
+        *,
+        conversation_id: str,
+        persona_profile: str,
+        override: bool | None,
+    ) -> bool:
+        if not _config_bool(self._config, ("memory", "enabled"), True):
+            return False
+        if override is not None:
+            return bool(override)
+        if self._compiled_memory_enabled:
+            return True
+        if not self._compiled_memory_scope_gate_enabled:
+            return False
+        return (
+            conversation_id,
+            persona_profile,
+        ) in self._compiled_memory_enabled_session_profiles
 
     def _collect_available_tools(self) -> list[BrainToolSpec]:
         """Expose the registry's tools so the prompt can list them (else the
@@ -743,6 +775,39 @@ def _config_int(config: Any | None, path: tuple[str, str], default: int | None) 
         return int(value)
     except (TypeError, ValueError) as exc:
         raise ContextBuilderError(f"Config value {section_name}.{attr_name} must be an integer.") from exc
+
+
+def _config_bool(config: Any | None, path: tuple[str, str], default: bool) -> bool:
+    section_name, attr_name = path
+    section = getattr(config, section_name, None)
+    value = getattr(section, attr_name, default)
+    return bool(default if value is None else value)
+
+
+def _normalize_compiled_memory_session_profiles(
+    scopes: Iterable[tuple[str, str]] | None,
+) -> frozenset[tuple[str, str]]:
+    if scopes is None:
+        return frozenset()
+
+    normalized: set[tuple[str, str]] = set()
+    for scope in scopes:
+        if (
+            not isinstance(scope, (list, tuple))
+            or len(scope) != 2
+        ):
+            raise ContextBuilderError(
+                "compiled_memory_enabled_session_profiles entries must be "
+                "(session_id, persona_profile) pairs."
+            )
+        session_id, persona_profile = scope
+        normalized.add(
+            (
+                _required_text(session_id, "compiled memory session_id"),
+                _required_text(persona_profile, "compiled memory persona_profile"),
+            )
+        )
+    return frozenset(normalized)
 
 
 def _required_text(value: str, label: str) -> str:

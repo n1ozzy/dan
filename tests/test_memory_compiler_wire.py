@@ -338,6 +338,194 @@ def test_scoped_override_true_does_not_persist_across_requests(
     }
 
 
+def test_session_profile_enablement_requires_matching_scope_and_does_not_leak(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    insert_conversation(conn, conversation_id="conversation-2")
+    (persona_path.parent / "scope-profile.md").write_text(
+        "Persona: scoped profile.",
+        encoding="utf-8",
+    )
+    compiler = StaticCompiler(
+        CompiledMemoryContext(
+            selected_items=[
+                selected_memory_item(
+                    title="SESSION_PROFILE_TITLE",
+                    claim="SESSION_PROFILE_CLAIM",
+                )
+            ]
+        )
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=False,
+        compiled_memory_scope_gate_enabled=True,
+        compiled_memory_enabled_session_profiles=(
+            ("conversation-1", "scope-profile"),
+        ),
+        now=fixed_now,
+    )
+
+    matched = builder.build_request(
+        turn_id="turn-matched",
+        conversation_id="conversation-1",
+        input_text="Matched",
+        settings={"persona.profile": "scope-profile"},
+    )
+    wrong_profile = builder.build_request(
+        turn_id="turn-wrong-profile",
+        conversation_id="conversation-1",
+        input_text="Wrong profile",
+    )
+    wrong_session = builder.build_request(
+        turn_id="turn-wrong-session",
+        conversation_id="conversation-2",
+        input_text="Wrong session",
+        settings={"persona.profile": "scope-profile"},
+    )
+
+    assert compiler.calls == 1
+    assert builder._compiled_memory_enabled is False
+    assert context_message_kinds(matched.request) == ["persona", "compiled_memory"]
+    assert compiled_memory_text(matched.request) == (
+        "Compiled memory:\n"
+        "- title: SESSION_PROFILE_TITLE\n"
+        "  claim: SESSION_PROFILE_CLAIM\n"
+        "  evidence_count: 1"
+    )
+    assert matched.context_snapshot["persona_profile"] == "scope-profile"
+    assert compiled_memory_messages(wrong_profile.request) == []
+    assert compiled_memory_messages(wrong_session.request) == []
+    assert compiled_memory_diagnostics(matched)["compiled_memory_enabled"] is True
+    assert compiled_memory_diagnostics(wrong_profile)["compiled_memory_enabled"] is False
+    assert compiled_memory_diagnostics(wrong_session)["compiled_memory_enabled"] is False
+
+
+def test_request_override_false_disables_session_profile_enablement_for_one_request(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    (persona_path.parent / "scope-profile.md").write_text(
+        "Persona: scoped profile.",
+        encoding="utf-8",
+    )
+    compiler = StaticCompiler(
+        CompiledMemoryContext(
+            selected_items=[
+                selected_memory_item(
+                    title="OVERRIDE_FALSE_SESSION_PROFILE_TITLE",
+                    claim="OVERRIDE_FALSE_SESSION_PROFILE_CLAIM",
+                )
+            ]
+        )
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=False,
+        compiled_memory_scope_gate_enabled=True,
+        compiled_memory_enabled_session_profiles=(
+            ("conversation-1", "scope-profile"),
+        ),
+        now=fixed_now,
+    )
+
+    disabled = builder.build_request(
+        turn_id="turn-disabled",
+        conversation_id="conversation-1",
+        input_text="Disabled",
+        settings={"persona.profile": "scope-profile"},
+        compiled_memory_enabled_override=False,
+    )
+    enabled = builder.build_request(
+        turn_id="turn-enabled",
+        conversation_id="conversation-1",
+        input_text="Enabled",
+        settings={"persona.profile": "scope-profile"},
+    )
+
+    assert compiler.calls == 1
+    assert builder._compiled_memory_enabled is False
+    assert compiled_memory_messages(disabled.request) == []
+    assert len(compiled_memory_messages(enabled.request)) == 1
+    assert compiled_memory_diagnostics(disabled) == {
+        "compiled_memory_enabled": False,
+        "compiler_available": True,
+        "compiled_memory_attempted": False,
+        "compiled_memory_section_present": False,
+        "selected_count": 0,
+        "skipped_count": 0,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {},
+    }
+
+
+def test_memory_enabled_false_blocks_session_profile_and_request_override(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    (persona_path.parent / "scope-profile.md").write_text(
+        "Persona: scoped profile.",
+        encoding="utf-8",
+    )
+    disabled_config = config()
+    disabled_config.memory.enabled = False
+    compiler = StaticCompiler(
+        CompiledMemoryContext(
+            selected_items=[
+                selected_memory_item(
+                    title="MEMORY_DISABLED_TITLE",
+                    claim="MEMORY_DISABLED_CLAIM",
+                )
+            ]
+        )
+    )
+    builder = ContextBuilder(
+        conn,
+        config=disabled_config,
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=True,
+        compiled_memory_scope_gate_enabled=True,
+        compiled_memory_enabled_session_profiles=(
+            ("conversation-1", "scope-profile"),
+        ),
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-disabled",
+        conversation_id="conversation-1",
+        input_text="Disabled",
+        settings={"persona.profile": "scope-profile"},
+        compiled_memory_enabled_override=True,
+    )
+
+    assert compiler.calls == 0
+    assert compiled_memory_messages(result.request) == []
+    assert compiled_memory_diagnostics(result) == {
+        "compiled_memory_enabled": False,
+        "compiler_available": True,
+        "compiled_memory_attempted": False,
+        "compiled_memory_section_present": False,
+        "selected_count": 0,
+        "skipped_count": 0,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {},
+    }
+
+
 def test_flag_on_includes_selected_compiled_memory(
     conn: sqlite3.Connection,
     persona_path: Path,
@@ -800,6 +988,143 @@ def test_scoped_override_true_keeps_governance_redaction_and_diagnostics_off_pro
         for marker in forbidden_markers
         if marker in combined_non_model_visible
     ] == []
+
+
+def test_session_profile_enablement_keeps_prompt_safe_and_diagnostics_redacted(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    (persona_path.parent / "scope-profile.md").write_text(
+        "Persona: scoped profile.",
+        encoding="utf-8",
+    )
+    raw_evidence_quote = "RAW_SESSION_PROFILE_EVIDENCE_QUOTE"
+    raw_observation_text = "RAW_SESSION_PROFILE_OBSERVATION_TEXT"
+    raw_secret_marker = "sk-sessionprofile1234567890"
+    user_input = "USER_INPUT_SESSION_PROFILE_MARKER"
+    insert_memory_item(
+        conn,
+        memory_id="MEMORY_ID_SESSION_PROFILE_RAW_MARKER",
+        canonical_key=f"CANONICAL_KEY_SESSION_PROFILE_RAW_MARKER {raw_secret_marker}",
+        title="SAFE_SESSION_PROFILE_TITLE",
+        claim=f"SAFE_SESSION_PROFILE_CLAIM {raw_secret_marker}",
+        content=f"RAW_SESSION_PROFILE_CONTENT {raw_secret_marker}",
+    )
+    insert_observation(
+        conn,
+        observation_id="observation-session-profile-raw",
+        text=raw_observation_text,
+    )
+    insert_evidence(
+        conn,
+        memory_id="MEMORY_ID_SESSION_PROFILE_RAW_MARKER",
+        observation_id="observation-session-profile-raw",
+        quote=raw_evidence_quote,
+    )
+    insert_memory_item(
+        conn,
+        memory_id="mem-session-profile-disabled",
+        status="disabled",
+        title="DISABLED_SESSION_PROFILE_TITLE",
+        claim="DISABLED_SESSION_PROFILE_CLAIM",
+        content="DISABLED_SESSION_PROFILE_CONTENT",
+    )
+    insert_evidence(conn, memory_id="mem-session-profile-disabled")
+    insert_memory_item(
+        conn,
+        memory_id="mem-session-profile-procedural",
+        kind="procedural",
+        title="PROCEDURAL_SESSION_PROFILE_TITLE",
+        claim="PROCEDURAL_SESSION_PROFILE_CLAIM",
+        content="PROCEDURAL_SESSION_PROFILE_CONTENT",
+    )
+    insert_evidence(conn, memory_id="mem-session-profile-procedural")
+    insert_memory_item(
+        conn,
+        memory_id="mem-session-profile-missing-provenance",
+        title="MISSING_PROVENANCE_SESSION_PROFILE_TITLE",
+        claim="MISSING_PROVENANCE_SESSION_PROFILE_CLAIM",
+        content="MISSING_PROVENANCE_SESSION_PROFILE_CONTENT",
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        compiled_memory_enabled=False,
+        compiled_memory_scope_gate_enabled=True,
+        compiled_memory_enabled_session_profiles=(
+            ("conversation-1", "scope-profile"),
+        ),
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text=user_input,
+        settings={"persona.profile": "scope-profile"},
+    )
+
+    messages = compiled_memory_messages(result.request)
+    assert len(messages) == 1
+    assert messages[0].metadata == {"kind": "compiled_memory", "untrusted": True}
+    assert compiled_memory_field_names(messages[0].content) == [
+        "title",
+        "claim",
+        "evidence_count",
+    ]
+    diagnostics = compiled_memory_diagnostics(result)
+    assert diagnostics == {
+        "compiled_memory_enabled": True,
+        "compiler_available": True,
+        "compiled_memory_attempted": True,
+        "compiled_memory_section_present": True,
+        "selected_count": 1,
+        "skipped_count": 3,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {
+            "disabled": 1,
+            "missing_provenance": 1,
+            "procedural_not_requested": 1,
+        },
+    }
+    compiled_text = compiled_memory_text(result.request)
+    assert "SAFE_SESSION_PROFILE_TITLE" in compiled_text
+    assert "SAFE_SESSION_PROFILE_CLAIM" in compiled_text
+    assert REDACTION_PLACEHOLDER in compiled_text
+
+    rendered = render_context(result.request, result.context_snapshot)
+    diagnostics_text = json.dumps(diagnostics, sort_keys=True)
+    assert "compiled_memory_diagnostics" not in rendered
+    forbidden_markers = (
+        "memory_id",
+        "canonical_key",
+        "audit_metadata",
+        "skipped_items",
+        "MEMORY_ID_SESSION_PROFILE_RAW_MARKER",
+        "CANONICAL_KEY_SESSION_PROFILE_RAW_MARKER",
+        raw_evidence_quote,
+        raw_observation_text,
+        raw_secret_marker,
+        user_input,
+        "RAW_SESSION_PROFILE_CONTENT",
+        "DISABLED_SESSION_PROFILE_TITLE",
+        "DISABLED_SESSION_PROFILE_CLAIM",
+        "DISABLED_SESSION_PROFILE_CONTENT",
+        "PROCEDURAL_SESSION_PROFILE_TITLE",
+        "PROCEDURAL_SESSION_PROFILE_CLAIM",
+        "PROCEDURAL_SESSION_PROFILE_CONTENT",
+        "MISSING_PROVENANCE_SESSION_PROFILE_TITLE",
+        "MISSING_PROVENANCE_SESSION_PROFILE_CLAIM",
+        "MISSING_PROVENANCE_SESSION_PROFILE_CONTENT",
+    )
+    assert [marker for marker in forbidden_markers if marker in diagnostics_text] == []
+    prompt_forbidden = tuple(
+        marker for marker in forbidden_markers if marker != user_input
+    )
+    assert [marker for marker in prompt_forbidden if marker in rendered] == []
 
 
 def test_context_governance_positive_control_renders_only_safe_selected_memory(
@@ -1664,6 +1989,65 @@ def test_scoped_override_true_compiler_failure_fails_closed_and_redacts(
     assert "RuntimeError" not in diagnostics_text
 
 
+def test_session_profile_enablement_compiler_failure_fails_closed_and_redacts(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    (persona_path.parent / "scope-profile.md").write_text(
+        "Persona: scoped profile.",
+        encoding="utf-8",
+    )
+    secret_marker = "SECRET_SESSION_PROFILE_FAILURE_MARKER"
+    compiler = FailingCompiler(
+        f"SESSION_PROFILE_COMPILER_BOOM {secret_marker}\nTraceback bait\nRuntimeError bait"
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=False,
+        compiled_memory_scope_gate_enabled=True,
+        compiled_memory_enabled_session_profiles=(
+            ("conversation-1", "scope-profile"),
+        ),
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+        settings={"persona.profile": "scope-profile"},
+    )
+
+    diagnostics = compiled_memory_diagnostics(result)
+    assert compiler.calls == 1
+    assert compiled_memory_messages(result.request) == []
+    assert diagnostics == {
+        "compiled_memory_enabled": True,
+        "compiler_available": True,
+        "compiled_memory_attempted": True,
+        "compiled_memory_section_present": False,
+        "selected_count": 0,
+        "skipped_count": 0,
+        "fail_closed": True,
+        "failure_category": "compiler_error",
+        "skipped_categories": {},
+    }
+    rendered = render_context(result.request, result.context_snapshot)
+    diagnostics_text = json.dumps(diagnostics, sort_keys=True)
+    assert secret_marker not in rendered
+    assert secret_marker not in diagnostics_text
+    assert "SESSION_PROFILE_COMPILER_BOOM" not in rendered
+    assert "SESSION_PROFILE_COMPILER_BOOM" not in diagnostics_text
+    assert "Traceback" not in rendered
+    assert "Traceback" not in diagnostics_text
+    assert "RuntimeError" not in rendered
+    assert "RuntimeError" not in diagnostics_text
+
+
 def test_compiled_memory_observe_does_not_change_context_output(
     conn: sqlite3.Connection,
     persona_path: Path,
@@ -1851,14 +2235,17 @@ def render_context(request: BrainRequest, snapshot: dict[str, Any]) -> str:
     )
 
 
-def insert_conversation(conn: sqlite3.Connection) -> None:
+def insert_conversation(
+    conn: sqlite3.Connection,
+    conversation_id: str = "conversation-1",
+) -> None:
     conn.execute(
         """
         INSERT INTO conversations (id, created_at, updated_at, title, status, metadata_json)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
-            "conversation-1",
+            conversation_id,
             "2026-07-04T11:00:00+00:00",
             "2026-07-04T11:00:00+00:00",
             "Test",

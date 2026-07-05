@@ -637,6 +637,176 @@ def test_create_daemon_app_config_enabled_wires_compiled_memory_context(tmp_path
         daemon_app.close()
 
 
+def test_create_daemon_app_scoped_enablement_uses_config_gate_without_global_leak(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        db_path,
+        compiled_context_enabled=True,
+    )
+
+    daemon_app = create_daemon_app(
+        config_path,
+        compiled_memory_enabled_session_profiles=(
+            ("conversation-runtime", "default"),
+        ),
+    )
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.context_builder._compiled_memory_enabled is False
+        assert daemon_app.context_builder._compiled_memory_scope_gate_enabled is True
+        assert isinstance(daemon_app.context_builder._memory_compiler, MemoryCompiler)
+
+        insert_runtime_conversation(daemon_app)
+        insert_runtime_conversation(daemon_app, conversation_id="conversation-other")
+        insert_runtime_memory_item(
+            daemon_app,
+            memory_id="mem-runtime-scoped",
+            title="Runtime scoped title",
+            claim="Runtime scoped claim.",
+        )
+
+        matched = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime scoped check",
+        )
+        unrelated = daemon_app.context_builder.build_request(
+            turn_id="turn-other",
+            conversation_id="conversation-other",
+            input_text="runtime unrelated check",
+        )
+
+        matched_messages = [
+            message
+            for message in matched.request.context_messages
+            if message.metadata.get("kind") == "compiled_memory"
+        ]
+        unrelated_messages = [
+            message
+            for message in unrelated.request.context_messages
+            if message.metadata.get("kind") == "compiled_memory"
+        ]
+        assert len(matched_messages) == 1
+        assert "Runtime scoped title" in matched_messages[0].content
+        assert unrelated_messages == []
+        assert asdict(matched.compiled_memory_diagnostics)[
+            "compiled_memory_enabled"
+        ] is True
+        assert asdict(unrelated.compiled_memory_diagnostics)[
+            "compiled_memory_enabled"
+        ] is False
+    finally:
+        daemon_app.close()
+
+
+def test_create_daemon_app_empty_scoped_allow_list_does_not_enable_globally(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        db_path,
+        compiled_context_enabled=True,
+    )
+
+    daemon_app = create_daemon_app(
+        config_path,
+        compiled_memory_enabled_session_profiles=(),
+    )
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.context_builder._compiled_memory_enabled is False
+        assert daemon_app.context_builder._compiled_memory_scope_gate_enabled is True
+
+        insert_runtime_conversation(daemon_app)
+        insert_runtime_memory_item(
+            daemon_app,
+            memory_id="mem-runtime-empty-scope",
+            title="Runtime empty scope title",
+            claim="Runtime empty scope claim must not render.",
+        )
+
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime empty scoped allow-list check",
+        )
+
+        messages = [
+            message
+            for message in result.request.context_messages
+            if message.metadata.get("kind") == "compiled_memory"
+        ]
+        assert messages == []
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": False,
+            "compiler_available": True,
+            "compiled_memory_attempted": False,
+            "compiled_memory_section_present": False,
+            "selected_count": 0,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
+    finally:
+        daemon_app.close()
+
+
+def test_create_daemon_app_scoped_enablement_requires_config_gate(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        db_path,
+        compiled_context_enabled=False,
+    )
+    compiler = RuntimeSpyCompiler()
+
+    daemon_app = create_daemon_app(
+        config_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled_session_profiles=(
+            ("conversation-runtime", "default"),
+        ),
+    )
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.context_builder._compiled_memory_enabled is False
+        assert daemon_app.context_builder._compiled_memory_scope_gate_enabled is False
+
+        insert_runtime_conversation(daemon_app)
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime scoped gate disabled check",
+        )
+
+        assert compiler.calls == 0
+        assert [
+            message
+            for message in result.request.context_messages
+            if message.metadata.get("kind") == "compiled_memory"
+        ] == []
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": False,
+            "compiler_available": True,
+            "compiled_memory_attempted": False,
+            "compiled_memory_section_present": False,
+            "selected_count": 0,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
+    finally:
+        daemon_app.close()
+
+
 def test_memory_disabled_overrides_compiled_context_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

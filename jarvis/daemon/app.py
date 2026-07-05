@@ -6,7 +6,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -1320,6 +1320,7 @@ def create_daemon_app(
     initialize: bool = True,
     memory_compiler: Any | None = None,
     compiled_memory_enabled: bool | None = None,
+    compiled_memory_enabled_session_profiles: Iterable[tuple[str, str]] | None = None,
     compiled_memory_config: MemoryCompilerConfig | None = None,
 ) -> DaemonApp:
     config = load_config(config_path)
@@ -1328,6 +1329,7 @@ def create_daemon_app(
         initialize=initialize,
         memory_compiler=memory_compiler,
         compiled_memory_enabled=compiled_memory_enabled,
+        compiled_memory_enabled_session_profiles=compiled_memory_enabled_session_profiles,
         compiled_memory_config=compiled_memory_config,
     )
 
@@ -1338,6 +1340,7 @@ def create_daemon_app_from_config(
     initialize: bool = True,
     memory_compiler: Any | None = None,
     compiled_memory_enabled: bool | None = None,
+    compiled_memory_enabled_session_profiles: Iterable[tuple[str, str]] | None = None,
     compiled_memory_config: MemoryCompilerConfig | None = None,
 ) -> DaemonApp:
     paths = resolve_runtime_paths(config)
@@ -1417,15 +1420,25 @@ def create_daemon_app_from_config(
     memory_candidate_repository = MemoryCandidateRepository(conn, event_store=event_store)
     memory_evidence_repository = MemoryEvidenceRepository(conn, event_store=event_store)
     memory_item_repository = MemoryItemRepository(conn, event_store=event_store)
-    runtime_compiled_memory_enabled = _resolve_compiled_memory_enabled(
+    scoped_allow_list_supplied = compiled_memory_enabled_session_profiles is not None
+    runtime_compiled_memory_scope_pairs = (
+        tuple(compiled_memory_enabled_session_profiles)
+        if scoped_allow_list_supplied
+        else ()
+    )
+    runtime_compiled_memory_gate_enabled = _resolve_compiled_memory_enabled(
         config,
         explicit_enabled=compiled_memory_enabled,
+    )
+    runtime_compiled_memory_enabled = (
+        runtime_compiled_memory_gate_enabled
+        and not scoped_allow_list_supplied
     )
     runtime_compiled_memory_config = compiled_memory_config or _compiled_memory_config_from_config(
         config
     )
     runtime_memory_compiler = memory_compiler
-    if runtime_compiled_memory_enabled and runtime_memory_compiler is None:
+    if runtime_compiled_memory_gate_enabled and runtime_memory_compiler is None:
         runtime_memory_compiler = MemoryCompiler(memory_item_repository)
     # Registered here, not with the other tools above: memory_save needs the
     # DB-backed Memory OS repositories, so the uninitialized (no-DB) registry
@@ -1444,6 +1457,8 @@ def create_daemon_app_from_config(
         memory_manager=memory_manager,
         memory_compiler=runtime_memory_compiler,
         compiled_memory_enabled=runtime_compiled_memory_enabled,
+        compiled_memory_scope_gate_enabled=runtime_compiled_memory_gate_enabled,
+        compiled_memory_enabled_session_profiles=runtime_compiled_memory_scope_pairs,
         compiled_memory_config=runtime_compiled_memory_config,
         tool_specs=tool_registry.list_specs,
     )
