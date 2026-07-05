@@ -233,6 +233,61 @@ def test_scoped_override_true_enables_compiled_memory_without_mutating_builder(
     }
 
 
+def test_force_disabled_blocks_request_override_true_without_prompt_or_diagnostics_leak(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    compiler = StaticCompiler(
+        CompiledMemoryContext(
+            selected_items=[
+                selected_memory_item(
+                    title="FORCE_DISABLED_OVERRIDE_TITLE",
+                    claim="FORCE_DISABLED_OVERRIDE_CLAIM",
+                )
+            ]
+        )
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=True,
+        compiled_memory_force_disabled=True,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+        compiled_memory_enabled_override=True,
+    )
+
+    diagnostics = compiled_memory_diagnostics(result)
+    rendered = render_context(result.request, result.context_snapshot)
+    diagnostics_text = json.dumps(diagnostics, sort_keys=True)
+    assert compiler.calls == 0
+    assert compiled_memory_messages(result.request) == []
+    assert diagnostics == {
+        "compiled_memory_enabled": False,
+        "compiler_available": True,
+        "compiled_memory_attempted": False,
+        "compiled_memory_section_present": False,
+        "selected_count": 0,
+        "skipped_count": 0,
+        "fail_closed": False,
+        "failure_category": None,
+        "skipped_categories": {},
+    }
+    assert "FORCE_DISABLED_OVERRIDE_TITLE" not in rendered
+    assert "FORCE_DISABLED_OVERRIDE_CLAIM" not in rendered
+    assert "compiled_memory_force_disabled" not in rendered
+    assert "compiled_memory_force_disabled" not in diagnostics_text
+    assert "compiled_memory_diagnostics" not in rendered
+
+
 def test_scoped_override_false_disables_enabled_builder_without_mutating_builder(
     conn: sqlite3.Connection,
     persona_path: Path,
@@ -282,6 +337,54 @@ def test_scoped_override_false_disables_enabled_builder_without_mutating_builder
     rendered = render_context(result.request, result.context_snapshot)
     assert "SCOPED_OVERRIDE_FALSE_TITLE" not in rendered
     assert "SCOPED_OVERRIDE_FALSE_CLAIM" not in rendered
+
+
+def test_force_disabled_blocks_session_profile_enablement(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    (persona_path.parent / "scope-profile.md").write_text(
+        "Persona: scoped profile.",
+        encoding="utf-8",
+    )
+    compiler = StaticCompiler(
+        CompiledMemoryContext(
+            selected_items=[
+                selected_memory_item(
+                    title="FORCE_DISABLED_SESSION_PROFILE_TITLE",
+                    claim="FORCE_DISABLED_SESSION_PROFILE_CLAIM",
+                )
+            ]
+        )
+    )
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=False,
+        compiled_memory_scope_gate_enabled=True,
+        compiled_memory_enabled_session_profiles=(
+            ("conversation-1", "scope-profile"),
+        ),
+        compiled_memory_force_disabled=True,
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+        settings={"persona.profile": "scope-profile"},
+    )
+
+    rendered = render_context(result.request, result.context_snapshot)
+    assert compiler.calls == 0
+    assert compiled_memory_messages(result.request) == []
+    assert compiled_memory_diagnostics(result)["compiled_memory_enabled"] is False
+    assert "FORCE_DISABLED_SESSION_PROFILE_TITLE" not in rendered
+    assert "FORCE_DISABLED_SESSION_PROFILE_CLAIM" not in rendered
 
 
 def test_scoped_override_true_does_not_persist_across_requests(

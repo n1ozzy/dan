@@ -96,6 +96,7 @@ class ContextBuilder:
         compiled_memory_enabled: bool = False,
         compiled_memory_scope_gate_enabled: bool | None = None,
         compiled_memory_enabled_session_profiles: Iterable[tuple[str, str]] | None = None,
+        compiled_memory_force_disabled: bool = False,
         compiled_memory_config: MemoryCompilerConfig | None = None,
         event_store: Any | None = None,
         now: Callable[[], str] | None = None,
@@ -117,6 +118,7 @@ class ContextBuilder:
                 compiled_memory_enabled_session_profiles
             )
         )
+        self._compiled_memory_force_disabled = bool(compiled_memory_force_disabled)
         self._compiled_memory_config = compiled_memory_config or MemoryCompilerConfig()
         self._event_store = event_store
         self._now = now or utc_now_iso
@@ -339,6 +341,8 @@ class ContextBuilder:
         override: bool | None,
     ) -> bool:
         if not _config_bool(self._config, ("memory", "enabled"), True):
+            return False
+        if self._compiled_memory_force_disabled:
             return False
         if override is not None:
             return bool(override)
