@@ -22,6 +22,7 @@ import pytest
 from jarvis.tools.permissions import RequestSource
 
 from tests.git_guards import assert_schema_and_migrations_unchanged
+from jarvis.config import COMPILED_MEMORY_ENABLED_ENV, COMPILED_MEMORY_FORCE_DISABLED_ENV
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
 from jarvis.daemon.state_machine import RuntimeState
@@ -427,6 +428,25 @@ class RuntimeSpyCompiler:
         return CompiledMemoryContext()
 
 
+def compiled_memory_messages(result: object) -> list[object]:
+    return [
+        message
+        for message in result.request.context_messages
+        if message.metadata.get("kind") == "compiled_memory"
+    ]
+
+
+def compiled_memory_field_names(content: str) -> list[str]:
+    names: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            stripped = stripped[2:]
+        if ": " in stripped:
+            names.append(stripped.split(":", 1)[0])
+    return names
+
+
 def test_create_daemon_app_with_temp_config_initializes_temp_db_only(config_path: Path) -> None:
     daemon_app = create_daemon_app(config_path)
     try:
@@ -439,7 +459,10 @@ def test_create_daemon_app_with_temp_config_initializes_temp_db_only(config_path
 
 def test_runtime_context_output_shape_remains_default_off(
     config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv(COMPILED_MEMORY_ENABLED_ENV, raising=False)
+    monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
     compiler = RuntimeSpyCompiler()
     compiler_config = MemoryCompilerConfig(max_items=1, max_chars=64)
 
@@ -509,6 +532,8 @@ def test_create_daemon_app_default_runtime_path_does_not_call_memory_compiler(
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             raise AssertionError("default runtime context build must not create MemoryCompiler")
 
+    monkeypatch.delenv(COMPILED_MEMORY_ENABLED_ENV, raising=False)
+    monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
     monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
     monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
 
@@ -635,6 +660,393 @@ def test_create_daemon_app_config_enabled_wires_compiled_memory_context(tmp_path
         assert [marker for marker in forbidden_markers if marker in rendered_final_context] == []
     finally:
         daemon_app.close()
+
+
+def test_env_enable_true_wires_compiled_memory_without_prompt_or_diagnostics_leak(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "true")
+    monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        db_path,
+        compiled_context_enabled=False,
+    )
+
+    daemon_app = create_daemon_app(config_path)
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.config.memory.enabled is True
+        assert daemon_app.config.memory.compiled_context_enabled is False
+        assert daemon_app.context_builder._compiled_memory_enabled is True
+        assert isinstance(daemon_app.context_builder._memory_compiler, MemoryCompiler)
+
+        raw_evidence_quote = "RAW_ENV_ENABLE_EVIDENCE_QUOTE"
+        raw_secret_marker = "sk-env-enable1234567890"
+        insert_runtime_conversation(daemon_app)
+        insert_runtime_memory_item(
+            daemon_app,
+            memory_id="mem-runtime-env-enabled",
+            canonical_key=f"RAW_ENV_ENABLE_KEY {raw_secret_marker}",
+            title="Runtime env enabled title",
+            claim=f"Runtime env enabled claim. {raw_secret_marker}",
+            content=f"RAW_ENV_ENABLE_CONTENT {raw_secret_marker}",
+            evidence_quote=raw_evidence_quote,
+            observation_text=f"RAW_ENV_ENABLE_OBSERVATION {raw_secret_marker}",
+        )
+
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime env enabled check",
+        )
+
+        messages = compiled_memory_messages(result)
+        assert len(messages) == 1
+        assert messages[0].metadata == {"kind": "compiled_memory", "untrusted": True}
+        assert compiled_memory_field_names(messages[0].content) == [
+            "title",
+            "claim",
+            "evidence_count",
+        ]
+        assert "Runtime env enabled title" in messages[0].content
+        assert "Runtime env enabled claim." in messages[0].content
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": True,
+            "compiler_available": True,
+            "compiled_memory_attempted": True,
+            "compiled_memory_section_present": True,
+            "selected_count": 1,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
+
+        rendered_final_context = json.dumps(
+            {
+                "request": asdict(result.request),
+                "context_snapshot": result.context_snapshot,
+            },
+            sort_keys=True,
+        )
+        diagnostics_text = json.dumps(
+            asdict(result.compiled_memory_diagnostics),
+            sort_keys=True,
+        )
+        forbidden_model_markers = (
+            "memory_id",
+            "canonical_key",
+            "audit_metadata",
+            "skipped_items",
+            "mem-runtime-env-enabled",
+            "RAW_ENV_ENABLE_KEY",
+            raw_evidence_quote,
+            "RAW_ENV_ENABLE_OBSERVATION",
+            "RAW_ENV_ENABLE_CONTENT",
+            raw_secret_marker,
+            "compiled_memory_diagnostics",
+        )
+        assert [marker for marker in forbidden_model_markers if marker in rendered_final_context] == []
+        assert "Runtime env enabled title" not in diagnostics_text
+        assert "Runtime env enabled claim" not in diagnostics_text
+        assert raw_secret_marker not in diagnostics_text
+    finally:
+        daemon_app.close()
+
+
+def test_request_override_false_remains_request_local_with_env_enablement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "true")
+    monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(tmp_path / "jarvis.toml", db_path)
+
+    daemon_app = create_daemon_app(config_path)
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.context_builder._compiled_memory_enabled is True
+
+        insert_runtime_conversation(daemon_app)
+        insert_runtime_memory_item(
+            daemon_app,
+            memory_id="mem-runtime-env-request-local",
+            title="Runtime env request-local title",
+            claim="Runtime env request-local claim.",
+        )
+
+        disabled = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime-disabled",
+            conversation_id="conversation-runtime",
+            input_text="runtime env request-local disabled check",
+            compiled_memory_enabled_override=False,
+        )
+        enabled = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime-enabled",
+            conversation_id="conversation-runtime",
+            input_text="runtime env request-local enabled check",
+        )
+
+        assert compiled_memory_messages(disabled) == []
+        assert len(compiled_memory_messages(enabled)) == 1
+        assert asdict(disabled.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": False,
+            "compiler_available": True,
+            "compiled_memory_attempted": False,
+            "compiled_memory_section_present": False,
+            "selected_count": 0,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
+        assert asdict(enabled.compiled_memory_diagnostics)[
+            "compiled_memory_enabled"
+        ] is True
+    finally:
+        daemon_app.close()
+
+
+def test_env_force_disabled_blocks_every_runtime_enablement_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExplodingMemoryCompiler:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("env force-disabled runtime must not create MemoryCompiler")
+
+    monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "true")
+    monkeypatch.setenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, "true")
+    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        db_path,
+        compiled_context_enabled=True,
+    )
+
+    daemon_app = create_daemon_app(
+        config_path,
+        compiled_memory_enabled_session_profiles=(
+            ("conversation-runtime", "default"),
+        ),
+    )
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.config.memory.compiled_context_enabled is True
+        assert daemon_app.context_builder._compiled_memory_enabled is False
+        assert daemon_app.context_builder._compiled_memory_scope_gate_enabled is False
+        assert daemon_app.context_builder._memory_compiler is None
+
+        insert_runtime_conversation(daemon_app)
+        insert_runtime_memory_item(
+            daemon_app,
+            memory_id="mem-runtime-env-force-disabled",
+            title="Runtime env force-disabled title",
+            claim="Runtime env force-disabled claim must not render.",
+        )
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime env force-disabled check",
+            compiled_memory_enabled_override=True,
+        )
+
+        rendered = json.dumps(
+            {
+                "request": asdict(result.request),
+                "context_snapshot": result.context_snapshot,
+            },
+            sort_keys=True,
+        )
+        assert compiled_memory_messages(result) == []
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": False,
+            "compiler_available": False,
+            "compiled_memory_attempted": False,
+            "compiled_memory_section_present": False,
+            "selected_count": 0,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
+        assert "Runtime env force-disabled title" not in rendered
+        assert "Runtime env force-disabled claim" not in rendered
+        assert "compiled_memory_force_disabled" not in rendered
+        assert "compiled_memory_diagnostics" not in rendered
+    finally:
+        daemon_app.close()
+
+
+def test_memory_disabled_blocks_env_enablement_and_request_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExplodingMemoryCompiler:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("memory.enabled=false must block env compiled memory")
+
+    monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "true")
+    monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
+    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        db_path,
+        memory_enabled=False,
+        compiled_context_enabled=True,
+    )
+
+    daemon_app = create_daemon_app(
+        config_path,
+        compiled_memory_enabled_session_profiles=(
+            ("conversation-runtime", "default"),
+        ),
+    )
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.config.memory.enabled is False
+        assert daemon_app.context_builder._compiled_memory_enabled is False
+        assert daemon_app.context_builder._compiled_memory_scope_gate_enabled is False
+        assert daemon_app.context_builder._memory_compiler is None
+
+        insert_runtime_conversation(daemon_app)
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime memory disabled env check",
+            compiled_memory_enabled_override=True,
+        )
+
+        assert compiled_memory_messages(result) == []
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": False,
+            "compiler_available": False,
+            "compiled_memory_attempted": False,
+            "compiled_memory_section_present": False,
+            "selected_count": 0,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
+    finally:
+        daemon_app.close()
+
+
+def test_invalid_env_enable_value_does_not_enable_compiled_memory(
+    config_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "definitely")
+    monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
+    compiler = RuntimeSpyCompiler()
+
+    daemon_app = create_daemon_app(config_path, memory_compiler=compiler)
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.context_builder._compiled_memory_enabled is False
+
+        insert_runtime_conversation(daemon_app)
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime invalid env check",
+        )
+
+        assert compiler.calls == 0
+        assert compiled_memory_messages(result) == []
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": False,
+            "compiler_available": True,
+            "compiled_memory_attempted": False,
+            "compiled_memory_section_present": False,
+            "selected_count": 0,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
+    finally:
+        daemon_app.close()
+
+
+def test_invalid_env_force_disabled_value_blocks_env_enablement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExplodingMemoryCompiler:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("invalid env force-disabled value must fail closed")
+
+    monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "true")
+    monkeypatch.setenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, "definitely")
+    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+    db_path = tmp_path / "home" / "jarvis.db"
+    config_path = write_config(tmp_path / "jarvis.toml", db_path)
+
+    daemon_app = create_daemon_app(config_path)
+    try:
+        assert daemon_app.context_builder is not None
+        assert daemon_app.context_builder._compiled_memory_enabled is False
+        assert daemon_app.context_builder._compiled_memory_scope_gate_enabled is False
+        assert daemon_app.context_builder._memory_compiler is None
+
+        insert_runtime_conversation(daemon_app)
+        result = daemon_app.context_builder.build_request(
+            turn_id="turn-runtime",
+            conversation_id="conversation-runtime",
+            input_text="runtime invalid force-disabled env check",
+            compiled_memory_enabled_override=True,
+        )
+
+        assert compiled_memory_messages(result) == []
+        assert asdict(result.compiled_memory_diagnostics) == {
+            "compiled_memory_enabled": False,
+            "compiler_available": False,
+            "compiled_memory_attempted": False,
+            "compiled_memory_section_present": False,
+            "selected_count": 0,
+            "skipped_count": 0,
+            "fail_closed": False,
+            "failure_category": None,
+            "skipped_categories": {},
+        }
+    finally:
+        daemon_app.close()
+
+
+def test_compiled_memory_operator_env_controls_are_not_panel_or_api_toggles() -> None:
+    forbidden_markers = (
+        "JARVIS_COMPILED_MEMORY",
+        "compiled_memory",
+        "compiled-memory",
+        "compiled memory",
+    )
+    user_facing_paths = [
+        ROOT / "jarvis" / "daemon" / "lifecycle.py",
+        *sorted((ROOT / "jarvis" / "api").glob("*.py")),
+        *sorted((ROOT / "jarvis" / "panel" / "assets").glob("*")),
+    ]
+
+    offenders: list[tuple[str, str]] = []
+    for path in user_facing_paths:
+        if not path.is_file() or path.suffix not in {".html", ".js", ".css", ".py"}:
+            continue
+        text = path.read_text(encoding="utf-8").lower()
+        for marker in forbidden_markers:
+            if marker.lower() in text:
+                offenders.append((str(path.relative_to(ROOT)), marker))
+
+    assert offenders == []
 
 
 def test_create_daemon_app_force_disabled_blocks_config_enabled_compiled_memory(

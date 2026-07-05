@@ -14,7 +14,7 @@ from typing import Any
 from jarvis.brain.base import BrainResponse
 from jarvis.brain.context_builder import ContextBuilder
 from jarvis.brain.manager import BrainManager, BrainManagerError
-from jarvis.config import JarvisConfig, load_config
+from jarvis.config import JarvisConfig, compiled_memory_operator_env_controls, load_config
 from jarvis.events.bus import EventBus
 from jarvis.events.models import Event, utc_now_iso
 from jarvis.events.types import EventType
@@ -1426,7 +1426,15 @@ def create_daemon_app_from_config(
     memory_candidate_repository = MemoryCandidateRepository(conn, event_store=event_store)
     memory_evidence_repository = MemoryEvidenceRepository(conn, event_store=event_store)
     memory_item_repository = MemoryItemRepository(conn, event_store=event_store)
-    runtime_compiled_memory_force_disabled = bool(compiled_memory_force_disabled)
+    operator_env_controls = compiled_memory_operator_env_controls()
+    runtime_compiled_memory_force_disabled = (
+        bool(compiled_memory_force_disabled) or operator_env_controls.force_disabled
+    )
+    runtime_compiled_memory_explicit_enabled = (
+        compiled_memory_enabled
+        if compiled_memory_enabled is not None
+        else operator_env_controls.enabled
+    )
     scoped_allow_list_supplied = compiled_memory_enabled_session_profiles is not None
     runtime_compiled_memory_scope_pairs = (
         tuple(compiled_memory_enabled_session_profiles)
@@ -1435,7 +1443,7 @@ def create_daemon_app_from_config(
     )
     runtime_compiled_memory_gate_enabled = _resolve_compiled_memory_enabled(
         config,
-        explicit_enabled=compiled_memory_enabled,
+        explicit_enabled=runtime_compiled_memory_explicit_enabled,
         force_disabled=runtime_compiled_memory_force_disabled,
     )
     runtime_compiled_memory_enabled = (

@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import ConfigError, load_config
+from jarvis.config import (
+    COMPILED_MEMORY_ENABLED_ENV,
+    COMPILED_MEMORY_FORCE_DISABLED_ENV,
+    ConfigError,
+    compiled_memory_operator_env_controls,
+    load_config,
+)
 from jarvis.logging import redact_secrets
 from jarvis.memory.compiler import MemoryCompilerConfig
 from jarvis.paths import ensure_runtime_dirs, expand_user_path, resolve_runtime_paths
@@ -153,6 +159,78 @@ def test_example_config_compiled_memory_defaults_off() -> None:
     assert config.memory.compiled_context_max_items == MemoryCompilerConfig().max_items
     assert config.memory.compiled_context_max_chars == MemoryCompilerConfig().max_chars
     assert config.memory.compiled_context_include_procedural is False
+
+
+def test_compiled_memory_operator_env_absent_has_no_enablement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(COMPILED_MEMORY_ENABLED_ENV, raising=False)
+    monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
+
+    controls = compiled_memory_operator_env_controls()
+
+    assert controls.enabled is None
+    assert controls.force_disabled is False
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    (
+        ("true", True),
+        ("1", True),
+        ("on", True),
+        ("yes", True),
+        ("false", False),
+        ("0", False),
+        ("off", False),
+        ("no", False),
+    ),
+)
+def test_compiled_memory_operator_env_enabled_parses_typed_bool_values(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: str,
+    expected: bool,
+) -> None:
+    monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, raw_value)
+    monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
+
+    assert compiled_memory_operator_env_controls().enabled is expected
+
+
+def test_invalid_compiled_memory_operator_env_enabled_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "definitely")
+    monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
+
+    controls = compiled_memory_operator_env_controls()
+
+    assert controls.enabled is False
+    assert controls.force_disabled is False
+
+
+def test_compiled_memory_operator_env_force_disabled_parses_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(COMPILED_MEMORY_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, "true")
+
+    controls = compiled_memory_operator_env_controls()
+
+    assert controls.enabled is None
+    assert controls.force_disabled is True
+
+
+def test_invalid_compiled_memory_operator_env_force_disabled_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(COMPILED_MEMORY_ENABLED_ENV, raising=False)
+    monkeypatch.setenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, "definitely")
+
+    controls = compiled_memory_operator_env_controls()
+
+    assert controls.enabled is None
+    assert controls.force_disabled is True
 
 
 def test_explicit_config_can_enable_compiled_memory_context(tmp_path: Path) -> None:

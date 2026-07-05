@@ -6,12 +6,16 @@ import os
 import tomllib
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Mapping, TypeVar
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "jarvis.toml"
 EXAMPLE_CONFIG_PATH = REPO_ROOT / "config" / "jarvis.example.toml"
+COMPILED_MEMORY_ENABLED_ENV = "JARVIS_COMPILED_MEMORY_ENABLED"
+COMPILED_MEMORY_FORCE_DISABLED_ENV = "JARVIS_COMPILED_MEMORY_FORCE_DISABLED"
+_ENV_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_ENV_FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
 REQUIRED_SECTIONS = (
     "daemon",
     "database",
@@ -89,6 +93,12 @@ DEFAULT_COMPILED_CONTEXT_MAX_CHARS = 1200
 
 class ConfigError(RuntimeError):
     """Raised when Jarvis configuration cannot be loaded."""
+
+
+@dataclass(frozen=True)
+class CompiledMemoryOperatorEnvControls:
+    enabled: bool | None = None
+    force_disabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -351,6 +361,26 @@ class JarvisConfig:
 T = TypeVar("T")
 
 
+def compiled_memory_operator_env_controls(
+    environ: Mapping[str, str] | None = None,
+) -> CompiledMemoryOperatorEnvControls:
+    source = os.environ if environ is None else environ
+    enabled = _optional_env_bool(
+        COMPILED_MEMORY_ENABLED_ENV,
+        source,
+        invalid_value=False,
+    )
+    force_disabled = _optional_env_bool(
+        COMPILED_MEMORY_FORCE_DISABLED_ENV,
+        source,
+        invalid_value=True,
+    )
+    return CompiledMemoryOperatorEnvControls(
+        enabled=enabled,
+        force_disabled=bool(force_disabled),
+    )
+
+
 def load_config(path: str | Path | None = None) -> JarvisConfig:
     """Load Jarvis configuration from explicit path, env, repo config, or example."""
 
@@ -385,6 +415,22 @@ def _select_config_path(path: str | Path | None) -> Path:
         return DEFAULT_CONFIG_PATH
 
     return EXAMPLE_CONFIG_PATH
+
+
+def _optional_env_bool(
+    name: str,
+    environ: Mapping[str, str],
+    *,
+    invalid_value: bool,
+) -> bool | None:
+    if name not in environ:
+        return None
+    value = str(environ[name]).strip().lower()
+    if value in _ENV_TRUE_VALUES:
+        return True
+    if value in _ENV_FALSE_VALUES:
+        return False
+    return invalid_value
 
 
 def _normalize_path(path: str | Path) -> Path:
