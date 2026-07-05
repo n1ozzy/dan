@@ -629,6 +629,217 @@ def test_memory_enabled_false_blocks_session_profile_and_request_override(
     }
 
 
+def rollout_case(case_id: str, **overrides: Any) -> Any:
+    case = {
+        "id": case_id,
+        "memory_enabled": True,
+        "compiled_context_enabled": True,
+        "force_disabled": False,
+        "scoped_allow_list": None,
+        "conversation_id": "conversation-1",
+        "persona_profile": None,
+        "request_override": None,
+        "compiler_kind": "static",
+        "expected_enabled": False,
+        "expected_compiler_calls": 0,
+        "expected_section_present": False,
+        "expected_fail_closed": False,
+    }
+    case.update(overrides)
+    return pytest.param(case, id=case_id)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        rollout_case(
+            "memory-enabled-false",
+            memory_enabled=False,
+            scoped_allow_list=(("conversation-1", "scope-profile"),),
+            persona_profile="scope-profile",
+            request_override=True,
+        ),
+        rollout_case(
+            "force-disabled",
+            force_disabled=True,
+            scoped_allow_list=(("conversation-1", "scope-profile"),),
+            persona_profile="scope-profile",
+            request_override=True,
+        ),
+        rollout_case(
+            "request-override-false",
+            scoped_allow_list=(("conversation-1", "scope-profile"),),
+            persona_profile="scope-profile",
+            request_override=False,
+        ),
+        rollout_case(
+            "request-override-true",
+            compiled_context_enabled=False,
+            request_override=True,
+            expected_enabled=True,
+            expected_compiler_calls=1,
+            expected_section_present=True,
+        ),
+        rollout_case("default-off", compiled_context_enabled=False),
+        rollout_case(
+            "matched-session-profile",
+            scoped_allow_list=(("conversation-1", "scope-profile"),),
+            persona_profile="scope-profile",
+            expected_enabled=True,
+            expected_compiler_calls=1,
+            expected_section_present=True,
+        ),
+        rollout_case(
+            "nonmatching-profile",
+            scoped_allow_list=(("conversation-1", "scope-profile"),),
+        ),
+        rollout_case(
+            "nonmatching-session",
+            scoped_allow_list=(("conversation-1", "scope-profile"),),
+            conversation_id="conversation-2",
+            persona_profile="scope-profile",
+        ),
+        rollout_case(
+            "empty-scoped-allow-list",
+            scoped_allow_list=(),
+            persona_profile="scope-profile",
+        ),
+        rollout_case(
+            "none-scoped-allow-list",
+            persona_profile="scope-profile",
+            expected_enabled=True,
+            expected_compiler_calls=1,
+            expected_section_present=True,
+        ),
+        rollout_case(
+            "compiler-failure",
+            compiler_kind="failing",
+            expected_enabled=True,
+            expected_compiler_calls=1,
+            expected_fail_closed=True,
+        ),
+    ],
+)
+def test_compiled_memory_rollout_precedence_matrix(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+    case: dict[str, Any],
+) -> None:
+    insert_conversation(conn, conversation_id="conversation-1")
+    insert_conversation(conn, conversation_id="conversation-2")
+    (persona_path.parent / "scope-profile.md").write_text(
+        "Persona: scoped profile.",
+        encoding="utf-8",
+    )
+    test_config = config()
+    test_config.memory.enabled = case["memory_enabled"]
+    title = f"SAFE_MATRIX_TITLE_{case['id']}"
+    claim = f"SAFE_MATRIX_CLAIM_{case['id']}"
+    skipped_secret = f"RAW_MATRIX_SKIPPED_ID_{case['id']}"
+    failure_secret = f"RAW_MATRIX_FAILURE_{case['id']}"
+    if case["compiler_kind"] == "failing":
+        compiler = FailingCompiler(
+            f"compiler boom {failure_secret}\nTraceback bait\nRuntimeError bait"
+        )
+    else:
+        compiler = StaticCompiler(
+            CompiledMemoryContext(
+                selected_items=[
+                    selected_memory_item(
+                        title=title,
+                        claim=claim,
+                    )
+                ],
+                skipped_items=[
+                    SkippedMemoryItem(
+                        memory_id=skipped_secret,
+                        reason_skipped="disabled",
+                    )
+                ],
+            )
+        )
+    scoped_allow_list = case["scoped_allow_list"]
+    scoped_allow_list_supplied = scoped_allow_list is not None
+    builder = ContextBuilder(
+        conn,
+        config=test_config,
+        persona_path=persona_path,
+        memory_compiler=compiler,
+        compiled_memory_enabled=(
+            case["compiled_context_enabled"] and not scoped_allow_list_supplied
+        ),
+        compiled_memory_scope_gate_enabled=case["compiled_context_enabled"],
+        compiled_memory_enabled_session_profiles=scoped_allow_list,
+        compiled_memory_force_disabled=case["force_disabled"],
+        now=fixed_now,
+    )
+
+    result = builder.build_request(
+        turn_id=f"turn-{case['id']}",
+        conversation_id=case["conversation_id"],
+        input_text="Matrix request",
+        settings=(
+            {"persona.profile": case["persona_profile"]}
+            if case["persona_profile"] is not None
+            else None
+        ),
+        compiled_memory_enabled_override=case["request_override"],
+    )
+
+    diagnostics = compiled_memory_diagnostics(result)
+    messages = compiled_memory_messages(result.request)
+    rendered = render_context(result.request, result.context_snapshot)
+    diagnostics_text = json.dumps(diagnostics, sort_keys=True)
+    assert compiler.calls == case["expected_compiler_calls"]
+    assert diagnostics["compiled_memory_enabled"] is case["expected_enabled"]
+    assert diagnostics["compiled_memory_attempted"] is (
+        case["expected_enabled"] and case["expected_compiler_calls"] == 1
+    )
+    assert diagnostics["compiled_memory_section_present"] is case[
+        "expected_section_present"
+    ]
+    assert diagnostics["fail_closed"] is case["expected_fail_closed"]
+    assert "compiled_memory_diagnostics" not in rendered
+    assert "compiled_memory_force_disabled" not in rendered
+    assert "compiled_memory_force_disabled" not in diagnostics_text
+    assert skipped_secret not in diagnostics_text
+    assert failure_secret not in diagnostics_text
+    assert title not in diagnostics_text
+    assert claim not in diagnostics_text
+
+    if case["expected_section_present"]:
+        assert len(messages) == 1
+        assert messages[0].metadata == {"kind": "compiled_memory", "untrusted": True}
+        assert compiled_memory_field_names(messages[0].content) == [
+            "title",
+            "claim",
+            "evidence_count",
+        ]
+        assert title in messages[0].content
+        assert claim in messages[0].content
+        assert skipped_secret not in messages[0].content
+        assert diagnostics["selected_count"] == 1
+        assert diagnostics["skipped_count"] == 1
+        assert diagnostics["skipped_categories"] == {"disabled": 1}
+    else:
+        assert messages == []
+        assert title not in rendered
+        assert claim not in rendered
+        assert diagnostics["selected_count"] == 0
+        assert diagnostics["compiled_memory_section_present"] is False
+
+    if case["expected_fail_closed"]:
+        assert diagnostics["failure_category"] == "compiler_error"
+        assert "compiler boom" not in rendered
+        assert "compiler boom" not in diagnostics_text
+        assert "Traceback" not in rendered
+        assert "Traceback" not in diagnostics_text
+        assert "RuntimeError" not in rendered
+        assert "RuntimeError" not in diagnostics_text
+    else:
+        assert diagnostics["failure_category"] is None
+
+
 def test_flag_on_includes_selected_compiled_memory(
     conn: sqlite3.Connection,
     persona_path: Path,
