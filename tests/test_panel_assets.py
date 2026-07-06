@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import textwrap
+import re
 from pathlib import Path
 
 from tests.git_guards import assert_schema_and_migrations_unchanged
@@ -35,6 +36,7 @@ REQUIRED_ROUTES = (
     "/events",
     "/stream",
     "/runtime/processes",
+    "/runtime/settings/apply",
     "/audio/devices",
     "/settings",
     "/brain/adapters",
@@ -207,15 +209,21 @@ def test_app_references_required_daemon_routes() -> None:
     assert missing == []
 
 
-def test_index_has_settings_section_with_brain_switch() -> None:
+def test_index_has_active_settings_sections_with_apply_controls() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
 
     assert "settingsHeading" in markup
     assert "settingsList" in markup
     assert "settingKey" in markup
     assert "settingValue" in markup
-    assert "brainAdapterSelect" in markup
-    assert "switchBrainButton" in markup
+    assert "activeBrainProviderSelect" in markup
+    assert "activeBrainModelSelect" in markup
+    assert "activeBrainEffortSelect" in markup
+    assert "applyBrainSettingsButton" in markup
+    assert "applyTtsSettingsButton" in markup
+    assert "applySttSettingsButton" in markup
+    assert "applyPttSettingsButton" in markup
+    assert "applyPersonaSettingsButton" in markup
 
 
 def test_app_settings_are_rendered_from_daemon_truth_only() -> None:
@@ -447,6 +455,26 @@ def test_mission_control_operator_shell_is_present_and_read_only() -> None:
         assert marker in script
 
 
+def test_system_runtime_cards_keep_values_readable_at_panel_width() -> None:
+    # Regression: Mission Control cards used 190px auto-fit columns plus
+    # overflow-wrap:anywhere on kv values, so normal values could render one
+    # character per line in the native panel.
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "#view-system.view" in styles
+    assert "overflow-x: hidden" in styles
+    assert "grid-template-columns: repeat(auto-fit, minmax(280px, 1fr))" in styles
+    assert "grid-template-columns: repeat(auto-fit, minmax(240px, 1fr))" in styles
+    assert "grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr))" in styles
+    assert "grid-template-columns: auto minmax(0, 1fr)" in styles
+    assert "grid-template-columns: minmax(0, 1fr) auto" in styles
+    assert "#view-system .kv-list" in styles
+    assert "grid-template-columns: minmax(96px, 42%) minmax(0, 1fr)" in styles
+    assert "overflow-wrap: break-word" in styles
+    assert "word-break: normal" in styles
+    assert "@media (max-width: 620px)" in styles
+
+
 def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) -> None:
     harness = tmp_path / "mission-control-summary-harness.js"
     harness.write_text(
@@ -648,18 +676,18 @@ def test_poc_checklist_voice_and_provider_doctors_pin_required_diagnostics() -> 
     script = APP_JS.read_text(encoding="utf-8")
 
     for item in (
-        "Lifecycle alive",
+        "Daemon alive",
+        "Panel connected",
         "Text turn path available",
-        "Panel live refresh active",
-        "PTT available",
         "Voice queue observable",
-        "Barge-in/cancel observable",
+        "PTT available",
+        "Brain provider known",
+        "Voice TTS status known",
+        "Voice STT status known",
+        "Tools/Internet status known",
         "Memory visible",
         "Approval visible",
-        "Provider status known",
-        "Voice settings split visible",
         "Latest turn trace visible",
-        "Logs newest-first and redacted",
     ):
         assert item in script
 
@@ -719,10 +747,9 @@ def test_settings_preview_cockpit_shell_is_present() -> None:
 
     assert "settingsPreviewHeading" in markup
     assert "Settings Preview" in markup
-    assert "Preview only. Changes are not saved." in markup
     assert "settingsPreviewList" in markup
-    assert "settingsPreviewSaveButton" in markup
-    assert "Save not implemented in POC" in markup
+    assert "settingsPreviewSaveButton" not in markup
+    assert "Save not implemented in POC" not in markup
 
     for heading in (
         "Brain / Provider",
@@ -749,9 +776,1586 @@ def test_settings_preview_cockpit_shell_is_present() -> None:
         assert contract_name in script
 
 
-def test_settings_preview_local_model_catches_invalid_provider_voice_combos(
+def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_path: Path) -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    for label in (
+        "Tools",
+        "Internet access",
+        "Require approval for network",
+        "Require approval for file writes",
+        "Require approval for shell",
+    ):
+        assert label in markup
+    for misleading_label in (
+        ">tools.enabled<",
+        ">network approval<",
+        ">file write approval<",
+        ">shell approval<",
+    ):
+        assert misleading_label not in markup
+
+    harness = tmp_path / "tools-internet-truth-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            function createNode(tag) {{
+              const children = [];
+              const classes = new Set();
+              return {{
+                tagName: tag,
+                children,
+                textContent: "",
+                className: "",
+                hidden: false,
+                disabled: false,
+                checked: false,
+                value: "",
+                type: "",
+                classList: {{
+                  toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+                  contains: (name) => classes.has(name),
+                }},
+                appendChild(child) {{
+                  children.push(child);
+                  return child;
+                }},
+                append(...nodes) {{
+                  for (const node of nodes) this.appendChild(node);
+                }},
+                removeChild(child) {{
+                  const index = children.indexOf(child);
+                  if (index >= 0) children.splice(index, 1);
+                  return child;
+                }},
+                get firstChild() {{
+                  return children[0] || null;
+                }},
+                addEventListener() {{}},
+              }};
+            }}
+
+            function textOf(node) {{
+              if (!node) return "";
+              return [node.textContent || "", ...(node.children || []).map(textOf)].join(" ");
+            }}
+
+            const requests = [];
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41741" }},
+              localStorage: {{
+                getItem: () => "token",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              createNode,
+              window: {{}},
+              document: {{
+                addEventListener: () => {{}},
+                createElement: createNode,
+              }},
+              fetch: async (url, init) => {{
+                requests.push({{ url, init }});
+                return {{
+                  ok: true,
+                  status: 200,
+                  text: async () => JSON.stringify({{ ok: true, applied: [], runtime_settings: payload }}),
+                }};
+              }},
+            }};
+            context.window.localStorage = context.localStorage;
+            context.globalThis = context;
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            const payload = {{
+              tools: {{
+                tools_enabled: {{
+                  value: true,
+                  effective_value: true,
+                  source: "settings",
+                  status: "ok",
+                  editable_later: true,
+                  warning: null,
+                }},
+                tools_master_flag: {{
+                  value: "enabled",
+                  effective_value: "enabled",
+                  source: "settings",
+                  status: "ok",
+                  editable_later: true,
+                  warning: null,
+                }},
+                tool_registry_status: {{
+                  value: "registered",
+                  effective_value: "registered",
+                  source: "runtime_detected",
+                  status: "ok",
+                  editable_later: false,
+                  warning: null,
+                }},
+                internet_capability: {{
+                  value: {{ state: "unavailable", registered_network_tools: [] }},
+                  effective_value: {{ state: "unavailable", registered_network_tools: [] }},
+                  source: "runtime_detected",
+                  status: "missing",
+                  editable_later: false,
+                  warning: "Internet unavailable: no network/search tool registered",
+                }},
+                network_search_tool: {{
+                  value: "missing",
+                  effective_value: "missing",
+                  source: "runtime_detected",
+                  status: "missing",
+                  editable_later: false,
+                  warning: "no network/search tool registered",
+                }},
+                network_policy: {{
+                  value: "approval_required",
+                  effective_value: "approval_required",
+                  source: "config",
+                  status: "ok",
+                  editable_later: true,
+                  warning: "network enabled but no network tool registered",
+                }},
+                approval_required_tools: {{
+                  value: ["network", "shell", "file_write"],
+                  effective_value: ["network", "shell", "file_write"],
+                  source: "config",
+                  status: "ok",
+                  editable_later: true,
+                  warning: null,
+                }},
+              }},
+              capability_graph: {{
+                tools_capabilities: {{
+                  apply_capabilities: {{
+                    "tools.enabled": {{
+                      apply_capable: false,
+                      requires_restart: true,
+                      blocker: "tool registry enable/disable is not apply-capable in POC; requires daemon restart",
+                    }},
+                    "tools.network_enabled": {{
+                      apply_capable: false,
+                      requires_restart: true,
+                      blocker: "network capability is registry-backed; no live network tool toggle is wired in POC",
+                    }},
+                    "security.require_approval_for_network": {{
+                      apply_capable: false,
+                      requires_restart: true,
+                      blocker: "runtime tool/network policy reload not implemented in POC; requires daemon restart",
+                    }},
+                    "security.require_approval_for_shell": {{
+                      apply_capable: false,
+                      requires_restart: true,
+                      blocker: "runtime tool/network policy reload not implemented in POC; requires daemon restart",
+                    }},
+                    "security.require_approval_for_file_write": {{
+                      apply_capable: false,
+                      requires_restart: true,
+                      blocker: "runtime tool/network policy reload not implemented in POC; requires daemon restart",
+                    }},
+                  }},
+                }},
+              }},
+              settings_preview: {{
+                sections: {{
+                  tools_internet: {{
+                    fields: {{
+                      tools_support: {{ current: "yes", effective: "yes", status: "ok" }},
+                    }},
+                  }},
+                }},
+              }},
+            }};
+            context.payload = payload;
+
+            vm.runInContext(`
+              el.activeToolsSettingsSection = createNode("section");
+              el.toolsSectionDescription = createNode("p");
+              el.toolsControlGrid = createNode("div");
+              el.toolsSummaryDetails = createNode("dl");
+              el.toolsEnabledToggle = createNode("input");
+              el.toolsNetworkEnabledToggle = createNode("input");
+              el.toolsNetworkApprovalToggle = createNode("input");
+              el.toolsShellApprovalToggle = createNode("input");
+              el.toolsFileWriteApprovalToggle = createNode("input");
+              el.toolsInternetSummary = createNode("dd");
+              el.toolsNetworkPolicySummary = createNode("dd");
+              el.toolsRegistrySummary = createNode("dd");
+              el.toolsInternetStatusList = createNode("div");
+              el.toolsApplyStatus = createNode("p");
+              el.resetToolsPreviewButton = createNode("button");
+              el.applyToolsSettingsButton = createNode("button");
+              el.activeSettingsStatus = createNode("p");
+              cockpit.online = true;
+              cockpit.runtimeSettingsApply.payload = payload;
+              renderToolsApplyControls(payload);
+              globalThis.__el = el;
+            `, context);
+
+            assert.strictEqual(context.__el.toolsEnabledToggle.disabled, true);
+            assert.strictEqual(context.__el.toolsNetworkEnabledToggle.disabled, true);
+            assert.strictEqual(context.__el.toolsNetworkApprovalToggle.disabled, true);
+            assert.strictEqual(context.__el.toolsShellApprovalToggle.disabled, true);
+            assert.strictEqual(context.__el.toolsFileWriteApprovalToggle.disabled, true);
+            assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, true);
+            assert.strictEqual(context.__el.resetToolsPreviewButton.disabled, true);
+            assert.strictEqual(context.__el.resetToolsPreviewButton.hidden, true);
+            assert.strictEqual(context.__el.toolsSectionDescription.hidden, true);
+            assert.strictEqual(context.__el.activeToolsSettingsSection.classList.contains("compact-only"), true);
+            assert.strictEqual(context.__el.toolsControlGrid.hidden, true);
+            assert.strictEqual(context.__el.toolsSummaryDetails.hidden, true);
+            assert.match(context.__el.toolsInternetSummary.textContent, /Missing|Unavailable/i);
+            assert.match(context.__el.toolsApplyStatus.textContent, /Blocked/i);
+            assert.match(context.__el.toolsApplyStatus.textContent, /Install\\/register a network search tool/i);
+            assert.doesNotMatch(context.__el.toolsApplyStatus.textContent, /runtime tool\\/network policy reload|not runtime-apply-capable|tools\\.enabled/i);
+
+            const statusText = textOf(context.__el.toolsInternetStatusList);
+            assert.match(statusText, /Tools \\/ Internet/i);
+            assert.match(statusText, /Tools\\s+On/i);
+            assert.match(statusText, /Internet access\\s+Missing/i);
+            assert.match(statusText, /Reason\\s+No network\\/search tool registered/i);
+            assert.match(statusText, /Action\\s+Install\\/register a network search tool/i);
+            assert.match(statusText, /Policy\\s+Approval required/i);
+            assert.match(statusText, /Apply\\s+disabled/i);
+            assert.doesNotMatch(statusText, /What this means|What can I do\\?|tools\\.enabled|security\\.require_approval|approval_required|runtime tool\\/network policy reload|tool registry enable\\/disable|not runtime-apply-capable/i);
+
+            payload.capability_graph.tools_capabilities.apply_capabilities["tools.enabled"] = {{
+              apply_capable: true,
+              requires_restart: false,
+              blocker: null,
+            }};
+            payload.capability_graph.tools_capabilities.apply_capabilities["security.require_approval_for_network"] = {{
+              apply_capable: true,
+              requires_restart: false,
+              blocker: null,
+            }};
+            vm.runInContext(`renderToolsApplyControls(payload);`, context);
+
+            assert.strictEqual(context.__el.toolsControlGrid.hidden, true);
+            assert.strictEqual(context.__el.toolsEnabledToggle.disabled, true);
+            assert.strictEqual(context.__el.toolsNetworkApprovalToggle.disabled, true);
+            assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, true);
+            assert.match(context.__el.toolsApplyStatus.textContent, /Apply disabled/i);
+            assert.match(context.__el.toolsApplyStatus.textContent, /Install\\/register a network search tool/i);
+
+            (async () => {{
+              context.__el.toolsNetworkApprovalToggle.disabled = false;
+              context.__el.toolsNetworkApprovalToggle.checked = false;
+              context.__el.applyToolsSettingsButton.disabled = true;
+              await context.applyRuntimeSettingsGroup("tools");
+              assert.strictEqual(requests.length, 0);
+            }})().catch((error) => {{
+              console.error(error);
+              process.exit(1);
+            }});
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_system_unknown_runtime_values_disable_apply_and_do_not_create_pending_change(
     tmp_path: Path,
 ) -> None:
+    harness = tmp_path / "unknown-runtime-values-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            function createNode(tag) {{
+              const children = [];
+              const classes = new Set();
+              return {{
+                tagName: tag,
+                children,
+                textContent: "",
+                className: "",
+                hidden: false,
+                disabled: false,
+                checked: false,
+                value: "",
+                title: "",
+                type: "",
+                classList: {{
+                  toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+                  contains: (name) => classes.has(name),
+                }},
+                appendChild(child) {{
+                  children.push(child);
+                  return child;
+                }},
+                append(...nodes) {{
+                  for (const node of nodes) this.appendChild(node);
+                }},
+                removeChild(child) {{
+                  const index = children.indexOf(child);
+                  if (index >= 0) children.splice(index, 1);
+                  return child;
+                }},
+                get firstChild() {{
+                  return children[0] || null;
+                }},
+                addEventListener() {{}},
+              }};
+            }}
+
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41741" }},
+              localStorage: {{
+                getItem: () => "token",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              createNode,
+              document: {{
+                addEventListener: () => {{}},
+                createElement: createNode,
+              }},
+              window: {{}},
+              fetch: async () => {{
+                throw new Error("unexpected request");
+              }},
+            }};
+            context.window.localStorage = context.localStorage;
+            context.globalThis = context;
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            const payload = {{
+              brain: {{
+                current_adapter: {{ effective_value: "claude_cli" }},
+              }},
+              voice: {{
+                ptt_mode: {{ effective_value: null, status: "unknown" }},
+              }},
+              capability_graph: {{
+                brain_capabilities: {{
+                  current_provider: "claude_cli",
+                  current_model: "claude-opus",
+                  providers: [
+                    {{
+                      id: "claude_cli",
+                      label: "Claude CLI",
+                      available: true,
+                      models: [{{ id: "claude-opus", label: "Claude Opus", available: true }}],
+                      current_model: "claude-opus",
+                      allowed_effort_values: ["low", "medium"],
+                      fast_supported: false,
+                      command_status: "yes",
+                    }},
+                  ],
+                }},
+              }},
+              settings_preview: {{
+                sections: {{
+                  brain_provider: {{
+                    label: "Brain / Provider",
+                    fields: {{
+                      provider: {{ id: "brain_provider.provider", label: "Provider", current: "claude_cli", effective: "claude_cli", status: "ok", editable_now: true }},
+                      model: {{ id: "brain_provider.model", label: "Model", current: "claude-opus", effective: "claude-opus", status: "ok", editable_now: true }},
+                      effort: {{ id: "brain_provider.effort", label: "Effort", current: null, effective: null, status: "unknown", source: "runtime_detected", allowed_values: ["low", "medium"], editable_now: true }},
+                      fast: {{ id: "brain_provider.fast", label: "Fast mode", current: null, effective: null, status: "unknown", source: "runtime_detected", editable_now: false }},
+                    }},
+                  }},
+                  endpointing_ptt: {{
+                    label: "Endpointing / PTT",
+                    fields: {{
+                      ptt_mode: {{ id: "endpointing_ptt.ptt_mode", label: "PTT mode", current: null, effective: null, status: "unknown", source: "runtime_detected", allowed_values: ["hold"], editable_now: true }},
+                      merge_window: {{ id: "endpointing_ptt.merge_window", label: "Merge window", current: null, effective: null, status: "unknown", source: "runtime_detected", editable_now: false }},
+                      listening_lease_state: {{ id: "endpointing_ptt.listening_lease_state", label: "Listening mode", current: null, effective: null, status: "unknown", source: "runtime_detected" }},
+                      interrupt_policy: {{ id: "endpointing_ptt.interrupt_policy", label: "Interrupt policy", current: null, effective: null, status: "unknown", source: "runtime_detected" }},
+                      ptt_hotkey: {{ id: "endpointing_ptt.ptt_hotkey", label: "PTT hotkey", current: null, effective: null, status: "unknown", source: "runtime_detected" }},
+                    }},
+                  }},
+                }},
+              }},
+            }};
+
+            context.payload = payload;
+            vm.runInContext(`
+              el.activeBrainProviderSelect = createNode("select");
+              el.activeBrainModelSelect = createNode("select");
+              el.activeBrainEffortSelect = createNode("select");
+              el.activeBrainFastToggle = createNode("input");
+              el.brainSettingsSummaryList = createNode("div");
+              el.brainApplyStatus = createNode("p");
+              el.applyBrainSettingsButton = createNode("button");
+              el.pttModeSelect = createNode("select");
+              el.pttMergeWindowInput = createNode("input");
+              el.pttListeningSummary = createNode("dd");
+              el.pttBargeInSummary = createNode("dd");
+              el.pttHotkeySummary = createNode("dd");
+              el.pttVadSummary = createNode("dd");
+              el.pttApplyStatus = createNode("p");
+              el.applyPttSettingsButton = createNode("button");
+              cockpit.online = true;
+              cockpit.runtimeSettingsApply.payload = payload;
+              cockpit.settingsPreview.payload = payload;
+              globalThis.__el = el;
+              globalThis.__brainDraft = {{ "brain.effort": "low" }};
+              globalThis.__pttDraft = {{ "voice.ptt_mode": "hold" }};
+            `, context);
+
+            assert.deepStrictEqual(
+              JSON.parse(JSON.stringify(context.runtimeSettingsChangedKeys("brain", context.__brainDraft, payload))),
+              [],
+            );
+            assert.strictEqual(
+              context.runtimeSettingsPendingMessage("brain", context.__brainDraft, payload),
+              "",
+            );
+            assert.deepStrictEqual(
+              JSON.parse(JSON.stringify(context.runtimeSettingsChangedKeys("ptt", context.__pttDraft, payload))),
+              [],
+            );
+
+            context.renderBrainApplyControls(payload);
+            assert.doesNotMatch(context.__el.brainApplyStatus.textContent, /Unknown -> low/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Effective value: Unknown/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Reason: runtime does not report this setting/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Apply disabled/i);
+            assert.strictEqual(context.__el.activeBrainEffortSelect.disabled, true);
+            assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
+
+            context.renderPttApplyControls(payload);
+            assert.doesNotMatch(context.__el.pttApplyStatus.textContent, /Unknown -> hold/i);
+            assert.match(context.__el.pttApplyStatus.textContent, /Effective value: Unknown/i);
+            assert.match(context.__el.pttApplyStatus.textContent, /Reason: runtime does not report this setting/i);
+            assert.strictEqual(context.__el.pttModeSelect.disabled, true);
+            assert.strictEqual(context.__el.applyPttSettingsButton.disabled, true);
+            assert.match(context.__el.pttListeningSummary.textContent, /Effective value: Unknown/i);
+            assert.match(context.__el.pttListeningSummary.textContent, /runtime does not report this setting/i);
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_settings_apply_feedback_preserves_pending_preview_and_reset_is_explicit(
+    tmp_path: Path,
+) -> None:
+    harness = tmp_path / "settings-apply-feedback-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            function createNode(tag) {{
+              const children = [];
+              const classes = new Set();
+              return {{
+                tagName: tag,
+                children,
+                textContent: "",
+                className: "",
+                hidden: false,
+                disabled: false,
+                checked: false,
+                value: "",
+                type: "",
+                title: "",
+                classList: {{
+                  toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+                  contains: (name) => classes.has(name),
+                }},
+                appendChild(child) {{ children.push(child); return child; }},
+                append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
+                removeChild(child) {{
+                  const index = children.indexOf(child);
+                  if (index >= 0) children.splice(index, 1);
+                  return child;
+                }},
+                get firstChild() {{ return children[0] || null; }},
+                addEventListener() {{}},
+              }};
+            }}
+
+            function payloadWithSpeakResponses(value) {{
+              return {{
+                voice: {{
+                  speak_responses: {{
+                    value,
+                    effective_value: value,
+                    source: "config",
+                    status: "ok",
+                    editable_now: true,
+                    warning: null,
+                  }},
+                  broker_enabled: {{ effective_value: false }},
+                  default_tts: {{ effective_value: "mock" }},
+                  default_stt: {{ effective_value: "mock" }},
+                }},
+                capability_graph: {{
+                  voice_capabilities: {{
+                    tts_providers: [
+                      {{ id: "mock", label: "Mock", available: true }},
+                    ],
+                    stt_providers: [],
+                  }},
+                }},
+                settings_preview: {{
+                  sections: {{
+                    voice_tts: {{
+                    fields: {{
+                        tts_provider: {{ current: "mock", effective: "mock", editable_now: true, status: "ok" }},
+                        tts_model: {{ current: "", effective: "", allowed_values: [], editable_now: true, status: "ok" }},
+                        voice_id: {{ current: "", effective: "", allowed_values: [], editable_now: true, status: "ok" }},
+                        voice_profile: {{ current: "", effective: "", allowed_values: [], editable_now: true, status: "ok" }},
+                        speed_or_rate: {{ current: 1, effective: 1, editable_now: true, status: "ok" }},
+                      }},
+                    }},
+                  }},
+                }},
+              }};
+            }}
+
+            const requests = [];
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41741" }},
+              localStorage: {{
+                getItem: () => "token",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              createNode,
+              window: {{}},
+              document: {{
+                addEventListener: () => {{}},
+                createElement: createNode,
+              }},
+              fetch: async (url, init = {{}}) => {{
+                const parsed = new URL(url);
+                requests.push({{ path: parsed.pathname, init }});
+                return {{
+                  ok: true,
+                  status: 200,
+                  text: async () => JSON.stringify(payloadWithSpeakResponses(false)),
+                }};
+              }},
+            }};
+            context.window.localStorage = context.localStorage;
+            context.globalThis = context;
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            const effectiveFalse = payloadWithSpeakResponses(false);
+            context.payload = effectiveFalse;
+            vm.runInContext(`
+              el.voiceSpeakResponsesToggle = createNode("input");
+              el.voiceBrokerEnabledToggle = createNode("input");
+              el.voiceTtsSelect = createNode("select");
+              el.voiceTtsModelSelect = createNode("select");
+              el.voiceVoiceIdSelect = createNode("select");
+              el.voiceProfileSelect = createNode("select");
+              el.voiceSpeedInput = createNode("input");
+              el.voiceTtsStatusList = createNode("div");
+              el.ttsApplyStatus = createNode("p");
+              el.voiceApplyStatus = createNode("p");
+              el.applyTtsSettingsButton = createNode("button");
+              el.activeSettingsStatus = createNode("p");
+              el.settingsPreviewList = createNode("div");
+              el.settingsPreviewError = createNode("p");
+              cockpit.online = true;
+              cockpit.runtimeSettingsApply.payload = payload;
+              cockpit.settingsPreview.payload = payload;
+              renderTtsApplyControls(payload);
+              globalThis.__el = el;
+            `, context);
+
+            assert.strictEqual(context.__el.voiceSpeakResponsesToggle.checked, false);
+            context.__el.voiceSpeakResponsesToggle.checked = true;
+            context.updateTtsControlOptions();
+            assert.match(context.__el.ttsApplyStatus.textContent, /Pending/i);
+            assert.match(context.__el.ttsApplyStatus.textContent, /OFF -> ON|false -> true/i);
+            assert.strictEqual(context.__el.applyTtsSettingsButton.disabled, false);
+            assert.strictEqual(requests.length, 0);
+
+            context.payload = payloadWithSpeakResponses(false);
+            vm.runInContext(`
+              cockpit.runtimeSettingsApply.payload = payload;
+              renderTtsApplyControls(payload);
+            `, context);
+            assert.strictEqual(context.__el.voiceSpeakResponsesToggle.checked, true);
+            assert.match(context.__el.ttsApplyStatus.textContent, /pending preview preserved|Pending/i);
+
+            context.resetSettingsPreview();
+            assert.strictEqual(context.__el.voiceSpeakResponsesToggle.checked, false);
+            assert.match(context.__el.ttsApplyStatus.textContent, /Preview reset|No live TTS changes/i);
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_brain_apply_disabled_for_reload_only_brain_field_changes(tmp_path: Path) -> None:
+        harness = tmp_path / "brain-reload-only-disabled-harness.js"
+        harness.write_text(
+            textwrap.dedent(
+                f"""
+                const assert = require("assert");
+                const fs = require("fs");
+                const vm = require("vm");
+
+                function createNode(tag) {{
+                  const children = [];
+                  const classes = new Set();
+                  return {{
+                    tagName: tag,
+                    children,
+                    textContent: "",
+                    className: "",
+                    hidden: false,
+                    disabled: false,
+                    checked: false,
+                    value: "",
+                    type: "",
+                    classList: {{
+                      toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+                      contains: (name) => classes.has(name),
+                    }},
+                    appendChild(child) {{ children.push(child); return child; }},
+                    append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
+                    removeChild(child) {{
+                      const index = children.indexOf(child);
+                      if (index >= 0) children.splice(index, 1);
+                      return child;
+                    }},
+                    get firstChild() {{ return children[0] || null; }},
+                    addEventListener() {{}},
+                  }};
+                }}
+
+                const requests = [];
+                const context = {{
+                  console,
+                  URL,
+                  location: {{ origin: "http://127.0.0.1:41741" }},
+                  localStorage: {{
+                    getItem: () => "token",
+                    setItem: () => {{}},
+                    removeItem: () => {{}},
+                  }},
+                  createNode,
+                  window: {{}},
+                  document: {{
+                    addEventListener: () => {{}},
+                    createElement: createNode,
+                  }},
+                  fetch: async (url, init = {{}}) => {{
+                    const parsed = new URL(url);
+                    requests.push({{ path: parsed.pathname, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : null }});
+                    return {{
+                      ok: true,
+                      status: 200,
+                      text: async () => JSON.stringify({{ ok: true, runtime_settings: {{}} }}),
+                    }};
+                  }},
+                }};
+                context.window.localStorage = context.localStorage;
+                context.globalThis = context;
+                vm.createContext(context);
+                vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+                  filename: "app.js",
+                }});
+
+                const payload = {{
+                  brain: {{
+                    current_adapter: {{ effective_value: "claude_cli" }},
+                  }},
+                  capability_graph: {{
+                    brain_capabilities: {{
+                      current_provider: "claude_cli",
+                      current_model: "claude-opus",
+                      providers: [{{
+                        id: "claude_cli",
+                        label: "Claude CLI",
+                        available: true,
+                        models: [{{ id: "claude-opus", label: "Claude Opus", available: true }}],
+                        current_model: "claude-opus",
+                        allowed_effort_values: ["low", "max"],
+                        fast_supported: true,
+                        command_status: "ok",
+                      }}],
+                    }},
+                  }},
+                  settings_preview: {{
+                    sections: {{
+                      brain_provider: {{
+                        fields: {{
+                          provider: {{ id: "brain_provider.provider", label: "Provider", current: "claude_cli", effective: "claude_cli", editable_now: true, status: "ok", allowed_values: ["claude_cli"] }},
+                          model: {{ id: "brain_provider.model", label: "Model", current: "claude-opus", effective: "claude-opus", editable_now: true, status: "ok", allowed_values: ["claude-opus"] }},
+                          effort: {{ id: "brain_provider.effort", label: "Effort", current: "low", effective: "low", editable_now: true, status: "ok", allowed_values: ["low", "max"], requires_restart: true }},
+                          fast: {{ id: "brain_provider.fast", label: "Fast", current: false, effective: false, editable_now: true, status: "ok", allows: [] }},
+                        }},
+                      }},
+                    }},
+                  }},
+                }};
+                context.payload = payload;
+
+                vm.runInContext(`
+                  el.activeBrainProviderSelect = createNode("select");
+                  el.activeBrainModelSelect = createNode("select");
+                  el.activeBrainEffortSelect = createNode("select");
+                  el.activeBrainFastToggle = createNode("input");
+                  el.brainSettingsSummaryList = createNode("div");
+                  el.brainApplyStatus = createNode("p");
+                  el.applyBrainSettingsButton = createNode("button");
+                  cockpit.online = true;
+                  cockpit.runtimeSettingsApply.payload = payload;
+                  cockpit.settingsPreview.payload = payload;
+                  globalThis.__el = el;
+                `, context);
+
+                    vm.runInContext(`
+                      renderBrainApplyControls(payload);
+                      const draft = runtimeSettingsPayloadForGroup("brain", runtimeSettingsDraftForGroup("brain"));
+                      draft["brain.effort"] = "max";
+                      runtimeSettingsSetPreview("brain", draft);
+                      el.activeBrainEffortSelect.value = "max";
+                      updateBrainControlOptions();
+                    `, context);
+
+                    const changed = context.runtimeSettingsPayloadForGroup("brain", context.runtimeSettingsDraftForGroup("brain"));
+                    assert.deepStrictEqual(
+                      JSON.parse(JSON.stringify(context.runtimeSettingsChangedKeys("brain", changed, context.payload))),
+                  ["brain.effort"],
+                );
+                assert.match(context.__el.brainApplyStatus.textContent, /Requires restart/);
+                assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
+
+                (async () => {{
+                  await context.applyRuntimeSettingsGroup("brain");
+                  assert.strictEqual(requests.length, 0);
+                }})().catch((error) => {{
+                  console.error(error);
+                  process.exit(1);
+                }});
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["node", str(harness)],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_developer_only_brain_provider_preserved_without_auto_switch_or_pending(tmp_path: Path) -> None:
+        harness = tmp_path / "brain-developer-provider-preserve-harness.js"
+        harness.write_text(
+            textwrap.dedent(
+                f"""
+                const assert = require("assert");
+                const fs = require("fs");
+                const vm = require("vm");
+
+                function createNode(tag) {{
+                  const children = [];
+                  const classes = new Set();
+                  return {{
+                    tagName: tag,
+                    children,
+                    textContent: "",
+                    className: "",
+                    hidden: false,
+                    disabled: false,
+                    checked: false,
+                    value: "",
+                    type: "",
+                    classList: {{
+                      toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+                      contains: (name) => classes.has(name),
+                    }},
+                    appendChild(child) {{ children.push(child); return child; }},
+                    append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
+                    removeChild(child) {{
+                      const index = children.indexOf(child);
+                      if (index >= 0) children.splice(index, 1);
+                      return child;
+                    }},
+                    get firstChild() {{ return children[0] || null; }},
+                    get childNodes() {{ return this.children; }},
+                    addEventListener() {{}},
+                  }};
+                }}
+
+                const context = {{
+                  console,
+                  URL,
+                  location: {{ origin: "http://127.0.0.1:41741" }},
+                  localStorage: {{
+                    getItem: () => "token",
+                    setItem: () => {{}},
+                    removeItem: () => {{}},
+                  }},
+                  createNode,
+                  window: {{}},
+                  document: {{
+                    addEventListener: () => {{}},
+                    createElement: createNode,
+                  }},
+                  fetch: async () => {{
+                    throw new Error("unexpected request");
+                  }},
+                }};
+                context.window.localStorage = context.localStorage;
+                context.globalThis = context;
+                vm.createContext(context);
+                vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+                  filename: "app.js",
+                }});
+
+                const payload = {{
+                  brain: {{
+                    current_adapter: {{ effective_value: "mock" }},
+                  }},
+                  capability_graph: {{
+                    brain_capabilities: {{
+                      current_provider: "mock",
+                      current_model: "mock-local",
+                      providers: [
+                        {{
+                          id: "mock",
+                          label: "Mock",
+                          available: true,
+                          developer_only: true,
+                          models: [{{ id: "mock-local", label: "mock-local", available: true }}],
+                          current_model: "mock-local",
+                          allowed_effort_values: [],
+                          fast_supported: false,
+                        }},
+                        {{
+                          id: "claude_cli",
+                          label: "Claude CLI",
+                          available: true,
+                          developer_only: false,
+                          models: [{{ id: "claude-opus", label: "Claude Opus", available: true }}],
+                          current_model: "claude-opus",
+                          allowed_effort_values: ["low", "high"],
+                          fast_supported: true,
+                        }},
+                      ],
+                    }},
+                  }},
+                  settings_preview: {{
+                    sections: {{
+                      brain_provider: {{
+                        fields: {{
+                          provider: {{ id: "brain_provider.provider", current: "mock", effective: "mock", status: "ok", editable_now: true, allowed_values: ["mock", "claude_cli"] }},
+                          model: {{ id: "brain_provider.model", current: "mock-local", effective: "mock-local", status: "ok", editable_now: true, allowed_values: ["mock-local", "claude-opus"] }},
+                          effort: {{ id: "brain_provider.effort", current: "normal", effective: "normal", status: "ok", editable_now: true }},
+                          fast: {{ id: "brain_provider.fast", current: false, effective: false, status: "ok", editable_now: true }},
+                        }},
+                      }},
+                    }},
+                  }},
+                }};
+                context.payload = payload;
+
+                    vm.runInContext(`
+                      el.activeBrainProviderSelect = createNode("select");
+                      el.activeBrainModelSelect = createNode("select");
+                      el.activeBrainEffortSelect = createNode("select");
+                      el.activeBrainFastToggle = createNode("input");
+                      el.brainSettingsSummaryList = createNode("div");
+                      el.brainApplyStatus = createNode("p");
+                      el.applyBrainSettingsButton = createNode("button");
+                      globalThis.__el = el;
+                      cockpit.online = true;
+                      cockpit.runtimeSettingsApply.payload = payload;
+                      cockpit.settingsPreview.payload = payload;
+                      renderBrainApplyControls(payload);
+                    `, context);
+
+                    const draft = JSON.parse(JSON.stringify(context.runtimeSettingsPayloadForGroup("brain", context.runtimeSettingsDraftForGroup("brain"))));
+                    assert.deepStrictEqual(
+                      JSON.parse(JSON.stringify(context.runtimeSettingsChangedKeys("brain", draft, payload))),
+                      [],
+                    );
+                    assert.strictEqual(context.__el.activeBrainProviderSelect.value, "");
+                    assert.strictEqual(context.__el.activeBrainProviderSelect.disabled, false);
+                    assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
+                    assert.doesNotMatch(context.__el.brainApplyStatus.textContent, /Pending change/i);
+                    if (context.__el.activeBrainProviderSelect.childNodes.length) {{
+                      assert.strictEqual(context.__el.activeBrainProviderSelect.childNodes[0].textContent, "Developer/Test provider active");
+                    }}
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["node", str(harness)],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_personality_apply_disabled_when_persona_requires_restart(tmp_path: Path) -> None:
+        harness = tmp_path / "personality-requires-restart-harness.js"
+        harness.write_text(
+            textwrap.dedent(
+                f"""
+                const assert = require("assert");
+                const fs = require("fs");
+                const vm = require("vm");
+
+                function createNode(tag) {{
+                  const children = [];
+                  return {{
+                    tagName: tag,
+                    children,
+                    textContent: "",
+                    className: "",
+                    hidden: false,
+                    disabled: false,
+                    checked: false,
+                    value: "",
+                    type: "",
+                    appendChild(child) {{ children.push(child); return child; }},
+                    append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
+                    removeChild(child) {{
+                      const index = children.indexOf(child);
+                      if (index >= 0) children.splice(index, 1);
+                      return child;
+                    }},
+                    get firstChild() {{ return children[0] || null; }},
+                    addEventListener() {{}},
+                  }};
+                }}
+
+                const requests = [];
+                const context = {{
+                  console,
+                  URL,
+                  location: {{ origin: "http://127.0.0.1:41741" }},
+                  localStorage: {{
+                    getItem: () => "token",
+                    setItem: () => {{}},
+                    removeItem: () => {{}},
+                  }},
+                  createNode,
+                  window: {{}},
+                  document: {{
+                    addEventListener: () => {{}},
+                    createElement: createNode,
+                  }},
+                  fetch: async (url, init = {{}}) => {{
+                    const parsed = new URL(url);
+                    requests.push({{ path: parsed.pathname, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : null }});
+                    return {{
+                      ok: true,
+                      status: 200,
+                      text: async () => JSON.stringify({{ runtime_settings: {{}} }}),
+                    }};
+                  }},
+                }};
+                context.window.localStorage = context.localStorage;
+                context.globalThis = context;
+                vm.createContext(context);
+                vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+                  filename: "app.js",
+                }});
+
+                const payload = {{
+                  capability_graph: {{
+                    brain_capabilities: {{
+                      current_provider: "claude_cli",
+                      providers: [{{ id: "claude_cli", available: true, models: [], allowed_effort_values: [], fast_supported: false }}],
+                    }},
+                  }},
+                  settings_preview: {{
+                    sections: {{
+                      personality: {{
+                        fields: {{
+                          active_persona: {{ id: "personality.active_persona", current: "default", effective: "default", editable_now: true, status: "ok", allowed_values: ["default", "friend"], requires_restart: true }},
+                        }},
+                      }},
+                    }},
+                  }},
+                }};
+                context.payload = payload;
+
+                vm.runInContext(`
+                  el.personaProfileSelect = createNode("select");
+                  el.personalityStatusList = createNode("div");
+                  el.personaApplyStatus = createNode("p");
+                  el.applyPersonaSettingsButton = createNode("button");
+                  globalThis.__el = el;
+                  cockpit.online = true;
+                  cockpit.runtimeSettingsApply.payload = payload;
+                  cockpit.settingsPreview.payload = payload;
+                  renderPersonaApplyControls(payload);
+                  el.personaProfileSelect.value = "friend";
+                  updatePersonaControlOptions();
+                `, context);
+
+                assert.match(context.__el.personaApplyStatus.textContent, /Requires restart/);
+                assert.strictEqual(context.__el.applyPersonaSettingsButton.disabled, true);
+                (async () => {{
+                  await context.applyRuntimeSettingsGroup("persona");
+                  assert.strictEqual(requests.length, 0);
+                }})().catch((error) => {{
+                  console.error(error);
+                  process.exit(1);
+                }});
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["node", str(harness)],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_tts_speak_responses_disabled_when_tts_group_blocked_and_disabled_without_independent_apply(tmp_path: Path) -> None:
+        harness = tmp_path / "tts-speak-responses-blocked-harness.js"
+        harness.write_text(
+            textwrap.dedent(
+                f"""
+                const assert = require("assert");
+                const fs = require("fs");
+                const vm = require("vm");
+
+                function createNode(tag) {{
+                  const children = [];
+                  return {{
+                    tagName: tag,
+                    children,
+                    textContent: "",
+                    className: "",
+                    hidden: false,
+                    disabled: false,
+                    checked: false,
+                    value: "",
+                    classList: {{
+                      add: () => {{}},
+                      remove: () => {{}},
+                      toggle: () => {{}},
+                      contains: () => false,
+                    }},
+                    appendChild(child) {{ children.push(child); return child; }},
+                    append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
+                    removeChild(child) {{
+                      const index = children.indexOf(child);
+                      if (index >= 0) children.splice(index, 1);
+                      return child;
+                    }},
+                    get firstChild() {{ return children[0] || null; }},
+                    addEventListener() {{}},
+                  }};
+                }}
+
+                const requests = [];
+                const context = {{
+                  console,
+                  URL,
+                  location: {{ origin: "http://127.0.0.1:41741" }},
+                  localStorage: {{
+                    getItem: () => "token",
+                    setItem: () => {{}},
+                    removeItem: () => {{}},
+                  }},
+                  createNode,
+                  window: {{}},
+                  document: {{
+                    addEventListener: () => {{}},
+                    createElement: createNode,
+                  }},
+                  fetch: async (url, init = {{}}) => {{
+                    const parsed = new URL(url);
+                    requests.push({{ path: parsed.pathname, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : null }});
+                    return {{
+                      ok: true,
+                      status: 200,
+                      text: async () => JSON.stringify({{ runtime_settings: {{}} }}),
+                    }};
+                  }},
+                }};
+                context.window.localStorage = context.localStorage;
+                context.globalThis = context;
+                vm.createContext(context);
+                vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+                  filename: "app.js",
+                }});
+
+                const blockedPayload = {{
+                  capability_graph: {{
+                    tools_capabilities: {{
+                      apply_capabilities: {{
+                        "voice.speak_responses": {{ apply_capable: false }},
+                      }},
+                    }},
+                    voice_capabilities: {{
+                      tts_providers: [{{ id: "mock", label: "Mock", available: false }}],
+                      stt_providers: [],
+                    }},
+                  }},
+                  settings_preview: {{
+                    sections: {{
+                      voice_tts: {{
+                        fields: {{
+                          tts_provider: {{ current: "", effective: "", status: "missing", editable_now: false, blocker: "tts provider unavailable" }},
+                          tts_model: {{ current: "", effective: "", allowed_values: [], editable_now: false }},
+                          voice_id: {{ current: "", effective: "", allowed_values: [], editable_now: false }},
+                        }},
+                      }},
+                    }},
+                  }},
+                  voice: {{
+                    speak_responses: {{ effective_value: false }},
+                    default_tts: {{ effective_value: "" }},
+                  }},
+                }};
+                context.payload = blockedPayload;
+
+                vm.runInContext(`
+                  el.voiceSpeakResponsesToggle = createNode("input");
+                  el.voiceBrokerEnabledToggle = createNode("input");
+                  el.voiceTtsSelect = createNode("select");
+                  el.voiceTtsModelSelect = createNode("select");
+                  el.voiceVoiceIdSelect = createNode("select");
+                  el.voiceProfileSelect = createNode("select");
+                  el.voiceSpeedInput = createNode("input");
+                  el.voiceTtsStatusList = createNode("div");
+                  el.ttsApplyStatus = createNode("p");
+                  el.applyTtsSettingsButton = createNode("button");
+                  globalThis.__el = el;
+                  cockpit.online = true;
+                  cockpit.runtimeSettingsApply.payload = payload;
+                  cockpit.settingsPreview.payload = payload;
+                  renderTtsApplyControls(payload);
+                `, context);
+
+                assert.strictEqual(context.__el.voiceSpeakResponsesToggle.disabled, true);
+                context.__el.voiceSpeakResponsesToggle.checked = true;
+                context.updateTtsControlOptions();
+                assert.match(context.__el.ttsApplyStatus.textContent, /Blocked/);
+                assert.doesNotMatch(context.__el.ttsApplyStatus.textContent, /OFF -> ON|false -> true/i);
+
+                const independentPayload = JSON.parse(JSON.stringify(blockedPayload));
+                independentPayload.settings_preview.sections.voice_tts.fields.tts_provider.status = "missing";
+                independentPayload.settings_preview.sections.voice_tts.fields.tts_provider.apply_capable = true;
+                independentPayload.settings_preview.sections.voice_tts.fields.tts_provider.blocker = null;
+                independentPayload.settings_preview.sections.voice_tts.fields.tts_provider.editable_now = true;
+                independentPayload.capability_graph.tools_capabilities.apply_capabilities["voice.speak_responses"].apply_capable = true;
+                independentPayload.voice = {{
+                  speak_responses: {{ effective_value: false }},
+                  default_tts: {{ effective_value: "" }},
+                }};
+                context.independentPayload = independentPayload;
+
+                vm.runInContext(`
+                  const payload = independentPayload;
+                  cockpit.runtimeSettingsApply.payload = payload;
+                  cockpit.settingsPreview.payload = independentPayload;
+                  renderTtsApplyControls(independentPayload);
+                `, context);
+                assert.strictEqual(context.__el.voiceSpeakResponsesToggle.disabled, false);
+                assert.match(context.__el.ttsApplyStatus.textContent, /Blocked/);
+                assert.match(context.__el.ttsApplyStatus.textContent, /Requires restart|restart|Blocked/);
+                assert.strictEqual(context.__el.applyTtsSettingsButton.disabled, true);
+                (async () => {{
+                  await context.applyRuntimeSettingsGroup("tts");
+                  assert.strictEqual(requests.length, 0);
+                }})().catch((error) => {{
+                  console.error(error);
+                  process.exit(1);
+                }});
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["node", str(harness)],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_system_tab_has_active_settings_apply_sections_before_diagnostics() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    logs_view = markup[markup.index('id="view-logs"') : markup.index('id="view-system"')]
+    system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
+
+    ordered_ids = [
+        "missionControlHeading",
+        "activeBrainSettingsHeading",
+        "voiceTtsSettingsHeading",
+        "voiceSttSettingsHeading",
+        "activePttSettingsHeading",
+        "activeToolsSettingsHeading",
+        "activePersonalitySettingsHeading",
+    ]
+    positions = [system_view.index(item) for item in ordered_ids]
+    assert positions == sorted(positions)
+
+    for marker in (
+        "applyBrainSettingsButton",
+        "applyTtsSettingsButton",
+        "applySttSettingsButton",
+        "applyPttSettingsButton",
+        "applyToolsSettingsButton",
+        "toolsInternetStatusList",
+        "applyPersonaSettingsButton",
+        "resetBrainPreviewButton",
+        "resetTtsPreviewButton",
+        "resetSttPreviewButton",
+        "resetToolsPreviewButton",
+    ):
+        assert marker in system_view
+
+    for diagnostic_id in (
+        "quickHealthHeading",
+        "queueBargeInHeading",
+        "memoryApprovalsHeading",
+        "developerTestHeading",
+        "latestTurnTraceHeading",
+        "runtimeLogsSummaryHeading",
+        "runtimeOverviewHeading",
+        "settingsPreviewHeading",
+        "toolsHeading",
+    ):
+        assert diagnostic_id not in system_view
+        assert diagnostic_id in logs_view
+
+    assert "activeVoiceSettingsHeading" not in markup
+    assert "Voice controls" not in markup
+    assert "eventList" not in system_view
+
+
+def test_system_tab_is_actionable_first_and_logs_own_diagnostics() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+    logs_view = markup[markup.index('id="view-logs"') : markup.index('id="view-system"')]
+    system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
+
+    assert system_view.index("missionControlHeading") < system_view.index("activeBrainSettingsHeading")
+    assert system_view.index("activeBrainSettingsHeading") < system_view.index("activeToolsSettingsHeading")
+    assert "connectionHeading" not in system_view
+    assert "settingsHeading" not in system_view
+    assert "Połączenie" not in system_view
+    assert "Ustawienia surowe" not in system_view
+    assert "Runtime Diagnostics" not in system_view
+    assert "Settings Preview" not in system_view
+    assert "Latest Turn Trace" not in system_view
+    assert "Runtime Logs" not in system_view
+    assert "Możliwości Jarvisa" not in system_view
+    assert "Diagnostyka (surowe)" not in system_view
+
+    for moved_heading in (
+        "Events",
+        "Runtime diagnostics",
+        "Provider diagnostics",
+        "Voice diagnostics",
+        "Tools / Internet diagnostics",
+        "Raw technical details",
+        "Runtime summary",
+        "Voice queue",
+        "Memory / Approvals",
+        "Developer / Test",
+        "Latest Turn Trace",
+        "Settings Preview",
+        "Połączenie",
+        "Ustawienia surowe",
+    ):
+        assert moved_heading in logs_view
+
+    for dump_label in ("Value", "Status", "Action"):
+        assert not re.search(rf"(?<![A-Za-z]){dump_label}: ", script)
+
+
+def test_system_tab_uses_human_operator_labels_not_backend_keys() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
+
+    for human_label in (
+        ">Tools enabled<",
+        ">Internet access<",
+        ">Require approval for network<",
+        ">Require approval for shell<",
+        ">Require approval for file writes<",
+        ">Speak responses<",
+        ">Fast mode<",
+        ">Voice broker<",
+        ">Text-to-speech engine<",
+        ">Speech model<",
+    ):
+        assert human_label in system_view
+
+    for control_id, label in (
+        ("toolsEnabledToggle", "Tools enabled"),
+        ("toolsNetworkApprovalToggle", "Require approval for network"),
+        ("toolsShellApprovalToggle", "Require approval for shell"),
+        ("toolsFileWriteApprovalToggle", "Require approval for file writes"),
+        ("voiceSpeakResponsesToggle", "Speak responses"),
+        ("activeBrainFastToggle", "Fast mode"),
+    ):
+        assert re.search(
+            rf'<input id="{control_id}"[^>]*>\s*<span>{re.escape(label)}</span>',
+            system_view,
+            re.S,
+        ), control_id
+
+    assert re.search(
+        r'<div class="inline-toggle read-only-setting">\s*<span>Internet access</span>\s*<span id="toolsNetworkEnabledToggle" class="status-badge" role="status">unknown</span>',
+        system_view,
+        re.S,
+    )
+    assert re.search(
+        r'<div class="inline-toggle read-only-setting">\s*<span>Voice broker</span>\s*<span id="voiceBrokerEnabledToggle" class="status-badge" role="status">unknown</span>',
+        system_view,
+        re.S,
+    )
+    assert "grid-template-columns: 18px minmax(0, 1fr);" in styles
+    assert "inline-size: 16px;" in styles
+    assert "word-break: keep-all;" in styles
+
+    for raw_label in (
+        ">tools.enabled<",
+        ">security.require_approval_for_network<",
+        ">voice.default_tts<",
+        ">brain.current_adapter<",
+        ">speak_responses<",
+        ">broker_enabled<",
+        ">Configured tools.enabled<",
+    ):
+        assert raw_label not in system_view
+
+
+def test_system_tab_has_requested_cockpit_section_headings() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
+    expected_headings = [
+        "Mission Control",
+        "Brain / Provider",
+        "Voice / TTS",
+        "Voice / STT",
+        "Endpointing / PTT",
+        "Tools / Internet",
+        "Personality",
+    ]
+    for heading in expected_headings:
+        assert heading in system_view
+
+    assert "Developer / Test" not in system_view
+    assert "Mock" not in system_view
+
+
+def test_runtime_settings_apply_payload_is_allowlisted_and_posts(tmp_path: Path) -> None:
+    harness = tmp_path / "runtime-settings-apply-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            const requests = [];
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41800" }},
+              localStorage: {{
+                getItem: () => "token",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              fetch: async (url, init = {{}}) => {{
+                const parsed = new URL(url);
+                requests.push({{
+                  path: parsed.pathname,
+                  method: init.method || "GET",
+                  body: init.body ? JSON.parse(init.body) : null,
+                }});
+                return {{
+                  ok: true,
+                  status: 200,
+                  text: async () => JSON.stringify({{
+                    ok: true,
+                    applied: Object.keys(JSON.parse(init.body).settings),
+                    runtime_settings: {{}},
+                  }}),
+                }};
+              }},
+              document: {{
+                addEventListener: () => {{}},
+              }},
+              window: {{
+                localStorage: {{
+                  getItem: () => "token",
+                  setItem: () => {{}},
+                  removeItem: () => {{}},
+                }},
+                addEventListener: () => {{}},
+                prompt: () => "token",
+              }},
+            }};
+            context.globalThis = context;
+            vm.runInNewContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            const filtered = context.runtimeSettingsPayloadForGroup("brain", {{
+              "brain.provider": "claude_cli",
+              "brain.model": "claude-cli",
+              "voice.speak_responses": true,
+              "unknown.setting": "bad",
+            }});
+            assert.deepStrictEqual(JSON.parse(JSON.stringify(filtered)), {{
+              "brain.provider": "claude_cli",
+              "brain.model": "claude-cli",
+            }});
+            assert.match(
+              context.providerApplyBlocker({{
+                id: "codex_cli",
+                available: false,
+                blocker: "Provider command is missing.",
+              }}, "claude_cli"),
+              /Provider command is missing/,
+            );
+            const backendError = new Error("unsupported");
+            backendError.detail = {{
+              status: 422,
+              payload: {{ blockers: ["not apply-capable in POC"] }},
+            }};
+            assert.strictEqual(
+              context.runtimeSettingsErrorMessage(backendError),
+              "Blocked. No action available in this POC.",
+            );
+            const toolsFiltered = context.runtimeSettingsPayloadForGroup("tools", {{
+              "security.require_approval_for_network": false,
+              "tools.network_enabled": true,
+              "voice.speak_responses": true,
+              "unknown.setting": "bad",
+            }});
+            assert.deepStrictEqual(JSON.parse(JSON.stringify(toolsFiltered)), {{
+              "tools.network_enabled": true,
+              "security.require_approval_for_network": false,
+            }});
+            assert.strictEqual(typeof context.setRuntimeSettingsApplyBusy, "function");
+            const classSet = () => {{
+              const values = new Set();
+              return {{
+                toggle: (name, enabled) => enabled ? values.add(name) : values.delete(name),
+                contains: (name) => values.has(name),
+              }};
+            }};
+            const buttons = [{{ disabled: false, classList: classSet() }}, {{ disabled: false, classList: classSet() }}];
+            context.setRuntimeSettingsApplyBusy(true, buttons);
+            assert.ok(buttons.every((button) => button.disabled));
+            assert.ok(buttons.every((button) => button.classList.contains("busy")));
+
+            (async () => {{
+              await context.postRuntimeSettingsApply(filtered);
+              assert.strictEqual(requests.length, 1);
+              assert.strictEqual(requests[0].path, "/runtime/settings/apply");
+              assert.strictEqual(requests[0].method, "POST");
+              assert.deepStrictEqual(JSON.parse(JSON.stringify(requests[0].body)), {{
+                settings: {{
+                  "brain.provider": "claude_cli",
+                  "brain.model": "claude-cli",
+                }},
+              }});
+            }})().catch((error) => {{
+              console.error(error);
+              process.exit(1);
+            }});
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_settings_preview_local_model_catches_invalid_provider_voice_combos(
+    tmp_path: Path,
+    ) -> None:
     harness = tmp_path / "settings-preview-model-harness.js"
     harness.write_text(
         textwrap.dedent(
@@ -2108,18 +3712,20 @@ def test_logs_tab_reads_like_a_polish_diary() -> None:
     assert "eventMatchesFilter" in script
 
 
-def test_tools_live_in_system_as_capabilities() -> None:
-    # Zad. 6: narzędzia to rejestr możliwości, nie log — płaska sekcja w
-    # System z ludzką nazwą, opisem i etykietą polityki zgód po polsku.
+def test_tools_registry_details_live_in_logi_as_diagnostics() -> None:
+    # The registry is read-only diagnostics. System keeps only actionable
+    # Tools / Internet controls or compact blockers tied to those controls.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
+    logs_view = markup[markup.index('id="view-logs"') : markup.index('id="view-system"')]
+    system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
 
-    assert "toolList" in markup
+    assert "toolList" in logs_view
+    assert "toolList" not in system_view
     # renderowane przez wspólne mapy PL (nie surowe „file_read - file_read”).
     assert "toolLabel" in script
     assert "riskLabel" in script
-    # Sekcja narzędzi opisana jako możliwości.
-    assert "Możliwości" in markup
+    assert "Tools / Internet diagnostics" in logs_view
 
 
 def test_stream_status_indicator_is_gone() -> None:
@@ -2158,16 +3764,36 @@ def test_voice_mode_lives_in_system_status_in_composer() -> None:
 
 
 def test_system_view_is_human_readable() -> None:
-    # Zad. 8: System rozbity na płaskie, opisane sekcje (Mózg / Głos /
-    # Połączenie / Ustawienia surowe / Możliwości); surowizna schowana w
-    # „Diagnostyka (surowe)”. Stan daemona po ludzku, model aktywny/domyślny.
+    # System is actionable-first; LOGI owns read-only diagnostics.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
+    logs_view = markup[markup.index('id="view-logs"') : markup.index('id="view-system"')]
+    system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
 
-    for heading in ("brainHeading", "voiceHeading", "connectionHeading", "settingsHeading"):
-        assert heading in markup, heading
+    for heading in (
+        "missionControlHeading",
+        "activeBrainSettingsHeading",
+        "voiceTtsSettingsHeading",
+        "voiceSttSettingsHeading",
+        "activePttSettingsHeading",
+        "activeToolsSettingsHeading",
+        "activePersonalitySettingsHeading",
+    ):
+        assert heading in system_view, heading
 
-    # Ludzki stan daemona zamiast surowej kv-listy na wierzchu.
+    for heading in (
+        "quickHealthHeading",
+        "queueBargeInHeading",
+        "runtimeOverviewHeading",
+        "settingsPreviewHeading",
+        "toolsHeading",
+        "connectionHeading",
+        "settingsHeading",
+    ):
+        assert heading not in system_view, heading
+        assert heading in logs_view, heading
+
+    # Ludzki stan daemona żyje w diagnostyce, nie w głównym przepływie Systemu.
     assert "healthHumanList" in markup
     assert "renderHealthHuman" in script
     assert "Działa od" in script
@@ -2176,8 +3802,9 @@ def test_system_view_is_human_readable() -> None:
     assert "aktywny:" in script
     assert "domyślny:" in script
 
-    # Surowa diagnostyka pod jednym rozwijanym „Diagnostyka (surowe)”.
-    assert "Diagnostyka (surowe)" in markup
+    # Surowa diagnostyka jest w LOGI, nie dominuje Systemu.
+    assert "Raw technical details" in logs_view
+    assert system_view.index("missionControlHeading") < system_view.index("activeBrainSettingsHeading")
 
 
 def test_composer_sends_beside_the_field() -> None:

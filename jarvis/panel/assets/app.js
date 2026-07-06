@@ -32,6 +32,13 @@ const cockpit = {
     model: null,
     overrides: {},
   },
+  runtimeSettingsApply: {
+    payload: null,
+    applyingGroup: null,
+    preview: {},
+    groupResults: {},
+    renderingControls: false,
+  },
   missionControl: {
     snapshot: null,
     lastRefreshAt: null,
@@ -400,10 +407,78 @@ function bindElements() {
     "voiceDoctorList",
     "providerDoctorList",
     "missionControlRefreshStatus",
+    "refreshActiveSettingsButton",
+    "activeSettingsList",
+    "activeSettingsStatus",
+    "resetBrainPreviewButton",
+    "activeBrainProviderSelect",
+    "activeBrainModelSelect",
+    "activeBrainEffortSelect",
+    "activeBrainFastToggle",
+    "applyBrainSettingsButton",
+    "brainApplyStatus",
+    "brainSettingsSummaryList",
+    "voiceSpeakResponsesToggle",
+    "voiceBrokerEnabledToggle",
+    "voiceTtsSelect",
+    "voiceTtsModelSelect",
+    "voiceSttSelect",
+    "voiceSttModelSelect",
+    "voiceSttLanguageSelect",
+    "voiceVoiceIdSelect",
+    "voiceProfileSelect",
+    "voiceSpeedInput",
+    "voiceTtsStatusList",
+    "voiceSttStatusList",
+    "resetTtsPreviewButton",
+    "resetSttPreviewButton",
+    "applyTtsSettingsButton",
+    "applySttSettingsButton",
+    "voiceApplyStatus",
+    "ttsApplyStatus",
+    "sttApplyStatus",
+    "pttModeSelect",
+    "pttMergeWindowInput",
+    "pttListeningSummary",
+    "pttBargeInSummary",
+    "pttHotkeySummary",
+    "pttVadSummary",
+    "applyPttSettingsButton",
+    "pttApplyStatus",
+    "refreshQueueButton",
+    "cancelCurrentSpeechButton",
+    "queueBargeInList",
+    "queueApplyStatus",
+    "activeToolsSettingsSection",
+    "toolsSectionDescription",
+    "toolsControlGrid",
+    "toolsSummaryDetails",
+    "toolsEnabledToggle",
+    "toolsNetworkEnabledToggle",
+    "toolsNetworkApprovalToggle",
+    "toolsShellApprovalToggle",
+    "toolsFileWriteApprovalToggle",
+    "toolsInternetSummary",
+    "toolsNetworkPolicySummary",
+    "toolsRegistrySummary",
+    "toolsInternetStatusList",
+    "resetToolsPreviewButton",
+    "applyToolsSettingsButton",
+    "toolsApplyStatus",
+    "personaProfileSelect",
+    "personalityStatusList",
+    "applyPersonaSettingsButton",
+    "personaApplyStatus",
+    "refreshMemoryApprovalsButton",
+    "memoryApprovalsList",
+    "developerTestList",
+    "latestTurnTraceList",
+    "refreshRuntimeLogsSummaryButton",
+    "runtimeLogsSummaryList",
     "refreshSettingsPreviewButton",
+    "resetSettingsPreviewButton",
     "settingsPreviewList",
     "settingsPreviewError",
-    "settingsPreviewSaveButton",
     "refreshSettingsButton",
     "refreshRuntimeOverviewButton",
     "runtimeOverviewList",
@@ -439,9 +514,47 @@ function bindElements() {
 }
 
 function bindEvents() {
-  el.refreshAllButton.addEventListener("click", refreshAll);
-  el.refreshMissionControlButton.addEventListener("click", refreshMissionControl);
-  el.conversationSelect.addEventListener("change", async () => {
+  bindIf(el.refreshAllButton, "click", refreshAll);
+  bindIf(el.refreshMissionControlButton, "click", refreshMissionControl);
+  bindIf(el.refreshActiveSettingsButton, "click", refreshSettingsPreview);
+  bindIf(el.activeBrainProviderSelect, "change", updateBrainControlOptions);
+  bindIf(el.activeBrainModelSelect, "change", updateBrainControlOptions);
+  bindIf(el.activeBrainEffortSelect, "change", updateBrainControlOptions);
+  bindIf(el.activeBrainFastToggle, "change", updateBrainControlOptions);
+  bindIf(el.voiceSpeakResponsesToggle, "change", updateTtsControlOptions);
+  bindIf(el.voiceTtsSelect, "change", updateTtsControlOptions);
+  bindIf(el.voiceTtsModelSelect, "change", updateTtsControlOptions);
+  bindIf(el.voiceVoiceIdSelect, "change", updateTtsControlOptions);
+  bindIf(el.voiceProfileSelect, "change", updateTtsControlOptions);
+  bindIf(el.voiceSpeedInput, "input", updateTtsControlOptions);
+  bindIf(el.voiceSttSelect, "change", updateSttControlOptions);
+  bindIf(el.voiceSttModelSelect, "change", updateSttControlOptions);
+  bindIf(el.voiceSttLanguageSelect, "change", updateSttControlOptions);
+  bindIf(el.pttModeSelect, "change", updatePttControlOptions);
+  bindIf(el.toolsEnabledToggle, "change", updateToolsControlOptions);
+  bindIf(el.toolsNetworkEnabledToggle, "change", updateToolsControlOptions);
+  bindIf(el.toolsNetworkApprovalToggle, "change", updateToolsControlOptions);
+  bindIf(el.toolsShellApprovalToggle, "change", updateToolsControlOptions);
+  bindIf(el.toolsFileWriteApprovalToggle, "change", updateToolsControlOptions);
+  bindIf(el.personaProfileSelect, "change", updatePersonaControlOptions);
+  bindIf(el.applyBrainSettingsButton, "click", () => applyRuntimeSettingsGroup("brain"));
+  bindIf(el.applyTtsSettingsButton, "click", () => applyRuntimeSettingsGroup("tts"));
+  bindIf(el.applySttSettingsButton, "click", () => applyRuntimeSettingsGroup("stt"));
+  bindIf(el.applyPttSettingsButton, "click", () => applyRuntimeSettingsGroup("ptt"));
+  bindIf(el.applyToolsSettingsButton, "click", () => applyRuntimeSettingsGroup("tools"));
+  bindIf(el.applyPersonaSettingsButton, "click", () => applyRuntimeSettingsGroup("persona"));
+  bindIf(el.refreshQueueButton, "click", refreshVoiceQueue);
+  bindIf(el.cancelCurrentSpeechButton, "click", cancelCurrentSpeech);
+  bindIf(el.refreshMemoryApprovalsButton, "click", async () => {
+    await Promise.allSettled([refreshMemory(), refreshToolsAndApprovals(), refreshSettingsPreview()]);
+  });
+  bindIf(el.refreshRuntimeLogsSummaryButton, "click", refreshEvents);
+  bindIf(el.resetBrainPreviewButton, "click", resetSettingsPreview);
+  bindIf(el.resetTtsPreviewButton, "click", resetSettingsPreview);
+  bindIf(el.resetSttPreviewButton, "click", resetSettingsPreview);
+  bindIf(el.resetToolsPreviewButton, "click", resetSettingsPreview);
+  bindIf(el.resetSettingsPreviewButton, "click", resetSettingsPreview);
+  bindIf(el.conversationSelect, "change", async () => {
     const conversationId = el.conversationSelect.value;
     if (!conversationId) {
       return;
@@ -456,21 +569,21 @@ function bindEvents() {
       renderError(el.historyError, error);
     }
   });
-  el.refreshMemoryButton.addEventListener("click", refreshMemory);
-  el.refreshToolsButton.addEventListener("click", refreshToolsAndApprovals);
-  el.refreshSettingsPreviewButton.addEventListener("click", refreshSettingsPreview);
-  el.refreshSettingsButton.addEventListener("click", refreshSettings);
-  el.refreshRuntimeOverviewButton.addEventListener("click", refreshRuntimeOverview);
-  el.switchBrainButton.addEventListener("click", switchBrain);
-  el.settingsForm.addEventListener("submit", saveSetting);
-  el.refreshEventsButton.addEventListener("click", refreshEvents);
-  el.logFilter.addEventListener("change", () => {
+  bindIf(el.refreshMemoryButton, "click", refreshMemory);
+  bindIf(el.refreshToolsButton, "click", refreshToolsAndApprovals);
+  bindIf(el.refreshSettingsPreviewButton, "click", refreshSettingsPreview);
+  bindIf(el.refreshSettingsButton, "click", refreshSettings);
+  bindIf(el.refreshRuntimeOverviewButton, "click", refreshRuntimeOverview);
+  bindIf(el.switchBrainButton, "click", switchBrain);
+  bindIf(el.settingsForm, "submit", saveSetting);
+  bindIf(el.refreshEventsButton, "click", refreshEvents);
+  bindIf(el.logFilter, "change", () => {
     cockpit.logFilter = el.logFilter.value || "all";
     renderEvents(cockpit.lastEvents);
   });
-  el.refreshRuntimeButton.addEventListener("click", refreshRuntime);
-  el.textForm.addEventListener("submit", sendTextInput);
-  el.textInput.addEventListener("keydown", (event) => {
+  bindIf(el.refreshRuntimeButton, "click", refreshRuntime);
+  bindIf(el.textForm, "submit", sendTextInput);
+  bindIf(el.textInput, "keydown", (event) => {
     // Enter sends; Shift+Enter keeps inserting a newline.
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -479,22 +592,22 @@ function bindEvents() {
   });
   // Pole rośnie z treścią (2 → ~5 rzędów), potem przewija się wewnątrz —
   // komunikatorowy composer bez ręcznego ciągnięcia uchwytu.
-  el.textInput.addEventListener("input", autoGrowComposer);
+  bindIf(el.textInput, "input", autoGrowComposer);
   for (const tab of document.querySelectorAll(".tab-button")) {
     tab.addEventListener("click", () => switchView(tab.dataset.view));
   }
-  el.approvalNudge.addEventListener("click", () => switchView("approvals"));
-  el.newConversationButton.addEventListener("click", () => {
+  bindIf(el.approvalNudge, "click", () => switchView("approvals"));
+  bindIf(el.newConversationButton, "click", () => {
     cockpit.selectedConversationId = null;
     cockpit.composingNew = true;
     ensureNewConversationOption();
     renderEmpty(el.turnList, "Nowa rozmowa — napisz pierwszą wiadomość poniżej.");
     el.textInput.focus();
   });
-  el.pttModeButton.addEventListener("click", () => setVoiceMode("ptt"));
-  el.listenToggle.addEventListener("click", () => setVoiceMode("listen"));
-  el.memoryForm.addEventListener("submit", createMemoryBlock);
-  el.apiBaseInput.addEventListener("change", () => {
+  bindIf(el.pttModeButton, "click", () => setVoiceMode("ptt"));
+  bindIf(el.listenToggle, "click", () => setVoiceMode("listen"));
+  bindIf(el.memoryForm, "submit", createMemoryBlock);
+  bindIf(el.apiBaseInput, "change", () => {
     const nextBase = el.apiBaseInput.value.trim();
     cockpit.apiBase = nextBase || DEFAULT_API_BASE;
     el.apiBaseInput.value = cockpit.apiBase;
@@ -505,6 +618,13 @@ function bindEvents() {
     cockpit.stream.lastEventId = 0;
     refreshAll();
   });
+}
+
+function bindIf(node, eventName, handler) {
+  if (!node) {
+    return;
+  }
+  node.addEventListener(eventName, handler);
 }
 
 async function refreshAll() {
@@ -577,15 +697,18 @@ async function refreshVoiceQueue() {
     renderVoiceQueue(Array.isArray(payload.voice_queue) ? payload.voice_queue : []);
   } catch (error) {
     clearNode(el.voiceQueueList);
+    clearNode(el.queueBargeInList);
     const row = document.createElement("div");
     row.className = "list-row";
     appendLine(row, "Kolejka głosu niedostępna", "input-line");
     appendLine(row, error.message || "request failed", "muted");
     el.voiceQueueList.appendChild(row);
+    setText(el.queueApplyStatus, error.message || "queue refresh failed");
   }
 }
 
 function renderVoiceQueue(rows) {
+  renderQueueBargeInSummary(cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {}, rows);
   clearNode(el.voiceQueueList);
   if (rows.length === 0) {
     renderEmpty(el.voiceQueueList, "Kolejka głosu pusta");
@@ -874,23 +997,2033 @@ const SETTINGS_PREVIEW_CONTROL_FIELDS = new Set([
   "queue_barge_in.manual_cancel_available",
 ]);
 
+const RUNTIME_SETTINGS_GROUP_FIELDS = Object.freeze({
+  brain: Object.freeze(["brain.provider", "brain.model", "brain.effort", "brain.fast"]),
+  tts: Object.freeze([
+    "voice.speak_responses",
+    "voice.default_tts",
+    "voice.voice_id",
+    "voice.voice_profile",
+    "voice.profile",
+    "voice.speed",
+  ]),
+  stt: Object.freeze(["voice.default_stt"]),
+  voice: Object.freeze([
+    "voice.speak_responses",
+    "voice.default_tts",
+    "voice.default_stt",
+    "voice.voice_id",
+    "voice.voice_profile",
+    "voice.profile",
+    "voice.speed",
+  ]),
+  ptt: Object.freeze(["voice.ptt_mode", "voice.merge_window"]),
+  tools: Object.freeze([
+    "tools.enabled",
+    "tools.network_enabled",
+    "security.network_enabled",
+    "security.require_approval_for_network",
+    "security.require_approval_for_shell",
+    "security.require_approval_for_file_write",
+    "security.destructive_tools_enabled",
+    "destructive_tools_enabled",
+    "provider_tools_enabled",
+  ]),
+  persona: Object.freeze(["persona.profile"]),
+});
+
+const RUNTIME_SETTINGS_GROUP_LABELS = Object.freeze({
+  brain: "Brain / Provider",
+  tts: "Voice / TTS",
+  stt: "Voice / STT",
+  ptt: "Endpointing / PTT",
+  tools: "Tools / Internet",
+  persona: "Personality",
+});
+
+const RUNTIME_SETTING_LABELS = Object.freeze({
+  "brain.provider": "Brain provider",
+  "brain.model": "Brain model",
+  "brain.effort": "Effort",
+  "brain.fast": "Fast mode",
+  "voice.speak_responses": "Speak responses",
+  "voice.default_tts": "Text-to-speech engine",
+  "voice.default_stt": "Speech-to-text engine",
+  "voice.ptt_mode": "PTT mode",
+  "voice.merge_window": "Merge window",
+  "tools.enabled": "Tools enabled",
+  "tools.network_enabled": "Internet access",
+  "security.network_enabled": "Network policy",
+  "security.require_approval_for_network": "Require approval for network",
+  "security.require_approval_for_shell": "Require approval for shell",
+  "security.require_approval_for_file_write": "Require approval for file writes",
+  "persona.profile": "Persona profile",
+});
+
+const RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY = Object.freeze({
+  "brain.provider": Object.freeze(["brain_provider", "provider"]),
+  "brain.model": Object.freeze(["brain_provider", "model"]),
+  "brain.effort": Object.freeze(["brain_provider", "effort"]),
+  "brain.fast": Object.freeze(["brain_provider", "fast"]),
+  "voice.default_tts": Object.freeze(["voice_tts", "tts_provider"]),
+  "voice.default_stt": Object.freeze(["voice_stt", "stt_provider"]),
+  "voice.voice_id": Object.freeze(["voice_tts", "voice_id"]),
+  "voice.voice_profile": Object.freeze(["voice_tts", "voice_profile"]),
+  "voice.profile": Object.freeze(["voice_tts", "voice_profile"]),
+  "voice.speed": Object.freeze(["voice_tts", "speed_or_rate"]),
+  "voice.rate": Object.freeze(["voice_tts", "speed_or_rate"]),
+  "voice.ptt_mode": Object.freeze(["endpointing_ptt", "ptt_mode"]),
+  "voice.merge_window": Object.freeze(["endpointing_ptt", "merge_window"]),
+  "tools.enabled": Object.freeze(["tools_internet", "tools_enabled"]),
+  "tools.network_enabled": Object.freeze(["tools_internet", "internet_capability"]),
+  "security.network_enabled": Object.freeze(["tools_internet", "network_policy"]),
+  "security.require_approval_for_network": Object.freeze(["tools_internet", "network_policy"]),
+  "security.require_approval_for_shell": Object.freeze(["tools_internet", "approval_required_tools"]),
+  "security.require_approval_for_file_write": Object.freeze(["tools_internet", "approval_required_tools"]),
+  "persona.profile": Object.freeze(["personality", "active_persona"]),
+});
+
+const HUMAN_SETTING_LABELS = Object.freeze({
+  ...RUNTIME_SETTING_LABELS,
+  active_persona: "Persona profile",
+  broker_enabled: "Voice broker",
+  command_status: "Command status",
+  credentials_or_command_status: "Credentials status",
+  default_stt: "Speech-to-text engine",
+  default_tts: "Text-to-speech engine",
+  endpointing_support: "Endpointing support",
+  fast: "Fast mode",
+  language: "Language",
+  merge_window: "Merge window",
+  model: "Model",
+  provider: "Brain provider",
+  ptt_hotkey: "PTT hotkey",
+  ptt_mode: "PTT mode",
+  silence_duration: "Silence duration",
+  silence_threshold: "Silence threshold",
+  speak_responses: "Speak responses",
+  speed_or_rate: "Speed",
+  stt_model: "Speech-to-text model",
+  stt_provider: "Speech-to-text engine",
+  tools_support: "Tools",
+  tts_model: "Speech model",
+  tts_provider: "Text-to-speech engine",
+  voice_id: "Voice id",
+  voice_profile: "Voice profile",
+});
+
+function runtimeSettingsPayloadForGroup(group, draft) {
+  const allowed = RUNTIME_SETTINGS_GROUP_FIELDS[group] || [];
+  const source = safeObject(draft);
+  const settings = {};
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(source, key) && source[key] !== undefined) {
+      settings[key] = source[key];
+    }
+  }
+  return settings;
+}
+
+function runtimeSettingsGroupHasChanges(group, settings, payload = null) {
+  const source = safeObject(settings);
+  const currentPayload = payload || cockpit.runtimeSettingsApply.payload || {};
+  return runtimeSettingsChangedKeys(group, source, currentPayload).length > 0;
+}
+
+function runtimeSettingsPreviewForGroup(group) {
+  return safeObject(safeObject(cockpit.runtimeSettingsApply.preview)[group]);
+}
+
+function runtimeSettingsHasPendingPreview(group = null) {
+  if (group) {
+    const draft = runtimeSettingsPayloadForGroup(group, runtimeSettingsPreviewForGroup(group));
+    return runtimeSettingsChangedKeys(group, draft, cockpit.runtimeSettingsApply.payload || {}).length > 0;
+  }
+  return Object.keys(safeObject(cockpit.runtimeSettingsApply.preview)).some((key) =>
+    runtimeSettingsHasPendingPreview(key),
+  );
+}
+
+function runtimeSettingsPreviewValue(group, key, effectiveValue) {
+  const preview = runtimeSettingsPreviewForGroup(group);
+  if (Object.prototype.hasOwnProperty.call(preview, key)) {
+    return preview[key];
+  }
+  return effectiveValue;
+}
+
+function runtimeSettingsSetPreview(group, draft) {
+  if (cockpit.runtimeSettingsApply.renderingControls) {
+    return;
+  }
+  cockpit.runtimeSettingsApply.preview[group] = runtimeSettingsPayloadForGroup(group, draft);
+  cockpit.runtimeSettingsApply.groupResults[group] = "";
+}
+
+function runtimeSettingsClearPreview(group = null, message = "Preview reset to effective value.") {
+  if (group) {
+    delete cockpit.runtimeSettingsApply.preview[group];
+    cockpit.runtimeSettingsApply.groupResults[group] = message;
+    return;
+  }
+  cockpit.runtimeSettingsApply.preview = {};
+  for (const key of Object.keys(RUNTIME_SETTINGS_GROUP_FIELDS)) {
+    cockpit.runtimeSettingsApply.groupResults[key] = message;
+  }
+}
+
+function runtimeSettingsFormatValue(value) {
+  if (typeof value === "boolean") {
+    return value ? "On" : "Off";
+  }
+  return humanDisplayValue(value);
+}
+
+function humanSettingLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "Setting";
+  }
+  if (HUMAN_SETTING_LABELS[raw]) {
+    return HUMAN_SETTING_LABELS[raw];
+  }
+  const last = raw.includes(".") ? raw.split(".").pop() : raw;
+  if (HUMAN_SETTING_LABELS[last]) {
+    return HUMAN_SETTING_LABELS[last];
+  }
+  return last
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function humanDisplayValue(value) {
+  if (value === undefined || value === null || value === "") {
+    return "Unknown";
+  }
+  if (typeof value === "boolean") {
+    return value ? "On" : "Off";
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0 ? value.map(humanDisplayValue).join(", ") : "None";
+  }
+  const text = settingsPreviewValue(value);
+  if (text === "yes") return "On";
+  if (text === "no") return "Off";
+  if (text === "unknown") return "Unknown";
+  if (text === "missing") return "Missing";
+  if (text === "available") return "Available";
+  if (text === "unavailable") return "Missing";
+  if (text === "approval_required") return "Approval required";
+  if (text === "disabled") return "Off";
+  if (text === "enabled") return "On";
+  return text;
+}
+
+function humanStatusLabel(status, options = {}) {
+  if (options.requiresRestart) return "Requires restart";
+  if (options.blocked) return "Blocked";
+  const raw = String(status || "").toLowerCase();
+  if (["ok", "ready", "available", "registered"].includes(raw)) return "Available";
+  if (["enabled", "on", "true", "yes"].includes(raw)) return "On";
+  if (["disabled", "off", "false", "no"].includes(raw)) return "Off";
+  if (["missing", "unavailable", "not_found"].includes(raw)) return "Missing";
+  if (["blocked", "invalid", "error"].includes(raw)) return "Blocked";
+  if (["unsupported", "not_supported"].includes(raw)) return "Not supported";
+  if (raw === "read_only" || raw === "readonly") return "Read-only";
+  return "Unknown";
+}
+
+function humanShortReason(value) {
+  const text = String(value || "").trim();
+  if (!text || text === "none") {
+    return "";
+  }
+  const lower = text.toLowerCase();
+  if (lower.includes("no network/search tool")) {
+    return "No network/search tool registered";
+  }
+  if (lower.includes("runtime tool/network policy reload")) {
+    return "Runtime policy changes require restart";
+  }
+  if (lower.includes("requires daemon restart") || lower.includes("requires restart")) {
+    return "Restart required";
+  }
+  if (lower.includes("registry-backed")) {
+    return "No live network toggle is available";
+  }
+  if (lower.includes("not apply-capable")) {
+    return "Not apply-capable in this POC";
+  }
+  if (lower.includes("missing")) {
+    return text.length > 90 ? `${text.slice(0, 87)}...` : text;
+  }
+  const withoutKeys = text.replace(/\b[a-z]+(?:[._-][a-z0-9]+)+\b/gi, "setting");
+  return withoutKeys.length > 90 ? `${withoutKeys.slice(0, 87)}...` : withoutKeys;
+}
+
+function humanActionForReason(reason, fallback = "No action available in this POC.") {
+  const lower = String(reason || "").toLowerCase();
+  if (lower.includes("network/search tool")) {
+    return "Install/register a network search tool.";
+  }
+  if (lower.includes("restart")) {
+    return "Restart Jarvis to change this.";
+  }
+  if (lower.includes("voice id")) {
+    return "Set a voice id before using this voice.";
+  }
+  if (lower.includes("local model")) {
+    return "Configure a local model before enabling this provider.";
+  }
+  return fallback;
+}
+
+function networkPolicyLabel(value) {
+  const raw = String(value || "").toLowerCase();
+  if (raw === "approval_required") return "Approval required";
+  if (raw === "allowed") return "Allowed";
+  if (raw === "disabled") return "Off";
+  return raw ? humanDisplayValue(raw) : "Unknown";
+}
+
+function runtimeSettingsPreviewFieldForKey(payload, key) {
+  const path = RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY[key];
+  if (!path) {
+    return {};
+  }
+  return settingsPreviewField(payload, path[0], path[1]);
+}
+
+function runtimeSettingsFieldEffectiveValue(field) {
+  const source = safeObject(field);
+  if (Object.prototype.hasOwnProperty.call(source, "effective")) {
+    return source.effective;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, "effective_value")) {
+    return source.effective_value;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, "current")) {
+    return source.current;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, "value")) {
+    return source.value;
+  }
+  return undefined;
+}
+
+function runtimeSettingsValueIsUnknown(value) {
+  if (value === undefined || value === null || value === "") {
+    return true;
+  }
+  if (typeof value === "string") {
+    const raw = value.trim().toLowerCase();
+    return ["unknown", "missing", "undefined", "null", "n/a", "na"].includes(raw);
+  }
+  return false;
+}
+
+function runtimeSettingsEffectiveValueUnknown(payload, key) {
+  const field = runtimeSettingsPreviewFieldForKey(payload, key);
+  const fieldValue = runtimeSettingsFieldEffectiveValue(field);
+  const currentValue = runtimeSettingsCurrentValueForKey(payload, key);
+  if (runtimeSettingsValueIsUnknown(currentValue)) {
+    return true;
+  }
+  if (Object.keys(field).length > 0 && runtimeSettingsValueIsUnknown(fieldValue)) {
+    return true;
+  }
+  return false;
+}
+
+function runtimeSettingsApplyCapabilityForKey(payload, key) {
+  const graph = safeObject(safeObject(payload).capability_graph);
+  const tools = safeObject(safeObject(graph).tools_capabilities);
+  const toolCapability = safeObject(safeObject(tools.apply_capabilities)[key]);
+  if (Object.keys(toolCapability).length > 0) {
+    return toolCapability;
+  }
+  const field = runtimeSettingsPreviewFieldForKey(payload, key);
+  if (field.apply_capable === true) {
+    return {
+      apply_capable: true,
+      requires_restart: Boolean(field.requires_restart || field.requires_reload),
+      blocker: field.blocker || "",
+    };
+  }
+  return {};
+}
+
+function runtimeSettingsUnknownCanApply(payload, key) {
+  const capability = runtimeSettingsApplyCapabilityForKey(payload, key);
+  return capability.apply_capable === true && capability.requires_restart !== true && !capability.blocker;
+}
+
+function runtimeSettingsUnknownDisabledReason(payload, key) {
+  if (!runtimeSettingsEffectiveValueUnknown(payload, key) || runtimeSettingsUnknownCanApply(payload, key)) {
+    return "";
+  }
+  return "Effective value: Unknown. Reason: runtime does not report this setting. Apply disabled.";
+}
+
+function runtimeSettingsUnknownDisabledMessage(group, settings, payload) {
+  for (const key of Object.keys(safeObject(settings))) {
+    const reason = runtimeSettingsUnknownDisabledReason(payload, key);
+    if (reason) {
+      return reason;
+    }
+  }
+  return "";
+}
+
+function runtimeSettingsFieldCanApplyNow(payload, key) {
+  const capability = runtimeSettingsApplyCapabilityForKey(payload, key);
+  if (Object.keys(capability).length > 0) {
+    return capability.apply_capable === true && capability.requires_restart !== true && !capability.blocker;
+  }
+  const field = runtimeSettingsPreviewFieldForKey(payload, key);
+  if (Object.keys(field).length > 0) {
+    if (field.blocker || field.requires_restart || field.requires_reload) {
+      return false;
+    }
+    if (["blocked", "missing", "unavailable", "unsupported", "invalid", "read_only", "readonly"].includes(String(field.status || "").toLowerCase())) {
+      return false;
+    }
+    return field.editable_now === true;
+  }
+  return true;
+}
+
+function runtimeSettingsFieldCannotApplyReason(payload, key) {
+  const unknownReason = runtimeSettingsUnknownDisabledReason(payload, key);
+  if (unknownReason) {
+    return unknownReason;
+  }
+  if (!runtimeSettingsFieldCanApplyNow(payload, key)) {
+    const field = runtimeSettingsPreviewFieldForKey(payload, key);
+    const reason = humanShortReason(field.blocker || field.warning);
+    if (field.requires_restart || field.requires_reload) {
+      return "Requires restart. Restart Jarvis to change this.";
+    }
+    if (reason) {
+      return `Blocked. ${humanActionForReason(reason)}`;
+    }
+    return `${humanSettingLabel(key)} is not apply-capable now.`;
+  }
+  return "";
+}
+
+function runtimeSettingsGroupApplyBlockedReason(group, settings, payload) {
+  const changedKeys = runtimeSettingsChangedKeys(group, settings, payload);
+  if (changedKeys.length === 0) {
+    return "";
+  }
+  for (const key of changedKeys) {
+    const field = runtimeSettingsPreviewFieldForKey(payload, key);
+    if (field.requires_restart || field.requires_reload) {
+      return "Requires restart";
+    }
+  }
+  for (const key of changedKeys) {
+    if (!runtimeSettingsFieldCanApplyNow(payload, key)) {
+      return "Not apply-capable in this POC";
+    }
+  }
+  return "";
+}
+
+function runtimeSettingsCompactUnknownStatus(value) {
+  if (runtimeSettingsValueIsUnknown(value)) {
+    return "Effective value: Unknown. Reason: runtime does not report this setting.";
+  }
+  return settingsPreviewValue(value);
+}
+
+function runtimeSettingsPendingMessage(group, settings, payload) {
+  const changedKeys = runtimeSettingsChangedKeys(group, settings, payload);
+  if (changedKeys.length === 0) {
+    return "";
+  }
+  const pieces = changedKeys.map((key) => {
+    const label = RUNTIME_SETTING_LABELS[key] || key;
+    const effective = runtimeSettingsCurrentValueForKey(payload, key);
+    return `${label}: ${runtimeSettingsFormatValue(effective)} -> ${runtimeSettingsFormatValue(settings[key])}`;
+  });
+  return `Pending change: ${pieces.join("; ")}`;
+}
+
+function runtimeSettingsGroupResult(group) {
+  return safeObject(cockpit.runtimeSettingsApply.groupResults)[group] || "";
+}
+
+function runtimeSettingsGroupNoChangesMessage(group) {
+  const label = RUNTIME_SETTINGS_GROUP_LABELS[group] || group;
+  return `No ${label} changes.`;
+}
+
+function runtimeSettingValuesEquivalent(left, right) {
+  if (left === right) {
+    return true;
+  }
+  if ((left === undefined || left === null || left === "") && (right === undefined || right === null || right === "")) {
+    return true;
+  }
+  if (typeof left === "number" || typeof right === "number") {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    return Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber === rightNumber;
+  }
+  return String(left) === String(right);
+}
+
+function runtimeSettingsCurrentValueForKey(payload, key) {
+  const source = safeObject(payload);
+  const graph = safeObject(source.capability_graph);
+  const brain = safeObject(graph.brain_capabilities);
+  const voice = safeObject(source.voice);
+  const tools = safeObject(source.tools);
+  if (key === "brain.provider" || key === "brain.adapter") {
+    return firstPresent(brain.current_provider, projectionValue(safeObject(source.brain).current_adapter));
+  }
+  if (key === "brain.model") {
+    return firstPresent(brain.current_model, settingsPreviewFieldValue(source, "brain_provider", "model"));
+  }
+  if (key === "brain.effort") {
+    return settingsPreviewFieldValue(source, "brain_provider", "effort");
+  }
+  if (key === "brain.fast") {
+    return settingsPreviewFieldValue(source, "brain_provider", "fast");
+  }
+  if (key === "voice.speak_responses") {
+    return projectionValue(voice.speak_responses);
+  }
+  if (key === "voice.default_tts") {
+    return projectionValue(voice.default_tts);
+  }
+  if (key === "voice.default_stt") {
+    return projectionValue(voice.default_stt);
+  }
+  if (key === "voice.voice_id") {
+    return settingsPreviewFieldValue(source, "voice_tts", "voice_id");
+  }
+  if (key === "voice.voice_profile" || key === "voice.profile") {
+    return settingsPreviewFieldValue(source, "voice_tts", "voice_profile");
+  }
+  if (key === "voice.speed" || key === "voice.rate") {
+    return settingsPreviewFieldValue(source, "voice_tts", "speed_or_rate");
+  }
+  if (key === "voice.ptt_mode") {
+    return settingsPreviewFieldValue(source, "endpointing_ptt", "ptt_mode");
+  }
+  if (key === "voice.merge_window") {
+    return settingsPreviewFieldValue(source, "endpointing_ptt", "merge_window");
+  }
+  if (key === "persona.profile") {
+    return settingsPreviewFieldValue(source, "personality", "active_persona");
+  }
+  if (key === "tools.enabled") {
+    return projectionValue(tools.tools_enabled);
+  }
+  if (key === "tools.network_enabled" || key === "security.network_enabled") {
+    const internet = safeObject(projectionValue(tools.internet_capability));
+    return internet.state === "available";
+  }
+  if (key === "security.require_approval_for_network") {
+    const approvalRequired = projectionValue(tools.approval_required_tools);
+    return Array.isArray(approvalRequired) && approvalRequired.includes("network");
+  }
+  if (key === "security.require_approval_for_shell") {
+    const approvalRequired = projectionValue(tools.approval_required_tools);
+    return Array.isArray(approvalRequired) && approvalRequired.includes("shell");
+  }
+  if (key === "security.require_approval_for_file_write") {
+    const approvalRequired = projectionValue(tools.approval_required_tools);
+    return Array.isArray(approvalRequired) && approvalRequired.includes("file_write");
+  }
+  return undefined;
+}
+
+async function postRuntimeSettingsApply(settings) {
+  return requestJson("/runtime/settings/apply", {
+    method: "POST",
+    body: { settings: safeObject(settings) },
+  });
+}
+
 async function refreshSettingsPreview() {
   if (!el.settingsPreviewList) {
     return;
   }
   clearError(el.settingsPreviewError);
+  const hadPendingPreview = runtimeSettingsHasPendingPreview();
   try {
     const payload = await requestJson("/runtime/settings");
+    cockpit.runtimeSettingsApply.payload = payload;
     cockpit.settingsPreview.payload = payload;
+    if (hadPendingPreview) {
+      for (const group of Object.keys(safeObject(cockpit.runtimeSettingsApply.preview))) {
+        if (runtimeSettingsHasPendingPreview(group)) {
+          cockpit.runtimeSettingsApply.groupResults[group] = "Effective state refreshed; pending preview preserved.";
+        }
+      }
+      setText(el.activeSettingsStatus, "Effective state refreshed; pending preview preserved.");
+    }
     cockpit.settingsPreview.model = settingsPreviewModelFromPayload(
       payload,
       cockpit.settingsPreview.overrides,
     );
+    renderRuntimeSettingsControls(payload);
     renderSettingsPreview(cockpit.settingsPreview.model);
   } catch (error) {
+    clearRuntimeSettingsControls();
     clearNode(el.settingsPreviewList);
     renderError(el.settingsPreviewError, error);
   }
+}
+
+function resetSettingsPreview() {
+  cockpit.settingsPreview.overrides = {};
+  runtimeSettingsClearPreview(null, "Preview reset to effective value.");
+  cockpit.settingsPreview.model = settingsPreviewModelFromPayload(cockpit.settingsPreview.payload || {});
+  renderRuntimeSettingsControls(cockpit.settingsPreview.payload || cockpit.runtimeSettingsApply.payload || {});
+  renderSettingsPreview(cockpit.settingsPreview.model);
+  setText(el.activeSettingsStatus, "Preview reset.");
+}
+
+function renderRuntimeSettingsControls(payload) {
+  cockpit.runtimeSettingsApply.renderingControls = true;
+  try {
+    renderActiveSettingsSummary(payload);
+    renderBrainApplyControls(payload);
+    renderVoiceApplyControls(payload);
+    renderPttApplyControls(payload);
+    renderToolsApplyControls(payload);
+    renderPersonaApplyControls(payload);
+    renderAuxiliaryCockpitSectionsFromPayload(payload);
+  } finally {
+    cockpit.runtimeSettingsApply.renderingControls = false;
+  }
+}
+
+function clearRuntimeSettingsControls() {
+  clearNode(el.activeSettingsList);
+  setText(el.activeSettingsStatus, "backend offline");
+  for (const node of [
+    el.activeBrainProviderSelect,
+    el.activeBrainModelSelect,
+    el.activeBrainEffortSelect,
+    el.voiceTtsSelect,
+    el.voiceTtsModelSelect,
+    el.voiceSttSelect,
+    el.voiceSttModelSelect,
+    el.voiceSttLanguageSelect,
+    el.voiceVoiceIdSelect,
+    el.voiceProfileSelect,
+    el.pttModeSelect,
+    el.toolsInternetStatusList,
+    el.personaProfileSelect,
+  ]) {
+    clearNode(node);
+  }
+}
+
+function renderActiveSettingsSummary(payload) {
+  clearNode(el.activeSettingsList);
+  const graph = safeObject(payload.capability_graph);
+  const brain = safeObject(graph.brain_capabilities);
+  const voice = safeObject(payload.voice);
+  const tools = safeObject(payload.tools);
+  const personaField = settingsPreviewField(payload, "personality", "active_persona");
+  const row = document.createElement("article");
+  row.className = "list-row";
+  appendLine(row, "Effective runtime state", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["brain provider", firstPresent(brain.current_provider, projectionValue(safeObject(payload.brain).current_adapter))],
+    ["brain model", firstPresent(brain.current_model, settingsPreviewFieldValue(payload, "brain_provider", "model"))],
+    ["speak responses", projectionValue(voice.speak_responses)],
+    ["TTS / STT", `${settingsPreviewValue(projectionValue(voice.default_tts))} / ${settingsPreviewValue(projectionValue(voice.default_stt))}`],
+    ["PTT mode", projectionValue(voice.ptt_mode)],
+    ["Internet/tools", toolsInternetSummaryText(payload, tools)],
+    ["persona", personaField.effective || personaField.current || "default"],
+  ]);
+  row.appendChild(values);
+  if (el.activeSettingsList) {
+    el.activeSettingsList.appendChild(row);
+  }
+}
+
+function renderSettingsSectionSummary(node, payload, sectionId, limit = 12) {
+  clearNode(node);
+  if (!node) {
+    return;
+  }
+  const section = safeObject(safeObject(safeObject(payload.settings_preview).sections)[sectionId]);
+  const fields = safeObject(section.fields);
+  if (Object.keys(fields).length === 0) {
+    renderEmpty(node, "section projection unavailable");
+    return;
+  }
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, section.label || SETTINGS_PREVIEW_SECTION_LABELS[sectionId] || sectionId, "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  const rows = Object.values(fields).slice(0, limit).map((field) => {
+    const reason = humanShortReason(field.blocker || field.warning);
+    const status = humanStatusLabel(field.status, {
+      requiresRestart: Boolean(field.requires_restart),
+      blocked: Boolean(field.blocker),
+    });
+    const action = reason
+      ? humanActionForReason(reason)
+      : field.editable_now
+        ? "Apply in System."
+        : field.requires_restart
+          ? "Restart Jarvis to change this."
+          : "None";
+    const value = humanDisplayValue(field.effective !== undefined ? field.effective : field.current);
+    const pieces = [
+      value,
+      status,
+      reason || null,
+      action && action !== "None" ? action : null,
+    ].filter(Boolean);
+    return [humanSettingLabel(field.label || field.id), pieces.join(" · ") || "Unknown"];
+  });
+  renderKeyValues(values, rows);
+  row.appendChild(values);
+  node.appendChild(row);
+}
+
+function renderBrainApplyControls(payload) {
+  const graph = safeObject(payload.capability_graph);
+  const brain = safeObject(graph.brain_capabilities);
+  const providers = Array.isArray(brain.providers) ? brain.providers : [];
+  const normalProviders = providers.filter((provider) => !provider.developer_only);
+  const currentProvider = String(brain.current_provider || "");
+  const previewProvider = runtimeSettingsPreviewValue("brain", "brain.provider", currentProvider);
+  const currentProviderObject = runtimeSettingsBrainProvider(payload, currentProvider);
+  const keepDeveloperProviderActive = Boolean(currentProviderObject && currentProviderObject.developer_only);
+  const providerOptions = [
+    ...normalProviders.map((provider) => ({
+      value: provider.id,
+      label: providerApplyLabel(provider, currentProvider),
+      disabled: Boolean(providerApplyBlocker(provider, currentProvider)),
+    })),
+  ];
+  if (keepDeveloperProviderActive) {
+    providerOptions.unshift({
+      value: "",
+      label: "Developer/Test provider active",
+      disabled: true,
+    });
+  }
+  setSelectOptions(
+    el.activeBrainProviderSelect,
+    providerOptions,
+    keepDeveloperProviderActive && String(previewProvider) === currentProvider
+      ? ""
+      : normalProviders.some((provider) => String(provider.id) === String(previewProvider))
+      ? previewProvider
+      : keepDeveloperProviderActive
+        ? ""
+        : (normalProviders[0] && normalProviders[0].id) || "",
+  );
+  if (el.activeBrainProviderSelect) {
+    el.activeBrainProviderSelect.title = keepDeveloperProviderActive
+      ? "Developer/Test provider active"
+      : "";
+    el.activeBrainProviderSelect.disabled = keepDeveloperProviderActive && providerOptions.length === 1;
+  }
+  renderSettingsSectionSummary(el.brainSettingsSummaryList, payload, "brain_provider");
+  updateBrainControlOptions();
+}
+
+function updateBrainControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  const providerId = el.activeBrainProviderSelect ? el.activeBrainProviderSelect.value : "";
+  const selectedProvider = runtimeSettingsBrainProvider(payload, providerId);
+  const currentProviderId = runtimeSettingsCurrentProvider(payload);
+  const currentProvider = runtimeSettingsBrainProvider(payload, currentProviderId);
+  const provider = selectedProvider || currentProvider;
+  const preserveDeveloperProvider = currentProvider && currentProvider.developer_only;
+  const lockedToDeveloperProvider = preserveDeveloperProvider && !selectedProvider;
+  const models = Array.isArray(safeObject(provider).models) ? provider.models : [];
+  const previewModel = runtimeSettingsPreviewValue(
+    "brain",
+    "brain.model",
+    safeObject(provider).current_model || (models[0] && models[0].id) || "",
+  );
+  setSelectOptions(
+    el.activeBrainModelSelect,
+    models.filter((item) => item.available !== false).map((item) => ({
+      value: item.id,
+      label: item.label || item.id,
+    })),
+    previewModel,
+  );
+  const efforts = Array.isArray(safeObject(provider).allowed_effort_values)
+    ? provider.allowed_effort_values
+    : [];
+  const effortUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "brain.effort");
+  setSelectOptions(
+    el.activeBrainEffortSelect,
+    efforts.map((value) => ({ value, label: value })),
+    effortUnknownReason ? "" : runtimeSettingsPreviewValue("brain", "brain.effort", efforts[0] || ""),
+  );
+  if (el.activeBrainEffortSelect) {
+    el.activeBrainEffortSelect.disabled = efforts.length === 0 || lockedToDeveloperProvider || Boolean(effortUnknownReason);
+    el.activeBrainEffortSelect.title = effortUnknownReason || "";
+  }
+  const fastUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "brain.fast");
+  if (el.activeBrainFastToggle) {
+    el.activeBrainFastToggle.checked = Boolean(runtimeSettingsPreviewValue("brain", "brain.fast", false));
+    el.activeBrainFastToggle.disabled = !safeObject(provider).fast_supported || lockedToDeveloperProvider || Boolean(fastUnknownReason);
+    el.activeBrainFastToggle.title = fastUnknownReason || "";
+  }
+  runtimeSettingsSetPreview("brain", runtimeSettingsDraftForGroup("brain"));
+  const blocker = provider ? providerApplyBlocker(provider, runtimeSettingsCurrentProvider(payload)) : "provider unavailable";
+  const draft = runtimeSettingsPayloadForGroup("brain", runtimeSettingsDraftForGroup("brain"));
+  const pending = runtimeSettingsPendingMessage("brain", draft, payload);
+  const unknownMessage = effortUnknownReason || fastUnknownReason || runtimeSettingsUnknownDisabledMessage("brain", draft, payload);
+  const applyBlockedReason = runtimeSettingsGroupApplyBlockedReason("brain", draft, payload);
+  const disabledMessage = blocker || unknownMessage || applyBlockedReason;
+  const result = runtimeSettingsGroupResult("brain");
+  setText(
+    el.brainApplyStatus,
+    disabledMessage || (pending ? `${result ? `${result} ` : ""}${pending}` : result || runtimeSettingsGroupNoChangesMessage("brain")),
+  );
+  setButtonEnabled(
+    el.applyBrainSettingsButton,
+    !disabledMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
+}
+
+function renderVoiceApplyControls(payload) {
+  renderTtsApplyControls(payload);
+  renderSttApplyControls(payload);
+}
+
+function renderTtsApplyControls(payload) {
+  const voice = safeObject(payload.voice);
+  const graphVoice = safeObject(safeObject(payload.capability_graph).voice_capabilities);
+  const ttsProviders = Array.isArray(graphVoice.tts_providers) ? graphVoice.tts_providers : [];
+  const currentTts = projectionValue(voice.default_tts);
+  const ttsField = settingsPreviewField(payload, "voice_tts", "tts_provider");
+  const ttsModelField = settingsPreviewField(payload, "voice_tts", "tts_model");
+  const voiceIdField = settingsPreviewField(payload, "voice_tts", "voice_id");
+  const voiceProfileField = settingsPreviewField(payload, "voice_tts", "voice_profile");
+  if (el.voiceSpeakResponsesToggle) {
+    el.voiceSpeakResponsesToggle.checked = Boolean(runtimeSettingsPreviewValue(
+      "tts",
+      "voice.speak_responses",
+      projectionValue(voice.speak_responses),
+    ));
+  }
+  if (el.voiceBrokerEnabledToggle) {
+    setReadOnlyBooleanStatus(el.voiceBrokerEnabledToggle, projectionValue(voice.broker_enabled));
+  }
+  setSelectOptions(
+    el.voiceTtsSelect,
+    ttsProviders.map((provider) => ({
+      value: provider.id,
+      label: provider.available ? `${provider.label || provider.id} (requires restart)` : `${provider.label || provider.id} (missing)`,
+      disabled: true,
+    })),
+    currentTts,
+  );
+  setSelectOptions(
+    el.voiceTtsModelSelect,
+    (Array.isArray(ttsModelField.allowed_values) ? ttsModelField.allowed_values : []).map((value) => ({
+      value,
+      label: value,
+      disabled: true,
+    })),
+    ttsModelField.effective || ttsModelField.current || "",
+  );
+  setSelectOptions(
+    el.voiceVoiceIdSelect,
+    (Array.isArray(voiceIdField.allowed_values) ? voiceIdField.allowed_values : []).map((value) => ({
+      value,
+      label: value,
+      disabled: true,
+    })),
+    voiceIdField.effective || voiceIdField.current || "",
+  );
+  setSelectOptions(
+    el.voiceProfileSelect,
+    (Array.isArray(voiceProfileField.allowed_values) ? voiceProfileField.allowed_values : []).map((value) => ({
+      value,
+      label: value,
+      disabled: true,
+    })),
+    voiceProfileField.effective || voiceProfileField.current || "",
+  );
+  if (el.voiceTtsSelect) el.voiceTtsSelect.disabled = true;
+  if (el.voiceTtsModelSelect) el.voiceTtsModelSelect.disabled = true;
+  if (el.voiceVoiceIdSelect) el.voiceVoiceIdSelect.disabled = true;
+  if (el.voiceProfileSelect) el.voiceProfileSelect.disabled = true;
+  if (el.voiceSpeedInput) {
+    el.voiceSpeedInput.disabled = true;
+    const currentSpeed = settingsPreviewFieldValue(payload, "voice_tts", "speed_or_rate");
+    el.voiceSpeedInput.value = currentSpeed === null || currentSpeed === undefined ? "" : currentSpeed;
+  }
+  renderSettingsSectionSummary(el.voiceTtsStatusList, payload, "voice_tts");
+  updateTtsControlOptions();
+  if (ttsField.requires_restart || ttsModelField.requires_restart || voiceIdField.requires_restart) {
+    setText(el.voiceApplyStatus, "Requires restart. Restart Jarvis to change this.");
+  }
+}
+
+function renderSttApplyControls(payload) {
+  const voice = safeObject(payload.voice);
+  const graphVoice = safeObject(safeObject(payload.capability_graph).voice_capabilities);
+  const sttProviders = Array.isArray(graphVoice.stt_providers) ? graphVoice.stt_providers : [];
+  const sttField = settingsPreviewField(payload, "voice_stt", "stt_provider");
+  const sttModelField = settingsPreviewField(payload, "voice_stt", "stt_model");
+  const languageField = settingsPreviewField(payload, "voice_stt", "language");
+  setSelectOptions(
+    el.voiceSttSelect,
+    sttProviders.map((provider) => ({
+      value: provider.id,
+      label: provider.available ? `${provider.label || provider.id} (requires restart)` : `${provider.label || provider.id} (missing)`,
+      disabled: true,
+    })),
+    projectionValue(voice.default_stt),
+  );
+  setSelectOptions(
+    el.voiceSttModelSelect,
+    (Array.isArray(sttModelField.allowed_values) ? sttModelField.allowed_values : []).map((value) => ({
+      value,
+      label: value,
+      disabled: true,
+    })),
+    sttModelField.effective || sttModelField.current || "",
+  );
+  setSelectOptions(
+    el.voiceSttLanguageSelect,
+    [languageField.effective || languageField.current || ""].filter(Boolean).map((value) => ({
+      value,
+      label: value,
+      disabled: true,
+    })),
+    languageField.effective || languageField.current || "",
+  );
+  if (el.voiceSttSelect) el.voiceSttSelect.disabled = true;
+  if (el.voiceSttModelSelect) el.voiceSttModelSelect.disabled = true;
+  if (el.voiceSttLanguageSelect) el.voiceSttLanguageSelect.disabled = true;
+  renderSettingsSectionSummary(el.voiceSttStatusList, payload, "voice_stt");
+  updateSttControlOptions();
+  if (sttField.requires_restart || sttModelField.requires_restart || languageField.requires_restart) {
+    setText(el.sttApplyStatus, "Requires restart. Restart Jarvis to change this.");
+  }
+}
+
+function updateTtsControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  runtimeSettingsSetPreview("tts", runtimeSettingsDraftForGroup("tts"));
+  const tts = runtimeSettingsVoiceProvider(payload, el.voiceTtsSelect ? el.voiceTtsSelect.value : "", "tts");
+  const ttsCanApply = runtimeSettingsFieldCanApplyNow(payload, "voice.default_tts");
+  const speakCanApply = runtimeSettingsFieldCanApplyNow(payload, "voice.speak_responses");
+  const blockers = [];
+  if (!tts || tts.available === false) blockers.push("TTS provider missing");
+  const ttsField = settingsPreviewField(payload, "voice_tts", "tts_provider");
+  const voiceIdField = settingsPreviewField(payload, "voice_tts", "voice_id");
+  if (ttsField.blocker && !String(ttsField.blocker).includes("requires restart")) blockers.push(ttsField.blocker);
+  if (voiceIdField.blocker) blockers.push(voiceIdField.blocker);
+  const draft = runtimeSettingsPayloadForGroup("tts", runtimeSettingsDraftForGroup("tts"));
+  const pending = runtimeSettingsPendingMessage("tts", draft, payload);
+  const unknownMessage = runtimeSettingsUnknownDisabledMessage("tts", draft, payload);
+  const result = runtimeSettingsGroupResult("tts");
+  const applyBlockedReason = runtimeSettingsGroupApplyBlockedReason("tts", draft, payload);
+  const ttsGroupBlocked = !ttsCanApply || blockers.length > 0;
+  const speakResponsesBlocked = ttsGroupBlocked && !speakCanApply;
+  if (el.voiceSpeakResponsesToggle) {
+    el.voiceSpeakResponsesToggle.disabled = speakResponsesBlocked || unknownMessage !== "";
+    el.voiceSpeakResponsesToggle.title = speakResponsesBlocked
+      ? runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts") || "Not apply-capable in this POC"
+      : "";
+  }
+  const ttsApplyBlocked = ttsGroupBlocked || Boolean(applyBlockedReason);
+  let blockedMessage = "";
+  if (ttsApplyBlocked) {
+    if (applyBlockedReason) {
+      blockedMessage = `Blocked. ${humanActionForReason(humanShortReason(applyBlockedReason))}`;
+    } else if (blockers.length > 0) {
+      blockedMessage = `Blocked. ${humanActionForReason(humanShortReason(blockers[0]))}`;
+    } else {
+      blockedMessage = runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts")
+        || `Blocked. ${humanActionForReason("not apply-capable in this POC")}`;
+    }
+  }
+  setText(
+    el.ttsApplyStatus,
+    blockedMessage || unknownMessage
+      ? blockedMessage || unknownMessage
+      : pending
+        ? `${result ? `${result} ` : ""}${pending}`
+        : result || "Requires restart. Restart Jarvis to change engine, model, voice, or speed.",
+  );
+  setButtonEnabled(
+    el.applyTtsSettingsButton,
+    !ttsApplyBlocked && !unknownMessage && !applyBlockedReason && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
+}
+
+function updateSttControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  const stt = runtimeSettingsVoiceProvider(payload, el.voiceSttSelect ? el.voiceSttSelect.value : "", "stt");
+  const blockers = [];
+  if (!stt || stt.available === false) blockers.push("STT provider/runtime missing");
+  const changed = runtimeSettingsGroupHasChanges("stt", runtimeSettingsDraftForGroup("stt"), payload);
+  const result = runtimeSettingsGroupResult("stt");
+  setText(
+    el.sttApplyStatus,
+    blockers.length > 0
+      ? `Blocked. ${humanActionForReason(humanShortReason(blockers[0]))}`
+      : changed
+        ? "Requires restart. Restart Jarvis to change this."
+        : "Requires restart. Restart Jarvis to change transcription settings.",
+  );
+  setButtonEnabled(el.applySttSettingsButton, false);
+}
+
+function renderPttApplyControls(payload) {
+  const pttField = settingsPreviewField(payload, "endpointing_ptt", "ptt_mode");
+  const allowedModes = Array.isArray(pttField.allowed_values) && pttField.allowed_values.length > 0
+    ? pttField.allowed_values
+    : ["hold"];
+  const pttUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "voice.ptt_mode");
+  const pttMode = pttUnknownReason
+    ? ""
+    : settingsPreviewFieldValue(payload, "endpointing_ptt", "ptt_mode") || allowedModes[0] || "hold";
+  setSelectOptions(
+    el.pttModeSelect,
+    allowedModes.map((value) => ({ value, label: value })),
+    runtimeSettingsPreviewValue("ptt", "voice.ptt_mode", pttMode),
+  );
+  if (el.pttModeSelect) {
+    el.pttModeSelect.disabled = Boolean(pttUnknownReason) || pttField.editable_now !== true;
+    el.pttModeSelect.title = pttUnknownReason || "";
+  }
+  if (el.pttMergeWindowInput) {
+    el.pttMergeWindowInput.value = settingsPreviewFieldValue(payload, "endpointing_ptt", "merge_window") || "";
+    el.pttMergeWindowInput.disabled = true;
+  }
+  setText(el.pttListeningSummary, runtimeSettingsCompactUnknownStatus(settingsPreviewFieldValue(payload, "endpointing_ptt", "listening_lease_state")));
+  setText(el.pttBargeInSummary, runtimeSettingsCompactUnknownStatus(settingsPreviewFieldValue(payload, "endpointing_ptt", "interrupt_policy")));
+  setText(el.pttHotkeySummary, runtimeSettingsCompactUnknownStatus(settingsPreviewFieldValue(payload, "endpointing_ptt", "ptt_hotkey")));
+  setText(el.pttVadSummary, pttVadModeSummary(payload));
+  updatePttControlOptions();
+}
+
+function updatePttControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  runtimeSettingsSetPreview("ptt", runtimeSettingsDraftForGroup("ptt"));
+  const pttField = settingsPreviewField(payload, "endpointing_ptt", "ptt_mode");
+  const blocker = pttField.blocker || "";
+  const draft = runtimeSettingsPayloadForGroup("ptt", runtimeSettingsDraftForGroup("ptt"));
+  const pending = runtimeSettingsPendingMessage("ptt", draft, payload);
+  const unknownMessage = runtimeSettingsUnknownDisabledMessage("ptt", draft, payload);
+  const result = runtimeSettingsGroupResult("ptt");
+  setText(
+    el.pttApplyStatus,
+    blocker
+      ? `Blocked. ${humanActionForReason(humanShortReason(blocker))}`
+      : unknownMessage
+        ? unknownMessage
+      : pending
+        ? `${result ? `${result} ` : ""}${pending}`
+        : result || "Requires restart. Restart Jarvis to change merge window.",
+  );
+  setButtonEnabled(
+    el.applyPttSettingsButton,
+    !blocker && !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
+}
+
+function pttVadModeSummary(payload) {
+  const mode = settingsPreviewFieldValue(payload, "endpointing_ptt", "ptt_mode");
+  if (mode) {
+    return `ptt (${mode})`;
+  }
+  const endpointing = settingsPreviewFieldValue(payload, "voice_stt", "endpointing_support");
+  if (endpointing === true) {
+    return "server_vad/semantic_vad support reported";
+  }
+  if (endpointing === false) {
+    return "disabled";
+  }
+  return "unknown";
+}
+
+function renderToolsApplyControls(payload) {
+  const tools = safeObject(payload.tools);
+  const graphTools = safeObject(safeObject(payload.capability_graph).tools_capabilities);
+  const applyCapabilities = safeObject(graphTools.apply_capabilities);
+  const internet = safeObject(projectionValue(tools.internet_capability));
+  const approvalRequired = Array.isArray(projectionValue(tools.approval_required_tools))
+    ? projectionValue(tools.approval_required_tools)
+    : [];
+  const hasLiveApplyControl = runtimeSettingsToolsHasLiveApplyControl(applyCapabilities);
+  const operator = toolsInternetOperatorState(tools, applyCapabilities);
+  const missingInternetReason = operator.internetStatus === "Missing" ? operator.reason : "";
+  setToolsToggleState(
+    el.toolsEnabledToggle,
+    projectionValue(tools.tools_master_flag) === "enabled" || Boolean(projectionValue(tools.tools_enabled)),
+    "tools.enabled",
+    applyCapabilities,
+    missingInternetReason,
+  );
+  setToolsToggleState(
+    el.toolsNetworkEnabledToggle,
+    internet.state === "available",
+    "tools.network_enabled",
+    applyCapabilities,
+    missingInternetReason,
+  );
+  setToolsToggleState(
+    el.toolsNetworkApprovalToggle,
+    approvalRequired.includes("network"),
+    "security.require_approval_for_network",
+    applyCapabilities,
+    missingInternetReason,
+  );
+  setToolsToggleState(
+    el.toolsShellApprovalToggle,
+    approvalRequired.includes("shell"),
+    "security.require_approval_for_shell",
+    applyCapabilities,
+    missingInternetReason,
+  );
+  setToolsToggleState(
+    el.toolsFileWriteApprovalToggle,
+    approvalRequired.includes("file_write"),
+    "security.require_approval_for_file_write",
+    applyCapabilities,
+    missingInternetReason,
+  );
+  setText(el.toolsInternetSummary, toolsInternetSummaryText(payload, tools));
+  setText(el.toolsNetworkPolicySummary, settingsPreviewValue(projectionValue(tools.network_policy)));
+  setText(el.toolsRegistrySummary, settingsPreviewValue(projectionValue(tools.tool_registry_status)));
+  const compactBlocked = operator.applyStatus !== "Available" || !hasLiveApplyControl;
+  setToolsSectionCompactMode(compactBlocked);
+  if (!compactBlocked) {
+    renderToolsInternetStatusList(payload, tools, applyCapabilities);
+  } else {
+    renderToolsInternetCompactStatusList(payload, tools, applyCapabilities);
+  }
+  updateToolsControlOptions();
+}
+
+function updateToolsControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  const tools = safeObject(payload.tools);
+  const graphTools = safeObject(safeObject(payload.capability_graph).tools_capabilities);
+  const applyCapabilities = safeObject(graphTools.apply_capabilities);
+  const draft = runtimeSettingsPayloadForGroup("tools", runtimeSettingsDraftForGroup("tools"));
+  const disabledReason = runtimeSettingsToolsApplyDisabledReason(payload, draft, applyCapabilities, tools);
+  setText(el.toolsApplyStatus, disabledReason || "Tools / Internet changes can apply now.");
+  setButtonEnabled(
+    el.applyToolsSettingsButton,
+    !disabledReason && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
+}
+
+function setToolsToggleState(toggle, checked, key, applyCapabilities, forceDisabledReason = "") {
+  if (!toggle) {
+    return;
+  }
+  const capability = safeObject(safeObject(applyCapabilities)[key]);
+  const disabledReason = forceDisabledReason
+    ? `${humanSettingLabel(key)}: ${forceDisabledReason}`
+    : runtimeSettingsToolControlDisabledReason(key, capability);
+  toggle.title = disabledReason || "";
+  if (String(toggle.tagName || "").toLowerCase() !== "input") {
+    setText(toggle, checked ? "Available" : "Missing");
+    toggle.disabled = true;
+    return;
+  }
+  toggle.checked = Boolean(checked);
+  toggle.disabled = Boolean(disabledReason);
+}
+
+function setReadOnlyBooleanStatus(node, value) {
+  if (!node) {
+    return;
+  }
+  const known = value === true || value === false;
+  const text = known ? (value ? "On" : "Off") : "Unknown";
+  if (String(node.tagName || "").toLowerCase() === "input") {
+    node.checked = Boolean(value);
+    node.disabled = true;
+    node.title = "Read-only runtime status.";
+    return;
+  }
+  setText(node, text);
+  node.title = known ? "Read-only runtime status." : "Reason: runtime does not report this setting.";
+  if (node.classList && typeof node.classList.toggle === "function") {
+    node.classList.toggle("status-on", value === true);
+    node.classList.toggle("status-off", value === false);
+    node.classList.toggle("status-unknown", !known);
+  }
+}
+
+function runtimeSettingsToolControlDisabledReason(key, capability) {
+  const label = humanSettingLabel(key);
+  if (capability.requires_restart) {
+    return `${label}: Requires restart`;
+  }
+  if (capability.apply_capable !== true) {
+    return `${label}: Read-only`;
+  }
+  if (capability.blocker) {
+    return `${label}: ${humanShortReason(capability.blocker) || "Blocked"}`;
+  }
+  return "";
+}
+
+function runtimeSettingsChangedKeys(group, settings, payload) {
+  const changed = [];
+  for (const [key, value] of Object.entries(safeObject(settings))) {
+    if (runtimeSettingsUnknownDisabledReason(payload, key)) {
+      continue;
+    }
+    if (!runtimeSettingValuesEquivalent(value, runtimeSettingsCurrentValueForKey(payload, key))) {
+      changed.push(key);
+    }
+  }
+  return changed;
+}
+
+function runtimeSettingsToolsApplyDisabledReason(payload, settings, applyCapabilities, tools) {
+  if (!cockpit.online) {
+    return "Failed: backend offline";
+  }
+  if (cockpit.runtimeSettingsApply.applyingGroup) {
+    return "Pending: another apply request is running";
+  }
+  const operator = toolsInternetOperatorState(tools, applyCapabilities);
+  const changedKeys = runtimeSettingsChangedKeys("tools", settings, payload);
+  if (operator.applyStatus === "Blocked" || operator.applyStatus === "Requires restart") {
+    return `${operator.applyStatus}. Apply disabled. ${operator.action}`;
+  }
+  if (changedKeys.length === 0) {
+    return "No Tools / Internet changes.";
+  }
+  for (const key of changedKeys) {
+    const reason = runtimeSettingsToolControlDisabledReason(key, safeObject(safeObject(applyCapabilities)[key]));
+    if (reason) {
+      return reason;
+    }
+  }
+  return "";
+}
+
+function toolsInternetSummaryText(payload, tools = null) {
+  const source = tools || safeObject(safeObject(payload).tools);
+  const internet = safeObject(projectionValue(source.internet_capability));
+  const state = internet.state || projectionStatus(source.internet_capability) || "unknown";
+  const names = Array.isArray(internet.registered_network_tools) ? internet.registered_network_tools : [];
+  if (names.length > 0) {
+    return `${toolsInternetStateLabel(state)}: ${names.join(", ")}`;
+  }
+  const warning = projectionWarning(source.internet_capability);
+  if (state === "unavailable") {
+    return `Missing${warning ? `: ${humanShortReason(warning)}` : ""}`;
+  }
+  return warning || toolsInternetStateLabel(state);
+}
+
+function runtimeSettingsToolBlockers(applyCapabilities, tools) {
+  const blockers = [];
+  const internetWarning = projectionWarning(safeObject(tools).internet_capability);
+  if (internetWarning) blockers.push(internetWarning);
+  for (const key of RUNTIME_SETTINGS_GROUP_FIELDS.tools) {
+    const capability = safeObject(safeObject(applyCapabilities)[key]);
+    if (capability.blocker) {
+      blockers.push(capability.blocker);
+    }
+  }
+  return Array.from(new Set(blockers.filter(Boolean))).slice(0, 4);
+}
+
+function runtimeSettingsToolsHasLiveApplyControl(applyCapabilities) {
+  return RUNTIME_SETTINGS_GROUP_FIELDS.tools.some((key) => {
+    const capability = safeObject(safeObject(applyCapabilities)[key]);
+    return capability.apply_capable === true && capability.requires_restart !== true && !capability.blocker;
+  });
+}
+
+function runtimeSettingsToolsNoLiveApplyReason(applyCapabilities, tools = null) {
+  const blockers = tools ? runtimeSettingsToolBlockers(applyCapabilities, tools) : [];
+  if (blockers.length > 0) {
+    return humanShortReason(blockers[0]);
+  }
+  let restartCount = 0;
+  let notCapableCount = 0;
+  for (const key of RUNTIME_SETTINGS_GROUP_FIELDS.tools) {
+    const capability = safeObject(safeObject(applyCapabilities)[key]);
+    if (capability.requires_restart) {
+      restartCount += 1;
+    } else if (capability.apply_capable !== true) {
+      notCapableCount += 1;
+    }
+  }
+  if (restartCount > 0) {
+    return "Requires restart";
+  }
+  if (notCapableCount > 0) {
+    return "Read-only";
+  }
+  return "";
+}
+
+function setToolsSectionCompactMode(compact) {
+  if (el.activeToolsSettingsSection && el.activeToolsSettingsSection.classList) {
+    el.activeToolsSettingsSection.classList.toggle("compact-only", Boolean(compact));
+  }
+  if (el.toolsSectionDescription) {
+    el.toolsSectionDescription.hidden = Boolean(compact);
+  }
+  for (const node of [el.toolsControlGrid, el.toolsSummaryDetails]) {
+    if (node) {
+      node.hidden = Boolean(compact);
+    }
+  }
+  if (el.resetToolsPreviewButton) {
+    el.resetToolsPreviewButton.disabled = Boolean(compact);
+    el.resetToolsPreviewButton.hidden = Boolean(compact);
+    el.resetToolsPreviewButton.title = compact ? "No Tools / Internet preview can apply at runtime." : "";
+  }
+}
+
+function toolsInternetStateLabel(state) {
+  if (state === "available") {
+    return "Available";
+  }
+  if (state === "unavailable") {
+    return "Missing";
+  }
+  if (state === "missing") {
+    return "Missing";
+  }
+  if (state === "enabled") {
+    return "On";
+  }
+  if (state === "disabled") {
+    return "Off";
+  }
+  return state ? humanDisplayValue(state) : "Unknown";
+}
+
+function toolsInternetOperatorState(tools, applyCapabilities) {
+  const internet = safeObject(projectionValue(tools.internet_capability));
+  const rawInternetState = String(internet.state || projectionStatus(tools.internet_capability) || "").toLowerCase();
+  const networkTool = projectionValue(tools.network_search_tool);
+  const networkToolMissing = String(networkTool || "").toLowerCase() === "missing";
+  const warning = projectionWarning(tools.internet_capability) || projectionWarning(tools.network_search_tool);
+  const toolsFlag = projectionValue(tools.tools_master_flag);
+  const toolsEnabled = projectionValue(tools.tools_enabled);
+  const toolsOn = toolsEnabled === true || toolsFlag === "enabled";
+  const internetMissing = rawInternetState === "unavailable" || rawInternetState === "missing" || networkToolMissing;
+  const restartOnly = !runtimeSettingsToolsHasLiveApplyControl(applyCapabilities)
+    && Object.values(safeObject(applyCapabilities)).some((item) => safeObject(item).requires_restart);
+  const blockerReason = humanShortReason(warning || runtimeSettingsToolBlockers(applyCapabilities, tools)[0]);
+  const reason = internetMissing ? "No network/search tool registered" : blockerReason;
+  const action = reason
+    ? humanActionForReason(reason)
+    : restartOnly
+      ? "Restart Jarvis to change this."
+      : "None";
+  const applyStatus = internetMissing || blockerReason
+    ? "Blocked"
+    : restartOnly
+      ? "Requires restart"
+      : "Available";
+  return {
+    toolsStatus: toolsOn ? "On" : "Off",
+    internetStatus: internetMissing ? "Missing" : toolsInternetStateLabel(rawInternetState),
+    searchToolStatus: networkToolMissing ? "Missing" : (networkTool ? "Available" : "Unknown"),
+    networkPolicy: networkPolicyLabel(projectionValue(tools.network_policy)),
+    reason: reason || "None",
+    action,
+    applyStatus,
+    applyLabel: applyStatus === "Available" ? "available" : "disabled",
+    whatThisMeans: internetMissing && toolsOn
+      ? "Tools are enabled, but internet is unavailable because no network/search tool is registered."
+      : internetMissing
+        ? "Internet is unavailable because no network/search tool is registered."
+        : restartOnly
+          ? "Tools settings are configured, but changing them requires restarting Jarvis."
+          : "Tools settings can be reviewed here before applying.",
+  };
+}
+
+function renderToolsInternetCompactStatusList(payload, tools, applyCapabilities) {
+  clearNode(el.toolsInternetStatusList);
+  if (!el.toolsInternetStatusList) return;
+  const row = document.createElement("article");
+  row.className = "list-row compact-status-row";
+  appendLine(row, "Tools / Internet", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  const operator = toolsInternetOperatorState(tools, applyCapabilities);
+  renderKeyValues(values, [
+    ["Tools", operator.toolsStatus],
+    ["Internet access", operator.internetStatus],
+    ["Reason", operator.reason],
+    ["Action", operator.action],
+    ["Policy", operator.networkPolicy],
+    ["Apply", operator.applyLabel],
+  ]);
+  row.appendChild(values);
+  el.toolsInternetStatusList.appendChild(row);
+}
+
+function renderToolsInternetStatusList(payload, tools, applyCapabilities) {
+  clearNode(el.toolsInternetStatusList);
+  if (!el.toolsInternetStatusList) return;
+  const row = document.createElement("article");
+  row.className = "list-row";
+  appendLine(row, "Tools / Internet effective state", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  const internet = safeObject(projectionValue(tools.internet_capability));
+  const applyCapability = projectionValue(tools.apply_capability)
+    || (Object.values(safeObject(applyCapabilities)).some((item) => safeObject(item).apply_capable) ? "yes" : "no");
+  const requiresRestart = Object.prototype.hasOwnProperty.call(safeObject(tools.requires_restart), "effective_value")
+    ? projectionValue(tools.requires_restart)
+    : Object.values(safeObject(applyCapabilities)).some((item) => safeObject(item).requires_restart);
+  const blocker = projectionValue(tools.blocker)
+    || runtimeSettingsToolBlockers(applyCapabilities, tools)[0]
+    || "none";
+  const internetWarning = projectionWarning(tools.internet_capability) || "none";
+  const networkApprovalCapability = safeObject(applyCapabilities["security.require_approval_for_network"]);
+  const approvalCanApply = networkApprovalCapability.apply_capable === true && !networkApprovalCapability.requires_restart
+    ? "Available"
+    : "Requires restart";
+  const operator = toolsInternetOperatorState(tools, applyCapabilities);
+  renderKeyValues(values, [
+    ["Tools", operator.toolsStatus],
+    ["Internet access", toolsInternetStateLabel(internet.state || projectionStatus(tools.internet_capability))],
+    ["Reason", humanShortReason(internetWarning) || "None"],
+    ["Action", operator.action],
+    ["Search tool", operator.searchToolStatus],
+    ["Network policy", operator.networkPolicy],
+    ["Approval changes", approvalCanApply],
+    ["Apply", applyCapability === "yes" ? "Available" : operator.applyStatus],
+    ["Restart needed", requiresRestart ? "Requires restart" : "Off"],
+    ["Blocker", humanShortReason(blocker) || "None"],
+  ]);
+  row.appendChild(values);
+  el.toolsInternetStatusList.appendChild(row);
+}
+
+function renderPersonaApplyControls(payload) {
+  const field = settingsPreviewField(payload, "personality", "active_persona");
+  const profiles = Array.isArray(field.allowed_values) ? field.allowed_values : [];
+  const selectedProfile = runtimeSettingsPreviewValue(
+    "persona",
+    "persona.profile",
+    field.effective || field.current || profiles[0] || "",
+  );
+  setSelectOptions(
+    el.personaProfileSelect,
+    profiles.map((value) => ({ value, label: value })),
+    selectedProfile,
+  );
+  renderPersonalityStatusList(payload, selectedProfile);
+  const capable = profiles.length > 0 && runtimeSettingsFieldCanApplyNow(payload, "persona.profile");
+  setText(
+    el.personaApplyStatus,
+    capable ? "Apply through Jarvis available." : "Read-only. No action available in this POC.",
+  );
+  updatePersonaControlOptions();
+}
+
+function updatePersonaControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  runtimeSettingsSetPreview("persona", runtimeSettingsDraftForGroup("persona"));
+  const field = settingsPreviewField(payload, "personality", "active_persona");
+  const profiles = Array.isArray(field.allowed_values) ? field.allowed_values : [];
+  const capable = profiles.length > 0 && runtimeSettingsFieldCanApplyNow(payload, "persona.profile");
+  const disabledReason = runtimeSettingsFieldCannotApplyReason(payload, "persona.profile");
+  const disabledText = capable
+    ? ""
+    : disabledReason.includes("Requires restart")
+      ? "Requires restart"
+      : "Not apply-capable in this POC";
+  const draft = runtimeSettingsPayloadForGroup("persona", runtimeSettingsDraftForGroup("persona"));
+  const pending = runtimeSettingsPendingMessage("persona", draft, payload);
+  const applyBlockedReason = runtimeSettingsGroupApplyBlockedReason("persona", draft, payload);
+  const result = runtimeSettingsGroupResult("persona");
+  setText(
+    el.personaApplyStatus,
+    capable
+      ? applyBlockedReason
+        ? applyBlockedReason
+        : pending
+          ? `${result ? `${result} ` : ""}${pending}`
+          : result || runtimeSettingsGroupNoChangesMessage("persona")
+      : disabledText,
+  );
+  setButtonEnabled(
+    el.applyPersonaSettingsButton,
+    capable && !applyBlockedReason && Boolean(pending) && cockpit.online,
+  );
+}
+
+function renderPersonalityStatusList(payload, selectedProfile = null) {
+  clearNode(el.personalityStatusList);
+  if (!el.personalityStatusList) {
+    return;
+  }
+  const field = settingsPreviewField(payload, "personality", "active_persona");
+  const activeProfile = field.current || field.effective || "unknown";
+  const selected = selectedProfile || runtimeSettingsPreviewValue(
+    "persona",
+    "persona.profile",
+    field.effective || field.current || "unknown",
+  );
+  const reason = humanShortReason(field.blocker || field.warning);
+  const status = reason
+    ? "Blocked"
+    : humanStatusLabel(field.status, {
+      requiresRestart: Boolean(field.requires_restart),
+      blocked: Boolean(field.blocker),
+    });
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, "Personality", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  const rows = [
+    ["Active profile", humanDisplayValue(activeProfile)],
+    ["Selected profile", humanDisplayValue(selected)],
+    ["Status", status],
+  ];
+  if (reason) {
+    rows.push(["Reason", reason]);
+    rows.push(["Action", humanActionForReason(reason)]);
+  }
+  renderKeyValues(values, rows);
+  row.appendChild(values);
+  el.personalityStatusList.appendChild(row);
+}
+
+function renderAuxiliaryCockpitSectionsFromPayload(payload) {
+  renderPersonalityStatusList(payload);
+  renderQueueBargeInSummary(payload);
+  renderMemoryApprovalsSummary(payload);
+  renderDeveloperTestSummary(payload);
+  renderLatestTurnTraceSummary(payload);
+  renderRuntimeLogsSummaryFromPayload(payload);
+}
+
+function renderQueueBargeInSummary(payload, rows = null) {
+  clearNode(el.queueBargeInList);
+  if (!el.queueBargeInList) {
+    return;
+  }
+  const queueSection = safeObject(safeObject(safeObject(payload.settings_preview).sections).queue_barge_in);
+  const queueFields = safeObject(queueSection.fields);
+  const statusValue = settingsPreviewFieldValue(payload, "queue_barge_in", "queue_status");
+  const statusObject = safeObject(statusValue);
+  const counts = safeObject(statusObject.counts);
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, "Queue / Barge-in effective state", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  const queueRows = Array.isArray(rows) ? rows : [];
+  const speaking = queueRows.find((item) => String(item.status || "").toLowerCase() === "speaking") || null;
+  renderKeyValues(values, [
+    ["queued", firstPresent(counts.queued, 0)],
+    ["speaking", firstPresent(counts.speaking, speaking ? 1 : 0)],
+    ["done / failed / cancelled", `${firstPresent(counts.done, 0)} / ${firstPresent(counts.failed, 0)} / ${firstPresent(counts.cancelled, 0)}`],
+    ["current speaking item", speaking ? shortId(firstPresent(speaking.id, speaking.voice_id)) : settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "active_speech_id"))],
+    ["kind", speaking ? firstPresent(speaking.kind, "unknown") : settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "current_spoken_kind"))],
+    ["cancel support", settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "cancel_support"))],
+    ["manual cancel", settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "manual_cancel_available"))],
+    ["interrupted_previous_response", settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "interrupted_previous_response"))],
+    ["last cancellation reason", settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "last_cancellation_reason"))],
+    ["latest queue error", firstPresent(safeObject(queueFields.queue_status).warning, statusObject.latest_error, "none")],
+  ]);
+  row.appendChild(values);
+  el.queueBargeInList.appendChild(row);
+  setText(el.queueApplyStatus, "Manual cancel route not implemented in this panel POC.");
+  if (el.cancelCurrentSpeechButton) {
+    el.cancelCurrentSpeechButton.disabled = true;
+    el.cancelCurrentSpeechButton.title = "not implemented";
+  }
+}
+
+function renderMemoryApprovalsSummary(payload) {
+  clearNode(el.memoryApprovalsList);
+  if (!el.memoryApprovalsList) {
+    return;
+  }
+  const memory = safeObject(payload.memory);
+  const approvals = safeObject(payload.approvals);
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, "Memory / Approvals compact status", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["memory enabled", settingsPreviewValue(projectionValue(memory.enabled))],
+    ["active memory max/count", firstPresent(projectionValue(memory.active_count), projectionValue(memory.max_active_blocks), "unknown")],
+    ["pending memory candidates", firstPresent(projectionValue(memory.pending_candidates), settingsPreviewValue(projectionValue(memory.worker_candidates_require_promotion)))],
+    ["pending approvals", settingsPreviewValue(projectionValue(approvals.pending_count))],
+    ["latest approval status", latestProjectionWarning(approvals) || "none"],
+    ["latest memory error", latestProjectionWarning(memory) || "none"],
+    ["memory write approval path", projectionValue(approvals.require_approval_for_file_write) ? "approval visible" : "unknown/manual"],
+  ]);
+  row.appendChild(values);
+  el.memoryApprovalsList.appendChild(row);
+}
+
+function latestProjectionWarning(group) {
+  for (const item of Object.values(safeObject(group))) {
+    const warning = projectionWarning(item);
+    if (warning) {
+      return warning;
+    }
+  }
+  return "";
+}
+
+function renderDeveloperTestSummary(payload) {
+  renderSettingsSectionSummary(el.developerTestList, payload, "developer_test");
+}
+
+function renderLatestTurnTraceSummary(payload) {
+  clearNode(el.latestTurnTraceList);
+  if (!el.latestTurnTraceList) {
+    return;
+  }
+  const trace = safeObject(payload.latest_turn_trace);
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, "Latest Turn Trace", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["turn id", settingsPreviewValue(projectionValue(trace.turn_id))],
+    ["source", settingsPreviewValue(projectionValue(trace.source))],
+    ["provider/model", `${settingsPreviewValue(projectionValue(trace.provider_adapter))} / ${settingsPreviewValue(projectionValue(trace.provider_model))}`],
+    ["tools attempted", settingsPreviewValue(projectionValue(trace.tools_attempted_count))],
+    ["approval status", settingsPreviewValue(projectionValue(trace.approval_status))],
+    ["voice rows", settingsPreviewValue(projectionValue(trace.voice_rows_created))],
+    ["interrupted turn", settingsPreviewValue(projectionValue(trace.interrupted_turn_id))],
+    ["cancelled speech", settingsPreviewValue(projectionValue(trace.cancelled_speech_id))],
+  ]);
+  row.appendChild(values);
+  el.latestTurnTraceList.appendChild(row);
+}
+
+function renderRuntimeLogsSummaryFromPayload(payload, events = []) {
+  clearNode(el.runtimeLogsSummaryList);
+  if (!el.runtimeLogsSummaryList) {
+    return;
+  }
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, "Runtime Logs summary only", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["latest safe error", firstPresent(traceLatestSafeError(runtimeOverviewContext({ runtimeSettings: payload, events: { events } })), "none")],
+    ["latest voice event", latestEventSummaryForFamily(events, "voice")],
+    ["latest provider event", latestEventSummaryForFamilies(events, ["brain", "provider", "adapter"])],
+    ["latest approval event", latestEventSummaryForFamily(events, "approval")],
+    ["debug events", newestFirstEvents(events).slice(0, 5).map((event) => `${event.type || "event"} #${event.id || "?"}`).join(" | ") || "none"],
+  ]);
+  row.appendChild(values);
+  el.runtimeLogsSummaryList.appendChild(row);
+}
+
+function latestEventSummaryForFamily(events, family) {
+  const event = newestFirstEvents(events).find((item) => eventFamily(item && item.type) === family);
+  return event ? `${event.type || family} #${event.id || "?"}` : "none";
+}
+
+function latestEventSummaryForFamilies(events, families) {
+  const event = newestFirstEvents(events).find((item) => eventMatchesIssue(item, families));
+  return event ? `${event.type || "event"} #${event.id || "?"}` : "none";
+}
+
+async function cancelCurrentSpeech() {
+  setText(el.queueApplyStatus, "Manual cancel route not implemented.");
+  if (el.cancelCurrentSpeechButton) {
+    el.cancelCurrentSpeechButton.disabled = true;
+  }
+}
+
+async function applyRuntimeSettingsGroup(group) {
+  const draft = runtimeSettingsDraftForGroup(group);
+  const settings = runtimeSettingsApplyPayloadForGroup(group, runtimeSettingsPayloadForGroup(group, draft));
+  const statusNode = runtimeSettingsStatusNode(group);
+  if (cockpit.runtimeSettingsApply.applyingGroup) {
+    setText(statusNode, `Settings apply already in progress: ${cockpit.runtimeSettingsApply.applyingGroup}`);
+    return;
+  }
+  if (Object.keys(settings).length === 0) {
+    setText(statusNode, "read-only in this POC");
+    return;
+  }
+  if (!runtimeSettingsGroupHasChanges(group, settings, cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {})) {
+    setText(statusNode, "unchanged");
+    return;
+  }
+  if (group === "tools") {
+    const button = runtimeSettingsApplyButton(group);
+    if (button && button.disabled) {
+      const payload = cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {};
+      const tools = safeObject(payload.tools);
+      const graphTools = safeObject(safeObject(payload.capability_graph).tools_capabilities);
+      const reason = runtimeSettingsToolsApplyDisabledReason(
+        payload,
+        settings,
+        safeObject(graphTools.apply_capabilities),
+        tools,
+      );
+      setText(statusNode, reason || "Apply Tools disabled.");
+      return;
+    }
+  }
+  cockpit.runtimeSettingsApply.applyingGroup = group;
+  cockpit.runtimeSettingsApply.groupResults[group] = "Applying...";
+  setRuntimeSettingsApplyBusy(true);
+  setText(statusNode, "Applying...");
+  setText(el.activeSettingsStatus, `Applying ${group} settings...`);
+  let resultMessage = null;
+  try {
+    const payload = await postRuntimeSettingsApply(settings);
+    const runtimeSettings = payload.runtime_settings || {};
+    cockpit.runtimeSettingsApply.payload = runtimeSettings;
+    cockpit.settingsPreview.payload = runtimeSettings;
+    cockpit.settingsPreview.overrides = {};
+    cockpit.settingsPreview.model = settingsPreviewModelFromPayload(runtimeSettings);
+    resultMessage = runtimeSettingsApplyResultMessage(payload, group, settings, runtimeSettings);
+    if (payload.status === "applied" || payload.status === "unchanged") {
+      runtimeSettingsClearPreview(group, resultMessage);
+    } else {
+      cockpit.runtimeSettingsApply.groupResults[group] = resultMessage;
+    }
+    await Promise.allSettled([refreshMissionControl(), refreshHealthAndState(), refreshRuntimeOverview(), refreshVoice()]);
+  } catch (error) {
+    resultMessage = runtimeSettingsErrorMessage(error);
+    const errorPayload = safeObject(safeObject(error && error.detail).payload);
+    const runtimeSettings = safeObject(errorPayload.runtime_settings);
+    if (Object.keys(runtimeSettings).length > 0) {
+      cockpit.runtimeSettingsApply.payload = runtimeSettings;
+      cockpit.settingsPreview.payload = runtimeSettings;
+      cockpit.settingsPreview.model = settingsPreviewModelFromPayload(
+        runtimeSettings,
+        cockpit.settingsPreview.overrides,
+      );
+    }
+    cockpit.runtimeSettingsApply.groupResults[group] = resultMessage;
+  } finally {
+    cockpit.runtimeSettingsApply.applyingGroup = null;
+    setRuntimeSettingsApplyBusy(false);
+    renderRuntimeSettingsControls(cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {});
+    if (cockpit.settingsPreview.model) {
+      renderSettingsPreview(cockpit.settingsPreview.model);
+    }
+    setText(statusNode, resultMessage || "Apply finished.");
+    setText(el.activeSettingsStatus, resultMessage || "Apply finished.");
+  }
+}
+
+function runtimeSettingsApplyButtons(buttons = null) {
+  if (Array.isArray(buttons)) {
+    return buttons.filter(Boolean);
+  }
+  return [
+    el.applyBrainSettingsButton,
+    el.applyTtsSettingsButton,
+    el.applySttSettingsButton,
+    el.applyPttSettingsButton,
+    el.applyToolsSettingsButton,
+    el.applyPersonaSettingsButton,
+  ].filter(Boolean);
+}
+
+function setRuntimeSettingsApplyBusy(busy, buttons = null) {
+  for (const button of runtimeSettingsApplyButtons(buttons)) {
+    if (busy) {
+      setBusy(button, true);
+    } else if (button.classList && typeof button.classList.toggle === "function") {
+      button.classList.toggle("busy", false);
+    }
+  }
+}
+
+function runtimeSettingsDraftBrainProviderId(payload = null) {
+  const runtimePayload = safeObject(payload || cockpit.runtimeSettingsApply.payload || {});
+  const selectedProviderId = el.activeBrainProviderSelect ? String(el.activeBrainProviderSelect.value || "") : "";
+  const currentProviderId = runtimeSettingsCurrentProvider(runtimePayload);
+  if (!selectedProviderId) {
+    return currentProviderId || "";
+  }
+  const selectedProvider = runtimeSettingsBrainProvider(runtimePayload, selectedProviderId);
+  const currentProvider = runtimeSettingsBrainProvider(runtimePayload, currentProviderId);
+  if (!selectedProvider && currentProvider && currentProvider.developer_only) {
+    return currentProviderId || "";
+  }
+  return selectedProviderId;
+}
+
+function runtimeSettingsDraftForGroup(group) {
+  if (group === "brain") {
+    const providerId = runtimeSettingsDraftBrainProviderId();
+    const draft = {
+      "brain.provider": providerId || undefined,
+      "brain.model": el.activeBrainModelSelect && !el.activeBrainModelSelect.disabled
+        ? el.activeBrainModelSelect.value
+        : undefined,
+      "brain.effort": el.activeBrainEffortSelect && !el.activeBrainEffortSelect.disabled
+        ? el.activeBrainEffortSelect.value
+        : undefined,
+    };
+    if (el.activeBrainFastToggle && !el.activeBrainFastToggle.disabled) {
+      draft["brain.fast"] = Boolean(el.activeBrainFastToggle.checked);
+    }
+    return draft;
+  }
+  if (group === "tts") {
+    const draft = {
+      ...(el.voiceSpeakResponsesToggle && !el.voiceSpeakResponsesToggle.disabled
+        ? { "voice.speak_responses": Boolean(el.voiceSpeakResponsesToggle.checked) }
+        : {}),
+      "voice.default_tts": el.voiceTtsSelect && !el.voiceTtsSelect.disabled ? el.voiceTtsSelect.value : undefined,
+    };
+    if (el.voiceVoiceIdSelect && !el.voiceVoiceIdSelect.disabled && el.voiceVoiceIdSelect.value) {
+      draft["voice.voice_id"] = el.voiceVoiceIdSelect.value;
+    }
+    if (el.voiceProfileSelect && !el.voiceProfileSelect.disabled && el.voiceProfileSelect.value) {
+      draft["voice.voice_profile"] = el.voiceProfileSelect.value;
+    }
+    if (el.voiceSpeedInput && !el.voiceSpeedInput.disabled && el.voiceSpeedInput.value !== "") {
+      draft["voice.speed"] = Number(el.voiceSpeedInput.value);
+    }
+    return draft;
+  }
+  if (group === "stt") {
+    return {
+      "voice.default_stt": el.voiceSttSelect && !el.voiceSttSelect.disabled ? el.voiceSttSelect.value : undefined,
+    };
+  }
+  if (group === "ptt") {
+    return {
+      "voice.ptt_mode": el.pttModeSelect ? el.pttModeSelect.value : undefined,
+      "voice.merge_window": el.pttMergeWindowInput && !el.pttMergeWindowInput.disabled && el.pttMergeWindowInput.value !== ""
+        ? Number(el.pttMergeWindowInput.value)
+        : undefined,
+    };
+  }
+  if (group === "tools") {
+    const draft = {};
+    if (el.toolsEnabledToggle && !el.toolsEnabledToggle.disabled) {
+      draft["tools.enabled"] = Boolean(el.toolsEnabledToggle.checked);
+    }
+    if (el.toolsNetworkEnabledToggle && !el.toolsNetworkEnabledToggle.disabled) {
+      draft["tools.network_enabled"] = Boolean(el.toolsNetworkEnabledToggle.checked);
+    }
+    if (el.toolsNetworkApprovalToggle && !el.toolsNetworkApprovalToggle.disabled) {
+      draft["security.require_approval_for_network"] = Boolean(el.toolsNetworkApprovalToggle.checked);
+    }
+    if (el.toolsShellApprovalToggle && !el.toolsShellApprovalToggle.disabled) {
+      draft["security.require_approval_for_shell"] = Boolean(el.toolsShellApprovalToggle.checked);
+    }
+    if (el.toolsFileWriteApprovalToggle && !el.toolsFileWriteApprovalToggle.disabled) {
+      draft["security.require_approval_for_file_write"] = Boolean(el.toolsFileWriteApprovalToggle.checked);
+    }
+    return draft;
+  }
+  if (group === "persona") {
+    return {
+      "persona.profile": el.personaProfileSelect ? el.personaProfileSelect.value : undefined,
+    };
+  }
+  return {};
+}
+
+function runtimeSettingsApplyPayloadForGroup(group, settings) {
+  if (group !== "brain" && group !== "tts" && group !== "stt" && group !== "persona" && group !== "ptt") {
+    return runtimeSettingsPayloadForGroup(group, settings);
+  }
+  const payload = safeObject(settings);
+  const runtimePayload = cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {};
+  const filtered = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (runtimeSettingsFieldCanApplyNow(runtimePayload, key)) {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
+function runtimeSettingsStatusNode(group) {
+  return {
+    brain: el.brainApplyStatus,
+    tts: el.ttsApplyStatus || el.voiceApplyStatus,
+    stt: el.sttApplyStatus,
+    voice: el.voiceApplyStatus,
+    ptt: el.pttApplyStatus,
+    tools: el.toolsApplyStatus,
+    persona: el.personaApplyStatus,
+    queue: el.queueApplyStatus,
+  }[group] || el.activeSettingsStatus;
+}
+
+function runtimeSettingsApplyButton(group) {
+  return {
+    brain: el.applyBrainSettingsButton,
+    tts: el.applyTtsSettingsButton,
+    stt: el.applySttSettingsButton,
+    ptt: el.applyPttSettingsButton,
+    tools: el.applyToolsSettingsButton,
+    persona: el.applyPersonaSettingsButton,
+  }[group] || null;
+}
+
+function runtimeSettingsErrorMessage(error) {
+  const detail = safeObject(error && error.detail);
+  const payload = safeObject(detail.payload);
+  const blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
+  const status = payload.status || "";
+  const reason = humanShortReason(blockers[0] || (error && error.message ? error.message : "Apply failed"));
+  if (status === "requires_restart") {
+    return `Requires restart. ${humanActionForReason(reason)}`;
+  }
+  if (status === "blocked") {
+    return `Blocked. ${humanActionForReason(reason)}`;
+  }
+  if (blockers.length > 0) {
+    return `Blocked. ${humanActionForReason(reason)}`;
+  }
+  if (detail.status === 400) {
+    return `Validation error: ${error.message}`;
+  }
+  if (detail.status === 409 || detail.status === 422) {
+    return `Blocked. ${humanActionForReason(reason)}`;
+  }
+  return error && error.message ? error.message : "Apply failed";
+}
+
+function runtimeSettingsApplyResultMessage(payload, group, settings, runtimeSettings) {
+  const status = payload.status || "";
+  const applied = Array.isArray(payload.applied_keys)
+    ? payload.applied_keys
+    : (Array.isArray(payload.applied) ? payload.applied : []);
+  const blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
+  const requiresRestart = Array.isArray(payload.requires_restart_keys) ? payload.requires_restart_keys : [];
+  if (status === "requires_restart" || requiresRestart.length > 0) {
+    const reason = humanShortReason(blockers[0] || "Restart required");
+    return `Requires restart. ${humanActionForReason(reason)}`;
+  }
+  if (status === "blocked" || blockers.length > 0) {
+    const reason = humanShortReason(blockers[0] || "Blocked");
+    return `Blocked. ${humanActionForReason(reason)}`;
+  }
+  if (status === "applied" || applied.length > 0) {
+    const count = applied.length || Object.keys(safeObject(settings)).length;
+    if (runtimeSettingsRequestedValuesApplied(settings, runtimeSettings)) {
+      return `Applied ${count} setting${count === 1 ? "" : "s"}. Effective state refreshed.`;
+    }
+    return "Unchanged: effective state did not change after refresh.";
+  }
+  return runtimeSettingsGroupNoChangesMessage(group);
+}
+
+function runtimeSettingsRequestedValuesApplied(settings, runtimeSettings) {
+  const source = safeObject(settings);
+  for (const [key, value] of Object.entries(source)) {
+    if (!runtimeSettingValuesEquivalent(value, runtimeSettingsCurrentValueForKey(runtimeSettings, key))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function runtimeSettingsCurrentProvider(payload) {
+  return String(safeObject(safeObject(payload.capability_graph).brain_capabilities).current_provider || "");
+}
+
+function runtimeSettingsBrainProvider(payload, providerId) {
+  const providers = safeObject(safeObject(payload.capability_graph).brain_capabilities).providers;
+  return Array.isArray(providers)
+    ? providers.find((provider) => String(provider.id) === String(providerId)) || null
+    : null;
+}
+
+function runtimeSettingsVoiceProvider(payload, providerId, type) {
+  const voice = safeObject(safeObject(payload.capability_graph).voice_capabilities);
+  const key = type === "stt" ? "stt_providers" : "tts_providers";
+  const providers = Array.isArray(voice[key]) ? voice[key] : [];
+  return providers.find((provider) => String(provider.id) === String(providerId)) || null;
+}
+
+function settingsPreviewField(payload, section, field) {
+  return safeObject(
+    safeObject(safeObject(safeObject(payload.settings_preview).sections)[section]).fields,
+  )[field] || {};
+}
+
+function settingsPreviewFieldValue(payload, section, field) {
+  const item = settingsPreviewField(payload, section, field);
+  return item.effective !== undefined ? item.effective : item.current;
+}
+
+function providerApplyLabel(provider, currentProviderId) {
+  const blocker = providerApplyBlocker(provider, currentProviderId);
+  const base = provider.label || provider.id;
+  return blocker ? `${base} (${blocker})` : base;
+}
+
+function providerApplyBlocker(provider, currentProviderId) {
+  if (!provider) {
+    return "missing";
+  }
+  if (provider.developer_only && String(provider.id) !== String(currentProviderId)) {
+    return "Developer/Test only";
+  }
+  if (!provider.available) {
+    return provider.blocker || "missing";
+  }
+  if (settingsPreviewSupportState(provider.command_status) === "no") {
+    return "command missing";
+  }
+  return "";
+}
+
+function setSelectOptions(select, options, selectedValue) {
+  if (!select) {
+    return;
+  }
+  clearNode(select);
+  for (const item of options) {
+    const option = document.createElement("option");
+    option.value = item.value === undefined || item.value === null ? "" : String(item.value);
+    setText(option, item.label === undefined ? option.value : item.label);
+    option.disabled = Boolean(item.disabled);
+    select.appendChild(option);
+  }
+  if (selectedValue !== undefined && selectedValue !== null) {
+    select.value = String(selectedValue);
+  }
+}
+
+function setButtonEnabled(button, enabled) {
+  if (!button) {
+    return;
+  }
+  button.disabled = !enabled;
 }
 
 function settingsPreviewModelFromPayload(payload, overrides = {}) {
@@ -898,7 +3031,7 @@ function settingsPreviewModelFromPayload(payload, overrides = {}) {
   const model = {
     previewOnly: preview.preview_only !== false,
     saveImplemented: Boolean(preview.save_implemented),
-    saveDisabledReason: preview.save_disabled_reason || "Save not implemented in POC",
+    saveDisabledReason: preview.save_disabled_reason || "Diagnostics preview only",
     sections: settingsPreviewCloneSections(safeObject(preview.sections)),
     capabilityGraph: safeObject(safeObject(payload).capability_graph),
     compatibilityWarnings: Array.isArray(safeObject(payload).compatibility_warnings)
@@ -1337,10 +3470,10 @@ function renderSettingsPreview(model) {
   }
   const banner = document.createElement("article");
   banner.className = "list-row settings-preview-banner";
-  appendLine(banner, "Preview only - no Save behavior", "input-line");
+  appendLine(banner, "Diagnostics only - Apply controls above own runtime changes", "input-line");
   appendLine(
     banner,
-    "Local changes show diffs, invalidated children, warnings, blockers, and restart/reload requirements. Nothing is persisted.",
+    "Local preview changes show diffs, invalidated children, warnings, blockers, and restart/reload requirements.",
     "muted",
   );
   el.settingsPreviewList.appendChild(banner);
@@ -1654,6 +3787,25 @@ function renderMissionControl(snapshot) {
   renderPocChecklist(safeSnapshot);
   renderVoiceDoctor(safeSnapshot);
   renderProviderDoctor(safeSnapshot);
+  renderMissionAuxiliarySummaries(safeSnapshot);
+}
+
+function renderMissionAuxiliarySummaries(snapshot) {
+  const runtimeSettings = safeObject(snapshot.runtimeSettings);
+  const events = Array.isArray(safeObject(snapshot.events).events) ? snapshot.events.events : [];
+  if (Object.keys(runtimeSettings).length > 0) {
+    renderQueueBargeInSummary(runtimeSettings);
+    renderMemoryApprovalsSummary(runtimeSettings);
+    renderDeveloperTestSummary(runtimeSettings);
+    renderLatestTurnTraceSummary(runtimeSettings);
+    renderRuntimeLogsSummaryFromPayload(runtimeSettings, events);
+  } else {
+    renderQueueBargeInSummary({});
+    renderMemoryApprovalsSummary({});
+    renderDeveloperTestSummary({});
+    renderLatestTurnTraceSummary({});
+    renderRuntimeLogsSummaryFromPayload({}, events);
+  }
 }
 
 function renderMissionSummary(summary) {
@@ -1672,9 +3824,17 @@ function renderMissionSummary(summary) {
   renderKeyValues(values, [
     ["top blockers", summary.blockers.length > 0 ? summary.blockers.slice(0, 3).join("; ") : "none"],
     ["top warnings", summary.warnings.length > 0 ? summary.warnings.slice(0, 3).join("; ") : "none"],
+    ["backend connection", summary.backendConnected ? "connected" : "offline"],
+    ["daemon status", summary.daemonStatus],
+    ["panel status", summary.panelStatus],
+    ["active provider", summary.activeProvider],
+    ["voice", summary.voiceStatus],
+    ["tools/internet", summary.toolsInternetStatus],
+    ["memory/approval", summary.memoryApprovalStatus],
+    ["latest critical blocker", summary.latestCriticalBlocker],
+    ["latest safe error", summary.latestSafeError],
     ["next action", summary.nextAction],
     ["last refresh", summary.lastRefreshTime],
-    ["backend", summary.backendConnected ? "connected" : "offline"],
     ["last important event", summary.lastImportantEvent || "none"],
     ["safety", summary.safetyGuarantee],
   ]);
@@ -1835,15 +3995,29 @@ function pocChecklistItems(snapshot) {
     projectionValue(context.brainRuntime.current_adapter),
     context.activeAdapter,
   );
-  const voiceGroups = Object.keys(voiceRuntimeGroups(context));
+  const ttsKnown = settingsPreviewFieldValue(context.runtimeSettings, "voice_tts", "tts_provider") ||
+    readinessValue(context, "tts_provider");
+  const sttKnown = settingsPreviewFieldValue(context.runtimeSettings, "voice_stt", "stt_provider") ||
+    readinessValue(context, "stt_provider");
+  const toolsKnown = firstPresent(
+    settingsPreviewFieldValue(context.runtimeSettings, "tools_internet", "internet_capability"),
+    readinessValue(context, "network_tools_capability"),
+  );
   const turnId = traceValue(context, "turn_id");
   return [
     checklistItem(
-      "Lifecycle alive",
+      "Daemon alive",
       backend ? "pass" : "fail",
       backend ? "daemon health/state loaded" : "backend offline or health missing",
       "/health + /state",
       "Run scripts/jarvis status if this fails.",
+    ),
+    checklistItem(
+      "Panel connected",
+      backend ? "pass" : "fail",
+      backend ? "panel can reach daemon endpoints" : "backend unreachable",
+      "/health",
+      "Refresh Mission Control after starting the daemon.",
     ),
     checklistItem(
       "Text turn path available",
@@ -1853,11 +4027,11 @@ function pocChecklistItems(snapshot) {
       "Send one short text turn from Chat.",
     ),
     checklistItem(
-      "Panel live refresh active",
-      cockpit.stream.connected ? "pass" : backend ? "manual" : "fail",
-      cockpit.stream.connected ? "WebSocket stream is live" : "fallback polling/refresh button available",
-      "/stream + fallback refresh",
-      "Watch logs update after one new event.",
+      "Voice queue observable",
+      queueVisible ? "pass" : "unknown",
+      queueVisible ? "queue projection loaded" : "voice queue source missing",
+      "/voice/queue?limit=12",
+      "Speak once and verify queued/final/error rows appear.",
     ),
     checklistItem(
       "PTT available",
@@ -1867,18 +4041,32 @@ function pocChecklistItems(snapshot) {
       "Hold the native hotkey; Mission Control must not activate the mic.",
     ),
     checklistItem(
-      "Voice queue observable",
-      queueVisible ? "pass" : "unknown",
-      queueVisible ? "/voice/queue projection loaded" : "voice queue source missing",
-      "/voice/queue?limit=12",
-      "Speak once and verify queued/final/error rows appear.",
+      "Brain provider known",
+      providerKnown ? "pass" : "unknown",
+      providerKnown ? `provider ${overviewValue(providerKnown)} visible` : "active provider missing",
+      "/runtime/settings brain.providers",
+      "Send a turn and verify provider/model in latest trace.",
     ),
     checklistItem(
-      "Barge-in/cancel observable",
-      bargeInChecklistStatus(context),
-      bargeInChecklistWhy(context),
-      "/voice/runtime queue_barge_in + voice.speak.cancelled",
-      "Interrupt speech and verify cancellation reason appears.",
+      "Voice TTS status known",
+      ttsKnown ? "pass" : "unknown",
+      ttsKnown ? `TTS ${settingsPreviewValue(ttsKnown)}` : "TTS status missing",
+      "/runtime/settings voice_tts",
+      "Run a manual speech check outside the panel.",
+    ),
+    checklistItem(
+      "Voice STT status known",
+      sttKnown ? "pass" : "unknown",
+      sttKnown ? `STT ${settingsPreviewValue(sttKnown)}` : "STT status missing",
+      "/runtime/settings voice_stt",
+      "Run a manual transcription check outside the panel.",
+    ),
+    checklistItem(
+      "Tools/Internet status known",
+      toolsKnown ? "pass" : "unknown",
+      toolsKnown ? toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)) : "tools/internet projection missing",
+      "/runtime/settings tools_internet",
+      "Do not run tools here; verify policy only.",
     ),
     checklistItem(
       "Memory visible",
@@ -1895,32 +4083,11 @@ function pocChecklistItems(snapshot) {
       "Create memory approval to verify decision cards.",
     ),
     checklistItem(
-      "Provider status known",
-      providerKnown ? "pass" : "unknown",
-      providerKnown ? `provider ${overviewValue(providerKnown)} visible` : "active provider missing",
-      "/runtime/settings brain.providers",
-      "Send a turn and verify provider/model in latest trace.",
-    ),
-    checklistItem(
-      "Voice settings split visible",
-      voiceGroups.length >= 4 ? "pass" : "unknown",
-      voiceGroups.length >= 4 ? "voice runtime groups split by layer" : "voice runtime groups missing",
-      "/voice/runtime",
-      "Verify Capture/STT/PTT/TTS/Playback/Queue rows.",
-    ),
-    checklistItem(
       "Latest turn trace visible",
       turnId ? "pass" : "unknown",
       turnId ? `latest turn ${shortId(turnId)} visible` : "no latest turn trace yet",
       "/runtime/settings latest_turn_trace",
       "Run one text or voice turn.",
-    ),
-    checklistItem(
-      "Logs newest-first and redacted",
-      eventsVisible ? "pass" : "unknown",
-      eventsVisible ? "safe timeline path active" : "events source missing",
-      "/events?latest=true&limit=50",
-      "Confirm latest event is first and secrets are redacted.",
     ),
   ];
 }
@@ -2120,6 +4287,14 @@ function operatorSummaryFromSnapshot(snapshot) {
     warnings: warnings.slice(0, 3),
     nextAction: operatorNextAction(status, blockers, warnings),
     backendConnected,
+    daemonStatus: firstPresent(context.state.state, context.health.state, context.health.service, "unknown"),
+    panelStatus: backendConnected ? "connected to backend" : "backend unreachable",
+    activeProvider: firstPresent(projectionValue(context.brainRuntime.current_adapter), context.activeAdapter, "unknown"),
+    voiceStatus: missionVoiceStatus(context),
+    toolsInternetStatus: firstPresent(toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)), networkToolSummary(context.tools), "unknown"),
+    memoryApprovalStatus: `${memoryEnabledSummary(context)} · ${pendingApprovalSummary(context)}`,
+    latestCriticalBlocker: blockers[0] || "none",
+    latestSafeError: traceLatestSafeError(context) || "none",
     lastRefreshTime: cockpit.missionControl.lastRefreshAt
       ? formatFullDate(cockpit.missionControl.lastRefreshAt)
       : "unknown",
@@ -2127,6 +4302,20 @@ function operatorSummaryFromSnapshot(snapshot) {
     safetyGuarantee:
       "POC mode - not production; no config writes; no settings save; no provider switch execution; no model loading; no microphone activation; no external API/provider calls; no paid calls; no raw secret rendering",
   };
+}
+
+function missionVoiceStatus(context) {
+  if (context.health.voice_enabled === false) {
+    return "disabled";
+  }
+  const readiness = voiceRuntimeOverallReadiness(context);
+  if (readiness === RUNTIME_OVERVIEW_READINESS.OK) {
+    return "enabled";
+  }
+  if (readiness === RUNTIME_OVERVIEW_READINESS.MISSING || readiness === RUNTIME_OVERVIEW_READINESS.INVALID) {
+    return "degraded";
+  }
+  return firstPresent(context.health.voice_enabled === true ? "enabled/unknown" : null, readiness, "unknown");
 }
 
 function operatorBackendConnected(context) {
@@ -5181,6 +7370,9 @@ async function refreshSettings() {
 }
 
 function renderBrainAdapters(payload) {
+  if (!el.brainAdapterSelect) {
+    return;
+  }
   clearNode(el.brainAdapterSelect);
 
   const adapters = Array.isArray(payload.adapters) ? payload.adapters : [];
@@ -5315,6 +7507,7 @@ async function refreshEvents() {
     const payload = await requestJson("/events?latest=true&limit=50");
     const events = Array.isArray(payload.events) ? payload.events : [];
     renderEvents(events);
+    renderRuntimeLogsSummaryFromPayload(cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {}, events);
     const latestId = Number(payload.latest_event_id);
     if (Number.isFinite(latestId) && latestId > cockpit.stream.lastEventId) {
       cockpit.stream.lastEventId = latestId;
@@ -6022,10 +8215,42 @@ function setInteractiveEnabled(enabled) {
     el.brainAdapterSelect,
     el.switchBrainButton,
     el.refreshSettingsPreviewButton,
+    el.refreshActiveSettingsButton,
+    el.activeBrainProviderSelect,
+    el.activeBrainModelSelect,
+    el.activeBrainEffortSelect,
+    el.activeBrainFastToggle,
+    el.applyBrainSettingsButton,
+    el.voiceSpeakResponsesToggle,
+    el.voiceTtsSelect,
+    el.voiceTtsModelSelect,
+    el.voiceSttSelect,
+    el.voiceSttModelSelect,
+    el.voiceSttLanguageSelect,
+    el.voiceVoiceIdSelect,
+    el.voiceProfileSelect,
+    el.voiceSpeedInput,
+    el.applyTtsSettingsButton,
+    el.applySttSettingsButton,
+    el.pttModeSelect,
+    el.pttMergeWindowInput,
+    el.applyPttSettingsButton,
+    el.refreshQueueButton,
+    el.cancelCurrentSpeechButton,
+    el.toolsEnabledToggle,
+    el.toolsNetworkEnabledToggle,
+    el.toolsNetworkApprovalToggle,
+    el.toolsShellApprovalToggle,
+    el.toolsFileWriteApprovalToggle,
+    el.applyToolsSettingsButton,
+    el.personaProfileSelect,
+    el.applyPersonaSettingsButton,
   ];
 
   for (const control of controls) {
-    control.disabled = !enabled;
+    if (control) {
+      control.disabled = !enabled;
+    }
   }
   for (const control of [
     el.brainAdapterSelect,
@@ -6034,10 +8259,9 @@ function setInteractiveEnabled(enabled) {
     el.settingValue,
     el.saveSettingButton,
   ]) {
-    control.disabled = !enabled || POC_NO_PERSISTENCE_GUARD;
-  }
-  if (el.settingsPreviewSaveButton) {
-    el.settingsPreviewSaveButton.disabled = true;
+    if (control) {
+      control.disabled = !enabled || POC_NO_PERSISTENCE_GUARD;
+    }
   }
 }
 
@@ -6061,16 +8285,47 @@ function clearDynamicSections() {
     clearError(box);
   }
   setText(el.missionControlRefreshStatus, "");
+  setText(el.activeSettingsStatus, "");
+  setText(el.brainApplyStatus, "");
+  setText(el.voiceApplyStatus, "");
+  setText(el.ttsApplyStatus, "");
+  setText(el.sttApplyStatus, "");
+  setText(el.pttApplyStatus, "");
+  setText(el.queueApplyStatus, "");
+  setText(el.toolsApplyStatus, "");
+  setText(el.personaApplyStatus, "");
   clearNode(el.conversationSelect);
   clearNode(el.turnList);
   clearNode(el.memoryList);
   clearNode(el.healthHumanList);
+  clearNode(el.activeSettingsList);
+  clearNode(el.activeBrainProviderSelect);
+  clearNode(el.activeBrainModelSelect);
+  clearNode(el.activeBrainEffortSelect);
+  clearNode(el.voiceTtsSelect);
+  clearNode(el.voiceTtsModelSelect);
+  clearNode(el.voiceSttSelect);
+  clearNode(el.voiceSttModelSelect);
+  clearNode(el.voiceSttLanguageSelect);
+  clearNode(el.voiceVoiceIdSelect);
+  clearNode(el.voiceProfileSelect);
+  clearNode(el.pttModeSelect);
+  clearNode(el.personaProfileSelect);
   clearNode(el.toolList);
   clearNode(el.approvalList);
   clearNode(el.missionControlModules);
   clearNode(el.missionControlChecklist);
   clearNode(el.voiceDoctorList);
   clearNode(el.providerDoctorList);
+  clearNode(el.brainSettingsSummaryList);
+  clearNode(el.voiceTtsStatusList);
+  clearNode(el.voiceSttStatusList);
+  clearNode(el.queueBargeInList);
+  clearNode(el.memoryApprovalsList);
+  clearNode(el.developerTestList);
+  clearNode(el.latestTurnTraceList);
+  clearNode(el.runtimeLogsSummaryList);
+  clearNode(el.personalityStatusList);
   clearNode(el.settingsPreviewList);
   clearNode(el.settingsList);
   clearNode(el.runtimeOverviewList);
@@ -6139,17 +8394,26 @@ function renderError(node, error) {
 }
 
 function clearError(node) {
+  if (!node) {
+    return;
+  }
   node.hidden = true;
   node.textContent = "";
 }
 
 function clearNode(node) {
+  if (!node) {
+    return;
+  }
   while (node.firstChild) {
     node.removeChild(node.firstChild);
   }
 }
 
 function renderEmpty(node, message) {
+  if (!node) {
+    return;
+  }
   clearNode(node);
   const row = document.createElement("div");
   row.className = "empty-row";
@@ -6181,6 +8445,9 @@ function smallButton(label) {
 }
 
 function setBusy(button, busy) {
+  if (!button) {
+    return;
+  }
   button.disabled = busy || !cockpit.online;
   button.classList.toggle("busy", busy);
 }
