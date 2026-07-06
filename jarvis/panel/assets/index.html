@@ -121,6 +121,40 @@
 
         <!-- SYSTEM: mózg, głos, połączenie, ustawienia surowe, możliwości. -->
         <section id="view-system" class="view" aria-label="System">
+          <div class="sys-section mission-control" aria-labelledby="missionControlHeading">
+            <div class="section-head mission-head">
+              <div>
+                <h2 id="missionControlHeading">Operator Mode / Mission Control</h2>
+                <p class="muted section-desc">
+                  POC control surface. Read-only refresh, no provider calls, no mic activation.
+                </p>
+              </div>
+              <div class="mission-actions">
+                <span class="poc-badge">POC mode - not production</span>
+                <button id="refreshMissionControlButton" type="button" class="ghost">
+                  Refresh Mission Control
+                </button>
+              </div>
+            </div>
+            <div id="missionControlSummary" class="mission-summary"></div>
+            <p id="missionControlRefreshStatus" class="muted mission-refresh-status" aria-live="polite"></p>
+            <div id="missionControlModules" class="module-grid"></div>
+            <div class="doctor-grid">
+              <div class="doctor-panel" aria-labelledby="voiceDoctorHeading">
+                <h3 id="voiceDoctorHeading">Voice Doctor</h3>
+                <div id="voiceDoctorList" class="list compact-list"></div>
+              </div>
+              <div class="doctor-panel" aria-labelledby="providerDoctorHeading">
+                <h3 id="providerDoctorHeading">Provider Doctor</h3>
+                <div id="providerDoctorList" class="list compact-list"></div>
+              </div>
+            </div>
+            <div class="checklist-panel" aria-labelledby="pocChecklistHeading">
+              <h3 id="pocChecklistHeading">POC Piłeczki</h3>
+              <div id="missionControlChecklist" class="checklist-grid"></div>
+            </div>
+          </div>
+
           <div class="sys-section" aria-labelledby="brainHeading">
             <h2 id="brainHeading">Mózg</h2>
             <p class="muted section-desc">
@@ -152,12 +186,12 @@
 
           <div class="sys-section" aria-labelledby="runtimeOverviewHeading">
             <div class="section-head">
-              <h2 id="runtimeOverviewHeading">Mapa runtime</h2>
+              <h2 id="runtimeOverviewHeading">Voice Settings cockpit</h2>
               <button id="refreshRuntimeOverviewButton" type="button" class="ghost">Odśwież</button>
             </div>
             <p class="muted section-desc">
-              Tylko odczyt: mapa ustawień z bezpiecznych endpointów daemona.
-              Braki oznaczają, że dana wartość nie jest jeszcze wystawiona przez API.
+              Tylko odczyt: warstwy głosu z bezpiecznych endpointów daemona.
+              Braki są oznaczone jako unknown/missing; panel nic tu nie mutuje.
             </p>
             <div id="runtimeOverviewList" class="list compact-list"></div>
             <pre id="runtimeOverviewError" class="error-box" hidden></pre>
@@ -199,6 +233,23 @@
                 <pre id="runtimeError" class="error-box" hidden></pre>
               </div>
             </details>
+          </div>
+
+          <div class="sys-section" aria-labelledby="settingsPreviewHeading">
+            <div class="section-head">
+              <h2 id="settingsPreviewHeading">Settings Preview</h2>
+              <button id="refreshSettingsPreviewButton" type="button" class="ghost">Odśwież</button>
+            </div>
+            <p class="muted section-desc">
+              Preview only. Changes are not saved.
+            </p>
+            <div class="settings-preview-actions">
+              <button id="settingsPreviewSaveButton" type="button" disabled>
+                Save not implemented in POC
+              </button>
+            </div>
+            <div id="settingsPreviewList" class="list compact-list"></div>
+            <pre id="settingsPreviewError" class="error-box" hidden></pre>
           </div>
 
           <div class="sys-section" aria-labelledby="settingsHeading">

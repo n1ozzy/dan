@@ -15,10 +15,11 @@ from jarvis.brain.base import BrainMessage, BrainRequest, BrainToolSpec
 from jarvis.logging import get_logger
 from jarvis.security.redaction import redact_secret_text
 
+from ..memory.compiler import MemoryCompiler, MemoryCompilerConfig, MemoryCompilerRequest
 from ..memory.manager import MemoryManager
 
 if TYPE_CHECKING:
-    from ..memory.compiler import CompiledMemoryContext, MemoryCompilerConfig
+    from ..memory.compiler import CompiledMemoryContext
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -266,7 +267,6 @@ class ContextBuilder:
 
         compiler = self._memory_compiler
         if compiler is None:
-            from ..memory.compiler import MemoryCompiler
             from ..memory.items import MemoryItemRepository
 
             compiler = MemoryCompiler(MemoryItemRepository(self._conn))
@@ -274,8 +274,6 @@ class ContextBuilder:
                 self._memory_compiler = compiler
 
         try:
-            from ..memory.compiler import MemoryCompilerRequest
-
             compiled = compiler.compile(
                 MemoryCompilerRequest(
                     conversation_id=conversation_id,
@@ -752,8 +750,6 @@ def _compiled_prompt_field(value: Any) -> str:
 
 
 def _default_memory_compiler_config() -> MemoryCompilerConfig:
-    from ..memory.compiler import MemoryCompilerConfig
-
     return MemoryCompilerConfig()
 
 
@@ -844,4 +840,5 @@ __all__ = [
     "ContextBuildResult",
     "ContextBuilder",
     "ContextBuilderError",
+    "MemoryCompiler",
 ]

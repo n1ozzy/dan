@@ -2186,12 +2186,18 @@ def _runtime_warning_messages(payload: dict[str, Any]) -> list[str]:
     return [str(item) for item in values]
 
 
+def _settings_preview_field(payload: dict[str, Any], section: str, field: str) -> dict[str, Any]:
+    settings_preview = payload["settings_preview"]
+    sections = settings_preview["sections"]
+    return sections[section]["fields"][field]
+
+
 def test_get_runtime_settings_returns_typed_projection_groups_and_fields(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/runtime/settings")
 
     assert status == 200
-    for group in (
+    projection_groups = (
         "runtime",
         "brain",
         "voice",
@@ -2200,12 +2206,16 @@ def test_get_runtime_settings_returns_typed_projection_groups_and_fields(app: Da
         "memory",
         "approvals",
         "panel",
+        "runtime_readiness",
+        "current_turn_state",
         "latest_turn_trace",
-    ):
+    )
+    for group in projection_groups:
         assert group in payload
         assert isinstance(payload[group], dict)
 
-    for group in payload.values():
+    for group_name in projection_groups:
+        group = payload[group_name]
         for field in group.values():
             assert set(field.keys()) == {
                 "value",
@@ -2215,7 +2225,7 @@ def test_get_runtime_settings_returns_typed_projection_groups_and_fields(app: Da
                 "editable_later",
                 "warning",
             }
-            assert field["status"] in {"ok", "missing", "invalid", "unknown"}
+            assert field["status"] in {"ok", "missing", "invalid", "unsupported", "unknown"}
             assert field["source"] in {
                 "config",
                 "settings",
@@ -2227,6 +2237,277 @@ def test_get_runtime_settings_returns_typed_projection_groups_and_fields(app: Da
     assert payload["runtime"]["host"]["value"] == "127.0.0.1"
     assert payload["runtime"]["host"]["source"] == "config"
     assert payload["memory"]["enabled"]["source"] == "config"
+    readiness = payload["runtime_readiness"]
+    for field in (
+        "daemon_config",
+        "database_path",
+        "panel_backend_connected",
+        "brain_provider_command",
+        "tts_provider",
+        "stt_provider",
+        "recorder_command",
+        "playback_command",
+        "network_tools_capability",
+        "summary",
+        "top_blockers",
+        "warnings",
+    ):
+        assert field in readiness
+    assert readiness["panel_backend_connected"]["value"] == "yes"
+    assert readiness["daemon_config"]["status"] in {"ok", "missing", "invalid", "unknown"}
+    assert readiness["database_path"]["status"] in {"ok", "missing", "invalid", "unknown"}
+
+
+def test_get_runtime_settings_includes_settings_preview_payload_and_capability_graph(
+    app: DaemonApp,
+) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    settings_preview = payload["settings_preview"]
+    assert settings_preview["preview_only"] is True
+    assert settings_preview["save_implemented"] is False
+    assert settings_preview["save_disabled_reason"] == "Save not implemented in POC"
+
+    expected_sections = {
+        "brain_provider": (
+            "provider",
+            "model",
+            "effort",
+            "fast",
+            "context_budget",
+            "provider_sessions_are_memory",
+            "tools_support",
+            "streaming_support",
+            "command_status",
+            "latest_provider_error",
+        ),
+        "voice_tts": (
+            "tts_provider",
+            "tts_model",
+            "voice_id",
+            "voice_profile",
+            "speed_or_rate",
+            "style",
+            "stability",
+            "similarity",
+            "streaming_support",
+            "continuity_support",
+            "latest_tts_error",
+        ),
+        "voice_stt": (
+            "stt_provider",
+            "stt_model",
+            "language",
+            "transcription_ready",
+            "endpointing_support",
+            "latest_stt_error",
+        ),
+        "endpointing_ptt": (
+            "ptt_mode",
+            "ptt_hotkey",
+            "merge_window",
+            "silence_threshold",
+            "silence_duration",
+            "interrupt_policy",
+            "listening_lease_state",
+        ),
+        "queue_barge_in": (
+            "queue_status",
+            "cancel_support",
+            "active_speech_id",
+            "current_spoken_kind",
+            "interrupted_previous_response",
+            "last_cancellation_reason",
+            "manual_cancel_available",
+        ),
+        "tools_internet": (
+            "tools_enabled",
+            "tools_support",
+            "internet_capability",
+            "network_policy",
+            "approval_required_tools",
+            "latest_tool_error",
+        ),
+        "personality": (
+            "active_persona",
+            "active_style",
+            "personality_source",
+            "editable_later",
+        ),
+        "developer_test": (
+            "mock_provider",
+            "fake_tts",
+            "fake_stt",
+            "debug_mode",
+            "test_harness_status",
+        ),
+    }
+    assert set(settings_preview["sections"]) == set(expected_sections)
+    required_field_keys = {
+        "id",
+        "label",
+        "current",
+        "effective",
+        "status",
+        "source",
+        "allowed_values",
+        "disabled_values",
+        "warning",
+        "blocker",
+        "dependencies",
+        "invalidates",
+        "requires_restart",
+        "requires_reload",
+        "editable_now",
+        "editable_later",
+        "developer_only",
+    }
+    for section_id, field_ids in expected_sections.items():
+        section = settings_preview["sections"][section_id]
+        assert set(section["fields"]) == set(field_ids)
+        for field_id in field_ids:
+            field = section["fields"][field_id]
+            assert set(field) == required_field_keys
+            assert field["id"] == f"{section_id}.{field_id}"
+            assert field["status"] in {"ok", "missing", "invalid", "unsupported", "unknown"}
+
+    graph = payload["capability_graph"]
+    assert set(graph) == {"brain_capabilities", "voice_capabilities", "local_capabilities"}
+    brain_capabilities = graph["brain_capabilities"]
+    assert isinstance(brain_capabilities["providers"], list)
+    assert "mock" in {provider["id"] for provider in brain_capabilities["providers"]}
+    assert brain_capabilities["current_provider"]
+    voice_capabilities = graph["voice_capabilities"]
+    assert "tts_providers" in voice_capabilities
+    assert "stt_providers" in voice_capabilities
+    local_capabilities = graph["local_capabilities"]
+    assert {"ollama", "mlx", "llama_cpp_metal", "bielik", "mistral"}.issubset(
+        {runtime["id"] for runtime in local_capabilities["runtimes"]}
+    )
+
+
+def test_runtime_settings_structured_warnings_cover_invalid_preview_fixtures(
+    tmp_path: Path,
+) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = true\nspeak_responses = true\nbroker_enabled = false\ndefault_tts = ''\ndefault_stt = ''\n",
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    warnings = payload["compatibility_warnings"]
+    warning_ids = {warning["id"] for warning in warnings}
+    assert {"mock_provider_developer_only", "voice_enabled_tts_missing", "voice_enabled_stt_missing"}.issubset(
+        warning_ids
+    )
+    for warning in warnings:
+        assert set(warning) == {
+            "id",
+            "severity",
+            "group",
+            "field_ids",
+            "message",
+            "reason",
+            "suggested_action",
+        }
+        assert warning["severity"] in {"info", "warning", "invalid", "blocker"}
+        assert isinstance(warning["field_ids"], list)
+
+    tts_provider = _settings_preview_field(payload, "voice_tts", "tts_provider")
+    stt_provider = _settings_preview_field(payload, "voice_stt", "stt_provider")
+    mock_provider = _settings_preview_field(payload, "developer_test", "mock_provider")
+    assert tts_provider["status"] == "missing"
+    assert tts_provider["blocker"]
+    assert stt_provider["status"] == "missing"
+    assert stt_provider["blocker"]
+    assert mock_provider["developer_only"] is True
+
+
+def test_runtime_settings_preview_blocks_tts_voice_id_required_for_supertonic(
+    tmp_path: Path,
+) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = true\nspeak_responses = true\ndefault_tts = 'supertonic'\ndefault_stt = 'mock'\nsupertonic_voice = ''\nsupertonic_lang = 'pl'\n",
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    voice_id = _settings_preview_field(payload, "voice_tts", "voice_id")
+    warning_ids = {warning["id"] for warning in payload["compatibility_warnings"]}
+    assert voice_id["status"] == "missing"
+    assert "requires voice_id" in voice_id["blocker"]
+    assert "tts_voice_id_missing" in warning_ids
+
+
+def test_runtime_settings_preview_redacts_secret_shaped_values(
+    tmp_path: Path,
+) -> None:
+    raw_secret = "sk-settings-preview-secret"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        extra_toml=f'\n[brain.claude_cli]\nenabled = true\ncommand = "{raw_secret}"\nmodel = "claude-cli"\n',
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    encoded = json.dumps(payload, sort_keys=True)
+    assert raw_secret not in encoded
+    assert "[REDACTED]" in encoded
+
+
+def test_runtime_readiness_warns_for_voice_config_blockers(tmp_path: Path) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = true\nspeak_responses = true\nbroker_enabled = false\ndefault_tts = ''\ndefault_stt = ''\n",
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    readiness = payload["runtime_readiness"]
+    warnings = readiness["warnings"]["value"]
+    blockers = readiness["top_blockers"]["value"]
+    assert readiness["tts_provider"]["status"] == "missing"
+    assert readiness["stt_provider"]["status"] == "missing"
+    assert any("voice enabled but broker disabled" in item for item in warnings)
+    assert any("speak_responses enabled but TTS missing" in item for item in warnings)
+    assert any("TTS provider" in item for item in blockers)
 
 
 def test_get_runtime_settings_includes_latest_turn_trace_for_last_text_turn(
@@ -2245,6 +2526,7 @@ def test_get_runtime_settings_includes_latest_turn_trace_for_last_text_turn(
 
     assert status == 200
     trace = payload["latest_turn_trace"]
+    turn_state = payload["current_turn_state"]
     assert trace["turn_id"]["value"] == input_payload["turn_id"]
     assert trace["source"]["value"] in {"text", "panel", "voice"}
     assert trace["conversation_id"]["value"] == input_payload["conversation_id"]
@@ -2258,6 +2540,10 @@ def test_get_runtime_settings_includes_latest_turn_trace_for_last_text_turn(
     assert isinstance(timestamps, dict)
     assert "created_at" in timestamps
     assert "completion_at" in timestamps
+    assert turn_state["current_turn_id"]["value"] == input_payload["turn_id"]
+    assert turn_state["current_conversation_id"]["value"] == input_payload["conversation_id"]
+    assert turn_state["current_turn_source"]["value"] == "text"
+    assert turn_state["generation_state"]["value"] == "idle"
 
 
 def test_get_runtime_settings_turn_trace_records_ptt_down_barge_in(tmp_path: Path) -> None:
@@ -2323,6 +2609,7 @@ def test_get_runtime_settings_turn_trace_records_ptt_down_barge_in(tmp_path: Pat
             )
             assert status == 200, ptt_payload
             assert ptt_payload["cancellation"]["interrupted_previous_response"] is True
+            assert ptt_payload["cancellation"]["interruption_reason"] == "ptt_down"
             status, runtime_payload = request_json(
                 "GET",
                 f"{base_url}/runtime/settings",
@@ -2339,6 +2626,116 @@ def test_get_runtime_settings_turn_trace_records_ptt_down_barge_in(tmp_path: Pat
     assert trace["previous_turn_id"]["value"] == turn_id
     assert trace["new_turn_source"]["value"] == "PTT"
     assert trace["cancellation_reason"]["value"] == "ptt_down"
+    turn_state = runtime_payload["current_turn_state"]
+    assert turn_state["current_turn_id"]["value"] is None
+    assert turn_state["current_turn_source"]["value"] == "voice_ptt"
+    assert turn_state["generation_state"]["value"] == "listening"
+    assert turn_state["interrupted_previous_response"]["value"] is True
+    assert turn_state["interrupted_turn_id"]["value"] == turn_id
+    assert turn_state["interruption_reason"]["value"] == "ptt_down"
+    assert turn_state["cancelled_speech_id"]["value"] == queued.id
+
+
+def test_get_runtime_settings_does_not_apply_stale_barge_in_to_later_text_turn(
+    tmp_path: Path,
+) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = true\ndefault_tts = 'mock'\ndefault_stt = 'mock'\n",
+    )
+    app = create_daemon_app(config_path)
+    try:
+        app.start()
+        from jarvis.store.event_store import create_event_store
+        from jarvis.store.repositories import utc_now_iso
+        from jarvis.voice.queue import VoiceQueue
+
+        now = utc_now_iso()
+        interrupted_turn_id = "turn-interrupted-voice"
+        insert_runtime_conversation(app)
+        assert app.conn is not None
+        app.conn.execute(
+            """
+            INSERT INTO turns (
+              id, conversation_id, created_at, updated_at, source, status,
+              input_text, final_text, brain_adapter, brain_model,
+              context_snapshot_json, error, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                interrupted_turn_id,
+                "conversation-runtime",
+                now,
+                now,
+                "voice",
+                "done",
+                "Przerwij poprzednią odpowiedź.",
+                "Ta odpowiedź zostanie przerwana.",
+                "mock",
+                "mock-local",
+                "{}",
+                None,
+                "{}",
+            ),
+        )
+
+        queue = VoiceQueue(app.conn, event_store=create_event_store(app.conn))
+        queued = queue.enqueue(
+            text="Stara mowa do anulowania.",
+            turn_id=interrupted_turn_id,
+            seq=0,
+        )
+
+        with running_server(app) as base_url:
+            status, first_payload = request_json(
+                "POST",
+                f"{base_url}/voice/ptt/down",
+                {"source": "ptt"},
+            )
+            assert status == 200, first_payload
+            status, original_runtime = request_json("GET", f"{base_url}/runtime/settings")
+            assert status == 200
+            request_json("POST", f"{base_url}/voice/ptt/up", {"source": "ptt"})
+
+            status, text_payload = request_json(
+                "POST",
+                f"{base_url}/input/text",
+                {"text": "later unrelated text turn", "source": "text"},
+            )
+            assert status == 200, text_payload
+            status, later_runtime = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert original_runtime["latest_turn_trace"]["turn_id"]["value"] == interrupted_turn_id
+    assert original_runtime["latest_turn_trace"]["interrupted_previous_response"]["value"] is True
+    assert original_runtime["latest_turn_trace"]["cancelled_speech_id"]["value"] == queued.id
+    assert original_runtime["latest_turn_trace"]["interruption_attributed_to_turn_id"]["value"] == interrupted_turn_id
+
+    assert status == 200
+    trace = later_runtime["latest_turn_trace"]
+    assert trace["turn_id"]["value"] == text_payload["turn_id"]
+    assert trace["source"]["value"] == "text"
+    assert trace["interrupted_previous_response"]["value"] is False
+    assert trace["cancelled_speech_id"]["value"] is None
+    assert trace["interruption_reason"]["value"] is None
+    assert trace["previous_turn_id"]["value"] is None
+    assert trace["interrupted_turn_id"]["value"] is None
+    assert trace["interruption_attributed_to_turn_id"]["value"] is None
+    assert trace["interruption_source"]["value"] is None
+
+    turn_state = later_runtime["current_turn_state"]
+    assert turn_state["current_turn_id"]["value"] == text_payload["turn_id"]
+    assert turn_state["current_turn_source"]["value"] == "text"
+    assert turn_state["interrupted_previous_response"]["value"] is False
+    assert turn_state["cancelled_speech_id"]["value"] is None
+    assert turn_state["interruption_reason"]["value"] is None
+    assert turn_state["interrupted_turn_id"]["value"] is None
 
 
 def test_get_runtime_settings_counts_turn_approvals_and_tool_attempts(
@@ -2409,6 +2806,50 @@ def test_runtime_settings_warnings_include_tts_unavailable_when_voice_enabled(
     )
 
 
+def test_runtime_settings_supertonic_readiness_does_not_list_voices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    called = False
+
+    def fail_if_voice_list_is_probed(binary_path: str | None, voice: str | None) -> tuple[str, str | None, str | None]:
+        nonlocal called
+        called = True
+        raise AssertionError(f"unexpected Supertonic voice-list probe for {binary_path} {voice}")
+
+    monkeypatch.setattr(routes_runtime, "_safe_probe_supertonic_voice", fail_if_voice_list_is_probed)
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        (
+            "enabled = true\n"
+            "default_tts = 'supertonic'\n"
+            "default_stt = 'mock'\n"
+            "supertonic_binary = '/bin/echo'\n"
+            "supertonic_voice = 'M2'\n"
+            "supertonic_lang = 'pl'\n"
+        ),
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    assert called is False
+    tts_dependencies = payload["voice_tts_voice_model"]["dependency_status"]["value"]
+    assert tts_dependencies["supertonic_voice"] == "unknown"
+    warnings = _runtime_warning_messages(payload)
+    assert any("voice list requires manual diagnostic" in message for message in warnings)
+
+
 def test_runtime_settings_warnings_include_stt_unavailable_when_voice_enabled(
     tmp_path: Path,
 ) -> None:
@@ -2455,21 +2896,18 @@ def test_runtime_settings_warnings_include_missing_stt_local_model_for_selected_
     assert any("STT model" in message or "local model" in message for message in warnings)
 
 
-def test_runtime_settings_warns_when_supertonic_voice_is_not_in_cli_voice_list(
+def test_runtime_settings_warns_supertonic_voice_requires_manual_diagnostic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import jarvis.api.routes_runtime as routes_runtime
 
+    called = False
+
     def fake_run(command, **_: object) -> object:
-        assert command == ["/bin/echo", "list-voices"]
-
-        class _CompletedProcess:
-            returncode = 0
-            stdout = "M1 F1"
-            stderr = ""
-
-        return _CompletedProcess()
+        nonlocal called
+        called = True
+        raise AssertionError(f"unexpected subprocess probe: {command}")
 
     monkeypatch.setattr(routes_runtime.subprocess, "run", fake_run)
 
@@ -2496,8 +2934,9 @@ def test_runtime_settings_warns_when_supertonic_voice_is_not_in_cli_voice_list(
         app.close()
 
     assert status == 200
+    assert called is False
     warnings = _runtime_warning_messages(payload)
-    assert any("Configured supertonic voice 'M2' is not available" in message for message in warnings)
+    assert any("voice list requires manual diagnostic" in message for message in warnings)
 
 
 def test_runtime_settings_warnings_when_tools_are_shown_but_provider_does_not_support_tools(
@@ -2619,7 +3058,8 @@ def test_get_runtime_settings_includes_brain_provider_capabilities(app: DaemonAp
     assert mock_provider["fast_supported"]["value"] in {"yes", "no", "unknown"}
     assert mock_provider["streaming_support"]["value"] in {"yes", "no", "unknown"}
     assert mock_provider["tools_support"]["value"] in {"yes", "no", "unknown"}
-    assert mock_provider["provider_credentials_status"]["value"] in {"yes", "no", "unknown"}
+    assert mock_provider["provider_command_status"]["value"] in {"yes", "no", "unknown"}
+    assert mock_provider["provider_credentials_status"]["value"] == "unknown"
 
 
 def test_post_runtime_settings_is_readonly(app: DaemonApp) -> None:

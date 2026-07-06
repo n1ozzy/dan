@@ -36,12 +36,13 @@ LEGACY_GUIDANCE = [
 ]
 
 KNOWN_SOURCES = frozenset({"config", "settings", "default", "runtime_detected", "unknown"})
-KNOWN_STATUSES = frozenset({"ok", "missing", "invalid", "unknown"})
+KNOWN_STATUSES = frozenset({"ok", "missing", "invalid", "unsupported", "unknown"})
 PERSONA_PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 KNOWN_PROVIDER_EFFORT_LEVELS = ("low", "medium", "high")
 KNOWN_PROVIDER_SUPPORT_UNKNOWN = "unknown"
 KNOWN_PROVIDER_SUPPORT_YES = "yes"
 KNOWN_PROVIDER_SUPPORT_NO = "no"
+SUPERTONIC_VOICE_MANUAL_DIAGNOSTIC_WARNING = "Supertonic voice list requires manual diagnostic."
 
 PROVIDER_PRESET: dict[str, dict[str, Any]] = {
     "mock": {
@@ -78,6 +79,48 @@ PROVIDER_PRESET: dict[str, dict[str, Any]] = {
         "tools_support": KNOWN_PROVIDER_SUPPORT_YES,
     },
 }
+
+LOCAL_RUNTIME_PROBES: tuple[dict[str, Any], ...] = (
+    {
+        "id": "ollama",
+        "label": "Ollama",
+        "kind": "Local",
+        "commands": ("ollama",),
+        "model_env": ("JARVIS_OLLAMA_MODEL", "OLLAMA_MODEL"),
+    },
+    {
+        "id": "mlx",
+        "label": "MLX",
+        "kind": "Local",
+        "commands": ("mlx_lm.generate", "mlx_lm", "python"),
+        "model_env": ("JARVIS_MLX_MODEL", "MLX_MODEL"),
+        "planned": True,
+    },
+    {
+        "id": "llama_cpp_metal",
+        "label": "llama.cpp / Metal",
+        "kind": "Local",
+        "commands": ("llama-server", "llama-cli", "main"),
+        "model_env": ("JARVIS_LLAMA_CPP_MODEL", "LLAMA_CPP_MODEL"),
+        "planned": True,
+    },
+    {
+        "id": "bielik",
+        "label": "Bielik",
+        "kind": "Local model",
+        "commands": (),
+        "model_env": ("JARVIS_BIELIK_MODEL", "BIELIK_MODEL"),
+        "planned": True,
+    },
+    {
+        "id": "mistral",
+        "label": "Mistral local",
+        "kind": "Local model",
+        "commands": (),
+        "model_env": ("JARVIS_MISTRAL_MODEL", "MISTRAL_MODEL"),
+        "planned": True,
+    },
+)
 
 
 def _normalize_source(value: str | None) -> str:
@@ -191,6 +234,80 @@ def _normalize_new_turn_source(raw_source: Any) -> str | None:
     return source
 
 
+def _empty_barge_in_snapshot() -> dict[str, Any]:
+    return {
+        "interrupted_previous_response": False,
+        "interruption_attributed_to_turn_id": None,
+        "interrupted_turn_id": None,
+        "cancelled_speech_id": None,
+        "cancellation_reason": None,
+        "interruption_reason": None,
+        "previous_turn_id": None,
+        "new_turn_source": None,
+        "interruption_source": None,
+    }
+
+
+def _normalized_optional_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _barge_in_snapshot_from_payload(
+    payload: dict[str, Any],
+    *,
+    event_turn_id: Any = None,
+) -> dict[str, Any]:
+    attributed_turn_id = _normalized_optional_text(payload.get("turn_id")) or _normalized_optional_text(
+        event_turn_id
+    )
+    if attributed_turn_id is None:
+        return _empty_barge_in_snapshot()
+
+    snapshot = _empty_barge_in_snapshot()
+    snapshot["interrupted_previous_response"] = True
+    snapshot["interruption_attributed_to_turn_id"] = attributed_turn_id
+    snapshot["interrupted_turn_id"] = attributed_turn_id
+    snapshot["previous_turn_id"] = attributed_turn_id
+
+    cancelled_speech_id = _normalized_optional_text(payload.get("request_id"))
+    if cancelled_speech_id is not None:
+        snapshot["cancelled_speech_id"] = cancelled_speech_id
+
+    reason = _normalized_optional_text(payload.get("reason"))
+    if reason is not None:
+        snapshot["cancellation_reason"] = reason
+        snapshot["interruption_reason"] = reason
+
+    interruption_source = _normalize_new_turn_source(payload.get("interruption_source"))
+    if interruption_source is not None:
+        snapshot["new_turn_source"] = interruption_source
+        snapshot["interruption_source"] = interruption_source
+
+    return snapshot
+
+
+def _barge_in_attributed_turn_id(snapshot: dict[str, Any]) -> str | None:
+    for key in (
+        "interruption_attributed_to_turn_id",
+        "interrupted_turn_id",
+        "previous_turn_id",
+    ):
+        attributed = _normalized_optional_text(snapshot.get(key))
+        if attributed is not None:
+            return attributed
+    return None
+
+
+def _barge_in_matches_turn(snapshot: dict[str, Any], turn_id: Any) -> bool:
+    normalized_turn_id = _normalized_optional_text(turn_id)
+    if normalized_turn_id is None:
+        return False
+    return _barge_in_attributed_turn_id(snapshot) == normalized_turn_id
+
+
 def _safe_has_credential(*vars_: str) -> str:
     for var_name in vars_:
         if str(os.environ.get(var_name, "")).strip():
@@ -302,6 +419,13 @@ def _safe_probe_supertonic_voice(binary_path: str | None, voice: str | None) -> 
         None,
         f"Configured supertonic voice {normalized_voice!r} is not available: {', '.join(sorted(available))}",
     )
+
+
+def _supertonic_voice_status_without_probe(voice: str | None) -> tuple[str, str | None, str | None]:
+    normalized_voice = (voice or "").strip()
+    if not normalized_voice:
+        return ("missing", None, "Supertonic profile is selected but supertonic_voice is missing.")
+    return ("unknown", None, SUPERTONIC_VOICE_MANUAL_DIAGNOSTIC_WARNING)
 
 
 def _safe_probe_playback_binary(explicit: str) -> tuple[str, str | None, str | None]:
@@ -561,7 +685,7 @@ def _latest_provider_error(app: DaemonApp, provider_name: str) -> tuple[str | No
     return None, "ok"
 
 
-def _provider_credentials_projection(
+def _provider_command_projection(
     *,
     provider_name: str,
     adapter: Any,
@@ -601,6 +725,22 @@ def _provider_credentials_projection(
         effective_value=value,
         source="runtime_detected",
         status=status,
+        editable_later=False,
+        warning=warning,
+    )
+
+
+def _provider_credentials_projection(*, provider_name: str) -> dict[str, Any]:
+    warning = (
+        "Mock provider does not require external credentials."
+        if provider_name == "mock"
+        else "Credential status is not exposed by safe runtime checks."
+    )
+    return _projection(
+        value=KNOWN_PROVIDER_SUPPORT_UNKNOWN,
+        effective_value=KNOWN_PROVIDER_SUPPORT_UNKNOWN,
+        source="runtime_detected",
+        status="unknown",
         editable_later=False,
         warning=warning,
     )
@@ -699,10 +839,11 @@ def _provider_capabilities_for_adapter(
 
     context_budget = app.config.brain.context_budget_chars
     latest_error, latest_error_status = _latest_provider_error(app, adapter_name)
-    credentials_projection = _provider_credentials_projection(
+    command_projection = _provider_command_projection(
         provider_name=adapter_name,
         adapter=adapter,
     )
+    credentials_projection = _provider_credentials_projection(provider_name=adapter_name)
 
     return {
         "name": adapter_name,
@@ -775,6 +916,14 @@ def _provider_capabilities_for_adapter(
             status="ok" if tools_support in {KNOWN_PROVIDER_SUPPORT_YES, KNOWN_PROVIDER_SUPPORT_NO} else "unknown",
             editable_later=False,
             warning=adapter_warning,
+        ),
+        "provider_command_status": _projection(
+            value=command_projection["value"],
+            effective_value=command_projection["effective_value"],
+            source="runtime_detected",
+            status=command_projection["status"],
+            editable_later=False,
+            warning=command_projection["warning"],
         ),
         "provider_credentials_status": _projection(
             value=credentials_projection["value"],
@@ -923,16 +1072,11 @@ def _collect_voice_runtime_compatibility_warnings(
                     warnings,
                     "Supertonic profile is selected but supertonic_lang is missing.",
                 )
-            if tts_binary_status == "ok":
-                voice_status, _, voice_warning = _safe_probe_supertonic_voice(
-                    tts_binary,
-                    supertonic_voice,
+            if supertonic_voice:
+                _append_compatibility_warning(
+                    warnings,
+                    SUPERTONIC_VOICE_MANUAL_DIAGNOSTIC_WARNING,
                 )
-                if voice_status != "ok":
-                    _append_compatibility_warning(
-                        warnings,
-                        voice_warning or "Configured supertonic voice is unavailable.",
-                    )
 
         if not app.voice_stt and stt_engine:
             _append_compatibility_warning(warnings, "Voice is enabled but STT engine is unavailable.")
@@ -1494,13 +1638,7 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
         return {
             "latest_safe_error": None,
             "latest_cancel_reason": None,
-            "latest_barge_in": {
-                "interrupted_previous_response": False,
-                "cancelled_speech_id": None,
-                "cancellation_reason": None,
-                "previous_turn_id": None,
-                "new_turn_source": None,
-            },
+            "latest_barge_in": _empty_barge_in_snapshot(),
             "status": "unknown",
         }
 
@@ -1508,7 +1646,7 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
     try:
         rows = conn.execute(
             """
-            SELECT type, payload_json
+            SELECT type, payload_json, turn_id
             FROM events
             WHERE type IN (?, ?, ?, ?, ?)
             ORDER BY id DESC
@@ -1524,15 +1662,9 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
         ).fetchall()
         latest_safe_error = None
         latest_cancel_reason = None
-        latest_barge_in = {
-            "interrupted_previous_response": False,
-            "cancelled_speech_id": None,
-            "cancellation_reason": None,
-            "previous_turn_id": None,
-            "new_turn_source": None,
-        }
+        latest_barge_in = _empty_barge_in_snapshot()
 
-        for event_type, payload_json in rows:
+        for event_type, payload_json, event_turn_id in rows:
             try:
                 payload = json.loads(str(payload_json))
             except (TypeError, json.JSONDecodeError):
@@ -1554,21 +1686,16 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
                     latest_cancel_reason = raw.strip()
 
             if str(event_type) == EventType.VOICE_SPEAK_CANCELLED and not latest_barge_in["interrupted_previous_response"]:
-                raw_speech_id = payload.get("request_id")
-                if isinstance(raw_speech_id, str) and raw_speech_id.strip():
-                    latest_barge_in["cancelled_speech_id"] = raw_speech_id.strip()
-                raw_turn_id = payload.get("turn_id")
-                if isinstance(raw_turn_id, str) and raw_turn_id.strip():
-                    latest_barge_in["previous_turn_id"] = raw_turn_id.strip()
-                raw_reason = payload.get("reason")
-                if isinstance(raw_reason, str) and raw_reason.strip():
-                    latest_barge_in["cancellation_reason"] = raw_reason.strip()
-                source = _normalize_new_turn_source(payload.get("interruption_source"))
-                if source is not None:
-                    latest_barge_in["new_turn_source"] = source
-                latest_barge_in["interrupted_previous_response"] = True
+                latest_barge_in = _barge_in_snapshot_from_payload(
+                    payload,
+                    event_turn_id=event_turn_id,
+                )
 
-            if latest_safe_error is not None and latest_cancel_reason is not None:
+            if (
+                latest_safe_error is not None
+                and latest_cancel_reason is not None
+                and latest_barge_in["interrupted_previous_response"]
+            ):
                 break
 
         return {
@@ -1581,18 +1708,37 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
         return {
             "latest_safe_error": None,
             "latest_cancel_reason": None,
-            "latest_barge_in": {
-                "interrupted_previous_response": False,
-                "cancelled_speech_id": None,
-                "cancellation_reason": None,
-                "previous_turn_id": None,
-                "new_turn_source": None,
-            },
+            "latest_barge_in": _empty_barge_in_snapshot(),
             "status": "invalid",
             "warning": str(exc),
         }
     finally:
         close_quietly(conn)
+
+
+def _latest_barge_in_for_turn(conn: sqlite3.Connection, turn_id: str) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT turn_id, payload_json
+        FROM events
+        WHERE type = ?
+        ORDER BY id DESC
+        LIMIT 120
+        """,
+        (EventType.VOICE_SPEAK_CANCELLED,),
+    ).fetchall()
+    for row in rows:
+        try:
+            event_turn_id = row["turn_id"]
+            payload_json = row["payload_json"]
+        except (KeyError, TypeError):
+            event_turn_id = row[0]
+            payload_json = row[1]
+        payload = _safe_parse_json_dict(payload_json)
+        snapshot = _barge_in_snapshot_from_payload(payload, event_turn_id=event_turn_id)
+        if _barge_in_matches_turn(snapshot, turn_id):
+            return snapshot
+    return _empty_barge_in_snapshot()
 
 
 def _latest_turn_trace_projection(
@@ -1744,6 +1890,14 @@ def _latest_turn_trace_projection(
                     editable_later=False,
                     warning="No turns are available yet.",
                 ),
+                "interruption_reason": _projection(
+                    value=None,
+                    effective_value=None,
+                    source=source,
+                    status="missing",
+                    editable_later=False,
+                    warning="No turns are available yet.",
+                ),
                 "interrupted_previous_response": _projection(
                     value=False,
                     effective_value=False,
@@ -1768,7 +1922,31 @@ def _latest_turn_trace_projection(
                     editable_later=False,
                     warning="No turns are available yet.",
                 ),
+                "interrupted_turn_id": _projection(
+                    value=None,
+                    effective_value=None,
+                    source=source,
+                    status="missing",
+                    editable_later=False,
+                    warning="No turns are available yet.",
+                ),
+                "interruption_attributed_to_turn_id": _projection(
+                    value=None,
+                    effective_value=None,
+                    source=source,
+                    status="missing",
+                    editable_later=False,
+                    warning="No turns are available yet.",
+                ),
                 "new_turn_source": _projection(
+                    value=None,
+                    effective_value=None,
+                    source=source,
+                    status="missing",
+                    editable_later=False,
+                    warning="No turns are available yet.",
+                ),
+                "interruption_source": _projection(
                     value=None,
                     effective_value=None,
                     source=source,
@@ -1815,31 +1993,15 @@ def _latest_turn_trace_projection(
 
         effort_value, effort_status = _read_setting(settings, "effort")
         fast_value, fast_status = _read_setting(settings, "fast")
-        raw_event_snapshot = event_snapshot or {}
-        barge_in_snapshot = raw_event_snapshot.get("latest_barge_in", {})
-        if not isinstance(barge_in_snapshot, dict):
-            barge_in_snapshot = {}
+        barge_in_snapshot = _latest_barge_in_for_turn(conn, turn_id)
         interrupted_previous_response = bool(barge_in_snapshot.get("interrupted_previous_response"))
-        cancelled_speech_id = (
-            str(barge_in_snapshot["cancelled_speech_id"]).strip()
-            if isinstance(barge_in_snapshot.get("cancelled_speech_id"), str)
-            else None
-        )
-        barge_in_cancellation_reason = (
-            str(barge_in_snapshot["cancellation_reason"]).strip()
-            if isinstance(barge_in_snapshot.get("cancellation_reason"), str)
-            else None
-        )
-        barge_previous_turn_id = (
-            str(barge_in_snapshot["previous_turn_id"]).strip()
-            if isinstance(barge_in_snapshot.get("previous_turn_id"), str)
-            else None
-        )
-        barge_new_turn_source = (
-            str(barge_in_snapshot["new_turn_source"]).strip()
-            if isinstance(barge_in_snapshot.get("new_turn_source"), str)
-            else None
-        )
+        cancelled_speech_id = _normalized_optional_text(barge_in_snapshot.get("cancelled_speech_id"))
+        barge_in_cancellation_reason = _normalized_optional_text(barge_in_snapshot.get("cancellation_reason"))
+        barge_previous_turn_id = _normalized_optional_text(barge_in_snapshot.get("previous_turn_id"))
+        barge_interrupted_turn_id = _normalized_optional_text(barge_in_snapshot.get("interrupted_turn_id"))
+        barge_attributed_turn_id = _barge_in_attributed_turn_id(barge_in_snapshot)
+        barge_new_turn_source = _normalized_optional_text(barge_in_snapshot.get("new_turn_source"))
+        barge_interruption_source = _normalized_optional_text(barge_in_snapshot.get("interruption_source"))
 
         events = conn.execute(
             """
@@ -1917,8 +2079,6 @@ def _latest_turn_trace_projection(
             raw_error = latest_turn["error"]
             if isinstance(raw_error, str) and raw_error.strip():
                 cancellation_reason = raw_error.strip()
-        if barge_previous_turn_id is None and interrupted_previous_response:
-            barge_previous_turn_id = turn_id
         if cancellation_reason is None and barge_in_cancellation_reason is not None:
             cancellation_reason = barge_in_cancellation_reason
 
@@ -2091,6 +2251,13 @@ def _latest_turn_trace_projection(
                 status="ok" if cancellation_reason is None else "invalid",
                 editable_later=False,
             ),
+            "interruption_reason": _projection(
+                value=barge_in_cancellation_reason,
+                effective_value=barge_in_cancellation_reason,
+                source=source,
+                status="ok" if barge_in_cancellation_reason is not None else "missing",
+                editable_later=False,
+            ),
             "interrupted_previous_response": _projection(
                 value=interrupted_previous_response,
                 effective_value=interrupted_previous_response,
@@ -2115,11 +2282,32 @@ def _latest_turn_trace_projection(
                 status="ok" if barge_previous_turn_id is not None else "missing",
                 editable_later=False,
             ),
+            "interrupted_turn_id": _projection(
+                value=barge_interrupted_turn_id,
+                effective_value=barge_interrupted_turn_id,
+                source=source,
+                status="ok" if barge_interrupted_turn_id is not None else "missing",
+                editable_later=False,
+            ),
+            "interruption_attributed_to_turn_id": _projection(
+                value=barge_attributed_turn_id,
+                effective_value=barge_attributed_turn_id,
+                source=source,
+                status="ok" if barge_attributed_turn_id is not None else "missing",
+                editable_later=False,
+            ),
             "new_turn_source": _projection(
                 value=barge_new_turn_source,
                 effective_value=barge_new_turn_source,
                 source=source,
                 status="ok" if barge_new_turn_source is not None else "missing",
+                editable_later=False,
+            ),
+            "interruption_source": _projection(
+                value=barge_interruption_source,
+                effective_value=barge_interruption_source,
+                source=source,
+                status="ok" if barge_interruption_source is not None else "missing",
                 editable_later=False,
             ),
             "timestamps": _projection(
@@ -2404,6 +2592,252 @@ def _layer_projection(
             status="ok" if not warning_value else _normalize_status(readiness),
             editable_later=False,
             warning=None if not warning_value else "Warnings detected.",
+            ),
+        }
+
+
+def _runtime_projection_value(projection: Any) -> Any:
+    if isinstance(projection, dict):
+        if "effective_value" in projection:
+            return projection.get("effective_value")
+        return projection.get("value")
+    return None
+
+
+def _normalize_current_turn_source(raw_source: Any) -> str:
+    source = str(raw_source).strip().lower() if raw_source is not None else ""
+    if source in {"ptt", "voice", "voice_ptt", "barge_in"}:
+        return "voice_ptt"
+    if source in {"text", "panel", "tool"}:
+        return source
+    if source in {"api", "cli"}:
+        return "text"
+    return "unknown"
+
+
+def _current_turn_state_projection(
+    app: DaemonApp,
+    *,
+    latest_turn_trace: dict[str, Any],
+    queue_snapshot: dict[str, Any],
+    event_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    source = "runtime_detected" if app.started else "unknown"
+    trace = latest_turn_trace if isinstance(latest_turn_trace, dict) else {}
+    queue = queue_snapshot if isinstance(queue_snapshot, dict) else {}
+    events = event_snapshot if isinstance(event_snapshot, dict) else {}
+    barge_in = events.get("latest_barge_in")
+    if not isinstance(barge_in, dict):
+        barge_in = {}
+
+    queue_counts = queue.get("counts")
+    if not isinstance(queue_counts, dict):
+        queue_counts = {}
+    queued_count = _safe_to_int(queue_counts.get("queued")) or 0
+    speaking_count = _safe_to_int(queue_counts.get("speaking")) or 0
+    active_speech_count = _safe_to_int(queue.get("active")) or 0
+    speech_pending = queued_count > 0 or active_speech_count > 0
+
+    generation_active = 0
+    try:
+        generation_active = app.voice_generation_registry.active_count()
+    except Exception:
+        generation_active = 0
+
+    active_leases = []
+    if app.started:
+        try:
+            active_leases = app.active_listening_leases()
+        except Exception:
+            active_leases = []
+    listening_active = len(active_leases) > 0
+    lease_source = None
+    for lease in active_leases:
+        raw_source = getattr(lease, "source", None)
+        if raw_source:
+            lease_source = raw_source
+            break
+
+    trace_turn_id = _runtime_projection_value(trace.get("turn_id"))
+    queue_turn_id = _normalized_optional_text(queue.get("latest_turn_id"))
+    trace_conversation_id = _runtime_projection_value(trace.get("conversation_id"))
+    trace_source = _runtime_projection_value(trace.get("source"))
+    event_attributed_turn_id = _barge_in_attributed_turn_id(barge_in)
+    event_relevant = False
+    if event_attributed_turn_id is not None:
+        if _barge_in_matches_turn(barge_in, trace_turn_id):
+            event_relevant = True
+        elif speech_pending and event_attributed_turn_id == queue_turn_id:
+            event_relevant = True
+        elif listening_active:
+            event_relevant = True
+
+    trace_attributed_turn_id = (
+        _normalized_optional_text(_runtime_projection_value(trace.get("interruption_attributed_to_turn_id")))
+        or _normalized_optional_text(_runtime_projection_value(trace.get("interrupted_turn_id")))
+        or _normalized_optional_text(_runtime_projection_value(trace.get("previous_turn_id")))
+    )
+    trace_interrupted = (
+        bool(_runtime_projection_value(trace.get("interrupted_previous_response")))
+        and trace_attributed_turn_id is not None
+        and trace_attributed_turn_id == _normalized_optional_text(trace_turn_id)
+    )
+
+    if event_relevant:
+        interrupted = bool(barge_in.get("interrupted_previous_response"))
+        interruption_attributed_to_turn_id = event_attributed_turn_id
+        interrupted_turn_id = _normalized_optional_text(barge_in.get("interrupted_turn_id")) or event_attributed_turn_id
+        interruption_reason = (
+            _normalized_optional_text(barge_in.get("interruption_reason"))
+            or _normalized_optional_text(barge_in.get("cancellation_reason"))
+        )
+        cancelled_speech_id = _normalized_optional_text(barge_in.get("cancelled_speech_id"))
+        interruption_source = (
+            _normalized_optional_text(barge_in.get("interruption_source"))
+            or _normalized_optional_text(barge_in.get("new_turn_source"))
+        )
+    elif trace_interrupted:
+        interrupted = True
+        interruption_attributed_to_turn_id = trace_attributed_turn_id
+        interrupted_turn_id = (
+            _normalized_optional_text(_runtime_projection_value(trace.get("interrupted_turn_id")))
+            or trace_attributed_turn_id
+        )
+        interruption_reason = (
+            _normalized_optional_text(_runtime_projection_value(trace.get("interruption_reason")))
+            or _normalized_optional_text(_runtime_projection_value(trace.get("cancellation_reason")))
+        )
+        cancelled_speech_id = _normalized_optional_text(_runtime_projection_value(trace.get("cancelled_speech_id")))
+        interruption_source = (
+            _normalized_optional_text(_runtime_projection_value(trace.get("interruption_source")))
+            or _normalized_optional_text(_runtime_projection_value(trace.get("new_turn_source")))
+        )
+    else:
+        interrupted = False
+        interruption_attributed_to_turn_id = None
+        interrupted_turn_id = None
+        interruption_reason = None
+        cancelled_speech_id = None
+        interruption_source = None
+
+    if listening_active:
+        current_turn_source = _normalize_current_turn_source(interruption_source or lease_source or "voice_ptt")
+    else:
+        current_turn_source = _normalize_current_turn_source(interruption_source or trace_source)
+
+    if speech_pending:
+        current_turn_id = queue_turn_id or trace_turn_id
+    elif generation_active > 0:
+        current_turn_id = trace_turn_id
+    elif listening_active and current_turn_source == "voice_ptt":
+        current_turn_id = None
+    else:
+        current_turn_id = trace_turn_id
+
+    current_conversation_id = trace_conversation_id if current_turn_id is not None else None
+    current_speech_id = queue.get("latest_voice_id") if speaking_count > 0 else None
+    latest_safe_error = _runtime_projection_value(trace.get("latest_safe_error"))
+
+    if not app.started:
+        generation_state = "unknown"
+    elif latest_safe_error:
+        generation_state = "error"
+    elif listening_active:
+        generation_state = "listening"
+    elif speaking_count > 0 or queued_count > 0:
+        generation_state = "speaking"
+    elif generation_active > 0:
+        generation_state = "generating"
+    elif interrupted and interruption_reason:
+        generation_state = "cancelled"
+    else:
+        generation_state = "idle"
+
+    turn_missing_warning = (
+        "Current voice PTT turn has no persisted turn id yet."
+        if listening_active and current_turn_id is None
+        else None
+    )
+
+    return {
+        "current_turn_id": _projection(
+            value=current_turn_id,
+            effective_value=current_turn_id,
+            source=source,
+            status="ok" if current_turn_id is not None else "missing",
+            editable_later=False,
+            warning=turn_missing_warning,
+        ),
+        "current_conversation_id": _projection(
+            value=current_conversation_id,
+            effective_value=current_conversation_id,
+            source=source,
+            status="ok" if current_conversation_id is not None else "missing",
+            editable_later=False,
+            warning=turn_missing_warning,
+        ),
+        "current_turn_source": _projection(
+            value=current_turn_source,
+            effective_value=current_turn_source,
+            source=source,
+            status="ok" if current_turn_source != "unknown" else "unknown",
+            editable_later=False,
+        ),
+        "generation_state": _projection(
+            value=generation_state,
+            effective_value=generation_state,
+            source=source,
+            status="ok" if generation_state != "unknown" else "unknown",
+            editable_later=False,
+        ),
+        "current_speech_id": _projection(
+            value=current_speech_id,
+            effective_value=current_speech_id,
+            source=source,
+            status="ok" if current_speech_id is not None else "missing",
+            editable_later=False,
+        ),
+        "interrupted_previous_response": _projection(
+            value=interrupted if app.started else "unknown",
+            effective_value=interrupted if app.started else "unknown",
+            source=source,
+            status="ok" if app.started else "unknown",
+            editable_later=False,
+        ),
+        "interrupted_turn_id": _projection(
+            value=interrupted_turn_id,
+            effective_value=interrupted_turn_id,
+            source=source,
+            status="ok" if interrupted_turn_id is not None else "missing",
+            editable_later=False,
+        ),
+        "interruption_attributed_to_turn_id": _projection(
+            value=interruption_attributed_to_turn_id,
+            effective_value=interruption_attributed_to_turn_id,
+            source=source,
+            status="ok" if interruption_attributed_to_turn_id is not None else "missing",
+            editable_later=False,
+        ),
+        "interruption_reason": _projection(
+            value=interruption_reason,
+            effective_value=interruption_reason,
+            source=source,
+            status="ok" if interruption_reason is not None else "missing",
+            editable_later=False,
+        ),
+        "interruption_source": _projection(
+            value=interruption_source,
+            effective_value=interruption_source,
+            source=source,
+            status="ok" if interruption_source is not None else "missing",
+            editable_later=False,
+        ),
+        "cancelled_speech_id": _projection(
+            value=cancelled_speech_id,
+            effective_value=cancelled_speech_id,
+            source=source,
+            status="ok" if cancelled_speech_id is not None else "missing",
+            editable_later=False,
         ),
     }
 
@@ -2777,8 +3211,7 @@ def _voice_layer_projection_tts(
         warnings.append("Configured supertonic language is empty.")
     supertonic_voice_status = "ok"
     if configured_tts == "supertonic":
-        supertonic_voice_status, _, supertonic_voice_warning = _safe_probe_supertonic_voice(
-            tts_binary,
+        supertonic_voice_status, _, supertonic_voice_warning = _supertonic_voice_status_without_probe(
             supertonic_voice,
         )
         if supertonic_voice_warning:
@@ -3202,6 +3635,1415 @@ def _tools_projection(app: DaemonApp) -> dict[str, Any]:
     }
 
 
+def _preview_disabled(value: Any, reason: str) -> dict[str, Any]:
+    return {"value": value, "reason": reason}
+
+
+def _preview_field(
+    *,
+    section: str,
+    field_id: str,
+    label: str,
+    current: Any,
+    effective: Any | None = None,
+    status: str = "ok",
+    source: str = "runtime_detected",
+    allowed_values: list[Any] | tuple[Any, ...] | None = None,
+    disabled_values: list[dict[str, Any]] | None = None,
+    warning: str | None = None,
+    blocker: str | None = None,
+    dependencies: list[str] | tuple[str, ...] | None = None,
+    invalidates: list[str] | tuple[str, ...] | None = None,
+    requires_restart: bool = False,
+    requires_reload: bool = False,
+    editable_now: bool = False,
+    editable_later: bool = False,
+    developer_only: bool = False,
+) -> dict[str, Any]:
+    return {
+        "id": f"{section}.{field_id}",
+        "label": label,
+        "current": current,
+        "effective": current if effective is None else effective,
+        "status": _normalize_status(status),
+        "source": _normalize_source(source),
+        "allowed_values": list(allowed_values or []),
+        "disabled_values": list(disabled_values or []),
+        "warning": warning,
+        "blocker": blocker,
+        "dependencies": list(dependencies or []),
+        "invalidates": list(invalidates or []),
+        "requires_restart": bool(requires_restart),
+        "requires_reload": bool(requires_reload),
+        "editable_now": bool(editable_now),
+        "editable_later": bool(editable_later),
+        "developer_only": bool(developer_only),
+    }
+
+
+def _preview_section(section_id: str, label: str, fields: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "id": section_id,
+        "label": label,
+        "fields": fields,
+    }
+
+
+def _support_bool(value: Any) -> bool | None:
+    if isinstance(value, dict):
+        value = _runtime_projection_value(value)
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower() if value is not None else ""
+    if normalized in {"yes", "true", "supported", "available", "ok", "enabled"}:
+        return True
+    if normalized in {"no", "false", "unsupported", "missing", "disabled"}:
+        return False
+    return None
+
+
+def _support_word(value: Any) -> str:
+    supported = _support_bool(value)
+    if supported is True:
+        return KNOWN_PROVIDER_SUPPORT_YES
+    if supported is False:
+        return KNOWN_PROVIDER_SUPPORT_NO
+    return KNOWN_PROVIDER_SUPPORT_UNKNOWN
+
+
+def _projection_status(projection: Any) -> str:
+    if isinstance(projection, dict):
+        return _normalize_status(str(projection.get("status", "unknown")))
+    return "unknown"
+
+
+def _projection_warning(projection: Any) -> str | None:
+    if isinstance(projection, dict):
+        warning = projection.get("warning")
+        return str(warning) if warning else None
+    return None
+
+
+def _safe_command_probe(commands: tuple[str, ...] | list[str]) -> tuple[str, str | None, str | None]:
+    last_candidate = None
+    for command in commands:
+        status, resolved, exists = _safe_is_executable(command)
+        if resolved:
+            last_candidate = resolved
+        if exists:
+            return "ok", command, resolved
+    return "missing", None, last_candidate
+
+
+def _safe_model_env_hints(env_names: tuple[str, ...] | list[str]) -> list[dict[str, Any]]:
+    models: list[dict[str, Any]] = []
+    for env_name in env_names:
+        raw = str(os.environ.get(env_name, "")).strip()
+        if not raw:
+            continue
+        models.append(
+            {
+                "id": raw,
+                "label": raw,
+                "source": f"env:{env_name}",
+                "available": True,
+            }
+        )
+    return models
+
+
+def _build_local_capabilities(app: DaemonApp) -> dict[str, Any]:
+    runtimes: list[dict[str, Any]] = []
+    all_models: list[dict[str, Any]] = []
+    default_model = str(getattr(app.config.brain, "default_model", "") or "").strip()
+    for probe in LOCAL_RUNTIME_PROBES:
+        runtime_id = str(probe["id"])
+        commands = tuple(probe.get("commands", ()))
+        command_status, command_name, command_path = _safe_command_probe(commands)
+        models = _safe_model_env_hints(tuple(probe.get("model_env", ())))
+        if default_model and runtime_id in default_model.lower() and not models:
+            models.append(
+                {
+                    "id": default_model,
+                    "label": default_model,
+                    "source": "config:brain.default_model",
+                    "available": False,
+                }
+            )
+        available = command_status == "ok"
+        configured = available or bool(models)
+        model_ready = any(bool(model.get("available")) for model in models)
+        status = "ok" if available and (model_ready or runtime_id not in {"ollama", "bielik", "mistral"}) else "missing"
+        warning = None
+        blocker = None
+        if not available and not models:
+            warning = "Local runtime is not detected from safe command/env probes."
+        if runtime_id in {"ollama", "bielik", "mistral"} and not models:
+            blocker = "Local provider has no safely detected local model."
+        runtimes.append(
+            {
+                "id": runtime_id,
+                "label": str(probe["label"]),
+                "kind": str(probe.get("kind", "Local")),
+                "planned": bool(probe.get("planned", False)),
+                "configured": configured,
+                "available": available,
+                "status": _normalize_status(status),
+                "command": command_name,
+                "command_path": command_path,
+                "models": models,
+                "local_models": models,
+                "warning": warning,
+                "blocker": blocker,
+            }
+        )
+        all_models.extend(models)
+
+    return {
+        "runtimes": runtimes,
+        "local_runtime_status": "ok" if any(runtime["available"] for runtime in runtimes) else "missing",
+        "local_models": all_models,
+    }
+
+
+def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
+    provider_id = str(raw.get("name") or raw.get("id") or "").strip()
+    supported_models = [str(model) for model in raw.get("supported_models", []) if str(model)]
+    current_model_projection = raw.get("current_model")
+    allowed_efforts = _runtime_projection_value(raw.get("allowed_effort_values")) or []
+    if not isinstance(allowed_efforts, list):
+        allowed_efforts = []
+    command = raw.get("provider_command_status")
+    command_value = _support_word(command)
+    configured = bool(raw.get("configured", False))
+    available = bool(raw.get("available", False)) and command_value != KNOWN_PROVIDER_SUPPORT_NO
+    status = _normalize_status(str(raw.get("status") or "ok"))
+    warnings = [
+        warning
+        for warning in (
+            raw.get("warning"),
+            _projection_warning(raw.get("current_model")),
+            _projection_warning(raw.get("effort")),
+            _projection_warning(raw.get("fast")),
+            _projection_warning(raw.get("latest_error")),
+            _projection_warning(command),
+        )
+        if warning
+    ]
+    if not available and configured:
+        status = "missing"
+        warnings.append("Provider is configured but not available from safe runtime probes.")
+    models = [
+        {
+            "id": model,
+            "label": model,
+            "available": True,
+            "configured": model == _runtime_projection_value(current_model_projection),
+        }
+        for model in supported_models
+    ]
+    return {
+        "id": provider_id,
+        "label": str(raw.get("display_name") or provider_id),
+        "kind": str(raw.get("kind") or "Provider"),
+        "configured": configured,
+        "available": available,
+        "models": models,
+        "current_model": _runtime_projection_value(current_model_projection),
+        "allowed_effort_values": allowed_efforts,
+        "fast_supported": _support_bool(raw.get("fast_supported")) is True,
+        "context_info": {
+            "budget_chars": _runtime_projection_value(raw.get("context_window_chars")),
+            "source": "config",
+        },
+        "tools_supported": _support_bool(raw.get("tools_support")) is True,
+        "streaming_supported": _support_bool(raw.get("streaming_support")) is True,
+        "command_status": command_value,
+        "latest_provider_error": _runtime_projection_value(raw.get("latest_error")),
+        "status": status,
+        "warnings": list(dict.fromkeys(str(item) for item in warnings if item)),
+        "developer_only": provider_id == "mock" or str(raw.get("kind")) == "Developer/Test",
+        "raw": raw,
+    }
+
+
+def _local_provider_capability_nodes(local_capabilities: dict[str, Any]) -> list[dict[str, Any]]:
+    providers: list[dict[str, Any]] = []
+    for runtime in local_capabilities.get("runtimes", []):
+        runtime_id = str(runtime.get("id") or "")
+        if not runtime_id:
+            continue
+        models = [
+            {
+                "id": str(model.get("id")),
+                "label": str(model.get("label") or model.get("id")),
+                "available": bool(model.get("available")),
+                "configured": False,
+            }
+            for model in runtime.get("models", [])
+            if model.get("id")
+        ]
+        available = bool(runtime.get("available")) and bool(models)
+        blocker = runtime.get("blocker")
+        if not available and not blocker:
+            blocker = "Local runtime or local model is missing."
+        providers.append(
+            {
+                "id": runtime_id,
+                "label": str(runtime.get("label") or runtime_id),
+                "kind": str(runtime.get("kind") or "Local"),
+                "configured": bool(runtime.get("configured")),
+                "available": available,
+                "models": models,
+                "current_model": models[0]["id"] if models else None,
+                "allowed_effort_values": [],
+                "fast_supported": False,
+                "context_info": {"budget_chars": None, "source": "unknown"},
+                "tools_supported": False,
+                "streaming_supported": bool(runtime.get("available")),
+                "command_status": KNOWN_PROVIDER_SUPPORT_YES
+                if runtime.get("available")
+                else KNOWN_PROVIDER_SUPPORT_NO,
+                "latest_provider_error": None,
+                "status": "ok" if available else "missing",
+                "warnings": [str(runtime.get("warning"))] if runtime.get("warning") else [],
+                "developer_only": False,
+                "blocker": blocker,
+                "local_runtime": True,
+            }
+        )
+    return providers
+
+
+def _build_brain_capabilities(
+    *,
+    brain_projection: dict[str, Any],
+    local_capabilities: dict[str, Any],
+) -> dict[str, Any]:
+    raw_providers = _runtime_projection_value(brain_projection.get("providers")) or []
+    providers = [
+        _normalize_brain_provider_capability(provider)
+        for provider in raw_providers
+        if isinstance(provider, dict)
+    ]
+    known_ids = {provider["id"] for provider in providers}
+    for provider in _local_provider_capability_nodes(local_capabilities):
+        if provider["id"] not in known_ids:
+            providers.append(provider)
+            known_ids.add(provider["id"])
+
+    current_provider = _runtime_projection_value(brain_projection.get("current_adapter"))
+    current_model = None
+    for provider in providers:
+        if provider["id"] == current_provider:
+            current_model = provider.get("current_model")
+            break
+    return {
+        "providers": providers,
+        "current_provider": current_provider,
+        "current_model": current_model,
+        "provider_sessions_are_memory": _runtime_projection_value(
+            brain_projection.get("provider_sessions_are_memory")
+        ),
+    }
+
+
+def _build_voice_capabilities(
+    app: DaemonApp,
+    *,
+    tts_projection: dict[str, Any],
+    stt_projection: dict[str, Any],
+    queue_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    configured_tts = str(app.config.voice.default_tts or "").strip()
+    configured_stt = str(app.config.voice.default_stt or "").strip()
+    tts_binary_status, tts_binary, _ = _safe_probe_tts_binary(
+        configured_tts,
+        str(app.config.voice.supertonic_binary or ""),
+    )
+    stt_package_status, stt_package_name = _safe_probe_stt_package(configured_stt)
+    playback_status, playback_binary, _ = _safe_probe_playback_binary(
+        str(app.config.voice.playback_binary or "")
+    )
+
+    tts_providers = [
+        {
+            "id": "mock",
+            "label": "Mock TTS",
+            "configured": configured_tts == "mock",
+            "available": True,
+            "models": [{"id": "mock", "label": "mock", "available": True}],
+            "voice_ids": [],
+            "voice_profiles": [],
+            "controls": {
+                "speed": False,
+                "style": False,
+                "stability": False,
+                "similarity": False,
+                "streaming": False,
+                "continuity": False,
+            },
+            "developer_only": True,
+            "status": "ok",
+        },
+        {
+            "id": "supertonic",
+            "label": "Supertonic",
+            "configured": configured_tts == "supertonic",
+            "available": tts_binary_status == "ok",
+            "models": [{"id": "supertonic", "label": "supertonic", "available": tts_binary_status == "ok"}],
+            "voice_ids": [app.config.voice.supertonic_voice] if app.config.voice.supertonic_voice else [],
+            "voice_profiles": [app.config.voice.supertonic_lang] if app.config.voice.supertonic_lang else [],
+            "controls": {
+                "speed": True,
+                "style": False,
+                "stability": False,
+                "similarity": False,
+                "streaming": False,
+                "continuity": bool(app.config.voice.broker_enabled),
+            },
+            "developer_only": False,
+            "status": "ok" if tts_binary_status == "ok" else "missing",
+            "binary": tts_binary,
+        },
+    ]
+    if configured_tts and configured_tts not in {"mock", "supertonic"}:
+        tts_providers.append(
+            {
+                "id": configured_tts,
+                "label": configured_tts,
+                "configured": True,
+                "available": False,
+                "models": [],
+                "voice_ids": [],
+                "voice_profiles": [],
+                "controls": {
+                    "speed": False,
+                    "style": False,
+                    "stability": False,
+                    "similarity": False,
+                    "streaming": False,
+                    "continuity": False,
+                },
+                "developer_only": False,
+                "status": "missing",
+            }
+        )
+
+    stt_providers = [
+        {
+            "id": "mock",
+            "label": "Mock STT",
+            "configured": configured_stt == "mock",
+            "available": True,
+            "models": [{"id": "mock", "label": "mock", "available": True}],
+            "endpointing_support": False,
+            "developer_only": True,
+            "status": "ok",
+        },
+        {
+            "id": "mlx_whisper",
+            "label": "MLX Whisper",
+            "configured": configured_stt in {"mlx_whisper", "mlx-whisper"},
+            "available": stt_package_status == KNOWN_PROVIDER_SUPPORT_YES,
+            "models": [
+                {
+                    "id": app.config.voice.stt_model,
+                    "label": app.config.voice.stt_model,
+                    "available": bool(app.config.voice.stt_model),
+                }
+            ]
+            if app.config.voice.stt_model
+            else [],
+            "endpointing_support": True,
+            "developer_only": False,
+            "status": "ok" if stt_package_status == KNOWN_PROVIDER_SUPPORT_YES else "missing",
+            "package": stt_package_name,
+        },
+    ]
+    if configured_stt and configured_stt not in {"mock", "mlx_whisper", "mlx-whisper"}:
+        stt_providers.append(
+            {
+                "id": configured_stt,
+                "label": configured_stt,
+                "configured": True,
+                "available": False,
+                "models": [],
+                "endpointing_support": False,
+                "developer_only": False,
+                "status": "missing",
+            }
+        )
+
+    return {
+        "tts_providers": tts_providers,
+        "tts_models": [
+            model
+            for provider in tts_providers
+            for model in provider.get("models", [])
+        ],
+        "voice_ids": [
+            voice_id
+            for provider in tts_providers
+            for voice_id in provider.get("voice_ids", [])
+        ],
+        "voice_profiles": [
+            profile
+            for provider in tts_providers
+            for profile in provider.get("voice_profiles", [])
+        ],
+        "supported_voice_controls": {
+            "speed": configured_tts == "supertonic",
+            "style": False,
+            "stability": False,
+            "similarity": False,
+            "streaming": False,
+            "continuity": bool(app.config.voice.broker_enabled),
+        },
+        "stt_providers": stt_providers,
+        "stt_models": [
+            model
+            for provider in stt_providers
+            for model in provider.get("models", [])
+        ],
+        "endpointing_support": app.config.voice.ptt_mode in {"hold", "toggle", "off"},
+        "ptt_support": True,
+        "playback_support": playback_status == "ok",
+        "playback_binary": playback_binary,
+        "cancellation_support": app.voice_cancellation is not None,
+        "queue_status": queue_snapshot.get("status", "unknown"),
+        "tts_readiness": _projection_status(tts_projection.get("readiness")),
+        "stt_readiness": _projection_status(stt_projection.get("readiness")),
+    }
+
+
+def _build_capability_graph(
+    app: DaemonApp,
+    *,
+    brain_projection: dict[str, Any],
+    tts_projection: dict[str, Any],
+    stt_projection: dict[str, Any],
+    queue_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    local_capabilities = _build_local_capabilities(app)
+    return {
+        "brain_capabilities": _build_brain_capabilities(
+            brain_projection=brain_projection,
+            local_capabilities=local_capabilities,
+        ),
+        "voice_capabilities": _build_voice_capabilities(
+            app,
+            tts_projection=tts_projection,
+            stt_projection=stt_projection,
+            queue_snapshot=queue_snapshot,
+        ),
+        "local_capabilities": local_capabilities,
+    }
+
+
+def _provider_by_id(capability_graph: dict[str, Any], provider_id: Any) -> dict[str, Any] | None:
+    for provider in capability_graph.get("brain_capabilities", {}).get("providers", []):
+        if str(provider.get("id")) == str(provider_id):
+            return provider
+    return None
+
+
+def _voice_provider_by_id(providers: list[dict[str, Any]], provider_id: Any) -> dict[str, Any] | None:
+    for provider in providers:
+        if str(provider.get("id")) == str(provider_id):
+            return provider
+    return None
+
+
+def _build_settings_preview(
+    app: DaemonApp,
+    *,
+    brain_projection: dict[str, Any],
+    tools_projection: dict[str, Any],
+    queue_snapshot: dict[str, Any],
+    event_snapshot: dict[str, Any],
+    tts_projection: dict[str, Any],
+    stt_projection: dict[str, Any],
+    capability_graph: dict[str, Any],
+) -> dict[str, Any]:
+    section = "brain_provider"
+    brain_capabilities = capability_graph["brain_capabilities"]
+    providers = brain_capabilities["providers"]
+    current_provider_id = brain_capabilities.get("current_provider")
+    current_provider = _provider_by_id(capability_graph, current_provider_id) or {}
+    raw_provider = current_provider.get("raw", {}) if isinstance(current_provider.get("raw"), dict) else {}
+    provider_disabled = []
+    for provider in providers:
+        reason = None
+        if provider.get("developer_only"):
+            reason = "Developer/Test only."
+        elif not provider.get("available"):
+            reason = provider.get("blocker") or "Provider is unavailable."
+        if reason:
+            provider_disabled.append(_preview_disabled(provider.get("id"), str(reason)))
+    model_values = [model["id"] for model in current_provider.get("models", []) if model.get("id")]
+    current_model = current_provider.get("current_model")
+    model_status = _projection_status(raw_provider.get("current_model")) if raw_provider else "ok"
+    model_blocker = None
+    model_warning = _projection_warning(raw_provider.get("current_model")) if raw_provider else None
+    if not model_values:
+        model_status = "missing"
+        model_blocker = current_provider.get("blocker") or "No model is available for the selected provider."
+    elif current_model not in model_values:
+        model_status = "invalid"
+        model_blocker = "Selected model is not allowed for the selected provider; reset required."
+    effort_allowed = list(current_provider.get("allowed_effort_values") or [])
+    effort_value = _runtime_projection_value(raw_provider.get("effort")) if raw_provider else None
+    effort_status = _projection_status(raw_provider.get("effort")) if raw_provider else "unsupported"
+    effort_warning = _projection_warning(raw_provider.get("effort")) if raw_provider else None
+    fast_value = _runtime_projection_value(raw_provider.get("fast")) if raw_provider else None
+    fast_supported = bool(current_provider.get("fast_supported"))
+    fast_status = _projection_status(raw_provider.get("fast")) if raw_provider else ("ok" if fast_supported else "unsupported")
+    fast_disabled = []
+    if not fast_supported:
+        fast_disabled.append(_preview_disabled(True, "Selected provider/model does not support fast mode."))
+        if fast_value is True:
+            fast_status = "unsupported"
+    brain_fields = {
+        "provider": _preview_field(
+            section=section,
+            field_id="provider",
+            label="Provider",
+            current=current_provider_id,
+            status=current_provider.get("status", "unknown"),
+            source="settings",
+            allowed_values=[provider["id"] for provider in providers],
+            disabled_values=provider_disabled,
+            warning="Developer/Test provider is active." if current_provider.get("developer_only") else None,
+            blocker=current_provider.get("blocker") if not current_provider.get("available", True) else None,
+            invalidates=["brain_provider.model", "brain_provider.effort", "brain_provider.fast", "brain_provider.tools_support", "brain_provider.streaming_support", "brain_provider.context_budget"],
+            requires_reload=True,
+            editable_now=True,
+            editable_later=True,
+            developer_only=bool(current_provider.get("developer_only")),
+        ),
+        "model": _preview_field(
+            section=section,
+            field_id="model",
+            label="Model",
+            current=current_model,
+            status=model_status,
+            source="settings" if raw_provider else "runtime_detected",
+            allowed_values=model_values,
+            warning=model_warning,
+            blocker=model_blocker,
+            dependencies=["brain_provider.provider"],
+            invalidates=["brain_provider.effort", "brain_provider.fast", "brain_provider.context_budget"],
+            requires_reload=True,
+            editable_now=True,
+            editable_later=True,
+        ),
+        "effort": _preview_field(
+            section=section,
+            field_id="effort",
+            label="Effort",
+            current=effort_value,
+            status=effort_status,
+            source="settings",
+            allowed_values=effort_allowed,
+            warning=effort_warning,
+            blocker="Effort is unsupported by selected provider/model; reset required."
+            if effort_status in {"invalid", "unsupported"} else None,
+            dependencies=["brain_provider.provider", "brain_provider.model"],
+            requires_reload=True,
+            editable_now=bool(effort_allowed),
+            editable_later=True,
+        ),
+        "fast": _preview_field(
+            section=section,
+            field_id="fast",
+            label="Fast",
+            current=fast_value,
+            status=fast_status,
+            source="settings",
+            allowed_values=[True, False],
+            disabled_values=fast_disabled,
+            warning=_projection_warning(raw_provider.get("fast")) if raw_provider else None,
+            blocker="Fast is unsupported by selected provider/model." if fast_status in {"invalid", "unsupported"} else None,
+            dependencies=["brain_provider.provider", "brain_provider.model"],
+            requires_reload=True,
+            editable_now=True,
+            editable_later=True,
+        ),
+        "context_budget": _preview_field(
+            section=section,
+            field_id="context_budget",
+            label="Context budget",
+            current=current_provider.get("context_info", {}).get("budget_chars"),
+            source="config",
+            status="ok" if current_provider.get("context_info", {}).get("budget_chars") is not None else "unknown",
+            dependencies=["brain_provider.provider", "brain_provider.model"],
+            requires_reload=True,
+            editable_later=True,
+        ),
+        "provider_sessions_are_memory": _preview_field(
+            section=section,
+            field_id="provider_sessions_are_memory",
+            label="Provider sessions are memory",
+            current=_runtime_projection_value(brain_projection.get("provider_sessions_are_memory")),
+            source="config",
+            status="ok",
+            requires_restart=True,
+            editable_later=True,
+        ),
+        "tools_support": _preview_field(
+            section=section,
+            field_id="tools_support",
+            label="Tools support",
+            current=_support_word(current_provider.get("tools_supported")),
+            source="runtime_detected",
+            status="ok" if current_provider else "unknown",
+            dependencies=["brain_provider.provider", "brain_provider.model"],
+        ),
+        "streaming_support": _preview_field(
+            section=section,
+            field_id="streaming_support",
+            label="Streaming support",
+            current=_support_word(current_provider.get("streaming_supported")),
+            source="runtime_detected",
+            status="ok" if current_provider else "unknown",
+            dependencies=["brain_provider.provider", "brain_provider.model"],
+        ),
+        "command_status": _preview_field(
+            section=section,
+            field_id="command_status",
+            label="Command status",
+            current=current_provider.get("command_status"),
+            source="runtime_detected",
+            status="ok" if current_provider.get("command_status") == KNOWN_PROVIDER_SUPPORT_YES else "missing",
+            blocker="Provider command is missing."
+            if current_provider.get("command_status") == KNOWN_PROVIDER_SUPPORT_NO else None,
+        ),
+        "latest_provider_error": _preview_field(
+            section=section,
+            field_id="latest_provider_error",
+            label="Latest provider error",
+            current=current_provider.get("latest_provider_error"),
+            source="runtime_detected",
+            status="ok" if not current_provider.get("latest_provider_error") else "invalid",
+        ),
+    }
+
+    voice_capabilities = capability_graph["voice_capabilities"]
+    tts_section = "voice_tts"
+    configured_tts = str(app.config.voice.default_tts or "").strip()
+    tts_provider = _voice_provider_by_id(voice_capabilities["tts_providers"], configured_tts)
+    tts_disabled = [
+        _preview_disabled(provider["id"], "TTS provider is unavailable.")
+        for provider in voice_capabilities["tts_providers"]
+        if not provider.get("available")
+    ]
+    tts_blocker = None
+    tts_status = "ok"
+    if app.config.voice.enabled and not configured_tts:
+        tts_status = "missing"
+        tts_blocker = "Voice enabled but TTS provider is missing."
+    elif tts_provider is not None and not tts_provider.get("available"):
+        tts_status = "missing"
+        tts_blocker = "Selected TTS provider is unavailable."
+    tts_model_values = [model["id"] for model in (tts_provider or {}).get("models", [])]
+    voice_id_values = list((tts_provider or {}).get("voice_ids", []))
+    voice_profile_values = list((tts_provider or {}).get("voice_profiles", []))
+    voice_id_status = "ok"
+    voice_id_blocker = None
+    if configured_tts == "supertonic" and not app.config.voice.supertonic_voice:
+        voice_id_status = "missing"
+        voice_id_blocker = "TTS provider requires voice_id."
+    speed_supported = bool((tts_provider or {}).get("controls", {}).get("speed"))
+    tts_fields = {
+        "tts_provider": _preview_field(
+            section=tts_section,
+            field_id="tts_provider",
+            label="TTS provider",
+            current=configured_tts,
+            status=tts_status,
+            source="config",
+            allowed_values=[provider["id"] for provider in voice_capabilities["tts_providers"]],
+            disabled_values=tts_disabled,
+            blocker=tts_blocker,
+            invalidates=["voice_tts.tts_model", "voice_tts.voice_id", "voice_tts.speed_or_rate"],
+            requires_restart=True,
+            editable_now=True,
+            editable_later=True,
+            developer_only=bool((tts_provider or {}).get("developer_only")),
+        ),
+        "tts_model": _preview_field(
+            section=tts_section,
+            field_id="tts_model",
+            label="TTS model",
+            current=tts_model_values[0] if tts_model_values else None,
+            status="ok" if tts_model_values else ("missing" if configured_tts and configured_tts != "mock" else "unknown"),
+            source="runtime_detected",
+            allowed_values=tts_model_values,
+            dependencies=["voice_tts.tts_provider"],
+            requires_restart=True,
+            editable_now=bool(tts_model_values),
+            editable_later=True,
+        ),
+        "voice_id": _preview_field(
+            section=tts_section,
+            field_id="voice_id",
+            label="Voice id",
+            current=app.config.voice.supertonic_voice if configured_tts == "supertonic" else None,
+            status=voice_id_status if configured_tts == "supertonic" else "unknown",
+            source="config",
+            allowed_values=voice_id_values,
+            blocker=voice_id_blocker,
+            dependencies=["voice_tts.tts_provider"],
+            requires_restart=True,
+            editable_now=bool(voice_id_values),
+            editable_later=True,
+        ),
+        "voice_profile": _preview_field(
+            section=tts_section,
+            field_id="voice_profile",
+            label="Voice profile",
+            current=app.config.voice.supertonic_lang if configured_tts == "supertonic" else None,
+            status="ok" if configured_tts == "supertonic" and app.config.voice.supertonic_lang else "unknown",
+            source="config",
+            allowed_values=voice_profile_values,
+            dependencies=["voice_tts.tts_provider"],
+            requires_restart=True,
+            editable_later=True,
+        ),
+        "speed_or_rate": _preview_field(
+            section=tts_section,
+            field_id="speed_or_rate",
+            label="Speed / rate",
+            current=app.config.voice.supertonic_speed if configured_tts == "supertonic" else None,
+            status="ok" if speed_supported else "unsupported",
+            source="config",
+            allowed_values=[0.8, 1.0, 1.15, 1.35] if speed_supported else [],
+            disabled_values=[] if speed_supported else [_preview_disabled("speed", "Selected TTS provider does not support speed/rate.")],
+            dependencies=["voice_tts.tts_provider"],
+            requires_restart=True,
+            editable_now=speed_supported,
+            editable_later=True,
+        ),
+        "style": _preview_field(section=tts_section, field_id="style", label="Style", current=None, status="unsupported", source="unknown"),
+        "stability": _preview_field(section=tts_section, field_id="stability", label="Stability", current=None, status="unsupported", source="unknown"),
+        "similarity": _preview_field(section=tts_section, field_id="similarity", label="Similarity", current=None, status="unsupported", source="unknown"),
+        "streaming_support": _preview_field(section=tts_section, field_id="streaming_support", label="Streaming", current=voice_capabilities["supported_voice_controls"]["streaming"], status="ok", source="runtime_detected"),
+        "continuity_support": _preview_field(section=tts_section, field_id="continuity_support", label="Continuity", current=voice_capabilities["supported_voice_controls"]["continuity"], status="ok", source="runtime_detected"),
+        "latest_tts_error": _preview_field(section=tts_section, field_id="latest_tts_error", label="Latest TTS error", current=_runtime_projection_value(tts_projection.get("latest_safe_error")), status="ok" if not _runtime_projection_value(tts_projection.get("latest_safe_error")) else "invalid", source="runtime_detected"),
+    }
+
+    stt_section = "voice_stt"
+    configured_stt = str(app.config.voice.default_stt or "").strip()
+    stt_provider = _voice_provider_by_id(voice_capabilities["stt_providers"], configured_stt)
+    stt_disabled = [
+        _preview_disabled(provider["id"], "STT provider is unavailable.")
+        for provider in voice_capabilities["stt_providers"]
+        if not provider.get("available")
+    ]
+    stt_status = "ok"
+    stt_blocker = None
+    if app.config.voice.enabled and not configured_stt:
+        stt_status = "missing"
+        stt_blocker = "Voice enabled but STT provider is missing."
+    elif stt_provider is not None and not stt_provider.get("available"):
+        stt_status = "missing"
+        stt_blocker = "Selected STT provider/runtime is unavailable."
+    stt_model_values = [model["id"] for model in (stt_provider or {}).get("models", []) if model.get("id")]
+    stt_fields = {
+        "stt_provider": _preview_field(
+            section=stt_section,
+            field_id="stt_provider",
+            label="STT provider",
+            current=configured_stt,
+            status=stt_status,
+            source="config",
+            allowed_values=[provider["id"] for provider in voice_capabilities["stt_providers"]],
+            disabled_values=stt_disabled,
+            blocker=stt_blocker,
+            invalidates=["voice_stt.stt_model", "voice_stt.endpointing_support"],
+            requires_restart=True,
+            editable_now=True,
+            editable_later=True,
+            developer_only=bool((stt_provider or {}).get("developer_only")),
+        ),
+        "stt_model": _preview_field(
+            section=stt_section,
+            field_id="stt_model",
+            label="STT model",
+            current=app.config.voice.stt_model,
+            status="ok" if app.config.voice.stt_model else "missing",
+            source="config",
+            allowed_values=stt_model_values,
+            dependencies=["voice_stt.stt_provider"],
+            requires_restart=True,
+            editable_now=bool(stt_model_values),
+            editable_later=True,
+        ),
+        "language": _preview_field(section=stt_section, field_id="language", label="Language", current=app.config.voice.stt_language, status="ok" if app.config.voice.stt_language else "missing", source="config", requires_restart=True, editable_later=True),
+        "transcription_ready": _preview_field(section=stt_section, field_id="transcription_ready", label="Transcription ready", current=voice_capabilities["stt_readiness"] == "ok", status=voice_capabilities["stt_readiness"], source="runtime_detected", dependencies=["voice_stt.stt_provider", "voice_stt.stt_model"]),
+        "endpointing_support": _preview_field(section=stt_section, field_id="endpointing_support", label="Endpointing support", current=bool((stt_provider or {}).get("endpointing_support")), status="ok", source="runtime_detected", dependencies=["voice_stt.stt_provider"]),
+        "latest_stt_error": _preview_field(section=stt_section, field_id="latest_stt_error", label="Latest STT error", current=_runtime_projection_value(stt_projection.get("latest_safe_error")), status="ok" if not _runtime_projection_value(stt_projection.get("latest_safe_error")) else "invalid", source="runtime_detected"),
+    }
+
+    endpoint_section = "endpointing_ptt"
+    endpoint_fields = {
+        "ptt_mode": _preview_field(section=endpoint_section, field_id="ptt_mode", label="PTT mode", current=app.config.voice.ptt_mode, status="ok" if app.config.voice.ptt_mode in {"hold", "toggle", "off"} else "invalid", source="config", allowed_values=["hold", "toggle", "off"], requires_restart=True, editable_now=True, editable_later=True),
+        "ptt_hotkey": _preview_field(section=endpoint_section, field_id="ptt_hotkey", label="PTT hotkey", current=app.config.voice.ptt_hotkey, status="ok" if app.config.voice.ptt_hotkey else "missing", source="config", warning="PTT hotkey is missing." if app.config.voice.ptt_mode != "off" and not app.config.voice.ptt_hotkey else None, requires_restart=True, editable_later=True),
+        "merge_window": _preview_field(section=endpoint_section, field_id="merge_window", label="Merge window", current=app.config.voice.transcript_turn_retry_seconds, status="ok", source="config", requires_restart=True, editable_later=True),
+        "silence_threshold": _preview_field(section=endpoint_section, field_id="silence_threshold", label="Silence threshold", current=app.config.voice.stt_min_rms, status="ok", source="config", requires_restart=True, editable_later=True),
+        "silence_duration": _preview_field(section=endpoint_section, field_id="silence_duration", label="Silence duration", current=app.config.voice.stt_min_voiced_seconds, status="ok", source="config", requires_restart=True, editable_later=True),
+        "interrupt_policy": _preview_field(section=endpoint_section, field_id="interrupt_policy", label="Interrupt policy", current="barge-in cancels active speech" if voice_capabilities["cancellation_support"] else "not available", status="ok" if voice_capabilities["cancellation_support"] else "unsupported", source="runtime_detected"),
+        "listening_lease_state": _preview_field(section=endpoint_section, field_id="listening_lease_state", label="Listening lease state", current=event_snapshot.get("active_leases"), status="ok" if app.started else "unknown", source="runtime_detected"),
+    }
+
+    queue_section = "queue_barge_in"
+    queue_counts = queue_snapshot.get("counts") if isinstance(queue_snapshot.get("counts"), dict) else {}
+    queue_fields = {
+        "queue_status": _preview_field(section=queue_section, field_id="queue_status", label="Queue status", current={"status": queue_snapshot.get("status"), "counts": queue_counts}, status=queue_snapshot.get("status", "unknown"), source="runtime_detected"),
+        "cancel_support": _preview_field(section=queue_section, field_id="cancel_support", label="Cancel support", current=voice_capabilities["cancellation_support"], status="ok" if voice_capabilities["cancellation_support"] else "unsupported", source="runtime_detected"),
+        "active_speech_id": _preview_field(section=queue_section, field_id="active_speech_id", label="Active speech id", current=queue_snapshot.get("latest_voice_id"), status="ok" if queue_snapshot.get("latest_voice_id") else "missing", source="runtime_detected"),
+        "current_spoken_kind": _preview_field(section=queue_section, field_id="current_spoken_kind", label="Current spoken kind", current=(queue_snapshot.get("tail") or [None])[0] if queue_snapshot.get("tail") else None, status="ok" if queue_snapshot.get("tail") else "unknown", source="runtime_detected"),
+        "interrupted_previous_response": _preview_field(section=queue_section, field_id="interrupted_previous_response", label="Interrupted previous response", current=event_snapshot.get("latest_barge_in", {}).get("interrupted_previous_response") if isinstance(event_snapshot.get("latest_barge_in"), dict) else False, status="ok", source="runtime_detected"),
+        "last_cancellation_reason": _preview_field(section=queue_section, field_id="last_cancellation_reason", label="Last cancellation reason", current=event_snapshot.get("latest_cancel_reason"), status="ok" if event_snapshot.get("latest_cancel_reason") else "missing", source="runtime_detected"),
+        "manual_cancel_available": _preview_field(section=queue_section, field_id="manual_cancel_available", label="Manual cancel available", current=voice_capabilities["cancellation_support"], status="ok" if voice_capabilities["cancellation_support"] else "unsupported", source="runtime_detected", editable_now=voice_capabilities["cancellation_support"], editable_later=True),
+    }
+
+    tools_section = "tools_internet"
+    tools_registered = _runtime_projection_value(tools_projection.get("registered")) or []
+    network_status, network_tool = _safe_probe_network_capability()
+    approval_required = []
+    if app.config.security.require_approval_for_shell:
+        approval_required.append("shell")
+    if app.config.security.require_approval_for_file_write:
+        approval_required.append("file_write")
+    if app.config.security.require_approval_for_network:
+        approval_required.append("network")
+    tools_fields = {
+        "tools_enabled": _preview_field(section=tools_section, field_id="tools_enabled", label="Tools enabled", current=bool(tools_registered), status="ok" if tools_registered else "missing", source="runtime_detected"),
+        "tools_support": _preview_field(section=tools_section, field_id="tools_support", label="Provider tools support", current=_support_word(current_provider.get("tools_supported")), status="ok" if current_provider.get("tools_supported") else "unsupported", source="runtime_detected", dependencies=["brain_provider.provider"]),
+        "internet_capability": _preview_field(section=tools_section, field_id="internet_capability", label="Internet capability", current={"status": network_status, "tool": network_tool}, status="ok" if network_status == KNOWN_PROVIDER_SUPPORT_YES else "missing", source="runtime_detected"),
+        "network_policy": _preview_field(section=tools_section, field_id="network_policy", label="Network policy", current=app.config.security.require_approval_for_network, status="ok", source="config"),
+        "approval_required_tools": _preview_field(section=tools_section, field_id="approval_required_tools", label="Approval required tools", current=approval_required, status="ok" if approval_required else "missing", source="config"),
+        "latest_tool_error": _preview_field(section=tools_section, field_id="latest_tool_error", label="Latest tool error", current=event_snapshot.get("latest_tool_error"), status="ok" if not event_snapshot.get("latest_tool_error") else "invalid", source="runtime_detected"),
+    }
+
+    personality_section = "personality"
+    personality_fields = {
+        "active_persona": _preview_field(section=personality_section, field_id="active_persona", label="Active persona", current=_runtime_projection_value(brain_projection.get("persona_profile")), status=_projection_status(brain_projection.get("persona_profile")), source="settings", requires_reload=True, editable_later=True),
+        "active_style": _preview_field(section=personality_section, field_id="active_style", label="Active style", current=None, status="unknown", source="unknown", editable_later=True),
+        "personality_source": _preview_field(section=personality_section, field_id="personality_source", label="Personality source", current="persona.profile setting + default persona file", status="ok", source="runtime_detected"),
+        "editable_later": _preview_field(section=personality_section, field_id="editable_later", label="Editable later", current=True, status="ok", source="runtime_detected", editable_later=True),
+    }
+
+    developer_section = "developer_test"
+    developer_fields = {
+        "mock_provider": _preview_field(section=developer_section, field_id="mock_provider", label="Mock provider", current=current_provider_id == "mock", status="ok", source="runtime_detected", warning="Mock provider is Developer/Test only." if current_provider_id == "mock" else None, developer_only=True),
+        "fake_tts": _preview_field(section=developer_section, field_id="fake_tts", label="Fake TTS", current=configured_tts == "mock", status="ok", source="config", developer_only=True),
+        "fake_stt": _preview_field(section=developer_section, field_id="fake_stt", label="Fake STT", current=configured_stt == "mock", status="ok", source="config", developer_only=True),
+        "debug_mode": _preview_field(section=developer_section, field_id="debug_mode", label="Debug mode", current=str(app.config.daemon.log_level).upper() == "DEBUG", status="ok", source="config", developer_only=True),
+        "test_harness_status": _preview_field(section=developer_section, field_id="test_harness_status", label="Test harness", current="not active", status="unknown", source="runtime_detected", developer_only=True),
+    }
+
+    return {
+        "preview_only": True,
+        "save_implemented": False,
+        "save_disabled_reason": "Save not implemented in POC",
+        "sections": {
+            "brain_provider": _preview_section("brain_provider", "Brain / Provider", brain_fields),
+            "voice_tts": _preview_section("voice_tts", "Voice / TTS", tts_fields),
+            "voice_stt": _preview_section("voice_stt", "Voice / STT", stt_fields),
+            "endpointing_ptt": _preview_section("endpointing_ptt", "Endpointing / PTT", endpoint_fields),
+            "queue_barge_in": _preview_section("queue_barge_in", "Queue / Barge-in", queue_fields),
+            "tools_internet": _preview_section("tools_internet", "Tools / Internet", tools_fields),
+            "personality": _preview_section("personality", "Personality", personality_fields),
+            "developer_test": _preview_section("developer_test", "Developer / Test", developer_fields),
+        },
+    }
+
+
+def _compatibility_warning(
+    *,
+    warning_id: str,
+    severity: str,
+    group: str,
+    field_ids: list[str],
+    message: str,
+    reason: str,
+    suggested_action: str,
+) -> dict[str, Any]:
+    return {
+        "id": warning_id,
+        "severity": severity if severity in {"info", "warning", "invalid", "blocker"} else "warning",
+        "group": group,
+        "field_ids": field_ids,
+        "message": message,
+        "reason": reason,
+        "suggested_action": suggested_action,
+    }
+
+
+def _build_structured_compatibility_warnings(
+    app: DaemonApp,
+    *,
+    settings_preview: dict[str, Any],
+    capability_graph: dict[str, Any],
+    tools_projection: dict[str, Any],
+) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+
+    def add(**kwargs: Any) -> None:
+        if any(existing["id"] == kwargs["warning_id"] for existing in warnings):
+            return
+        warnings.append(_compatibility_warning(**kwargs))
+
+    brain_fields = settings_preview["sections"]["brain_provider"]["fields"]
+    current_provider = _provider_by_id(
+        capability_graph,
+        brain_fields["provider"]["effective"],
+    )
+    if current_provider is None or not current_provider.get("available", False):
+        add(
+            warning_id="brain_provider_unavailable",
+            severity="blocker",
+            group="brain",
+            field_ids=["brain_provider.provider"],
+            message="Selected brain provider is unavailable.",
+            reason="The configured provider is not available from safe runtime/capability probes.",
+            suggested_action="Choose an available provider or install/configure the selected provider.",
+        )
+    if brain_fields["model"]["status"] in {"missing", "invalid"}:
+        add(
+            warning_id="brain_model_missing",
+            severity="blocker" if brain_fields["model"]["status"] == "missing" else "invalid",
+            group="brain",
+            field_ids=["brain_provider.model", "brain_provider.provider"],
+            message="Selected brain model is missing or invalid.",
+            reason=brain_fields["model"]["blocker"] or brain_fields["model"]["warning"] or "Model is not usable.",
+            suggested_action="Pick an allowed model for the selected provider.",
+        )
+    if brain_fields["effort"]["status"] in {"invalid", "unsupported"}:
+        add(
+            warning_id="brain_effort_unsupported",
+            severity="invalid",
+            group="brain",
+            field_ids=["brain_provider.effort", "brain_provider.provider", "brain_provider.model"],
+            message="Configured effort is unsupported by the selected provider/model.",
+            reason=brain_fields["effort"]["blocker"] or "Provider capability graph does not allow this effort value.",
+            suggested_action="Reset effort or choose a provider/model that supports it.",
+        )
+    if brain_fields["fast"]["status"] in {"invalid", "unsupported"}:
+        add(
+            warning_id="brain_fast_unsupported",
+            severity="invalid",
+            group="brain",
+            field_ids=["brain_provider.fast", "brain_provider.provider", "brain_provider.model"],
+            message="Fast mode is unsupported by the selected provider/model.",
+            reason=brain_fields["fast"]["blocker"] or "Provider capability graph marks fast unsupported.",
+            suggested_action="Turn fast off or choose a provider/model with fast support.",
+        )
+    if current_provider is not None and current_provider.get("developer_only"):
+        add(
+            warning_id="mock_provider_developer_only",
+            severity="info",
+            group="developer_test",
+            field_ids=["developer_test.mock_provider", "brain_provider.provider"],
+            message="Mock provider is Developer/Test only.",
+            reason="Mock is useful for tests and offline scaffolding but is not a normal brain provider.",
+            suggested_action="Use a real provider for normal operation.",
+        )
+    if current_provider is not None and current_provider.get("local_runtime") and not current_provider.get("models"):
+        add(
+            warning_id="local_provider_missing_model",
+            severity="blocker",
+            group="brain",
+            field_ids=["brain_provider.provider", "brain_provider.model"],
+            message="Local provider has no detected local model.",
+            reason="Safe local detection found no usable model for the selected local provider.",
+            suggested_action="Install/configure a local model before using this provider.",
+        )
+    local_models = capability_graph.get("local_capabilities", {}).get("local_models", [])
+    local_runtime_status = capability_graph.get("local_capabilities", {}).get("local_runtime_status")
+    if local_models and local_runtime_status != "ok":
+        add(
+            warning_id="local_model_runtime_missing",
+            severity="blocker",
+            group="brain",
+            field_ids=["brain_provider.provider", "brain_provider.model"],
+            message="A local model is configured but local runtime is missing.",
+            reason="A model hint exists, but no local runtime command was safely detected.",
+            suggested_action="Install/start the matching local runtime or choose another provider.",
+        )
+
+    tts_fields = settings_preview["sections"]["voice_tts"]["fields"]
+    stt_fields = settings_preview["sections"]["voice_stt"]["fields"]
+    if app.config.voice.enabled and tts_fields["tts_provider"]["status"] == "missing":
+        add(
+            warning_id="voice_enabled_tts_missing",
+            severity="blocker",
+            group="voice",
+            field_ids=["voice_tts.tts_provider"],
+            message="Voice is enabled but TTS provider is missing.",
+            reason=tts_fields["tts_provider"]["blocker"] or "Voice output needs a TTS provider.",
+            suggested_action="Configure TTS or disable voice output.",
+        )
+    if app.config.voice.speak_responses and tts_fields["tts_provider"]["status"] == "missing":
+        add(
+            warning_id="speak_responses_tts_missing",
+            severity="blocker",
+            group="voice",
+            field_ids=["voice_tts.tts_provider"],
+            message="speak_responses is enabled but TTS is missing.",
+            reason="Jarvis is configured to speak responses, but no usable TTS provider exists.",
+            suggested_action="Configure TTS or turn speak_responses off.",
+        )
+    if app.config.voice.enabled and stt_fields["stt_provider"]["status"] == "missing":
+        add(
+            warning_id="voice_enabled_stt_missing",
+            severity="blocker",
+            group="voice",
+            field_ids=["voice_stt.stt_provider"],
+            message="Voice is enabled but STT provider is missing.",
+            reason=stt_fields["stt_provider"]["blocker"] or "Voice input needs an STT provider.",
+            suggested_action="Configure STT or disable voice input.",
+        )
+    if tts_fields["tts_model"]["status"] == "missing" and tts_fields["tts_provider"]["current"] not in {"", "mock", None}:
+        add(
+            warning_id="tts_model_missing",
+            severity="blocker",
+            group="voice",
+            field_ids=["voice_tts.tts_provider", "voice_tts.tts_model"],
+            message="TTS model is required but missing.",
+            reason="The selected TTS provider has no model in capability data.",
+            suggested_action="Choose an allowed TTS model or configure provider metadata.",
+        )
+    if tts_fields["voice_id"]["status"] in {"missing", "invalid"}:
+        add(
+            warning_id="tts_voice_id_missing",
+            severity="blocker",
+            group="voice",
+            field_ids=["voice_tts.tts_provider", "voice_tts.voice_id"],
+            message="TTS voice_id is required but missing.",
+            reason=tts_fields["voice_id"]["blocker"] or "The selected TTS provider requires a voice id.",
+            suggested_action="Choose a valid voice_id for the selected TTS provider.",
+        )
+    if stt_fields["stt_model"]["status"] in {"missing", "invalid"} and stt_fields["stt_provider"]["current"] not in {"", "mock", None}:
+        add(
+            warning_id="stt_model_or_runtime_missing",
+            severity="blocker",
+            group="voice",
+            field_ids=["voice_stt.stt_provider", "voice_stt.stt_model"],
+            message="STT model or runtime is missing.",
+            reason="The selected STT provider needs a model/runtime before transcription can work.",
+            suggested_action="Configure a valid STT model/runtime.",
+        )
+    if tts_fields["speed_or_rate"]["current"] is not None and tts_fields["speed_or_rate"]["status"] == "unsupported":
+        add(
+            warning_id="tts_speed_unsupported",
+            severity="warning",
+            group="voice",
+            field_ids=["voice_tts.tts_provider", "voice_tts.speed_or_rate"],
+            message="Speed/rate is configured but unsupported by selected TTS provider.",
+            reason="Capability graph marks speed/rate unsupported.",
+            suggested_action="Remove the speed setting or choose a TTS provider with speed support.",
+        )
+    queue_fields = settings_preview["sections"]["queue_barge_in"]["fields"]
+    if app.config.voice.enabled and app.config.voice.speak_responses and queue_fields["cancel_support"]["status"] == "unsupported":
+        add(
+            warning_id="barge_in_cancel_unavailable",
+            severity="warning",
+            group="voice",
+            field_ids=["queue_barge_in.cancel_support", "queue_barge_in.manual_cancel_available"],
+            message="Barge-in is enabled by voice flow but cancel support is unavailable.",
+            reason="Runtime cancellation coordinator is not available from safe probes.",
+            suggested_action="Start/configure the voice runtime cancellation path before relying on barge-in.",
+        )
+    ptt_fields = settings_preview["sections"]["endpointing_ptt"]["fields"]
+    if ptt_fields["ptt_mode"]["current"] != "off" and ptt_fields["ptt_hotkey"]["status"] == "missing":
+        add(
+            warning_id="ptt_hotkey_missing",
+            severity="warning",
+            group="voice",
+            field_ids=["endpointing_ptt.ptt_mode", "endpointing_ptt.ptt_hotkey"],
+            message="PTT is enabled but hotkey is missing.",
+            reason="PTT mode has no configured global hotkey.",
+            suggested_action="Configure ptt_hotkey or use a non-hotkey control surface.",
+        )
+
+    tools_registered = _runtime_projection_value(tools_projection.get("registered")) or []
+    tools_fields = settings_preview["sections"]["tools_internet"]["fields"]
+    if tools_registered and tools_fields["tools_support"]["status"] == "unsupported":
+        add(
+            warning_id="tools_enabled_provider_unsupported",
+            severity="warning",
+            group="tools",
+            field_ids=["tools_internet.tools_enabled", "tools_internet.tools_support", "brain_provider.provider"],
+            message="Tools are enabled but selected provider does not support tools.",
+            reason="Tool registry is populated while provider capability says tools unsupported.",
+            suggested_action="Choose a tools-capable provider or hide/disable tools for this provider.",
+        )
+    if app.config.security.require_approval_for_network and tools_fields["internet_capability"]["status"] == "missing":
+        add(
+            warning_id="internet_policy_without_capability",
+            severity="warning",
+            group="tools",
+            field_ids=["tools_internet.network_policy", "tools_internet.internet_capability"],
+            message="Network policy exists but no internet capability/tool is available.",
+            reason="Network approval policy is present, but safe probe found no network tool.",
+            suggested_action="Install a network tool or remove the network policy from this profile.",
+        )
+    if tools_fields["approval_required_tools"]["current"] and not hasattr(app, "approval_gate"):
+        add(
+            warning_id="approval_required_surface_unavailable",
+            severity="blocker",
+            group="tools",
+            field_ids=["tools_internet.approval_required_tools"],
+            message="Approval-required tools exist but approval surface is unavailable.",
+            reason="Runtime does not expose approval handling.",
+            suggested_action="Wire approval surface before enabling approval-required tools.",
+        )
+
+    return warnings
+
+
+def _readiness_projection(
+    *,
+    value: Any,
+    status: str,
+    warning: str | None = None,
+    source: str = "runtime_detected",
+) -> dict[str, Any]:
+    return _projection(
+        value=value,
+        effective_value=value,
+        source=source,
+        status=status,
+        editable_later=False,
+        warning=warning,
+    )
+
+
+def _runtime_readiness_projection(
+    app: DaemonApp,
+    *,
+    brain_projection: dict[str, Any],
+    tools_projection: dict[str, Any],
+    stt_projection: dict[str, Any],
+    tts_projection: dict[str, Any],
+    compatibility_warnings: list[str],
+) -> dict[str, Any]:
+    fields: dict[str, dict[str, Any]] = {}
+    blockers: list[str] = []
+    warnings: list[str] = list(compatibility_warnings)
+
+    host = str(app.config.daemon.host or "").strip()
+    port = getattr(app.config.daemon, "port", None)
+    daemon_config_status = "ok"
+    daemon_config_warning = None
+    if not host:
+        daemon_config_status = "missing"
+        daemon_config_warning = "Daemon host is missing."
+    elif not isinstance(port, int) or port <= 0 or port > 65535:
+        daemon_config_status = "invalid"
+        daemon_config_warning = "Daemon port is invalid."
+    fields["daemon_config"] = _readiness_projection(
+        value={
+            "host_configured": bool(host),
+            "port_configured": isinstance(port, int),
+            "localhost_only": bool(app.config.security.localhost_only),
+        },
+        status=daemon_config_status,
+        warning=daemon_config_warning,
+        source="config",
+    )
+
+    try:
+        db_path = app.paths.db_path
+        db_parent = db_path.parent
+        if db_path.is_file():
+            database_status = "ok"
+            database_warning = None
+        elif db_parent.exists():
+            database_status = "missing"
+            database_warning = "Database file does not exist yet."
+        else:
+            database_status = "missing"
+            database_warning = "Database parent directory does not exist."
+        database_value = {
+            "configured": bool(str(getattr(app.config.database, "path", "")).strip()),
+            "parent_exists": db_parent.exists(),
+            "file_exists": db_path.exists(),
+        }
+    except Exception as exc:
+        database_status = "invalid"
+        database_warning = f"Database path probe failed: {exc}"
+        database_value = {"configured": bool(str(getattr(app.config.database, "path", "")).strip())}
+    fields["database_path"] = _readiness_projection(
+        value=database_value,
+        status=database_status,
+        warning=database_warning,
+    )
+
+    fields["panel_backend_connected"] = _readiness_projection(
+        value="yes",
+        status="ok",
+        source="runtime_detected",
+    )
+
+    providers = _runtime_projection_value(brain_projection.get("providers"))
+    current_provider = _current_provider_capability(providers if isinstance(providers, list) else [])
+    if current_provider is None:
+        brain_command_value = "unknown"
+        brain_command_status = "unknown"
+        brain_command_warning = "Current brain provider capability is not exposed."
+    else:
+        provider_name = str(current_provider.get("name") or "").strip()
+        command = current_provider.get("provider_command_status")
+        command_value = _runtime_projection_value(command)
+        command_status = _normalize_status(
+            command.get("status") if isinstance(command, dict) else "unknown"
+        )
+        if provider_name == "mock":
+            brain_command_value = "built-in"
+            brain_command_status = "ok"
+            brain_command_warning = None
+        elif command_value == KNOWN_PROVIDER_SUPPORT_YES:
+            brain_command_value = "exists"
+            brain_command_status = "ok"
+            brain_command_warning = None
+        elif command_value == KNOWN_PROVIDER_SUPPORT_NO:
+            brain_command_value = "missing"
+            brain_command_status = "missing"
+            brain_command_warning = "Selected brain provider command is missing."
+        else:
+            brain_command_value = "unknown"
+            brain_command_status = command_status
+            brain_command_warning = "Selected brain provider command readiness is unknown."
+    fields["brain_provider_command"] = _readiness_projection(
+        value=brain_command_value,
+        status=brain_command_status,
+        warning=brain_command_warning,
+    )
+
+    default_tts = str(app.config.voice.default_tts or "").strip()
+    tts_status = "ok" if default_tts else "missing"
+    fields["tts_provider"] = _readiness_projection(
+        value="configured" if default_tts else "missing",
+        status=tts_status,
+        warning=None if default_tts else "TTS provider is not configured.",
+        source="config",
+    )
+
+    default_stt = str(app.config.voice.default_stt or "").strip()
+    stt_status = "ok" if default_stt else "missing"
+    fields["stt_provider"] = _readiness_projection(
+        value="configured" if default_stt else "missing",
+        status=stt_status,
+        warning=None if default_stt else "STT provider is not configured.",
+        source="config",
+    )
+
+    recorder_status, recorder_binary, recorder_warning = _safe_probe_recorder_binary(
+        str(app.config.voice.recorder_binary or ""),
+        str(app.config.voice.recorder or "mock"),
+    )
+    fields["recorder_command"] = _readiness_projection(
+        value={
+            "backend": app.config.voice.recorder,
+            "exists": recorder_status == "ok",
+            "detected": recorder_binary is not None,
+        },
+        status=recorder_status,
+        warning=recorder_warning,
+    )
+
+    playback_status, playback_binary, playback_warning = _safe_probe_playback_binary(
+        str(app.config.voice.playback_binary or "")
+    )
+    fields["playback_command"] = _readiness_projection(
+        value={
+            "exists": playback_status == "ok",
+            "detected": playback_binary is not None,
+        },
+        status=playback_status,
+        warning=playback_warning,
+    )
+
+    network_status, network_tool = _safe_probe_network_capability()
+    if network_status == KNOWN_PROVIDER_SUPPORT_YES:
+        network_value = "enabled"
+        network_projection_status = "ok"
+    elif network_status == KNOWN_PROVIDER_SUPPORT_NO:
+        network_value = "disabled"
+        network_projection_status = "missing"
+    else:
+        network_value = "unknown"
+        network_projection_status = "unknown"
+    fields["network_tools_capability"] = _readiness_projection(
+        value={"capability": network_value, "tool": network_tool},
+        status=network_projection_status,
+    )
+
+    if app.config.voice.enabled and not app.config.voice.broker_enabled:
+        warnings.append("voice enabled but broker disabled")
+    if app.config.voice.speak_responses and not default_tts:
+        warnings.append("speak_responses enabled but TTS missing")
+    if current_provider is not None:
+        provider_name = str(current_provider.get("name") or "").strip().lower()
+        current_model = current_provider.get("current_model")
+        current_model_status = (
+            current_model.get("status") if isinstance(current_model, dict) else "unknown"
+        )
+        if provider_name in {"local", "ollama"} and current_model_status in {"missing", "invalid"}:
+            warnings.append("local provider selected but local model/runtime missing")
+
+    for key, field in fields.items():
+        status = field["status"]
+        warning = field.get("warning")
+        label = key.replace("_", " ")
+        if status in {"missing", "invalid"}:
+            blockers.append(f"{label}: {warning or status}")
+        if warning:
+            warnings.append(str(warning))
+
+    deduped_warnings = list(dict.fromkeys(item for item in warnings if item))
+    deduped_blockers = list(dict.fromkeys(item for item in blockers if item))
+    counts = {
+        "OK": 0,
+        "Missing": 0,
+        "Invalid": 0,
+        "Unknown": 0,
+        "Warning": len(deduped_warnings),
+    }
+    for field in fields.values():
+        status = field["status"]
+        if status == "ok":
+            counts["OK"] += 1
+        elif status == "missing":
+            counts["Missing"] += 1
+        elif status == "invalid":
+            counts["Invalid"] += 1
+        else:
+            counts["Unknown"] += 1
+
+    fields["summary"] = _readiness_projection(
+        value=counts,
+        status="ok" if not deduped_blockers else "invalid",
+        warning="Startup blockers detected." if deduped_blockers else None,
+    )
+    fields["top_blockers"] = _readiness_projection(
+        value=deduped_blockers,
+        status="ok" if not deduped_blockers else "invalid",
+        warning="Startup blockers detected." if deduped_blockers else None,
+    )
+    fields["warnings"] = _readiness_projection(
+        value=deduped_warnings,
+        status="ok" if not deduped_warnings else "invalid",
+        warning="Runtime warnings detected." if deduped_warnings else None,
+    )
+    return fields
+
+
 def _approvals_projection(app: DaemonApp) -> dict[str, Any]:
     pending_approvals = 0
     try:
@@ -3362,14 +5204,44 @@ def get_runtime_settings(app: DaemonApp) -> dict[str, Any]:
         if isinstance(tools_projection.get("registered"), dict)
         else [],
     )
+    capability_graph = _build_capability_graph(
+        app,
+        brain_projection=brain_projection,
+        tts_projection=tts_projection,
+        stt_projection=stt_projection,
+        queue_snapshot=queue_snapshot,
+    )
+    settings_preview = _build_settings_preview(
+        app,
+        brain_projection=brain_projection,
+        tools_projection=tools_projection,
+        queue_snapshot=queue_snapshot,
+        event_snapshot=event_snapshot,
+        tts_projection=tts_projection,
+        stt_projection=stt_projection,
+        capability_graph=capability_graph,
+    )
+    structured_compatibility_warnings = _build_structured_compatibility_warnings(
+        app,
+        settings_preview=settings_preview,
+        capability_graph=capability_graph,
+        tools_projection=tools_projection,
+    )
+    latest_turn_trace = _latest_turn_trace_projection(
+        app,
+        settings=settings,
+        event_snapshot=event_snapshot,
+    )
     payload = {
         "runtime": _runtime_projection(app),
         "brain": brain_projection,
-        "latest_turn_trace": _latest_turn_trace_projection(
+        "current_turn_state": _current_turn_state_projection(
             app,
-            settings=settings,
+            latest_turn_trace=latest_turn_trace,
+            queue_snapshot=queue_snapshot,
             event_snapshot=event_snapshot,
         ),
+        "latest_turn_trace": latest_turn_trace,
         "voice": _voice_projection(
             app,
             queue_snapshot=queue_snapshot,
@@ -3377,6 +5249,17 @@ def get_runtime_settings(app: DaemonApp) -> dict[str, Any]:
         ),
         "audio": audio_projection,
         "tools": tools_projection,
+        "runtime_readiness": _runtime_readiness_projection(
+            app,
+            brain_projection=brain_projection,
+            tools_projection=tools_projection,
+            stt_projection=stt_projection,
+            tts_projection=tts_projection,
+            compatibility_warnings=compatibility_warnings,
+        ),
+        "settings_preview": settings_preview,
+        "capability_graph": capability_graph,
+        "compatibility_warnings": structured_compatibility_warnings,
         "memory": _memory_projection(app),
         "approvals": _approvals_projection(app),
         "panel": _panel_projection(app),

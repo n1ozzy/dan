@@ -248,9 +248,11 @@ def test_runtime_overview_is_read_only_inventory_from_existing_safe_routes() -> 
         "/health",
         "/state",
         "/settings",
+        "/runtime/settings",
         "/brain/adapters",
         "/audio/devices",
         "/voice/listening",
+        "/voice/runtime",
         "/voice/queue?limit=12",
         "/tools",
         "/events?latest=true&limit=50",
@@ -259,8 +261,17 @@ def test_runtime_overview_is_read_only_inventory_from_existing_safe_routes() -> 
 
     for heading in (
         "Runtime",
+        "Turn State",
+        "Readiness / Blockers",
         "Brain/Provider",
-        "Voice Runtime",
+        "Latest turn trace",
+        "Debug timeline",
+        "Voice Settings: Capture/Input",
+        "Voice Settings: STT/Transcription",
+        "Voice Settings: Endpointing/VAD/PTT",
+        "Voice Settings: TTS/Voice Model",
+        "Voice Settings: Playback",
+        "Voice Settings: Queue/Barge-in",
         "Tools/Internet",
         "Logs/Trace",
         "Developer/Test",
@@ -276,8 +287,17 @@ def test_runtime_overview_sections_are_ordered_and_source_aware() -> None:
 
     headings = (
         'title: "Runtime"',
+        'title: "Turn State"',
+        'title: "Readiness / Blockers"',
         'title: "Brain/Provider"',
-        'title: "Voice Runtime"',
+        'title: "Latest turn trace"',
+        'title: "Debug timeline"',
+        'title: "Voice Settings: Capture/Input"',
+        'title: "Voice Settings: STT/Transcription"',
+        'title: "Voice Settings: Endpointing/VAD/PTT"',
+        'title: "Voice Settings: TTS/Voice Model"',
+        'title: "Voice Settings: Playback"',
+        'title: "Voice Settings: Queue/Barge-in"',
         'title: "Tools/Internet"',
         'title: "Logs/Trace"',
         'title: "Developer/Test"',
@@ -297,25 +317,669 @@ def test_runtime_overview_pins_real_diagnostic_fields() -> None:
     script = APP_JS.read_text(encoding="utf-8")
 
     for expected in (
-        "configured adapter/provider",
-        "effective adapter/provider",
-        "configured model",
-        "effective model(s)",
-        "configured TTS",
-        "effective TTS",
-        "configured STT",
-        "effective STT",
-        "playback engine",
-        "recorder/input engine",
-        "PTT mode/hotkey",
-        "broker enabled",
-        "speak responses",
+        "active provider/adapter",
+        "active model",
+        "configured provider list",
+        "provider availability/configured status",
+        "credentials status",
+        "context budget/window",
+        "streaming support",
+        "tools support",
+        "effort allowed values",
+        "effort current/status",
+        "fast support",
+        "latest provider used by last turn",
+        "latest provider error",
+        "unsupported by current provider/model",
+        "fast disabled/unsupported",
+        "missing local model",
+        "Turn State",
+        "current_turn_id",
+        "current_conversation_id",
+        "current_turn_source",
+        "generation_state",
+        "current_speech_id",
+        "interrupted_turn_id",
+        "interruption_reason",
+        "cancelled_speech_id",
+        "turnStateValue",
+        "Readiness / Blockers",
+        "OK",
+        "Missing",
+        "Invalid",
+        "Unknown",
+        "Warning",
+        "daemon config",
+        "database path",
+        "panel backend connected",
+        "brain provider command",
+        "TTS provider",
+        "STT provider",
+        "recorder/playback command",
+        "network/tools capability",
+        "readinessSummary",
+        "Latest turn trace",
+        "Debug timeline",
+        "turn_id",
+        "conversation_id",
+        "provider/adapter/model used",
+        "effort/fast",
+        "memory included count",
+        "memory excluded count",
+        "approvals requested/executed count",
+        "tools attempted count",
+        "voice rows created filler/final/error",
+        "speech cancellation/interruption reason",
+        "user input received",
+        "STT done",
+        "generation started",
+        "generation done",
+        "TTS queued",
+        "playback started",
+        "playback finished",
+        "newest-first safe events",
+        "debugTimelineSummary",
+        "traceLatestSafeError",
+        "input policy",
+        "recorder backend/command",
+        "STT provider",
+        "STT model/path",
+        "PTT mode",
+        "silence threshold/duration",
+        "TTS provider",
+        "voice id/profile/model",
+        "playback engine/command",
+        "cancelled reason",
+        "interrupted previous response",
         "queue counts",
+        "mock adapter/provider",
         "last failure source",
         "backend data gaps",
         "warnings summary",
     ):
         assert expected in script
+
+
+def test_mission_control_operator_shell_is_present_and_read_only() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    for marker in (
+        "missionControlHeading",
+        "Refresh Mission Control",
+        "missionControlSummary",
+        "missionControlModules",
+        "missionControlChecklist",
+        "voiceDoctorList",
+        "providerDoctorList",
+        "missionControlRefreshStatus",
+    ):
+        assert marker in markup
+
+    for marker in (
+        "mission-control",
+        "mission-summary",
+        "module-grid",
+        "doctor-grid",
+        "checklist-grid",
+        "poc-badge",
+    ):
+        assert marker in styles
+
+    for marker in (
+        "POC mode - not production",
+        "Jarvis POC status",
+        "operatorSummaryFromSnapshot",
+        "renderMissionControl",
+        "renderVoiceDoctor",
+        "renderProviderDoctor",
+        "pocChecklistItems",
+        "refreshMissionControl",
+        "MISSION_CONTROL_ENDPOINTS",
+        "POC_NO_PERSISTENCE_GUARD",
+        "no config writes",
+        "no provider switch execution",
+        "no microphone activation",
+        "no external API/provider calls",
+        "no raw secret rendering",
+    ):
+        assert marker in script
+
+
+def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) -> None:
+    harness = tmp_path / "mission-control-summary-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            const context = {{
+              console,
+              document: {{ addEventListener: () => {{}} }},
+              window: {{}},
+            }};
+            context.globalThis = context;
+            vm.runInNewContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            const projection = (value, status = "ok", warning = null) => ({{
+              value,
+              effective_value: value,
+              status,
+              warning,
+            }});
+            const baseSnapshot = {{
+              sourceStatus: {{
+                health: {{ ok: true, path: "/health" }},
+                state: {{ ok: true, path: "/state" }},
+                runtimeSettings: {{ ok: true, path: "/runtime/settings" }},
+                voice: {{ ok: true, path: "/voice/listening" }},
+                voiceRuntime: {{ ok: true, path: "/voice/runtime" }},
+                voiceQueue: {{ ok: true, path: "/voice/queue?limit=12" }},
+                approvals: {{ ok: true, path: "/approvals?limit=25" }},
+                memory: {{ ok: true, path: "/memory?active_only=true&limit=25" }},
+                tools: {{ ok: true, path: "/tools" }},
+                events: {{ ok: true, path: "/events?latest=true&limit=50" }},
+              }},
+              health: {{ service: "jarvisd", state: "IDLE", voice_enabled: true }},
+              state: {{ state: "IDLE", pending_approval_count: 0, brain_adapter: "mock" }},
+              runtimeSettings: {{
+                runtime_readiness: {{
+                  top_blockers: projection([], "ok"),
+                  warnings: projection([], "ok"),
+                  panel_backend_connected: projection("yes", "ok"),
+                  tts_provider: projection("mock", "ok"),
+                  stt_provider: projection("mock", "ok"),
+                }},
+                brain: {{
+                  current_adapter: projection("mock", "ok"),
+                  providers: projection([
+                    {{
+                      name: "mock",
+                      status: "ok",
+                      current: true,
+                      configured: true,
+                      available: true,
+                      kind: "Developer/Test",
+                      current_model: projection("mock-local", "ok"),
+                      provider_command_status: projection("yes", "ok"),
+                      provider_credentials_status: projection("unknown", "unknown"),
+                      fast_supported: projection("no", "unsupported"),
+                      tools_support: projection("no", "unsupported"),
+                      streaming_support: projection("no", "unsupported"),
+                    }},
+                  ]),
+                }},
+                latest_turn_trace: {{
+                  turn_id: projection("turn-1", "ok"),
+                  source: projection("text", "ok"),
+                  latest_safe_error: projection(null, "ok"),
+                }},
+              }},
+              voiceRuntime: {{
+                voice_runtime: {{
+                  voice_enabled: true,
+                  groups: {{
+                    capture_input: {{ readiness: "ok" }},
+                    stt_transcription: {{ readiness: "ok" }},
+                    endpointing_vad_ptt: {{ readiness: "ok" }},
+                    tts_voice_model: {{ readiness: "ok" }},
+                    playback: {{ readiness: "ok" }},
+                    queue_barge_in: {{ readiness: "ok" }},
+                  }},
+                }},
+              }},
+              voiceQueue: {{ voice_queue: [] }},
+              approvals: {{ approvals: [] }},
+              memory: {{ memory: [] }},
+              memoryItems: {{ items: [] }},
+              tools: {{ tools: [] }},
+              events: {{ events: [] }},
+              failures: [],
+            }};
+
+            const ready = context.operatorSummaryFromSnapshot(baseSnapshot);
+            assert.strictEqual(ready.status, "ready");
+            assert.match(ready.statusLine, /Ready enough/i);
+            assert.match(ready.nextAction, /send text turn/i);
+
+            const blockedSnapshot = JSON.parse(JSON.stringify(baseSnapshot));
+            blockedSnapshot.runtimeSettings.runtime_readiness.top_blockers = projection(
+              ["Voice enabled but TTS provider is missing.", "PTT source invalid warning."],
+              "missing",
+            );
+            blockedSnapshot.runtimeSettings.runtime_readiness.tts_provider = projection("", "missing");
+            const blocked = context.operatorSummaryFromSnapshot(blockedSnapshot);
+            assert.strictEqual(blocked.status, "blocked");
+            assert.match(blocked.statusLine, /Blocked/i);
+            assert.deepStrictEqual([...blocked.blockers.slice(0, 2)], [
+              "Voice enabled but TTS provider is missing.",
+              "PTT source invalid warning.",
+            ]);
+
+            const offline = context.operatorSummaryFromSnapshot({{
+              sourceStatus: {{ health: {{ ok: false, path: "/health" }} }},
+              failures: ["/health"],
+            }});
+            assert.strictEqual(offline.status, "offline");
+            assert.match(offline.statusLine, /backend offline/i);
+            assert.match(offline.nextAction, /daemon/i);
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_mission_control_refresh_plan_is_safe_read_only_gets(tmp_path: Path) -> None:
+    harness = tmp_path / "mission-control-refresh-plan-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            const context = {{
+              console,
+              document: {{ addEventListener: () => {{}} }},
+              window: {{}},
+            }};
+            context.globalThis = context;
+            vm.runInNewContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            const plan = context.missionControlSafeEndpointPlan();
+            assert.ok(plan.length >= 10);
+            assert.ok(plan.every((entry) => entry.method === "GET"));
+            assert.ok(plan.some((entry) => entry.path === "/runtime/settings"));
+            assert.ok(plan.some((entry) => entry.path === "/voice/queue?limit=12"));
+            assert.ok(plan.some((entry) => entry.path === "/approvals?limit=25"));
+            assert.ok(plan.some((entry) => entry.path === "/memory/items"));
+            assert.ok(plan.some((entry) => entry.path === "/events?latest=true&limit=50"));
+
+            const forbidden = [
+              "/settings",
+              "/brain/switch",
+              "/voice/listen/lock",
+              "/voice/listen/unlock",
+              "/voice/ptt/down",
+              "/voice/ptt/up",
+              "/input/text",
+              "/approvals/{{id}}/execute",
+            ];
+            for (const path of forbidden) {{
+              assert.ok(
+                !plan.some((entry) => entry.path === path && entry.method !== "GET"),
+                `unsafe endpoint in mission control plan: ${{path}}`,
+              );
+            }}
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_poc_checklist_voice_and_provider_doctors_pin_required_diagnostics() -> None:
+    script = APP_JS.read_text(encoding="utf-8")
+
+    for item in (
+        "Lifecycle alive",
+        "Text turn path available",
+        "Panel live refresh active",
+        "PTT available",
+        "Voice queue observable",
+        "Barge-in/cancel observable",
+        "Memory visible",
+        "Approval visible",
+        "Provider status known",
+        "Voice settings split visible",
+        "Latest turn trace visible",
+        "Logs newest-first and redacted",
+    ):
+        assert item in script
+
+    for voice_marker in (
+        "speak_responses",
+        "broker_enabled",
+        "default_tts",
+        "default_stt",
+        "TTS readiness",
+        "STT readiness",
+        "playback readiness",
+        "capture policy",
+        "PTT mode",
+        "listening lease state",
+        "current speaking item",
+        "last cancellation reason",
+        "interrupted_previous_response",
+        "latest voice error",
+        "voice disabled",
+        "speak disabled",
+        "broker disabled",
+        "TTS missing",
+        "STT missing",
+        "queue stuck",
+        "cancellation path unavailable",
+        "PTT source invalid warning",
+    ):
+        assert voice_marker in script
+
+    for provider_marker in (
+        "active provider/adapter",
+        "active model",
+        "command status",
+        "credentials status",
+        "effort support",
+        "fast support",
+        "context budget/window",
+        "streaming support",
+        "tools support",
+        "local runtime status",
+        "latest provider error",
+        "provider command missing",
+        "provider configured but unavailable",
+        "model missing/unknown",
+        "effort unsupported",
+        "fast unsupported",
+        "local model missing",
+        "mock/dev selected",
+        "credentials unknown/missing",
+    ):
+        assert provider_marker in script
+
+
+def test_settings_preview_cockpit_shell_is_present() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "settingsPreviewHeading" in markup
+    assert "Settings Preview" in markup
+    assert "Preview only. Changes are not saved." in markup
+    assert "settingsPreviewList" in markup
+    assert "settingsPreviewSaveButton" in markup
+    assert "Save not implemented in POC" in markup
+
+    for heading in (
+        "Brain / Provider",
+        "Voice / TTS",
+        "Voice / STT",
+        "Endpointing / PTT",
+        "Queue / Barge-in",
+        "Tools / Internet",
+        "Personality",
+        "Developer / Test",
+    ):
+        assert heading in script
+
+    for contract_name in (
+        "refreshSettingsPreview",
+        "renderSettingsPreview",
+        "settingsPreviewModelFromPayload",
+        "settingsPreviewApplyOverride",
+        "settingsPreviewEvaluate",
+        "settingsPreviewControlChanged",
+        "settingsPreviewDiffRows",
+        "renderSettingsPreviewDiff",
+    ):
+        assert contract_name in script
+
+
+def test_settings_preview_local_model_catches_invalid_provider_voice_combos(
+    tmp_path: Path,
+) -> None:
+    harness = tmp_path / "settings-preview-model-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            const context = {{
+              console,
+              document: {{
+                addEventListener: () => {{}},
+              }},
+              window: {{}},
+            }};
+            context.globalThis = context;
+            vm.runInNewContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            function previewField(id, current, extra = {{}}) {{
+              return Object.assign({{
+                id,
+                label: id,
+                current,
+                effective: current,
+                status: "ok",
+                source: "runtime_detected",
+                allowed_values: [],
+                disabled_values: [],
+                warning: null,
+                blocker: null,
+                dependencies: [],
+                invalidates: [],
+                requires_restart: false,
+                requires_reload: false,
+                editable_now: true,
+                editable_later: false,
+                developer_only: false,
+              }}, extra);
+            }}
+
+            const payload = {{
+              settings_preview: {{
+                preview_only: true,
+                sections: {{
+                  brain_provider: {{
+                    id: "brain_provider",
+                    label: "Brain / Provider",
+                    fields: {{
+                      provider: previewField("brain_provider.provider", "claude_cli", {{
+                        allowed_values: ["claude_cli", "codex_cli", "ollama", "mock"],
+                        disabled_values: [{{ value: "mock", reason: "Developer/Test only" }}],
+                        invalidates: ["brain_provider.model", "brain_provider.effort", "brain_provider.fast"],
+                      }}),
+                      model: previewField("brain_provider.model", "claude-pro"),
+                      effort: previewField("brain_provider.effort", "max", {{
+                        allowed_values: ["low", "max"],
+                      }}),
+                      fast: previewField("brain_provider.fast", true, {{
+                        allowed_values: [true, false],
+                      }}),
+                      tools_support: previewField("brain_provider.tools_support", "yes"),
+                      streaming_support: previewField("brain_provider.streaming_support", "yes"),
+                    }},
+                  }},
+                  voice_tts: {{
+                    id: "voice_tts",
+                    label: "Voice / TTS",
+                    fields: {{
+                      tts_provider: previewField("voice_tts.tts_provider", "", {{
+                        status: "missing",
+                        blocker: "Voice enabled but TTS provider is missing.",
+                      }}),
+                      tts_model: previewField("voice_tts.tts_model", null, {{ status: "missing" }}),
+                      voice_id: previewField("voice_tts.voice_id", null, {{ status: "missing" }}),
+                    }},
+                  }},
+                  voice_stt: {{
+                    id: "voice_stt",
+                    label: "Voice / STT",
+                    fields: {{
+                      stt_provider: previewField("voice_stt.stt_provider", "", {{
+                        status: "missing",
+                        blocker: "Voice enabled but STT provider is missing.",
+                      }}),
+                      stt_model: previewField("voice_stt.stt_model", null, {{ status: "missing" }}),
+                    }},
+                  }},
+                  queue_barge_in: {{
+                    id: "queue_barge_in",
+                    label: "Queue / Barge-in",
+                    fields: {{
+                      cancel_support: previewField("queue_barge_in.cancel_support", "no"),
+                    }},
+                  }},
+                }},
+              }},
+              capability_graph: {{
+                brain_capabilities: {{
+                  current_provider: "claude_cli",
+                  providers: [
+                    {{
+                      id: "claude_cli",
+                      label: "Claude CLI",
+                      kind: "Provider",
+                      available: true,
+                      configured: true,
+                      developer_only: false,
+                      models: [{{ id: "claude-pro", label: "claude-pro", available: true }}],
+                      current_model: "claude-pro",
+                      allowed_effort_values: ["low", "max"],
+                      fast_supported: true,
+                      tools_supported: true,
+                      streaming_supported: true,
+                    }},
+                    {{
+                      id: "codex_cli",
+                      label: "Codex CLI",
+                      kind: "Provider",
+                      available: true,
+                      configured: true,
+                      developer_only: false,
+                      models: [{{ id: "codex-lite", label: "codex-lite", available: true }}],
+                      current_model: "codex-lite",
+                      allowed_effort_values: ["low"],
+                      fast_supported: false,
+                      tools_supported: true,
+                      streaming_supported: false,
+                    }},
+                    {{
+                      id: "ollama",
+                      label: "Ollama",
+                      kind: "Local",
+                      available: false,
+                      configured: false,
+                      developer_only: false,
+                      models: [],
+                      current_model: null,
+                      allowed_effort_values: [],
+                      fast_supported: false,
+                      tools_supported: false,
+                      streaming_supported: false,
+                      blocker: "Local runtime/model missing.",
+                    }},
+                    {{
+                      id: "mock",
+                      label: "Mock",
+                      kind: "Developer/Test",
+                      available: true,
+                      configured: true,
+                      developer_only: true,
+                      models: [{{ id: "mock-local", label: "mock-local", available: true }}],
+                      current_model: "mock-local",
+                      allowed_effort_values: [],
+                      fast_supported: false,
+                      tools_supported: false,
+                      streaming_supported: false,
+                    }},
+                  ],
+                }},
+                voice_capabilities: {{
+                  tts_providers: [],
+                  stt_providers: [],
+                  cancellation_support: false,
+                }},
+                local_capabilities: {{ runtimes: [] }},
+              }},
+              compatibility_warnings: [],
+            }};
+
+            const model = context.settingsPreviewModelFromPayload(payload);
+            assert.strictEqual(
+              model.sections.voice_tts.fields.tts_provider.blocker,
+              "Voice enabled but TTS provider is missing.",
+            );
+            assert.strictEqual(
+              model.sections.voice_stt.fields.stt_provider.blocker,
+              "Voice enabled but STT provider is missing.",
+            );
+
+            const codexPreview = context.settingsPreviewApplyOverride(
+              model,
+              "brain_provider.provider",
+              "codex_cli",
+            );
+            assert.strictEqual(codexPreview.sections.brain_provider.fields.effort.status, "invalid");
+            assert.match(codexPreview.sections.brain_provider.fields.effort.blocker, /reset required/i);
+            assert.strictEqual(codexPreview.sections.brain_provider.fields.fast.status, "unsupported");
+            assert.ok(
+              codexPreview.sections.brain_provider.fields.fast.disabled_values.some((item) =>
+                item.value === true && /does not support fast/i.test(item.reason),
+              ),
+            );
+
+            const localPreview = context.settingsPreviewApplyOverride(
+              model,
+              "brain_provider.provider",
+              "ollama",
+            );
+            assert.strictEqual(localPreview.sections.brain_provider.fields.model.status, "missing");
+            assert.match(localPreview.sections.brain_provider.fields.model.blocker, /local.*model/i);
+
+            const mockPreview = context.settingsPreviewApplyOverride(
+              model,
+              "brain_provider.provider",
+              "mock",
+            );
+            assert.strictEqual(mockPreview.sections.brain_provider.fields.provider.developer_only, true);
+            assert.match(mockPreview.sections.brain_provider.fields.provider.warning, /Developer\\/Test/);
+            const redactedPreviewText = context.settingsPreviewValue({{
+              command: "sk-panel-settings-preview-secret",
+            }});
+            assert.ok(!redactedPreviewText.includes("sk-panel-settings-preview-secret"));
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_runtime_overview_detects_network_tools_beyond_network_risk_only() -> None:
@@ -443,10 +1107,214 @@ def test_live_stream_refreshes_chat_memory_voice_and_runtime_views() -> None:
     assert "scheduleHistoryRefresh" in script
     assert "scheduleMemoryRefresh" in script
     assert "scheduleRuntimeRefresh" in script
+    assert "scheduleRuntimeOverviewRefresh" in script
     assert 'type.startsWith("turn.")' in script
     assert 'type.startsWith("input.")' in script
     assert 'type.startsWith("memory.")' in script
     assert 'type.startsWith("voice.")' in script
+
+
+def test_live_stream_debounces_runtime_overview_refresh_for_relevant_events(tmp_path: Path) -> None:
+    harness = tmp_path / "runtime-overview-live-refresh-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            class FakeNode {{
+              constructor(tagName = "div") {{
+                this.tagName = tagName;
+                this.children = [];
+                this.parentNode = null;
+                this.className = "";
+                this.dataset = {{}};
+                this.listeners = {{}};
+                this.value = "";
+                this.title = "";
+                this.hidden = false;
+                this.disabled = false;
+                this._text = "";
+                this.classList = {{
+                  add: () => {{}},
+                  remove: () => {{}},
+                  toggle: () => false,
+                }};
+              }}
+              set textContent(value) {{
+                this._text = String(value);
+                this.children = [];
+              }}
+              get textContent() {{
+                return this._text + this.children.map((child) => child.textContent || "").join("");
+              }}
+              append(...nodes) {{
+                for (const node of nodes) {{
+                  this.appendChild(node);
+                }}
+              }}
+              appendChild(node) {{
+                this.children.push(node);
+                node.parentNode = this;
+                return node;
+              }}
+              removeChild(node) {{
+                const index = this.children.indexOf(node);
+                if (index >= 0) {{
+                  this.children.splice(index, 1);
+                }}
+                node.parentNode = null;
+                return node;
+              }}
+              addEventListener(type, listener) {{
+                this.listeners[type] = listener;
+              }}
+              setAttribute() {{}}
+              focus() {{}}
+              get firstChild() {{
+                return this.children[0] || null;
+              }}
+              querySelector() {{
+                return null;
+              }}
+              querySelectorAll() {{
+                return [];
+              }}
+            }}
+
+            const nodes = new Map();
+            function node(id) {{
+              if (!nodes.has(id)) {{
+                nodes.set(id, new FakeNode(id));
+              }}
+              return nodes.get(id);
+            }}
+
+            const timers = [];
+            let timerId = 1;
+            const requests = [];
+            const response = (payload) => ({{
+              status: 200,
+              ok: true,
+              text: async () => JSON.stringify(payload),
+            }});
+            const payloadFor = (path) => {{
+              if (path.startsWith("/conversations")) {{
+                return {{ conversations: [] }};
+              }}
+              if (path.startsWith("/turns")) {{
+                return {{ turns: [] }};
+              }}
+              if (path === "/runtime/settings") {{
+                return {{
+                  runtime_readiness: {{}},
+                  current_turn_state: {{}},
+                  latest_turn_trace: {{}},
+                  brain: {{}},
+                }};
+              }}
+              if (path.startsWith("/events")) {{
+                return {{ events: [] }};
+              }}
+              return {{}};
+            }};
+
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41800" }},
+              localStorage: {{
+                getItem: () => "token",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              setTimeout: (callback, ms) => {{
+                const handle = {{ id: timerId++, callback, ms, cleared: false }};
+                timers.push(handle);
+                return handle;
+              }},
+              clearTimeout: (handle) => {{
+                if (handle) {{
+                  handle.cleared = true;
+                }}
+              }},
+              setInterval: () => 0,
+              clearInterval: () => {{}},
+              WebSocket: class {{}},
+              fetch: async (url) => {{
+                const parsed = new URL(url);
+                const path = `${{parsed.pathname}}${{parsed.search}}`;
+                requests.push(path);
+                return response(payloadFor(path));
+              }},
+              document: {{
+                body: node("body"),
+                addEventListener: () => {{}},
+                createElement: (tagName) => new FakeNode(tagName),
+                createTextNode: (text) => {{
+                  const textNode = new FakeNode("#text");
+                  textNode.textContent = text;
+                  return textNode;
+                }},
+                getElementById: (id) => node(id),
+                querySelectorAll: () => [],
+              }},
+              window: {{
+                localStorage: {{
+                  getItem: () => "token",
+                  setItem: () => {{}},
+                  removeItem: () => {{}},
+                }},
+                addEventListener: () => {{}},
+                prompt: () => "token",
+              }},
+            }};
+            context.globalThis = context;
+            vm.runInNewContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+            context.bindElements();
+            context.bindEvents();
+
+            const frame = (id, type) => JSON.stringify({{
+              type: "event",
+              event: {{
+                id,
+                type,
+                source: "test",
+                created_at: "2026-07-06T12:00:00Z",
+                payload: {{}},
+              }},
+            }});
+
+            (async () => {{
+              context.handleStreamMessage(frame(1, "turn.finished"));
+              context.handleStreamMessage(frame(2, "turn.context.built"));
+
+              const due = timers.filter((timer) => !timer.cleared);
+              await Promise.all(due.map((timer) => timer.callback()));
+
+              const runtimeSettingsCalls = requests.filter((path) => path === "/runtime/settings");
+              assert.strictEqual(runtimeSettingsCalls.length, 1);
+            }})().catch((error) => {{
+              console.error(error);
+              process.exit(1);
+            }});
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_approval_cards_support_memory_save_one_click_and_idempotent_execute() -> None:
@@ -764,6 +1632,325 @@ def test_event_payload_summary_is_whitelisted_and_redacted(tmp_path: Path) -> No
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _run_logs_harness(tmp_path: Path, name: str, body: str) -> None:
+    harness = tmp_path / f"{name}.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            class FakeNode {{
+              constructor(tagName = "div") {{
+                this.tagName = tagName;
+                this.children = [];
+                this.parentNode = null;
+                this.className = "";
+                this.dataset = {{}};
+                this.listeners = {{}};
+                this.value = "";
+                this.title = "";
+                this._text = "";
+              }}
+              set textContent(value) {{
+                this._text = String(value);
+                this.children = [];
+              }}
+              get textContent() {{
+                return this._text + this.children.map((child) => child.textContent || "").join("");
+              }}
+              append(...nodes) {{
+                for (const node of nodes) {{
+                  this.appendChild(node);
+                }}
+              }}
+              appendChild(node) {{
+                this.children.push(node);
+                node.parentNode = this;
+                return node;
+              }}
+              insertBefore(node, reference) {{
+                if (!reference) {{
+                  return this.appendChild(node);
+                }}
+                const index = this.children.indexOf(reference);
+                if (index < 0) {{
+                  return this.appendChild(node);
+                }}
+                this.children.splice(index, 0, node);
+                node.parentNode = this;
+                return node;
+              }}
+              removeChild(node) {{
+                const index = this.children.indexOf(node);
+                if (index >= 0) {{
+                  this.children.splice(index, 1);
+                }}
+                node.parentNode = null;
+                return node;
+              }}
+              remove() {{
+                if (this.parentNode) {{
+                  this.parentNode.removeChild(this);
+                }}
+              }}
+              replaceChildren(...nodes) {{
+                for (const child of [...this.children]) {{
+                  child.parentNode = null;
+                }}
+                this.children = [];
+                this._text = "";
+                for (const node of nodes) {{
+                  this.appendChild(node);
+                }}
+              }}
+              addEventListener(type, listener) {{
+                this.listeners[type] = listener;
+              }}
+              setAttribute() {{}}
+              focus() {{}}
+              get firstChild() {{
+                return this.children[0] || null;
+              }}
+              get lastChild() {{
+                return this.children[this.children.length - 1] || null;
+              }}
+              querySelector(selector) {{
+                if (selector !== ".empty-row") {{
+                  return null;
+                }}
+                return findNode(this, (node) =>
+                  String(node.className || "").split(/\\s+/).includes("empty-row"),
+                );
+              }}
+              querySelectorAll() {{
+                return [];
+              }}
+            }}
+
+            function findNode(node, predicate) {{
+              if (predicate(node)) {{
+                return node;
+              }}
+              for (const child of node.children) {{
+                const found = findNode(child, predicate);
+                if (found) {{
+                  return found;
+                }}
+              }}
+              return null;
+            }}
+
+            const nodes = new Map();
+            function node(id) {{
+              if (!nodes.has(id)) {{
+                nodes.set(id, new FakeNode(id));
+              }}
+              return nodes.get(id);
+            }}
+
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41800" }},
+              localStorage: {{
+                getItem: () => "",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              setTimeout: () => 0,
+              clearTimeout: () => {{}},
+              setInterval: () => 0,
+              clearInterval: () => {{}},
+              WebSocket: class {{}},
+              document: {{
+                addEventListener: () => {{}},
+                createElement: (tagName) => new FakeNode(tagName),
+                createTextNode: (text) => {{
+                  const textNode = new FakeNode("#text");
+                  textNode.textContent = text;
+                  return textNode;
+                }},
+                getElementById: (id) => node(id),
+                querySelectorAll: () => [],
+              }},
+              window: {{
+                addEventListener: () => {{}},
+              }},
+            }};
+            context.globalThis = context;
+            vm.runInNewContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+            context.bindElements();
+            context.bindEvents();
+
+            function event(id, type = "state.changed") {{
+              return {{
+                id,
+                type,
+                source: "test",
+                created_at: "2026-07-06T12:00:00Z",
+                payload: {{ status: `status-${{id}}` }},
+              }};
+            }}
+
+            function eventIds() {{
+              return node("eventList").children
+                .map((row) => {{
+                  const match = row.textContent.match(/#(\\d+)\\s*·/);
+                  return match ? Number(match[1]) : null;
+                }})
+                .filter((id) => id !== null);
+            }}
+
+            {body}
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_safe_debug_timeline_classifies_families_and_never_dumps_raw_payloads(tmp_path: Path) -> None:
+    harness = tmp_path / "event-family-timeline-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            const context = {{
+              console,
+              document: {{
+                addEventListener: () => {{}},
+              }},
+              window: {{}},
+            }};
+            context.globalThis = context;
+            vm.runInNewContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            const secretValue = "sk-" + "timeline-secret";
+            const rows = [
+              {{
+                id: 9,
+                type: "voice.speak.failed",
+                created_at: "2026-07-06T12:00:09Z",
+                payload: {{
+                  status: "failed",
+                  error: `Authorization: Bearer ${{secretValue}}`,
+                  raw_payload: `must-not-render-${{secretValue}}`,
+                }},
+              }},
+              {{
+                id: 10,
+                type: "tool.finished",
+                created_at: "2026-07-06T12:00:10Z",
+                payload: {{
+                  status: "ok",
+                  tool_name: "shell_read",
+                  arguments: {{ command: `echo ${{secretValue}}` }},
+                }},
+              }},
+            ];
+
+            const latest = context.safeEventTimelineItem(rows[1]);
+            assert.strictEqual(latest.family, "tool");
+            assert.strictEqual(latest.status, "ok");
+            assert.strictEqual(latest.type, "tool.finished");
+            assert.ok(!latest.summary.includes(secretValue), latest.summary);
+            assert.ok(!latest.summary.includes("arguments:"), latest.summary);
+
+            const failed = context.safeEventTimelineItem(rows[0]);
+            assert.strictEqual(failed.family, "voice");
+            assert.strictEqual(failed.severity, "error");
+            assert.match(failed.summary, /\\[REDACTED\\]/);
+            assert.ok(!failed.summary.includes(secretValue), failed.summary);
+            assert.ok(!failed.summary.includes("raw_payload"), failed.summary);
+
+            const timeline = context.debugTimelineSummary(rows);
+            assert.ok(timeline.indexOf("#10") < timeline.indexOf("#9"), timeline);
+            assert.match(timeline, /family: tool/);
+            assert.match(timeline, /status: ok/);
+            assert.match(timeline, /family: voice/);
+            assert.ok(!timeline.includes(secretValue), timeline);
+            assert.ok(!timeline.includes("raw_payload"), timeline);
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_logs_render_latest_events_newest_first(tmp_path: Path) -> None:
+    _run_logs_harness(
+        tmp_path,
+        "logs-latest-ordering-harness",
+        """
+        context.renderEvents([event(30), event(20), event(10)]);
+
+        assert.deepStrictEqual(eventIds(), [30, 20, 10]);
+        """,
+    )
+
+
+def test_logs_keep_live_events_at_top_without_duplicates(tmp_path: Path) -> None:
+    _run_logs_harness(
+        tmp_path,
+        "logs-live-ordering-harness",
+        """
+        context.renderEvents([event(3), event(2), event(1)]);
+        context.prependLiveEvent(event(4));
+        context.prependLiveEvent(event(3));
+
+        assert.deepStrictEqual(eventIds().slice(0, 4), [4, 3, 2, 1]);
+        assert.strictEqual(eventIds().filter((id) => id === 3).length, 1);
+        """,
+    )
+
+
+def test_logs_trim_cache_by_keeping_newest_events(tmp_path: Path) -> None:
+    _run_logs_harness(
+        tmp_path,
+        "logs-cache-trimming-harness",
+        """
+        const polled = Array.from({ length: 260 }, (_, index) => event(260 - index));
+        context.renderEvents(polled);
+        context.prependLiveEvent(event(261));
+
+        node("logFilter").value = "all";
+        node("logFilter").listeners.change();
+
+        const ids = eventIds();
+        assert.strictEqual(ids[0], 261);
+        assert.ok(ids.includes(260), "newest polled event should survive cache trimming");
+        assert.ok(!ids.includes(1), "oldest polled event should be trimmed first");
+        """,
+    )
 
 
 def test_app_renders_relative_times_with_full_date_tooltip() -> None:

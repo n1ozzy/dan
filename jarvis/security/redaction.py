@@ -68,6 +68,13 @@ SENSITIVE_KEY_PREFIXES = (
     "ssh_key_",
     "token_",
 )
+SAFE_NON_SECRET_KEYS = frozenset(
+    {
+        # Runtime settings preview field id: this carries only yes/no/unknown
+        # readiness, not credentials.
+        "credentials_or_command_status",
+    }
+)
 
 SECRET_VALUE_PATTERNS = (
     re.compile(r"(?i)(\bAuthorization\s*[:=]\s*Bearer\s+)[^\s,;\"']+"),
@@ -141,6 +148,8 @@ def redact_secret_text(value: str) -> str:
 
 def is_sensitive_key(key: Any) -> bool:
     normalized = _normalize_key(key)
+    if normalized in SAFE_NON_SECRET_KEYS:
+        return False
     return (
         normalized in SENSITIVE_KEYS
         or normalized.endswith(SENSITIVE_KEY_SUFFIXES)
