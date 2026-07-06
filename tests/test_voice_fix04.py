@@ -39,9 +39,21 @@ def app(tmp_path: Path) -> Iterator[DaemonApp]:
 def _write_voice_enabled_config(tmp_path: Path) -> Path:
     config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
     body = config_path.read_text(encoding="utf-8")
-    body = body.replace("enabled = false", "enabled = true", 1)
-    body = body.replace("speak_responses = false", "speak_responses = true", 1)
-    body = body.replace("broker_enabled = false", "broker_enabled = true", 1)
+    body = body.replace(
+        "[voice]\nenabled = false",
+        "[voice]\nenabled = true",
+        1,
+    )
+    body = body.replace(
+        "speak_responses = false",
+        "speak_responses = true",
+        1,
+    )
+    body = body.replace(
+        "broker_enabled = false",
+        "broker_enabled = true",
+        1,
+    )
     config_path.write_text(body, encoding="utf-8")
     return config_path
 

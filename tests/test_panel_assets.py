@@ -258,16 +258,71 @@ def test_runtime_overview_is_read_only_inventory_from_existing_safe_routes() -> 
         assert route in script
 
     for heading in (
-        "Voice / Audio",
-        "Brain / Provider",
-        "Personality",
-        "Tools / Internet",
-        "Logs / Errors",
+        "Runtime",
+        "Brain/Provider",
+        "Voice Runtime",
+        "Tools/Internet",
+        "Logs/Trace",
+        "Developer/Test",
     ):
         assert heading in script
     assert "not exposed by current API" in script
     assert "unknown" in script
     assert "read-only" in script
+
+
+def test_runtime_overview_sections_are_ordered_and_source_aware() -> None:
+    script = APP_JS.read_text(encoding="utf-8")
+
+    headings = (
+        'title: "Runtime"',
+        'title: "Brain/Provider"',
+        'title: "Voice Runtime"',
+        'title: "Tools/Internet"',
+        'title: "Logs/Trace"',
+        'title: "Developer/Test"',
+    )
+    positions = [script.index(heading) for heading in headings]
+    assert positions == sorted(positions)
+
+    assert "RUNTIME_OVERVIEW_FIELD_SOURCES" in script
+    assert "runtimeOverviewFieldRows" in script
+    assert "runtimeOverviewReadiness" in script
+    assert "runtimeOverviewSourceFailures" in script
+    assert "source:" in script
+    assert "readiness:" in script
+
+
+def test_runtime_overview_pins_real_diagnostic_fields() -> None:
+    script = APP_JS.read_text(encoding="utf-8")
+
+    for expected in (
+        "configured adapter/provider",
+        "effective adapter/provider",
+        "configured model",
+        "effective model(s)",
+        "configured TTS",
+        "effective TTS",
+        "configured STT",
+        "effective STT",
+        "playback engine",
+        "recorder/input engine",
+        "PTT mode/hotkey",
+        "broker enabled",
+        "speak responses",
+        "queue counts",
+        "last failure source",
+    ):
+        assert expected in script
+
+
+def test_runtime_overview_detects_network_tools_beyond_network_risk_only() -> None:
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "networkToolCandidates" in script
+    assert "toolSupportsNetwork" in script
+    assert "description" in script
+    assert "internet" in script
 
 
 def test_panel_cockpit_runbook_documents_settings_section() -> None:

@@ -61,6 +61,25 @@ const LIVE_FALLBACK_POLL_MS = 5000;
 const RUNTIME_OVERVIEW_UNKNOWN = "unknown";
 const RUNTIME_OVERVIEW_NOT_EXPOSED = "not exposed by current API";
 const RUNTIME_OVERVIEW_READ_ONLY = "read-only";
+const RUNTIME_OVERVIEW_FIELD_STATUS_ORDER = ["ok", "missing", "invalid", "unknown"];
+const RUNTIME_OVERVIEW_READINESS = Object.freeze({
+  OK: "ok",
+  MISSING: "missing",
+  INVALID: "invalid",
+  UNKNOWN: "unknown",
+});
+const RUNTIME_OVERVIEW_FIELD_SOURCES = Object.freeze({
+  health: "Health",
+  state: "State",
+  settings: "Settings",
+  brain: "Brain adapters",
+  audio: "Audio devices",
+  voice: "Voice listening",
+  voiceQueue: "Voice queue",
+  tools: "Tools registry",
+  events: "Events",
+  contract: "Jarvis contract",
+});
 
 // Ludzkie nazwy narzędzi (rejestr daemona) — używane w kartach zgód i w
 // sekcji „Możliwości Jarvisa”. Fallback dla rodzin ui_/screen_/terminal_,
@@ -678,19 +697,21 @@ async function refreshRuntimeOverview() {
     ["voice", "/voice/listening"],
     ["voiceQueue", "/voice/queue?limit=12"],
     ["tools", "/tools"],
-    ["events", "/events?after_id=0&limit=50"],
+    ["events", "/events?latest=true&limit=50"],
   ];
   const settled = await Promise.allSettled(
     endpoints.map((entry) => requestJson(entry[1])),
   );
-  const snapshot = { failures: [] };
+  const snapshot = { failures: [], sourceStatus: {} };
   for (let index = 0; index < endpoints.length; index += 1) {
     const [key, path] = endpoints[index];
     const result = settled[index];
     if (result.status === "fulfilled") {
       snapshot[key] = result.value || {};
+      snapshot.sourceStatus[key] = { ok: true, path };
     } else {
       snapshot.failures.push(path);
+      snapshot.sourceStatus[key] = { ok: false, path };
     }
   }
 
@@ -723,10 +744,214 @@ function renderRuntimeOverview(snapshot) {
   }
 }
 
+const RUNTIME_OVERVIEW_SECTIONS = [
+  {
+    title: "Runtime",
+    fields: [
+      field("overview mode", "contract", (ctx) => ctx.readOnlyMode),
+      field("service", "health", (ctx) => ctx.health.service),
+      field("state", "state", (ctx) => firstPresent(ctx.state.state, ctx.health.state)),
+      field("started", "health", (ctx) => ctx.health.started),
+      field("schema version", "health", (ctx) => ctx.health.schema_version),
+      field("pending approval count", "state", (ctx) =>
+        firstPresent(ctx.state.pending_approval_count, ctx.health.pending_approval_count),
+      ),
+      field("voice enabled", "state", (ctx) => ctx.voiceEnabled),
+    ],
+  },
+  {
+    title: "Brain/Provider",
+    fields: [
+      field("configured adapter/provider", "settings", (ctx) => configuredSetting(ctx, [
+        "brain.default_adapter",
+        "brain.adapter",
+        "brain.provider",
+        "provider.adapter",
+      ])),
+      field("effective adapter/provider", "brain", (ctx) => ctx.activeAdapter, {
+        readiness: (ctx, value) => adapterReadiness(ctx.adapters, value),
+        dependency: (ctx, value) => adapterDependency(ctx.adapters, value),
+      }),
+      field("configured model", "settings", (ctx) => configuredSetting(ctx, [
+        "brain.model",
+        "provider.model",
+        "model",
+        "llm.model",
+      ])),
+      field("effective model(s)", "brain", (ctx) => adapterModels(ctx.adapters, ctx.activeAdapter)),
+      field("registered adapters", "brain", (ctx) => adapterNames(ctx.adapters)),
+      field("effort", "settings", (ctx) => configuredSetting(ctx, [
+        "brain.effort",
+        "provider.effort",
+        "reasoning.effort",
+        "effort",
+      ])),
+      field("fast mode", "settings", (ctx) => configuredSetting(ctx, [
+        "brain.fast_mode",
+        "provider.fast_mode",
+        "fast_mode",
+      ])),
+      field("context budget/window", "settings", (ctx) => configuredSetting(ctx, [
+        "brain.context_budget",
+        "brain.context_window",
+        "context.budget",
+        "context.window",
+        "memory.context_budget",
+      ])),
+      field("provider sessions are memory", "contract", () => "no; daemon owns memory"),
+      field("Claude config", "brain", (ctx) =>
+        adapterRegistration(ctx.adapters, ["claude_cli", "claude_cli_warm"]),
+      ),
+      field("Codex config", "brain", (ctx) => adapterRegistration(ctx.adapters, ["codex_cli"])),
+      field("Grok/local/Bielik/Mistral/Ollama", "brain", (ctx) =>
+        adapterRegistration(ctx.adapters, ["grok", "local", "bielik", "mistral", "ollama"]),
+      ),
+      field("mock", "brain", (ctx) =>
+        adapterRegistration(ctx.adapters, ["mock"], "Developer/Test registered"),
+      ),
+    ],
+  },
+  {
+    title: "Voice Runtime",
+    fields: [
+      field("listening now", "voice", (ctx) => ctx.voice.listening),
+      field("audio backend", "audio", (ctx) => ctx.audio.backend),
+      field("input device", "audio", (ctx) =>
+        firstPresent(ctx.audio.input_device, ctx.audio.preferred_input),
+      ),
+      field("output device", "audio", (ctx) =>
+        firstPresent(ctx.audio.output_device, ctx.audio.output_policy),
+      ),
+      field("input/output policy", "audio", (ctx) =>
+        firstPresent(ctx.audio.input_policy, ctx.audio.output_policy, configuredSetting(ctx, [
+          "voice.input_policy",
+          "voice.output_policy",
+          "audio.input_policy",
+          "audio.output_policy",
+        ])),
+      ),
+      field("bluetooth mic allowed", "audio", (ctx) => ctx.audio.allow_bluetooth_microphone),
+      field("configured TTS", "settings", (ctx) => configuredTts(ctx), {
+        readiness: voiceConfiguredReadiness,
+        warnings: voiceConfiguredWarnings("TTS"),
+      }),
+      field("effective TTS", "events", (ctx) => effectiveTts(ctx), {
+        readiness: voiceEffectiveReadiness,
+      }),
+      field("configured STT", "settings", (ctx) => configuredStt(ctx), {
+        readiness: voiceConfiguredReadiness,
+        warnings: voiceConfiguredWarnings("STT"),
+      }),
+      field("effective STT", "events", (ctx) => effectiveStt(ctx), {
+        readiness: voiceEffectiveReadiness,
+      }),
+      field("voice/model/speaker", "settings", (ctx) => configuredVoiceIdentity(ctx), {
+        readiness: voiceIdentityReadiness,
+      }),
+      field("playback engine", "audio", (ctx) => playbackEngine(ctx)),
+      field("recorder/input engine", "audio", (ctx) => recorderEngine(ctx)),
+      field("speech speed/rate", "settings", (ctx) => configuredSetting(ctx, [
+        "voice.speed",
+        "voice.rate",
+        "tts.speed",
+        "tts.rate",
+      ])),
+      field("pauses/timing/chunking", "settings", (ctx) => configuredSetting(ctx, [
+        "voice.pause_ms",
+        "voice.chunking",
+        "tts.pause_ms",
+        "tts.chunking",
+      ])),
+      field("PTT mode/hotkey", "settings", (ctx) => configuredSetting(ctx, [
+        "voice.ptt_mode",
+        "voice.ptt.hotkey",
+        "ptt.mode",
+        "ptt.hotkey",
+      ])),
+      field("mute mic on PTT", "settings", (ctx) => configuredSetting(ctx, [
+        "voice.mute_mic_on_ptt",
+        "ptt.mute_mic",
+      ])),
+      field("barge-in/cancel policy", "events", (ctx) => latestBargeInSummary(ctx.events)),
+      field("broker enabled", "settings", (ctx) => configuredSetting(ctx, [
+        "voice.broker_enabled",
+        "voice_broker.enabled",
+        "broker.enabled",
+      ])),
+      field("speak responses", "settings", (ctx) => configuredSetting(ctx, [
+        "voice.speak_responses",
+        "tts.speak_responses",
+        "speak_responses",
+      ])),
+      field("queue counts", "voiceQueue", (ctx) => voiceQueueCounts(ctx.queueRows)),
+      field("voice queue", "voiceQueue", (ctx) => voiceQueueSummary(ctx.queueRows, ctx.voiceQueue)),
+    ],
+  },
+  {
+    title: "Tools/Internet",
+    fields: [
+      field("registered tools", "tools", (ctx) =>
+        ctx.tools.length > 0 ? `${ctx.tools.length} registered` : "none registered",
+      ),
+      field("visible risk classes", "tools", (ctx) => toolRiskSummary(ctx.tools)),
+      field("approval-required tools", "tools", () => "policy not exposed; risk classes visible"),
+      field("internet/network capability", "tools", (ctx) => networkToolSummary(ctx.tools), {
+        readiness: (ctx) =>
+          networkToolCandidates(ctx.tools).length > 0
+            ? RUNTIME_OVERVIEW_READINESS.OK
+            : RUNTIME_OVERVIEW_READINESS.MISSING,
+      }),
+      field("missing credentials/config status", "settings", () => RUNTIME_OVERVIEW_NOT_EXPOSED),
+    ],
+  },
+  {
+    title: "Logs/Trace",
+    fields: [
+      field("latest runtime error", "events", (ctx) =>
+        latestEventIssue(ctx.events, ["runtime", "state", "daemon"]),
+      ),
+      field("latest voice error", "events", (ctx) =>
+        latestEventIssue(ctx.events, ["voice", "audio", "speech", "stt", "tts", "listening"]),
+      ),
+      field("latest provider error", "events", (ctx) =>
+        latestEventIssue(ctx.events, ["brain", "provider", "adapter"]),
+      ),
+      field("latest approval/tool error", "events", (ctx) =>
+        latestEventIssue(ctx.events, ["approval", "tool"]),
+      ),
+      field("last failure source", "events", (ctx) => runtimeOverviewSourceFailures(ctx.failures)),
+      field("test/debug status", "events", () => RUNTIME_OVERVIEW_NOT_EXPOSED),
+    ],
+  },
+  {
+    title: "Developer/Test",
+    fields: [
+      field("active persona/profile", "settings", (ctx) => overviewPersona(ctx.settings)),
+      field("runtime change without restart", "contract", () =>
+        "persona.profile is read per turn when set",
+      ),
+      field("style config", "settings", (ctx) => configuredSetting(ctx, [
+        "persona.style",
+        "style.profile",
+        "voice.style",
+      ])),
+    ],
+  },
+];
+
 function runtimeOverviewSections(snapshot) {
+  const context = runtimeOverviewContext(snapshot);
+  return RUNTIME_OVERVIEW_SECTIONS.map((section) => ({
+    title: section.title,
+    rows: runtimeOverviewFieldRows(section.fields, context),
+  }));
+}
+
+function runtimeOverviewContext(snapshot) {
   const settings = overviewSettings(snapshot.settings);
   const brain = safeObject(snapshot.brain);
   const health = safeObject(snapshot.health);
+  const state = safeObject(snapshot.state);
   const audio = safeObject(snapshot.audio).audio || {};
   const voice = safeObject(snapshot.voice);
   const queueRows = Array.isArray(safeObject(snapshot.voiceQueue).voice_queue)
@@ -735,76 +960,113 @@ function runtimeOverviewSections(snapshot) {
   const tools = Array.isArray(safeObject(snapshot.tools).tools) ? snapshot.tools.tools : [];
   const events = Array.isArray(safeObject(snapshot.events).events) ? snapshot.events.events : [];
   const adapters = Array.isArray(brain.adapters) ? brain.adapters : [];
-  const activeAdapter = firstPresent(brain.current, health.brain_adapter);
+  const activeAdapter = firstPresent(brain.current, state.brain_adapter, health.brain_adapter);
+  const failures = Array.isArray(snapshot.failures) ? snapshot.failures : [];
+  const sourceStatus = safeObject(snapshot.sourceStatus);
+  const voiceEnabled = firstPresent(voice.voice_enabled, state.voice_enabled, health.voice_enabled);
 
-  return [
-    {
-      title: "Voice / Audio",
-      rows: [
-        ["overview mode", RUNTIME_OVERVIEW_READ_ONLY],
-        ["voice enabled", yesNoUnknown(firstPresent(voice.voice_enabled, health.voice_enabled))],
-        ["listening now", yesNoUnknown(voice.listening)],
-        ["audio backend", overviewValue(audio.backend)],
-        ["input device", overviewValue(firstPresent(audio.input_device, audio.preferred_input))],
-        ["output device", overviewValue(firstPresent(audio.output_device, audio.output_policy))],
-        ["bluetooth mic allowed", yesNoUnknown(audio.allow_bluetooth_microphone)],
-        ["TTS engine/provider", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["STT/transcription engine", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["voice/model/speaker", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["speech speed/rate", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["pauses/timing/chunking", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["PTT mode/hotkey", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["mute mic on PTT", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["barge-in/cancel policy", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["voice queue", voiceQueueSummary(queueRows, snapshot.voiceQueue)],
-      ],
-    },
-    {
-      title: "Brain / Provider",
-      rows: [
-        ["active adapter/provider", overviewValue(activeAdapter)],
-        ["default adapter", overviewValue(brain.default)],
-        ["current model(s)", adapterModels(adapters, activeAdapter)],
-        ["registered adapters", adapterNames(adapters)],
-        ["effort", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["fast mode", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["context budget/window", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["provider sessions are memory", RUNTIME_OVERVIEW_NOT_EXPOSED],
-        ["Claude config", adapterRegistration(adapters, ["claude_cli", "claude_cli_warm"])],
-        ["Codex config", adapterRegistration(adapters, ["codex_cli"])],
-        ["Grok/local/Bielik/Mistral/Ollama", adapterRegistration(adapters, ["grok", "local", "bielik", "mistral", "ollama"])],
-        ["mock", adapterRegistration(adapters, ["mock"], "Developer/Test registered")],
-      ],
-    },
-    {
-      title: "Personality",
-      rows: [
-        ["active persona/profile", overviewPersona(settings)],
-        ["runtime change without restart", "persona.profile is read per turn when set"],
-        ["style config", RUNTIME_OVERVIEW_NOT_EXPOSED],
-      ],
-    },
-    {
-      title: "Tools / Internet",
-      rows: [
-        ["registered tools", tools.length > 0 ? `${tools.length} registered` : "none registered"],
-        ["visible risk classes", toolRiskSummary(tools)],
-        ["approval-required tools", "policy not exposed; risk classes visible"],
-        ["internet/network capability", networkToolSummary(tools)],
-        ["missing credentials/config status", RUNTIME_OVERVIEW_NOT_EXPOSED],
-      ],
-    },
-    {
-      title: "Logs / Errors",
-      rows: [
-        ["latest runtime error", latestEventIssue(events, ["runtime", "state", "daemon"])],
-        ["latest voice error", latestEventIssue(events, ["voice", "audio", "speech", "stt", "tts", "listening"])],
-        ["latest provider error", latestEventIssue(events, ["brain", "provider", "adapter"])],
-        ["latest approval/tool error", latestEventIssue(events, ["approval", "tool"])],
-        ["test/debug status", RUNTIME_OVERVIEW_NOT_EXPOSED],
-      ],
-    },
-  ];
+  return {
+    readOnlyMode: RUNTIME_OVERVIEW_READ_ONLY,
+    settings,
+    brain,
+    health,
+    state,
+    audio,
+    voice,
+    voiceQueue: safeObject(snapshot.voiceQueue),
+    queueRows,
+    tools,
+    events,
+    adapters,
+    activeAdapter,
+    failures,
+    sourceStatus,
+    voiceEnabled,
+  };
+}
+
+function field(label, source, value, options = {}) {
+  return { label, source, value, ...options };
+}
+
+function runtimeOverviewFieldRows(fields, context) {
+  return fields.map((entry) => [entry.label, runtimeOverviewFieldSummary(entry, context)]);
+}
+
+function runtimeOverviewFieldSummary(fieldConfig, context) {
+  const rawValue = fieldConfig.value(context);
+  const value = runtimeOverviewDisplayValue(rawValue);
+  const readiness = runtimeOverviewReadiness(fieldConfig, context, rawValue, value);
+  const source = runtimeOverviewSourceLabel(fieldConfig.source);
+  const parts = [value, `readiness: ${readiness}`, `source: ${source}`];
+  const dependency =
+    typeof fieldConfig.dependency === "function"
+      ? runtimeOverviewDisplayValue(fieldConfig.dependency(context, rawValue))
+      : "";
+  if (dependency && dependency !== RUNTIME_OVERVIEW_UNKNOWN) {
+    parts.push(`dependency: ${dependency}`);
+  }
+  const warnings = runtimeOverviewFieldWarnings(fieldConfig, context, rawValue);
+  if (warnings.length > 0) {
+    parts.push(`warnings: ${warnings.join("; ")}`);
+  }
+  return parts.join(" · ");
+}
+
+function runtimeOverviewReadiness(fieldConfig, context, rawValue, value) {
+  if (!runtimeOverviewSourceAvailable(context, fieldConfig.source)) {
+    return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  }
+  if (typeof fieldConfig.readiness === "function") {
+    return normalizeRuntimeReadiness(fieldConfig.readiness(context, rawValue, value));
+  }
+  if (value === RUNTIME_OVERVIEW_NOT_EXPOSED || value === RUNTIME_OVERVIEW_UNKNOWN) {
+    return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  }
+  if (value === "not registered" || value === "none registered" || value === "none") {
+    return RUNTIME_OVERVIEW_READINESS.MISSING;
+  }
+  if (value === "object not displayed") {
+    return RUNTIME_OVERVIEW_READINESS.INVALID;
+  }
+  return RUNTIME_OVERVIEW_READINESS.OK;
+}
+
+function normalizeRuntimeReadiness(value) {
+  const normalized = String(value || "").toLowerCase();
+  return RUNTIME_OVERVIEW_FIELD_STATUS_ORDER.includes(normalized)
+    ? normalized
+    : RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+}
+
+function runtimeOverviewSourceLabel(source) {
+  return RUNTIME_OVERVIEW_FIELD_SOURCES[source] || overviewValue(source);
+}
+
+function runtimeOverviewSourceAvailable(context, source) {
+  if (source === "contract") {
+    return true;
+  }
+  const status = safeObject(context.sourceStatus)[source];
+  return !status || status.ok !== false;
+}
+
+function runtimeOverviewFieldWarnings(fieldConfig, context, rawValue) {
+  if (!runtimeOverviewSourceAvailable(context, fieldConfig.source)) {
+    const status = safeObject(context.sourceStatus)[fieldConfig.source];
+    const path = status && status.path ? ` (${status.path})` : "";
+    return [`${runtimeOverviewSourceLabel(fieldConfig.source)} source unavailable${path}`];
+  }
+  return typeof fieldConfig.warnings === "function"
+    ? fieldConfig.warnings(context, rawValue).filter(Boolean)
+    : [];
+}
+
+function runtimeOverviewDisplayValue(value) {
+  if (typeof value === "boolean") {
+    return yesNoUnknown(value);
+  }
+  return overviewValue(value);
 }
 
 function overviewSettings(payload) {
@@ -827,6 +1089,140 @@ function overviewPersona(settings) {
     return overviewValue(settings["persona.profile"]);
   }
   return "default profile (persona.profile not set)";
+}
+
+function configuredSetting(context, keys) {
+  return firstConfiguredValue(context.settings, keys);
+}
+
+function firstConfiguredValue(settings, keys) {
+  for (const key of keys) {
+    const value = valueAtPath(settings, key);
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function valueAtPath(object, path) {
+  const source = safeObject(object);
+  if (Object.prototype.hasOwnProperty.call(source, path)) {
+    return source[path];
+  }
+  return String(path)
+    .split(".")
+    .reduce((current, part) => {
+      if (!current || typeof current !== "object" || Array.isArray(current)) {
+        return undefined;
+      }
+      return current[part];
+    }, source);
+}
+
+function configuredTts(context) {
+  return configuredSetting(context, [
+    "voice.default_tts",
+    "voice.tts",
+    "voice.tts.engine",
+    "voice.tts_provider",
+    "tts.engine",
+    "tts.provider",
+    "default_tts",
+  ]);
+}
+
+function configuredStt(context) {
+  return configuredSetting(context, [
+    "voice.default_stt",
+    "voice.stt",
+    "voice.stt.engine",
+    "voice.stt_provider",
+    "stt.engine",
+    "stt.provider",
+    "default_stt",
+  ]);
+}
+
+function effectiveTts(context) {
+  return latestEventPayloadValue(context.events, ["tts_engine", "tts_provider", "default_tts"]);
+}
+
+function effectiveStt(context) {
+  return latestEventPayloadValue(context.events, ["stt_engine", "stt_provider", "default_stt"]);
+}
+
+function configuredVoiceIdentity(context) {
+  return configuredSetting(context, [
+    "voice.voice_id",
+    "voice.voice_model",
+    "voice.voice_profile",
+    "voice.model",
+    "voice.profile",
+    "tts.voice_id",
+    "tts.model",
+    "voice_id",
+  ]);
+}
+
+function playbackEngine(context) {
+  return firstPresent(
+    context.audio.playback_engine,
+    context.audio.output_engine,
+    configuredSetting(context, [
+      "voice.playback_engine",
+      "audio.playback_engine",
+      "playback.command",
+      "playback.engine",
+    ]),
+  );
+}
+
+function recorderEngine(context) {
+  return firstPresent(
+    context.audio.recorder_engine,
+    context.audio.input_engine,
+    configuredSetting(context, [
+      "voice.recorder_engine",
+      "audio.recorder_engine",
+      "recorder.command",
+      "recorder.engine",
+    ]),
+  );
+}
+
+function voiceConfiguredReadiness(context, value) {
+  if (context.voiceEnabled === true && !firstPresent(value)) {
+    return RUNTIME_OVERVIEW_READINESS.MISSING;
+  }
+  return firstPresent(value)
+    ? RUNTIME_OVERVIEW_READINESS.OK
+    : RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+}
+
+function voiceEffectiveReadiness(context, value) {
+  return firstPresent(value)
+    ? RUNTIME_OVERVIEW_READINESS.OK
+    : RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+}
+
+function voiceConfiguredWarnings(label) {
+  return (context, value) => {
+    if (context.voiceEnabled === true && !firstPresent(value)) {
+      return [`voice enabled but ${label} is not exposed/configured`];
+    }
+    return [];
+  };
+}
+
+function voiceIdentityReadiness(context, value) {
+  const needsIdentity = Boolean(configuredTts(context) || effectiveTts(context));
+  if (needsIdentity && !firstPresent(value)) {
+    return RUNTIME_OVERVIEW_READINESS.MISSING;
+  }
+  return firstPresent(value)
+    ? RUNTIME_OVERVIEW_READINESS.OK
+    : RUNTIME_OVERVIEW_READINESS.UNKNOWN;
 }
 
 function overviewValue(value) {
@@ -886,6 +1282,22 @@ function adapterModels(adapters, name) {
   return models.length > 0 ? models.map(overviewValue).join(", ") : RUNTIME_OVERVIEW_UNKNOWN;
 }
 
+function adapterReadiness(adapters, name) {
+  if (!name) {
+    return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  }
+  return adapterByName(adapters, name)
+    ? RUNTIME_OVERVIEW_READINESS.OK
+    : RUNTIME_OVERVIEW_READINESS.MISSING;
+}
+
+function adapterDependency(adapters, name) {
+  if (!name) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return adapterByName(adapters, name) ? "registered" : "not registered";
+}
+
 function adapterByName(adapters, name) {
   if (!name || !Array.isArray(adapters)) {
     return null;
@@ -909,6 +1321,22 @@ function voiceQueueSummary(rows, payload) {
   return `${rows.length}${limit ? ` of ${limit}` : ""} rows (${statusSummary})`;
 }
 
+function voiceQueueCounts(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return "empty";
+  }
+  const counts = {};
+  for (const row of rows) {
+    const kind = overviewValue(row && row.kind);
+    const status = overviewValue(row && row.status);
+    const key = kind === RUNTIME_OVERVIEW_UNKNOWN ? status : `${kind}/${status}`;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .map(([key, count]) => `${key}: ${count}`)
+    .join(", ");
+}
+
 function toolRiskSummary(tools) {
   if (!Array.isArray(tools) || tools.length === 0) {
     return "none";
@@ -918,13 +1346,43 @@ function toolRiskSummary(tools) {
 }
 
 function networkToolSummary(tools) {
-  const networkTools = Array.isArray(tools)
-    ? tools.filter((tool) => String(tool.risk || "").toLowerCase() === "network")
-    : [];
+  const networkTools = networkToolCandidates(tools);
   if (networkTools.length === 0) {
-    return "no network-risk tool registered";
+    return "no network-capable tool detected";
   }
   return networkTools.map((tool) => overviewValue(tool.name)).join(", ");
+}
+
+function networkToolCandidates(tools) {
+  return Array.isArray(tools) ? tools.filter(toolSupportsNetwork) : [];
+}
+
+function toolSupportsNetwork(tool) {
+  const haystack = [
+    tool && tool.name,
+    tool && tool.risk,
+    tool && tool.description,
+    tool && tool.class,
+    tool && tool.capability,
+  ]
+    .map((value) => String(value || "").toLowerCase())
+    .join(" ");
+  return /\b(network|internet|http|https|url|web|browser|fetch)\b/.test(haystack);
+}
+
+function runtimeOverviewSourceFailures(failures) {
+  if (!Array.isArray(failures) || failures.length === 0) {
+    return "none";
+  }
+  return failures.map(overviewValue).join(", ");
+}
+
+function latestBargeInSummary(events) {
+  const event = latestEvent(events, ["voice.speak.cancelled", "voice.speak.interrupted"]);
+  if (!event) {
+    return RUNTIME_OVERVIEW_NOT_EXPOSED;
+  }
+  return eventPayloadSummary(event.payload || {}) || eventLabel(event.type);
 }
 
 function latestEventIssue(events, families) {
@@ -936,6 +1394,29 @@ function latestEventIssue(events, families) {
   }
   const summary = eventPayloadSummary(event.payload || {});
   return summary ? `${eventLabel(event.type)} · ${summary}` : eventLabel(event.type);
+}
+
+function latestEvent(events, types) {
+  const candidates = Array.isArray(events) ? [...events] : [];
+  candidates.sort((left, right) => Number(right.id || 0) - Number(left.id || 0));
+  return (
+    candidates.find((item) => types.includes(String(item && item.type ? item.type : ""))) || null
+  );
+}
+
+function latestEventPayloadValue(events, keys) {
+  const candidates = Array.isArray(events) ? [...events] : [];
+  candidates.sort((left, right) => Number(right.id || 0) - Number(left.id || 0));
+  for (const event of candidates) {
+    const payload = safeObject(event.payload);
+    for (const key of keys) {
+      const value = payload[key];
+      if (value !== undefined && value !== null && value !== "") {
+        return value;
+      }
+    }
+  }
+  return undefined;
 }
 
 function eventMatchesIssue(event, families) {

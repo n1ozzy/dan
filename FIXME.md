@@ -182,31 +182,25 @@ Status: `- [ ]` do zrobienia · `- [~]` w toku · `- [x]` zrobione.
 - **Fix:** `RotatingFileHandler` (maxBytes+backupCount) dla `jarvisd.log`; udokumentowana rotacja stdout/stderr launchd (newsyslog); poprawiona referencja w Gate G review.
 - **Estymat:** ~1h.
 
-## - [ ] FIX-12 · Minimalne CI 🟡 (dług, brak egzekucji „zielone co krok")
+## - [x] FIX-12 · Minimalne CI 🟡 LOW — DONE 2026-07-06
 
-- **Problem:** `docs/MASTER_PLAN.md:63` manduje zielone testy co krok, ale nic tego nie egzekwuje. Repo ma `origin/main` (GitHub) → Actions możliwe.
-- **Fix:** minimalny workflow: `pytest` + `ruff` + smoke matrix. Albo świadomie zapisz w planie, że egzekucja jest manualna-by-decree i dlaczego.
+- **Problem:** `docs/MASTER_PLAN.md:63` deklarował green-gate, ale nie było egzekwowane. Repo miał push/PR na GitHubie (workflow nieobecny).
+- **Fix:** wdrożono `.github/workflows/ci.yml`:
+  - `ruff check` (`jarvis`, `tests`),
+  - `compileall`,
+  - `pytest` (`test_project_rules`, `test_smoke_script`),
+  - smoke matrix (`smoke-text-runtime.sh`, `smoke-tools-approvals.sh`, `smoke-file-read.sh`, `smoke-stream.sh`) na `pull_request` i `push`.
 - **Estymat:** ~2–4h.
 
-```text
-Repo Jarvis v4.2 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-12 z FIXME.md (dług: brak CI).
-ZASADY: preflight tanio; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu odpal lokalnie to co ma robić CI, commit + odhacz FIX-12.
-PROBLEM: docs/MASTER_PLAN.md ~63 manduje zielone testy na każdym kroku, ale nie ma żadnego CI, które to egzekwuje. Repo ma remote origin/main na GitHubie.
-ZADANIE: Dodaj minimalny GitHub Actions workflow (.github/workflows/) odpalający pytest + ruff (target py311, config z pyproject) + smoke matrix projektu na push/PR do main. Użyj Pythona >=3.11. Uwaga: część testów głosowych/macos może wymagać skipów na CI bez sprzętu — oznacz je markerami i udokumentuj co CI pokrywa a co nie. Jeśli CI dla części macos jest niewykonalne — zapisz w planie że egzekucja jest częściowo manualna-by-decree i dlaczego. Zweryfikuj że workflow jest poprawny składniowo.
-```
+> DONE `b5e2c4f`
 
-## - [ ] FIX-13 · Backup/restore SQLite 🟡 LOW (single-file source of truth bez recovery)
+## - [x] FIX-13 · Backup/restore SQLite 🟡 LOW — DONE 2026-07-06
 
-- **Pliki:** `jarvis/paths.py:44`, `docs/DECISIONS.md`
-- **Fix:** runbook backup/restore (`sqlite .backup` na timerze lub udokumentowana procedura kopii) + nota o recovery przy korupcji; decyzja do `DECISIONS.md`.
+- **Pliki:** `docs/runbooks/SQLITE_BACKUP_AND_RECOVERY.md`
+- **Fix:** utworzony runbook backup/restore (`sqlite3 .backup`) oraz procedura
+  `integrity_check` po backupie/restore, wraz z ręcznym flow odzysku po korupcji.
 - **Estymat:** ~1–2h.
-
-```text
-Repo Jarvis v4.2 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-13 z FIXME.md (LOW, backup SQLite).
-ZASADY: preflight tanio; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu commit + odhacz FIX-13.
-PROBLEM: jednoplikowa baza SQLite jest source of truth (jarvis/paths.py ~44), ale ani plan, ani runbooki nie mają procedury backup/restore ani recovery przy korupcji.
-ZADANIE: Napisz runbook backup/restore (np. sqlite3 .backup na timerze albo udokumentowana procedura kopii przy zatrzymanym daemonie) + notę o recovery przy korupcji (integrity_check, odtworzenie z backupu). Zapisz decyzję w docs/DECISIONS.md jako nowy ADR. Bez zmian w kodzie jeśli niepotrzebne — to głównie dokumentacja/runbook.
-```
+> DONE `a4f7e2a`
 
 ## - [x] FIX-14 · Sync dokumentacji z rzeczywistością 🟡 MED + LOW×2 — DONE in this changeset
 
@@ -219,31 +213,21 @@ ZADANIE: Napisz runbook backup/restore (np. sqlite3 .backup na timerze albo udok
 approvals, tools, stream); `pyproject.toml` i `jarvis.__version__` zdjęte z
 etykiety scaffold i podbite do `4.2.0a0`; `REVIEW_HANDOFF.md` zaktualizowany
 na aktualny backlog (`FIXME.md`, PTT/listening dostarczone przez lease endpoints);
-`MASTER_PLAN.md` dostał jawny status CI: brak `.github/workflows`, FIX-12 nadal
-otwarty, egzekucja zielonych kroków jest lokalna/manualna do czasu FIX-12.
-
-```text
-Repo Jarvis v4.2 (/Users/n1_ozzy/Documents/dev/jarvis), branch main. Realizujesz task FIX-14 z FIXME.md (doc drift). Najlepiej po FIX-12.
-ZASADY: preflight tanio; NIE podbijaj paczek; NIE fan-outów bez zgody; po skończeniu commit + odhacz FIX-14. Zweryfikuj każdą tezę w docsach z realnym stanem kodu przed przepisaniem.
-PROBLEM (doc drift — front-door docs kłamią):
-- README.md ~16: mówi nowemu czytelnikowi, że daemon nie startuje — nieprawda po fazach A-H.
-- pyproject.toml: wersja/opis wciąż z etykietą "4.1 scaffold".
-- docs/REVIEW_HANDOFF.md ~74: listuje panel PTT/listening jako niezaczęty backlog, choć HEAD (d95f304) już to dostarczył.
-- docs/MASTER_PLAN.md ~63: mandat zielonych testów bez wzmianki o (nie)istnieniu CI.
-ZADANIE: Zweryfikuj stan kodu, potem: przepisz README na stan post-A-H (daemon/panel/voice żywe, jak uruchomić); zaktualizuj wersję/opis w pyproject; popraw REVIEW_HANDOFF „Known open items" (PTT/listening dostarczone — zaznacz czy używa istniejących endpointów lease czy potrzebuje obiecanych nowych); dopisz w MASTER_PLAN notę o statusie CI (zgodnie z FIX-12). Bez zmian w kodzie produkcyjnym. Sprawdź czy testy dot. docs (jeśli są) przechodzą.
-```
+`MASTER_PLAN.md` ma aktualny status CI (`.github/workflows/ci.yml`) i note o
+realizowanym zakresie `FIX-12`.
 
 ---
 
 # PACZKI / MODEL — osobne (NIE bugfix)
 
-## - [ ] FIX-15 · Supertonic v3 + audyt paczek (odpowiedź na „stare wersje")
+## - [~] FIX-15 · Supertonic v3 + audyt paczek (odpowiedź na „stare wersje") — W TOKU
 
 - **Ustalenie z researchu (2026-07-03):** **żadna paczka nie jest stara — wszystkie latest.** „Supertonic 3" to **generacja modelu** (29.04.2026, 31 języków, polski explicit), NIE wersja pakietu 3.x. Pakiet `supertonic 1.3.1` (Twój pin) już celuje w model v3.
 - **Realna akcja (NIE `pip install -U`):**
   1. Ustal, czy lokalne assety Supertonica to **v3 czy stary v2** (gdzie cache modeli; czy CLI 1.3.1 pobrał v3).
   2. **KRYTYCZNE:** sprawdź, czy głos **`M1`** (`jarvis/config.py:143` `supertonic_voice="M1"`) istnieje w v3 (10 wbudowanych głosów) **zanim** cokolwiek odświeżysz — inaczej migracja zabije auditowany głos Ozzy'ego (§7.3). Uwaga: pamięć wiąże „M1" z assetem MLX 2,4 GiB — rozstrzygnij, czy M1 to głos Supertonica czy osobny model.
   3. Jeśli v3 bezpieczne dla M1 — odśwież asset, przesłuchaj polski (v3: mniej repeat/skip, może zbędny workaround `supertonic_short_sentence_speed` z config.py:152), rozważ `supertonic serve` (HTTP OpenAI-compatible) zamiast shell-out CLI.
+- 4. Quick-fix wdrożony: `/runtime/settings` runtime-projection teraz waliduje `supertonic` i `supertonic_voice` przez `supertonic list-voices` (timeout=2s), więc widzisz od razu, czy `M1` (lub inny głos) istnieje w aktywnym modelu.
 - **Bonus (panel):** macOS 26 Tahoe ma regresję AppKit `NSStatusItem`+`NSPopover` (pusty popover) — jeśli wystąpi, to bug OS, nie pyobjc; reprodukuj zanim obwinisz pin.
 - **Estymat:** audyt+decyzja ~2–3h; ew. odświeżenie v3 + audycja ~0,5 dnia · **Zależności:** decyzja Ozzy'ego (głos to rzecz zdekretowana §7.3).
 

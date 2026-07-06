@@ -335,7 +335,12 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         if method == "GET" and path == "/events":
             after_id = _query_int(query, "after_id", default=0)
             limit = _query_int(query, "limit", default=100)
-            _write_json(handler, 200, get_events(app, after_id=after_id, limit=limit))
+            latest = _query_bool(query, "latest", default=False)
+            _write_json(
+                handler,
+                200,
+                get_events(app, after_id=after_id, limit=limit, latest=latest),
+            )
             return
 
         if method == "GET" and path == "/conversations":

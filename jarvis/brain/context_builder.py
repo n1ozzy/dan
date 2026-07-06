@@ -9,20 +9,16 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jarvis.brain.base import BrainMessage, BrainRequest, BrainToolSpec
 from jarvis.logging import get_logger
-from jarvis.memory.compiler import (
-    CompiledMemoryContext,
-    MemoryCompiler,
-    MemoryCompilerConfig,
-    MemoryCompilerRequest,
-)
-from jarvis.memory.items import MemoryItemRepository
 from jarvis.security.redaction import redact_secret_text
 
 from ..memory.manager import MemoryManager
+
+if TYPE_CHECKING:
+    from ..memory.compiler import CompiledMemoryContext, MemoryCompilerConfig
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -119,7 +115,9 @@ class ContextBuilder:
             )
         )
         self._compiled_memory_force_disabled = bool(compiled_memory_force_disabled)
-        self._compiled_memory_config = compiled_memory_config or MemoryCompilerConfig()
+        self._compiled_memory_config = (
+            compiled_memory_config or _default_memory_compiler_config()
+        )
         self._event_store = event_store
         self._now = now or utc_now_iso
         # Callable returning the registry's ToolSpecs (name/description/
@@ -268,11 +266,16 @@ class ContextBuilder:
 
         compiler = self._memory_compiler
         if compiler is None:
+            from ..memory.compiler import MemoryCompiler
+            from ..memory.items import MemoryItemRepository
+
             compiler = MemoryCompiler(MemoryItemRepository(self._conn))
             if cache_created_compiler:
                 self._memory_compiler = compiler
 
         try:
+            from ..memory.compiler import MemoryCompilerRequest
+
             compiled = compiler.compile(
                 MemoryCompilerRequest(
                     conversation_id=conversation_id,
@@ -746,6 +749,12 @@ def _compiled_prompt_field(value: Any) -> str:
     redacted = redact_secret_text(str(value))
     normalized = " ".join(redacted.split())
     return normalized or "(empty)"
+
+
+def _default_memory_compiler_config() -> MemoryCompilerConfig:
+    from ..memory.compiler import MemoryCompilerConfig
+
+    return MemoryCompilerConfig()
 
 
 def _compiled_evidence_count(value: Any) -> int:

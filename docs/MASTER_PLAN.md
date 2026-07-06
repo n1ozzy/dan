@@ -68,11 +68,8 @@ docs correction oddzielnie od implementation
 nie przytakiwać; fakt / przykład / wizja / decyzja / commitment rozdzielane jawnie
 ```
 
-**CI status (FIX-14, 2026-07-03):** repo nie ma jeszcze `.github/workflows`.
-Zasada "zielone po etapie" jest aktualnie egzekwowana lokalnie przez operatora
-sesji; minimalny GitHub Actions workflow dla `pytest`/`ruff`/smoke matrix jest
-osobnym otwartym długiem w `FIXME.md` jako FIX-12. Do czasu FIX-12 nie pisać,
-że CI automatycznie wymusza ten mandat.
+**CI status (FIX-12, 2026-07-05):** aktywny workflow GitHub Actions (`.github/workflows/ci.yml`) uruchamia `ruff`, testy jednostkowe oraz `smoke matrix` (`smoke-text-runtime`, `smoke-tools-approvals`, `smoke-file-read`, `smoke-stream`) na `push`/`PR` (`ubuntu-latest`).
+To jest minimum z zamkniętym mandatem „zielone po etapie” jako check.
 
 ---
 

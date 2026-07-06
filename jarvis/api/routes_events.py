@@ -11,12 +11,23 @@ from jarvis.events.models import Event
 ROUTE_GROUP = "events"
 
 
-def get_events(app: DaemonApp, *, after_id: int = 0, limit: int = 100) -> dict[str, Any]:
-    events = app.list_events_after(after_id, limit=limit)
+def get_events(
+    app: DaemonApp,
+    *,
+    after_id: int = 0,
+    limit: int = 100,
+    latest: bool = False,
+) -> dict[str, Any]:
+    events = (
+        app.list_latest_events(limit=limit)
+        if latest
+        else app.list_events_after(after_id, limit=limit)
+    )
     return {
         "events": [event_to_dict(event) for event in events],
         "after_id": after_id,
         "limit": limit,
+        "latest": latest,
         "latest_event_id": app.snapshot_state()["latest_event_id"],
     }
 
