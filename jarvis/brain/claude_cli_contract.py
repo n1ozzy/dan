@@ -74,6 +74,7 @@ class ClaudeCliCommandSettings:
 class ClaudeCliCommandContract:
     argv: list[str]
     command_preview: str
+    flag_metadata: list[dict[str, Any]]
     command: str
     args: list[str]
     stream_args: list[str]
@@ -114,6 +115,7 @@ def build_claude_cli_command(
         else list(DEFAULT_STREAM_ARGS)
     )
     request_settings = request_settings or {}
+    runtime_model = runtime_model if runtime_model is not None else _request_model(request_settings)
     runtime_effort = runtime_effort if runtime_effort is not None else request_settings.get("effort")
 
     args_model = _cli_arg_value(args, "--model")
@@ -205,6 +207,30 @@ def build_claude_cli_command(
     return ClaudeCliCommandContract(
         argv=argv,
         command_preview=_redacted_command_preview(argv),
+        flag_metadata=_flag_metadata(
+            selected_model=selected_model,
+            requested_model=requested_model,
+            args_model=args_model,
+            configured_model=configured_model,
+            selected_effort=selected_effort,
+            effective_effort=effective_effort,
+            requested_effort=requested_effort,
+            args_effort=args_effort,
+            configured_effort=configured_effort,
+            permission_mode=permission_mode,
+            permission_raw=permission_raw,
+            tools=tools,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+            mcp_config_path=mcp_config_path,
+            strict_mcp_config=strict_mcp_config,
+            output_format=output_format,
+            output_format_explicit=output_format_explicit,
+            input_format=input_format,
+            input_format_explicit=input_format_explicit,
+            streaming=streaming,
+            partial_messages_supported=partial_messages_supported,
+        ),
         command=command,
         args=args,
         stream_args=stream_args,
@@ -266,6 +292,18 @@ def _optional_text(value: Any) -> str | None:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _request_model(settings: Mapping[str, Any]) -> str | None:
+    model = _optional_text(settings.get("model"))
+    if model is None:
+        return None
+    source = _optional_text(settings.get("model_source")) or _optional_text(
+        settings.get("brain.model_source")
+    )
+    if source in {"settings", "jarvis_explicit", "runtime"}:
+        return model
+    return None
 
 
 def _non_sentinel_model(value: str | None) -> str | None:
@@ -413,6 +451,185 @@ def _append_value(
 def _append_flag(argv: list[str], flag: str) -> None:
     if not _cli_arg_present(argv, flag):
         argv.append(flag)
+
+
+def _flag_metadata(
+    *,
+    selected_model: str | None,
+    requested_model: str | None,
+    args_model: str | None,
+    configured_model: str | None,
+    selected_effort: str | None,
+    effective_effort: str | None,
+    requested_effort: str | None,
+    args_effort: str | None,
+    configured_effort: str | None,
+    permission_mode: str,
+    permission_raw: str | None,
+    tools: Sequence[str],
+    allowed_tools: Sequence[str],
+    disallowed_tools: Sequence[str],
+    mcp_config_path: str | None,
+    strict_mcp_config: bool | str,
+    output_format: str,
+    output_format_explicit: bool,
+    input_format: str,
+    input_format_explicit: bool,
+    streaming: bool,
+    partial_messages_supported: str,
+) -> list[dict[str, Any]]:
+    metadata: list[dict[str, Any]] = []
+    _append_flag_metadata(
+        metadata,
+        "--model",
+        included=bool(selected_model),
+        source=_source_for_first(
+            ("request_settings", requested_model),
+            ("args", args_model),
+            ("config", configured_model),
+        ),
+        reason=(
+            "Jarvis-selected model is explicit."
+            if requested_model
+            else (
+                "Model is configured on the Claude CLI contract."
+                if configured_model
+                else "No explicit Jarvis model; Claude CLI default is allowed."
+            )
+        ),
+    )
+    _append_flag_metadata(
+        metadata,
+        "--effort",
+        included=bool(effective_effort),
+        source=_source_for_first(
+            ("request_settings", requested_effort),
+            ("config", configured_effort),
+            ("args", args_effort),
+        ),
+        reason=(
+            "Effort is known and supported."
+            if effective_effort
+            else (
+                "Effort is unknown or unsupported; no explicit effort flag is emitted."
+                if selected_effort
+                else "No explicit effort selected."
+            )
+        ),
+    )
+    _append_flag_metadata(
+        metadata,
+        "--permission-mode",
+        included=permission_mode not in {"default", "unknown"},
+        source="config_or_args" if permission_raw else "default",
+        reason=(
+            "Permission mode is configured."
+            if permission_mode not in {"default", "unknown"}
+            else "No known permission mode is configured."
+        ),
+    )
+    _append_flag_metadata(
+        metadata,
+        "--tools",
+        included=bool(tools),
+        source="config_or_args" if tools else "default",
+        reason="Tool allow mode is explicit." if tools else "No tool allow mode configured.",
+    )
+    _append_flag_metadata(
+        metadata,
+        "--allowedTools",
+        included=bool(allowed_tools),
+        source="config_or_args" if allowed_tools else "default",
+        reason="Allowed tool selectors are configured." if allowed_tools else "No allowed tool selectors configured.",
+    )
+    _append_flag_metadata(
+        metadata,
+        "--disallowedTools",
+        included=bool(disallowed_tools),
+        source="config_or_args" if disallowed_tools else "default",
+        reason="Disallowed tool selectors are configured." if disallowed_tools else "No disallowed tool selectors configured.",
+    )
+    _append_flag_metadata(
+        metadata,
+        "--mcp-config",
+        included=bool(mcp_config_path),
+        source="config_or_args" if mcp_config_path else "default",
+        reason="MCP config path is explicit." if mcp_config_path else "No MCP config path configured.",
+    )
+    _append_flag_metadata(
+        metadata,
+        "--strict-mcp-config",
+        included=strict_mcp_config is True,
+        source="config_or_args" if strict_mcp_config != "unknown" else "unknown",
+        reason=(
+            "Strict MCP config is enabled."
+            if strict_mcp_config is True
+            else "Strict MCP config is not enabled."
+        ),
+    )
+    _append_flag_metadata(
+        metadata,
+        "--output-format",
+        included=output_format_explicit,
+        source="streaming" if streaming else ("config_or_args" if output_format_explicit else "default"),
+        reason=(
+            "Streaming requires stream-json output."
+            if streaming
+            else (
+                "Output format is explicitly configured."
+                if output_format_explicit
+                else "No output format flag is needed for Claude CLI text default."
+            )
+        ),
+    )
+    _append_flag_metadata(
+        metadata,
+        "--input-format",
+        included=input_format_explicit,
+        source="config_or_args" if input_format_explicit else "default",
+        reason=(
+            "Input format is explicitly configured."
+            if input_format_explicit
+            else "No input format flag is needed for Claude CLI text default."
+        ),
+    )
+    _append_flag_metadata(
+        metadata,
+        "--include-partial-messages",
+        included=partial_messages_supported == "yes",
+        source="streaming" if partial_messages_supported == "yes" else "default",
+        reason=(
+            "Streaming partial messages are enabled."
+            if partial_messages_supported == "yes"
+            else "Partial messages are not enabled."
+        ),
+    )
+    return metadata
+
+
+def _append_flag_metadata(
+    metadata: list[dict[str, Any]],
+    flag: str,
+    *,
+    included: bool,
+    source: str,
+    reason: str,
+) -> None:
+    metadata.append(
+        {
+            "flag": flag,
+            "included": bool(included),
+            "source": source,
+            "reason": reason,
+        }
+    )
+
+
+def _source_for_first(*candidates: tuple[str, str | None]) -> str:
+    for source, value in candidates:
+        if value:
+            return source
+    return "default"
 
 
 def _redacted_command_preview(tokens: Sequence[str]) -> str:

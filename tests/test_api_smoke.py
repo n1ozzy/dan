@@ -23,6 +23,9 @@ import pytest
 from jarvis.tools.permissions import RequestSource
 
 from tests.git_guards import assert_schema_and_migrations_unchanged
+from jarvis.brain import BrainRequest
+from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
+from jarvis.brain.claude_cli_contract import build_claude_cli_command
 from jarvis.config import COMPILED_MEMORY_ENABLED_ENV, COMPILED_MEMORY_FORCE_DISABLED_ENV
 from jarvis.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
@@ -3939,6 +3942,58 @@ def test_runtime_settings_claude_cli_unknown_effort_does_not_enter_command_previ
     assert provider["selected_effort"] is None
     assert provider["effective_effort"] is None
     assert "--effort" not in provider["command_preview"]
+
+
+def test_claude_cli_adapter_argv_uses_selected_model_from_command_contract() -> None:
+    runner_calls: list[dict[str, Any]] = []
+
+    def runner(
+        command: list[str],
+        input_text: str,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[str]:
+        runner_calls.append(
+            {"command": list(command), "input_text": input_text, "timeout": timeout}
+        )
+        return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+    request = BrainRequest(
+        turn_id="turn-claude-contract",
+        conversation_id="conversation-claude-contract",
+        input_text="hello",
+        settings={
+            "model": "claude-sonnet-4",
+            "model_source": "settings",
+            "effort": "high",
+        },
+    )
+    adapter = ClaudeCliAdapter(
+        command="claude",
+        args=["-p"],
+        model="claude-configured",
+        permission_mode="acceptEdits",
+        runner=runner,
+    )
+
+    response = adapter.generate(request)
+    contract = build_claude_cli_command(
+        adapter.command_settings(),
+        request_settings=request.settings,
+    )
+
+    assert response.text == "ok"
+    assert response.model == "claude-sonnet-4"
+    assert runner_calls[0]["command"] == contract.argv
+    assert "--model" in contract.argv
+    assert contract.argv[contract.argv.index("--model") + 1] == "claude-sonnet-4"
+    assert "--model claude-sonnet-4" in contract.command_preview
+    assert "--permission-mode acceptEdits" in contract.command_preview
+    assert {
+        "flag": "--model",
+        "included": True,
+        "source": "request_settings",
+        "reason": "Jarvis-selected model is explicit.",
+    } in contract.flag_metadata
 
 
 

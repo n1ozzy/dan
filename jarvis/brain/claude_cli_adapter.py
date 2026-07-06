@@ -250,6 +250,7 @@ def stream_cli_response(
     generation_registry: Any | None = None,
     command_settings: ClaudeCliCommandSettings | None = None,
 ) -> BrainResponse:
+    response_model = default_model
     if command_settings is None:
         command = _runtime_command(
             command_name=command_name,
@@ -259,11 +260,13 @@ def stream_cli_response(
             request_settings=request.settings,
         )
     else:
-        command = build_claude_cli_command(
+        command_contract = build_claude_cli_command(
             command_settings,
             request_settings=request.settings,
             streaming=True,
-        ).argv
+        )
+        command = command_contract.argv
+        response_model = command_contract.effective_model or default_model
     _reject_unsafe_args(command)
     prompt = format_cli_prompt(request)
     try:
@@ -356,7 +359,7 @@ def stream_cli_response(
     return BrainResponse(
         text=parsed.text,
         tool_calls=parsed.tool_calls,
-        model=default_model,
+        model=response_model,
         usage=_usage_from_stream(parser.result_usage),
         raw_metadata=raw_metadata,
     )
@@ -426,6 +429,7 @@ def generate_cli_response(
     request: BrainRequest,
     command_settings: ClaudeCliCommandSettings | None = None,
 ) -> BrainResponse:
+    response_model = default_model
     if command_settings is None:
         command = _runtime_command(
             command_name=command_name,
@@ -435,11 +439,13 @@ def generate_cli_response(
             request_settings=request.settings,
         )
     else:
-        command = build_claude_cli_command(
+        command_contract = build_claude_cli_command(
             command_settings,
             request_settings=request.settings,
             streaming=False,
-        ).argv
+        )
+        command = command_contract.argv
+        response_model = command_contract.effective_model or default_model
     _reject_unsafe_args(command)
     prompt = format_cli_prompt(request)
     try:
@@ -478,7 +484,7 @@ def generate_cli_response(
     return BrainResponse(
         text=parsed.text,
         tool_calls=parsed.tool_calls,
-        model=default_model,
+        model=response_model,
         raw_metadata=raw_metadata,
     )
 

@@ -55,3 +55,4 @@ historical, or archived. If docs conflict, follow this precedence:
 Old roadmap/handoff files cannot override current `PROJECT_RULES` or `STATUS`.
 Examples are not roadmap commitments.
 
+claude code docs: https://code.claude.com/docs

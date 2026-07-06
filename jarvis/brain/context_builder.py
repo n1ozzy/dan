@@ -397,6 +397,7 @@ class ContextBuilder:
         if brain_config is not None:
             settings["brain_adapter"] = getattr(brain_config, "default_adapter", "mock")
             settings["model"] = getattr(brain_config, "default_model", "mock-local")
+            settings["model_source"] = "config"
             settings["context_budget_chars"] = getattr(
                 brain_config,
                 "context_budget_chars",
@@ -416,11 +417,17 @@ class ContextBuilder:
                 None,
             )
 
-        settings.update(self._read_settings_table())
+        stored_settings = self._read_settings_table()
+        settings.update(stored_settings)
+        if "model" in stored_settings:
+            settings["model_source"] = "settings"
         if explicit_settings is not None:
             if not isinstance(explicit_settings, Mapping):
                 raise ContextBuilderError("settings must be a mapping.")
-            settings.update(dict(explicit_settings))
+            explicit = dict(explicit_settings)
+            settings.update(explicit)
+            if "model" in explicit and "model_source" not in explicit:
+                settings["model_source"] = "runtime"
 
         settings["provider_sessions_are_memory"] = False
         return settings
