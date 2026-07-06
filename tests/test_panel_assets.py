@@ -1646,6 +1646,201 @@ def test_settings_apply_feedback_preserves_pending_preview_and_reset_is_explicit
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_brain_apply_uses_backend_valid_next_turn_fields_only(tmp_path: Path) -> None:
+    harness = tmp_path / "brain-backend-apply-plan-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            function createNode(tag) {{
+              const children = [];
+              const classes = new Set();
+              return {{
+                tagName: tag,
+                children,
+                childNodes: children,
+                textContent: "",
+                className: "",
+                hidden: false,
+                disabled: false,
+                checked: false,
+                value: "",
+                title: "",
+                type: "",
+                dataset: {{}},
+                classList: {{
+                  toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+                  contains: (name) => classes.has(name),
+                }},
+                appendChild(child) {{ children.push(child); return child; }},
+                append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
+                removeChild(child) {{
+                  const index = children.indexOf(child);
+                  if (index >= 0) children.splice(index, 1);
+                  return child;
+                }},
+                get firstChild() {{ return children[0] || null; }},
+                addEventListener() {{}},
+              }};
+            }}
+
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41741" }},
+              localStorage: {{
+                getItem: () => "token",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              createNode,
+              document: {{
+                addEventListener: () => {{}},
+                createElement: createNode,
+              }},
+              window: {{}},
+              fetch: async () => {{ throw new Error("unexpected request"); }},
+            }};
+            context.window.localStorage = context.localStorage;
+            context.globalThis = context;
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{ filename: "app.js" }});
+
+            const payload = {{
+              brain: {{ current_adapter: {{ effective_value: "claude_cli" }} }},
+              capability_graph: {{
+                brain_capabilities: {{
+                  current_provider: "claude_cli",
+                  current_model: "claude-old",
+                  providers: [
+                    {{
+                      id: "claude_cli",
+                      provider_id: "claude_cli",
+                      label: "Claude CLI",
+                      kind: "cli",
+                      transport: "subprocess",
+                      available: true,
+                      models: [
+                        {{ id: "claude-old", label: "Claude Old", available: true }},
+                        {{ id: "claude-new", label: "Claude New", available: true }},
+                      ],
+                      current_model: "claude-old",
+                      selected_model: "claude-old",
+                      effective_model: "claude-old",
+                      model_source: "jarvis_explicit",
+                      allowed_effort_values: ["low", "high"],
+                      selected_effort: "low",
+                      effective_effort: "low",
+                      effort_source: "jarvis_explicit",
+                      fast_supported: false,
+                      command_status: "found",
+                      auth_status: "logged_in",
+                      permission_mode: "manual",
+                      tools: [],
+                      allowed_tools: [],
+                      disallowed_tools: [],
+                      output_format: "stream-json",
+                      input_format: "text",
+                      streaming_supported: true,
+                      streaming_supported_state: "yes",
+                      partial_messages_supported: "yes",
+                      apply_semantics: "next_turn",
+                      apply_capable: true,
+                      apply_disabled_reason: null,
+                      command_preview: "fake-claude -p --model claude-old --effort low",
+                    }},
+                    {{
+                      id: "mock",
+                      label: "mock/dev",
+                      kind: "Developer/Test",
+                      developer_only: true,
+                      available: true,
+                      models: [{{ id: "mock-local", label: "mock-local", available: true }}],
+                      current_model: "mock-local",
+                      allowed_effort_values: [],
+                      command_status: "found",
+                      apply_semantics: "not_apply_capable",
+                    }},
+                  ],
+                }},
+              }},
+              settings_preview: {{
+                sections: {{
+                  brain_provider: {{
+                    label: "Brain / Provider",
+                    apply_semantics: "next_turn",
+                    apply_capable: true,
+                    apply_disabled_reason: null,
+                    pending_changes: [],
+                    valid_next_turn_changes: ["brain.model"],
+                    requires_new_session_changes: ["brain.provider", "brain.effort"],
+                    requires_restart_changes: [],
+                    fields: {{
+                      provider: {{ id: "brain_provider.provider", label: "Provider", current: "claude_cli", effective: "claude_cli", status: "ok", editable_now: false, editable_later: true, allowed_values: ["claude_cli"], disabled_values: [{{ value: "mock", reason: "Developer/Test only." }}] }},
+                      model: {{ id: "brain_provider.model", label: "Model", current: "claude-old", effective: "claude-old", status: "ok", editable_now: true, allowed_values: ["claude-old", "claude-new"] }},
+                      effort: {{ id: "brain_provider.effort", label: "Effort", current: "low", effective: "low", status: "ok", editable_now: true, allowed_values: ["low", "high"] }},
+                      fast: {{ id: "brain_provider.fast", label: "Fast", current: false, effective: false, status: "unsupported", editable_now: false }},
+                      command_preview: {{ id: "brain_provider.command_preview", label: "Next-turn command preview", current: "fake-claude -p --model claude-old --effort low", effective: "fake-claude -p --model claude-old --effort low", status: "ok" }},
+                      apply_semantics: {{ id: "brain_provider.apply_semantics", label: "Apply semantics", current: "next_turn", effective: "next_turn", status: "ok" }},
+                    }},
+                  }},
+                }},
+              }},
+            }};
+            context.payload = payload;
+
+            vm.runInContext(`
+              el.activeBrainProviderSelect = createNode("select");
+              el.activeBrainModelSelect = createNode("select");
+              el.activeBrainEffortSelect = createNode("select");
+              el.activeBrainFastToggle = createNode("input");
+              el.brainSettingsSummaryList = createNode("div");
+              el.brainApplyStatus = createNode("p");
+              el.applyBrainSettingsButton = createNode("button");
+              cockpit.online = true;
+              cockpit.runtimeSettingsApply.payload = payload;
+              cockpit.settingsPreview.payload = payload;
+              cockpit.settingsPreview.model = settingsPreviewModelFromPayload(payload);
+              globalThis.__model = cockpit.settingsPreview.model;
+              globalThis.__el = el;
+            `, context);
+
+            const evaluatedProvider = context.settingsPreviewFieldById(context.__model, "brain_provider.provider");
+            assert.deepStrictEqual(JSON.parse(JSON.stringify(evaluatedProvider.allowed_values)), ["claude_cli"]);
+
+            vm.runInContext(`
+              renderBrainApplyControls(payload);
+              el.activeBrainModelSelect.value = "claude-new";
+              el.activeBrainEffortSelect.value = "high";
+            `, context);
+
+            const draft = context.runtimeSettingsPayloadForGroup("brain", context.runtimeSettingsDraftForGroup("brain"));
+            const filtered = context.runtimeSettingsApplyPayloadForGroup("brain", draft);
+            assert.deepStrictEqual(JSON.parse(JSON.stringify(filtered)), {{
+              "brain.model": "claude-new",
+            }});
+            assert.match(context.runtimeSettingsPendingMessage("brain", draft, payload), /model/i);
+            assert.doesNotMatch(context.runtimeSettingsPendingMessage("brain", draft, payload), /Effort/);
+            assert.match(context.runtimeSettingsGroupApplyBlockedReason("brain", draft, payload), /Not apply-capable|Requires/);
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_brain_apply_disabled_for_reload_only_brain_field_changes(tmp_path: Path) -> None:
         harness = tmp_path / "brain-reload-only-disabled-harness.js"
         harness.write_text(

@@ -1300,6 +1300,19 @@ function runtimeSettingsPreviewFieldForKey(payload, key) {
   return settingsPreviewField(payload, path[0], path[1]);
 }
 
+function runtimeSettingsPreviewSectionForKey(payload, key) {
+  const path = RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY[key];
+  if (!path) {
+    return {};
+  }
+  const source = safeObject(payload);
+  const previewSections = safeObject(safeObject(source.settings_preview).sections);
+  if (Object.keys(previewSections).length > 0) {
+    return safeObject(previewSections[path[0]]);
+  }
+  return safeObject(safeObject(source.sections)[path[0]]);
+}
+
 function runtimeSettingsFieldEffectiveValue(field) {
   const source = safeObject(field);
   if (Object.prototype.hasOwnProperty.call(source, "effective")) {
@@ -1347,6 +1360,26 @@ function runtimeSettingsApplyCapabilityForKey(payload, key) {
   const toolCapability = safeObject(safeObject(tools.apply_capabilities)[key]);
   if (Object.keys(toolCapability).length > 0) {
     return toolCapability;
+  }
+  const section = runtimeSettingsPreviewSectionForKey(payload, key);
+  const validNextTurn = Array.isArray(section.valid_next_turn_changes) ? section.valid_next_turn_changes : [];
+  const requiresNewSession = Array.isArray(section.requires_new_session_changes) ? section.requires_new_session_changes : [];
+  const requiresRestart = Array.isArray(section.requires_restart_changes) ? section.requires_restart_changes : [];
+  if (validNextTurn.includes(key)) {
+    return { apply_capable: true, requires_restart: false, blocker: "" };
+  }
+  if (requiresRestart.includes(key)) {
+    return { apply_capable: false, requires_restart: true, blocker: section.apply_disabled_reason || "requires_daemon_restart" };
+  }
+  if (requiresNewSession.includes(key)) {
+    return { apply_capable: false, requires_restart: false, blocker: section.apply_disabled_reason || "requires_new_session" };
+  }
+  if (key.startsWith("brain.") && Object.prototype.hasOwnProperty.call(section, "apply_capable")) {
+    return {
+      apply_capable: false,
+      requires_restart: false,
+      blocker: section.apply_disabled_reason || "not_apply_capable",
+    };
   }
   const field = runtimeSettingsPreviewFieldForKey(payload, key);
   if (field.apply_capable === true) {
@@ -1445,7 +1478,8 @@ function runtimeSettingsCompactUnknownStatus(value) {
 }
 
 function runtimeSettingsPendingMessage(group, settings, payload) {
-  const changedKeys = runtimeSettingsChangedKeys(group, settings, payload);
+  const changedKeys = runtimeSettingsChangedKeys(group, settings, payload)
+    .filter((key) => runtimeSettingsFieldCanApplyNow(payload, key));
   if (changedKeys.length === 0) {
     return "";
   }
@@ -3139,7 +3173,14 @@ function settingsPreviewEvaluateBrain(model) {
     return;
   }
   const provider = settingsPreviewBrainProvider(model, providerField.effective);
-  const providerIds = settingsPreviewBrainProviders(model).map((item) => item.id);
+  const backendProviderIds = Array.isArray(providerField.allowed_values)
+    ? providerField.allowed_values.filter((item) => item !== undefined && item !== null && item !== "")
+    : [];
+  const providerIds = backendProviderIds.length > 0
+    ? backendProviderIds
+    : settingsPreviewBrainProviders(model)
+      .filter((item) => !item.developer_only)
+      .map((item) => item.id);
   providerField.allowed_values = providerIds;
   providerField.disabled_values = settingsPreviewBrainProviders(model)
     .map((item) => settingsPreviewDisabledProviderOption(item))

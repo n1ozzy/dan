@@ -2438,6 +2438,9 @@ def test_get_runtime_settings_includes_settings_preview_payload_and_capability_g
         "editable_now",
         "editable_later",
         "developer_only",
+        "apply_capable",
+        "apply_disabled_reason",
+        "validation",
     }
     for section_id, field_ids in expected_sections.items():
         section = settings_preview["sections"][section_id]
@@ -3353,6 +3356,164 @@ def test_post_runtime_settings_apply_rejects_unsupported_effort(app: DaemonApp) 
 
     assert status == 422
     assert "Effort" in payload["error"]
+
+
+def test_runtime_settings_claude_model_next_turn_apply_updates_command_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(routes_runtime.shutil, "which", lambda command: "/usr/bin/fake-claude")
+    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("1.0.0", "ok", None))
+    monkeypatch.setattr(routes_runtime, "_safe_probe_claude_auth_status", lambda command: ("logged_in", None))
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="claude_cli",
+        extra_toml=(
+            "\n[brain.claude_cli]\n"
+            "enabled = true\n"
+            "command = \"fake-claude\"\n"
+            "model = \"claude-old\"\n"
+            "effort = \"low\"\n"
+            "permission_mode = \"manual\"\n"
+        ),
+    )
+    app = create_daemon_app(config_path)
+    try:
+        assert app.brain_manager is not None
+        adapter = app.brain_manager.get_adapter("claude_cli")
+        adapter.available_models = lambda: ["claude-old", "claude-new"]  # type: ignore[method-assign]
+        with running_server(app) as base_url:
+            status, before = request_json("GET", f"{base_url}/runtime/settings")
+            assert status == 200
+            brain_section = before["settings_preview"]["sections"]["brain_provider"]
+            assert brain_section["apply_semantics"] == "next_turn"
+            assert brain_section["apply_capable"] is True
+            assert "brain.model" in brain_section["valid_next_turn_changes"]
+            assert brain_section["fields"]["model"]["apply_capable"] is True
+
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"brain.model": "claude-new"}},
+            )
+    finally:
+        app.close()
+
+    assert status == 200, payload
+    assert payload["applied"] == ["brain.model"]
+    refreshed = payload["runtime_settings"]
+    command_preview = _settings_preview_field(refreshed, "brain_provider", "command_preview")
+    assert "--model claude-new" in command_preview["current"]
+    assert "--effort low" in command_preview["current"]
+
+
+def test_runtime_settings_rejects_unknown_effort_without_pending_applyable_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(routes_runtime.shutil, "which", lambda command: "/usr/bin/fake-claude")
+    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("1.0.0", "ok", None))
+    monkeypatch.setattr(routes_runtime, "_safe_probe_claude_auth_status", lambda command: ("logged_in", None))
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="claude_cli",
+        extra_toml=(
+            "\n[brain.claude_cli]\n"
+            "enabled = true\n"
+            "command = \"fake-claude\"\n"
+            "model = \"claude-sonnet\"\n"
+            "effort = \"\"\n"
+        ),
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"brain.effort": "unknown"}},
+            )
+            _, refreshed = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 422
+    assert "invalid value" in payload["error"].lower()
+    assert "brain.effort" in payload["rejected_keys"]
+    brain_section = refreshed["settings_preview"]["sections"]["brain_provider"]
+    assert "brain.effort" in brain_section["valid_next_turn_changes"]
+    assert brain_section["fields"]["effort"]["validation"]["target_valid"] is True
+    assert settings_value(app, "effort") is None
+
+
+def test_runtime_settings_requires_new_session_disables_brain_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(routes_runtime.shutil, "which", lambda command: "/usr/bin/fake-claude")
+    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("1.0.0", "ok", None))
+    monkeypatch.setattr(routes_runtime, "_safe_probe_claude_auth_status", lambda command: ("logged_in", None))
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="claude_cli_warm",
+        extra_toml=(
+            "\n[brain.claude_cli]\n"
+            "enabled = true\n"
+            "command = \"fake-claude\"\n"
+            "model = \"claude-warm\"\n"
+            "effort = \"high\"\n"
+        ),
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, runtime = request_json("GET", f"{base_url}/runtime/settings")
+            assert status == 200
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"brain.model": "claude-warm"}},
+            )
+    finally:
+        app.close()
+
+    brain_section = runtime["settings_preview"]["sections"]["brain_provider"]
+    assert brain_section["apply_semantics"] == "requires_new_session"
+    assert brain_section["apply_capable"] is False
+    assert brain_section["apply_disabled_reason"] == "requires_new_session"
+    assert "brain.model" in brain_section["requires_new_session_changes"]
+    assert status == 422
+    assert "requires_new_session" in payload["error"]
+
+
+def test_post_runtime_settings_apply_rejects_mock_as_normal_brain_provider(
+    app: DaemonApp,
+) -> None:
+    with running_server(app) as base_url:
+        status, runtime = request_json("GET", f"{base_url}/runtime/settings")
+        assert status == 200
+        provider_field = _settings_preview_field(runtime, "brain_provider", "provider")
+        assert "mock" not in provider_field["allowed_values"]
+        assert any(item["value"] == "mock" for item in provider_field["disabled_values"])
+
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"brain.provider": "mock"}},
+        )
+
+    assert status == 422
+    assert "mock" in payload["error"].lower()
+    assert "not_apply_capable" in payload["error"]
 
 
 def test_post_runtime_settings_apply_updates_session_voice_projection(app: DaemonApp) -> None:

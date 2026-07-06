@@ -84,6 +84,9 @@ TOOLS_INTERNET_APPLY_KEYS = frozenset(
         "provider_tools_enabled",
     }
 )
+BRAIN_NEXT_TURN_APPLY_KEYS = frozenset({"brain.model", "brain.effort"})
+BRAIN_PROVIDER_SESSION_CHANGE_KEYS = frozenset({"brain.provider", "brain.adapter"})
+BRAIN_REQUIRES_NEW_SESSION_KEYS = BRAIN_NEXT_TURN_APPLY_KEYS | BRAIN_PROVIDER_SESSION_CHANGE_KEYS
 
 RUNTIME_SETTINGS_APPLY_ALLOWED_KEYS = frozenset(
     {
@@ -843,6 +846,10 @@ def _provider_command_projection(
 
     command = getattr(adapter, "command", None)
     if not isinstance(command, str) or not command.strip():
+        command_argv = getattr(adapter, "_command", None)
+        if isinstance(command_argv, list) and command_argv:
+            command = command_argv[0]
+    if not isinstance(command, str) or not command.strip():
         return _projection(
             value=KNOWN_PROVIDER_SUPPORT_UNKNOWN,
             effective_value=KNOWN_PROVIDER_SUPPORT_UNKNOWN,
@@ -1394,6 +1401,24 @@ def _apply_error(message: str, *, status_code: int = 422) -> RuntimeSettingsAppl
     )
 
 
+def _apply_rejected(
+    key: str,
+    reason: str,
+    message: str,
+    *,
+    status_code: int = 422,
+) -> RuntimeSettingsApplyError:
+    reason_label = reason.replace("_", " ")
+    rendered_message = f"{message} ({reason}; {reason_label})"
+    return RuntimeSettingsApplyError(
+        rendered_message,
+        status_code=status_code,
+        apply_status=reason,
+        rejected_keys=[key],
+        blockers=[f"{key}: {rendered_message}"],
+    )
+
+
 def _provider_apply_blocker(
     provider: dict[str, Any],
     *,
@@ -1410,15 +1435,85 @@ def _provider_apply_blocker(
     apply_semantics = provider.get("apply_semantics")
     if apply_semantics and apply_semantics != "next_turn":
         if apply_semantics == "requires_new_session":
-            return f"Provider {requested_provider_id!r} requires a new provider session; not apply-capable in POC."
+            return f"Provider {requested_provider_id!r} requires a new provider session; not apply-capable in POC (requires_new_session)."
         if apply_semantics == "requires_daemon_restart":
-            return f"Provider {requested_provider_id!r} requires daemon restart; not apply-capable in POC."
-        return f"Provider {requested_provider_id!r} is not apply-capable in POC."
+            return f"Provider {requested_provider_id!r} requires daemon restart; not apply-capable in POC (requires_daemon_restart)."
+        return f"Provider {requested_provider_id!r} is not apply-capable in POC (not_apply_capable)."
     if provider.get("auth_status") == "missing":
         return f"Provider {requested_provider_id!r} auth is missing; not apply-capable in POC."
     if _support_bool(provider.get("command_status")) is False:
         return f"Provider {requested_provider_id!r} command is missing; not apply-capable in POC."
     return None
+
+
+def _brain_provider_apply_disabled_reason(provider: dict[str, Any]) -> str | None:
+    if provider.get("developer_only"):
+        return "not_apply_capable"
+    if _support_bool(provider.get("command_status")) is False:
+        return "missing_command"
+    auth_status = str(provider.get("auth_status") or "").strip()
+    if auth_status == "missing" or (auth_status and auth_status != "logged_in"):
+        return "missing_auth"
+    apply_semantics = str(provider.get("apply_semantics") or "not_apply_capable")
+    if apply_semantics in {"requires_new_session", "requires_daemon_restart", "not_apply_capable"}:
+        return apply_semantics
+    if apply_semantics != "next_turn":
+        return "not_apply_capable"
+    if not provider.get("available", False):
+        return "not_apply_capable"
+    return None
+
+
+def _brain_apply_plan(provider: dict[str, Any]) -> dict[str, Any]:
+    disabled_reason = _brain_provider_apply_disabled_reason(provider)
+    valid_next_turn: list[str] = []
+    requires_new_session: list[str] = []
+    requires_restart: list[str] = []
+
+    if disabled_reason is None:
+        if provider.get("models"):
+            valid_next_turn.append("brain.model")
+        if provider.get("allowed_effort_values"):
+            valid_next_turn.append("brain.effort")
+        else:
+            disabled_reason = "unknown_effort_support"
+    elif disabled_reason == "requires_new_session":
+        requires_new_session.extend(sorted(BRAIN_REQUIRES_NEW_SESSION_KEYS))
+    elif disabled_reason == "requires_daemon_restart":
+        requires_restart.extend(sorted(BRAIN_REQUIRES_NEW_SESSION_KEYS))
+
+    apply_capable = disabled_reason is None and bool(valid_next_turn)
+    return {
+        "apply_semantics": str(provider.get("apply_semantics") or "not_apply_capable"),
+        "apply_capable": apply_capable,
+        "apply_disabled_reason": None if apply_capable else (disabled_reason or "not_apply_capable"),
+        "pending_changes": [],
+        "valid_next_turn_changes": valid_next_turn if apply_capable else [],
+        "requires_new_session_changes": requires_new_session,
+        "requires_restart_changes": requires_restart,
+    }
+
+
+def _brain_field_apply_validation(
+    provider: dict[str, Any],
+    key: str,
+    *,
+    target_values: list[Any] | tuple[Any, ...],
+) -> dict[str, Any]:
+    plan = _brain_apply_plan(provider)
+    target_known = bool(target_values)
+    target_valid = key in plan["valid_next_turn_changes"]
+    reason = None
+    if not target_valid:
+        reason = plan["apply_disabled_reason"] or "not_apply_capable"
+        if key == "brain.effort" and not target_known:
+            reason = "unknown_effort_support"
+    return {
+        "key": key,
+        "target_known": target_known,
+        "target_valid": target_valid,
+        "reason": reason,
+    }
 
 
 def _brain_provider_for_apply(
@@ -1456,9 +1551,20 @@ def _apply_brain_settings(
         raise RuntimeSettingsApplyError("brain.provider and brain.adapter must match when both are supplied.")
 
     brain_capabilities = capability_graph.get("brain_capabilities", {})
+    if provider_value is not None:
+        requested_provider = _required_apply_text(provider_value, "brain.provider")
+        reason = "not_apply_capable" if requested_provider == "mock" else "requires_new_session"
+        raise _apply_rejected(
+            "brain.provider",
+            reason,
+            f"Provider {requested_provider!r} cannot be selected through normal next-turn apply; not apply-capable in POC",
+        )
+
     target_provider_id = provider_value if provider_value is not None else brain_capabilities.get("current_provider")
     provider = _brain_provider_for_apply(capability_graph, target_provider_id)
     provider_id = str(provider["id"])
+    apply_plan = _brain_apply_plan(provider)
+    valid_next_turn_changes = set(apply_plan["valid_next_turn_changes"])
     manager = app.brain_manager
     if manager is None:
         raise _apply_error("Brain manager is not initialized; provider is not apply-capable in POC.", status_code=409)
@@ -1470,6 +1576,12 @@ def _apply_brain_settings(
     settings_updates: dict[str, Any] = {}
     adapter_model_value: str | None = None
     if "brain.model" in settings:
+        if "brain.model" not in valid_next_turn_changes:
+            raise _apply_rejected(
+                "brain.model",
+                str(apply_plan["apply_disabled_reason"] or "not_apply_capable"),
+                f"Model is not next-turn apply-capable for provider {provider_id!r}",
+            )
         model = _required_apply_text(settings["brain.model"], "brain.model")
         allowed_models = [
             str(model_node.get("id"))
@@ -1481,50 +1593,44 @@ def _apply_brain_settings(
                 f"Provider {provider_id!r} has no apply-capable model in POC."
             )
         if model not in allowed_models:
-            raise _apply_error(
-                f"Model {model!r} is not supported for provider {provider_id!r}."
+            raise _apply_rejected(
+                "brain.model",
+                "invalid_value",
+                f"Model {model!r} is not supported for provider {provider_id!r}",
             )
         settings_updates["model"] = model
         adapter_model_value = model
 
     if "brain.effort" in settings:
+        if "brain.effort" not in valid_next_turn_changes:
+            raise _apply_rejected(
+                "brain.effort",
+                str(apply_plan["apply_disabled_reason"] or "not_apply_capable"),
+                f"Effort is not next-turn apply-capable for provider {provider_id!r}",
+            )
         effort = _required_apply_text(settings["brain.effort"], "brain.effort")
         allowed_efforts = [str(value) for value in provider.get("allowed_effort_values") or []]
         if not allowed_efforts:
-            raise _apply_error(
-                f"Effort is not apply-capable in POC for provider {provider_id!r}."
+            raise _apply_rejected(
+                "brain.effort",
+                "unknown_effort_support",
+                f"Effort support is unknown for provider {provider_id!r}",
             )
         if effort not in allowed_efforts:
-            raise _apply_error(
-                f"Effort {effort!r} is not supported for provider {provider_id!r}."
+            raise _apply_rejected(
+                "brain.effort",
+                "invalid_value",
+                f"Effort {effort!r} is not supported for provider {provider_id!r}",
             )
         settings_updates["effort"] = effort
 
     if "brain.fast" in settings:
-        fast = _optional_apply_bool(settings["brain.fast"], "brain.fast")
-        if not provider.get("fast_supported"):
-            raise _apply_error(
-                f"Fast is not apply-capable in POC for provider {provider_id!r}."
-            )
-        settings_updates["fast"] = fast
-
-    if provider_value is not None:
-        previous = manager.current_adapter_name
-        try:
-            manager.switch_adapter(provider_id)
-        except BrainManagerError as exc:
-            raise _apply_error(
-                f"Provider {provider_id!r} switch failed: {exc}; not apply-capable in POC.",
-                status_code=409,
-            ) from exc
-        if app.started and previous != provider_id:
-            app._require_event_store().append(
-                EventType.BRAIN_SWITCHED,
-                "api",
-                {"from": previous, "to": provider_id, "persisted": True, "runtime_apply": True},
-            )
-        app.update_settings({BRAIN_ADAPTER_SETTING_KEY: provider_id})
-        applied.append("brain.provider")
+        _optional_apply_bool(settings["brain.fast"], "brain.fast")
+        raise _apply_rejected(
+            "brain.fast",
+            "not_apply_capable",
+            f"Fast is not next-turn apply-capable for provider {provider_id!r}",
+        )
 
     if adapter_model_value is not None:
         try:
@@ -1534,6 +1640,16 @@ def _apply_brain_settings(
         except BrainManagerError as exc:
             raise _apply_error(
                 f"Provider {provider_id!r} model update failed: {exc}; not apply-capable in POC.",
+                status_code=409,
+            ) from exc
+    if "effort" in settings_updates:
+        try:
+            adapter = manager.get_adapter(provider_id)
+            if hasattr(adapter, "effort"):
+                setattr(adapter, "effort", settings_updates["effort"])
+        except BrainManagerError as exc:
+            raise _apply_error(
+                f"Provider {provider_id!r} effort update failed: {exc}; not apply-capable in POC.",
                 status_code=409,
             ) from exc
 
@@ -4599,6 +4715,9 @@ def _preview_field(
     editable_now: bool = False,
     editable_later: bool = False,
     developer_only: bool = False,
+    apply_capable: bool = False,
+    apply_disabled_reason: str | None = None,
+    validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": f"{section}.{field_id}",
@@ -4618,14 +4737,23 @@ def _preview_field(
         "editable_now": bool(editable_now),
         "editable_later": bool(editable_later),
         "developer_only": bool(developer_only),
+        "apply_capable": bool(apply_capable),
+        "apply_disabled_reason": apply_disabled_reason,
+        "validation": dict(validation or {}),
     }
 
 
-def _preview_section(section_id: str, label: str, fields: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _preview_section(
+    section_id: str,
+    label: str,
+    fields: dict[str, dict[str, Any]],
+    **metadata: Any,
+) -> dict[str, Any]:
     return {
         "id": section_id,
         "label": label,
         "fields": fields,
+        **metadata,
     }
 
 
@@ -5325,10 +5453,11 @@ def _build_settings_preview(
     auth_status = str(current_provider.get("auth_status") or "unknown")
     auth_field_status = "ok" if auth_status == "logged_in" else ("missing" if auth_status == "missing" else "unknown")
     apply_semantics = str(current_provider.get("apply_semantics") or "not_apply_capable")
+    brain_apply_plan = _brain_apply_plan(current_provider)
     apply_semantics_status = "ok" if apply_semantics == "next_turn" else (
         "invalid" if apply_semantics == "not_apply_capable" else "unsupported"
     )
-    brain_next_turn_apply = apply_semantics == "next_turn"
+    brain_next_turn_apply = bool(brain_apply_plan["apply_capable"])
     selected_model = current_provider.get("selected_model")
     effective_model = current_provider.get("effective_model")
     selected_effort = current_provider.get("selected_effort")
@@ -5343,15 +5472,18 @@ def _build_settings_preview(
             current=current_provider_id,
             status=current_provider.get("status", "unknown"),
             source="settings",
-            allowed_values=[provider["id"] for provider in providers],
+            allowed_values=[provider["id"] for provider in providers if not provider.get("developer_only")],
             disabled_values=provider_disabled,
             warning="Developer/Test provider is active." if current_provider.get("developer_only") else None,
             blocker=current_provider.get("blocker") if not current_provider.get("available", True) else None,
             invalidates=["brain_provider.model", "brain_provider.effort", "brain_provider.fast", "brain_provider.tools_support", "brain_provider.streaming_support", "brain_provider.context_budget", "brain_provider.command_status", "brain_provider.credentials_or_command_status", "brain_provider.auth_status", "brain_provider.command_preview", "brain_provider.apply_semantics"],
-            requires_reload=not brain_next_turn_apply,
-            editable_now=brain_next_turn_apply,
+            requires_reload=True,
+            editable_now=False,
             editable_later=True,
             developer_only=bool(current_provider.get("developer_only")),
+            apply_capable=False,
+            apply_disabled_reason="not_apply_capable" if current_provider.get("developer_only") else "requires_new_session",
+            validation={"key": "brain.provider", "target_known": True, "target_valid": False, "reason": "requires_new_session"},
         ),
         "provider_id": _preview_field(
             section=section,
@@ -5385,6 +5517,9 @@ def _build_settings_preview(
             requires_reload=not brain_next_turn_apply,
             editable_now=brain_next_turn_apply,
             editable_later=True,
+            apply_capable="brain.model" in brain_apply_plan["valid_next_turn_changes"],
+            apply_disabled_reason=None if "brain.model" in brain_apply_plan["valid_next_turn_changes"] else brain_apply_plan["apply_disabled_reason"],
+            validation=_brain_field_apply_validation(current_provider, "brain.model", target_values=model_values),
         ),
         "selected_model": _preview_field(
             section=section,
@@ -5428,6 +5563,11 @@ def _build_settings_preview(
             requires_reload=not brain_next_turn_apply,
             editable_now=brain_next_turn_apply and bool(effort_allowed),
             editable_later=True,
+            apply_capable="brain.effort" in brain_apply_plan["valid_next_turn_changes"],
+            apply_disabled_reason=None if "brain.effort" in brain_apply_plan["valid_next_turn_changes"] else (
+                "unknown_effort_support" if not effort_allowed else brain_apply_plan["apply_disabled_reason"]
+            ),
+            validation=_brain_field_apply_validation(current_provider, "brain.effort", target_values=effort_allowed),
         ),
         "selected_effort": _preview_field(
             section=section,
@@ -5469,8 +5609,11 @@ def _build_settings_preview(
             blocker="Fast is unsupported by selected provider/model." if fast_status in {"invalid", "unsupported"} else None,
             dependencies=["brain_provider.provider", "brain_provider.model"],
             requires_reload=not brain_next_turn_apply,
-            editable_now=brain_next_turn_apply,
+            editable_now=False,
             editable_later=True,
+            apply_capable=False,
+            apply_disabled_reason="not_apply_capable",
+            validation={"key": "brain.fast", "target_known": True, "target_valid": False, "reason": "not_apply_capable"},
         ),
         "context_budget": _preview_field(
             section=section,
@@ -5941,7 +6084,12 @@ def _build_settings_preview(
         "save_implemented": False,
         "save_disabled_reason": "Save not implemented in POC",
         "sections": {
-            "brain_provider": _preview_section("brain_provider", "Brain / Provider", brain_fields),
+            "brain_provider": _preview_section(
+                "brain_provider",
+                "Brain / Provider",
+                brain_fields,
+                **brain_apply_plan,
+            ),
             "voice_tts": _preview_section("voice_tts", "Voice / TTS", tts_fields),
             "voice_stt": _preview_section("voice_stt", "Voice / STT", stt_fields),
             "endpointing_ptt": _preview_section("endpointing_ptt", "Endpointing / PTT", endpoint_fields),
