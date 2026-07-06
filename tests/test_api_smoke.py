@@ -31,7 +31,7 @@ from jarvis.memory.compiler import CompiledMemoryContext, MemoryCompiler, Memory
 from jarvis.runtime.supervisor import RuntimeSupervisor
 from jarvis.store.db import close_quietly
 from jarvis.store.migrations import LATEST_SCHEMA_VERSION
-from jarvis.tools.registry import Tool
+from jarvis.tools.registry import Tool, ToolRunRecorder
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1530,6 +1530,51 @@ def test_get_events_returns_ascending_events_after_after_id(app: DaemonApp) -> N
     assert payload["after_id"] == 1
     assert payload["limit"] == 10
     assert payload["latest_event_id"] == 4
+
+
+def test_get_events_omits_tool_finished_output_for_clients(app: DaemonApp) -> None:
+    app.start()
+    assert app.conn is not None
+    assert app.event_store is not None
+    recorder = ToolRunRecorder(app.conn, event_store=app.event_store)
+    recorder.record_requested(
+        run_id="run-rest-output",
+        tool_name="ui_read_window",
+        risk="safe_read",
+        input={"window": "main"},
+        turn_id="turn-rest-output",
+    )
+    raw_secret = "sk-" + "rest-events-secret-token"
+    recorder.record_finished(
+        "run-rest-output",
+        output={
+            "stdout": f"raw tool output {raw_secret}",
+            "headers": {"Authorization": f"Bearer {raw_secret}"},
+        },
+    )
+
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/events?latest=true&limit=10")
+
+    encoded = json.dumps(payload, sort_keys=True)
+    events = [
+        event
+        for event in payload["events"]
+        if event["type"] == "tool.finished" and event["payload"].get("run_id") == "run-rest-output"
+    ]
+    assert status == 200
+    assert len(events) == 1
+    event_payload = events[0]["payload"]
+    assert event_payload["tool_name"] == "ui_read_window"
+    assert event_payload["status"] == "finished"
+    assert event_payload["output_omitted"] is True
+    assert "output" not in event_payload
+    assert raw_secret not in encoded
+    assert '"input"' not in encoded
+    assert '"arguments"' not in encoded
+    assert '"headers"' not in encoded
+    assert "raw tool output" not in encoded
+    assert "Authorization" not in encoded
 
 
 @pytest.mark.parametrize("query", ["after_id=bad", "limit=bad", "limit=0", "limit=1001"])

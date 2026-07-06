@@ -1965,6 +1965,40 @@ def test_logs_keep_live_events_at_top_without_duplicates(tmp_path: Path) -> None
     )
 
 
+def test_stream_hello_does_not_advance_reconnect_cursor(tmp_path: Path) -> None:
+    _run_logs_harness(
+        tmp_path,
+        "stream-hello-cursor-harness",
+        """
+        context.handleStreamMessage(JSON.stringify({
+          type: "event",
+          event: event(4, "tool.finished"),
+        }));
+        assert.strictEqual(context.streamUrl(), "ws://127.0.0.1:41741/stream?after_id=4");
+
+        context.handleStreamMessage(JSON.stringify({
+          type: "stream.hello",
+          latest_event_id: 8,
+          start_after_id: 4,
+        }));
+
+        assert.strictEqual(context.streamUrl(), "ws://127.0.0.1:41741/stream?after_id=4");
+
+        context.handleStreamMessage(JSON.stringify({
+          type: "event",
+          event: event(6, "tool.finished"),
+        }));
+        context.handleStreamMessage(JSON.stringify({
+          type: "event",
+          event: event(6, "tool.finished"),
+        }));
+
+        assert.strictEqual(context.streamUrl(), "ws://127.0.0.1:41741/stream?after_id=6");
+        assert.strictEqual(eventIds().filter((id) => id === 6).length, 1);
+        """,
+    )
+
+
 def test_logs_trim_cache_by_keeping_newest_events(tmp_path: Path) -> None:
     _run_logs_harness(
         tmp_path,

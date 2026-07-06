@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from jarvis.api.event_safety import safe_event_payload_for_client
 from jarvis.daemon.app import DaemonApp
 from jarvis.events.models import Event
 
@@ -40,7 +41,7 @@ def event_to_dict(event: Event) -> dict[str, Any]:
         "source": event.source,
         "correlation_id": event.correlation_id,
         "turn_id": event.turn_id,
-        "payload": event.payload,
+        "payload": safe_event_payload_for_client(event),
     }
 
 

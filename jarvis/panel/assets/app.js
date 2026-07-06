@@ -5663,10 +5663,8 @@ function handleStreamMessage(raw) {
   }
 
   if (frame.type === "stream.hello") {
-    const latestId = Number(frame.latest_event_id);
-    if (Number.isFinite(latestId) && latestId > cockpit.stream.lastEventId) {
-      cockpit.stream.lastEventId = latestId;
-    }
+    // Hello reports server state only; the reconnect cursor advances when an
+    // actual event frame is accepted.
     return;
   }
   if (frame.type !== "event" || !frame.event) {

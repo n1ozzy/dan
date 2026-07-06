@@ -23,8 +23,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import IO, TYPE_CHECKING, Any
 
+from jarvis.api.event_safety import safe_event_payload_for_client
 from jarvis.logging import get_logger
-from jarvis.security.redaction import redact_secrets
 from jarvis.security.transport import API_TOKEN_HEADER
 from jarvis.store.db import close_quietly, connect_db
 from jarvis.store.event_store import create_event_store
@@ -239,19 +239,8 @@ class FrameParser:
 
 
 def stream_event_dict(event: Event) -> dict[str, Any]:
-    """Shape a persisted event for the stream.
+    """Shape a persisted event for the stream."""
 
-    Two deliberate deviations from ``GET /events`` (ADR-019):
-    - bulk tool output never rides the stream (``ui_read_window`` output is
-      on-screen text); the payload carries ``output_omitted`` instead, and
-    - payloads pass through ``redact_secrets`` again, so the stream stays
-      redacted even for rows that reached the DB outside EventStore.append.
-    """
-
-    payload = dict(event.payload)
-    if "output" in payload:
-        payload.pop("output")
-        payload["output_omitted"] = True
     return {
         "id": event.id,
         "created_at": event.created_at,
@@ -259,7 +248,7 @@ def stream_event_dict(event: Event) -> dict[str, Any]:
         "source": event.source,
         "correlation_id": event.correlation_id,
         "turn_id": event.turn_id,
-        "payload": redact_secrets(payload),
+        "payload": safe_event_payload_for_client(event),
     }
 
 
