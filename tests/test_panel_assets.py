@@ -1267,6 +1267,206 @@ def test_system_unknown_runtime_values_disable_apply_and_do_not_create_pending_c
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
+    tmp_path: Path,
+) -> None:
+    harness = tmp_path / "claude-cli-contract-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            function createNode(tag) {{
+              const children = [];
+              const classes = new Set();
+              return {{
+                tagName: tag,
+                children,
+                childNodes: children,
+                textContent: "",
+                className: "",
+                hidden: false,
+                disabled: false,
+                checked: false,
+                value: "",
+                title: "",
+                type: "",
+                dataset: {{}},
+                classList: {{
+                  toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+                  contains: (name) => classes.has(name),
+                }},
+                appendChild(child) {{
+                  children.push(child);
+                  return child;
+                }},
+                append(...nodes) {{
+                  for (const node of nodes) this.appendChild(node);
+                }},
+                removeChild(child) {{
+                  const index = children.indexOf(child);
+                  if (index >= 0) children.splice(index, 1);
+                  return child;
+                }},
+                get firstChild() {{
+                  return children[0] || null;
+                }},
+                addEventListener() {{}},
+              }};
+            }}
+
+            function collectText(node) {{
+              if (!node) return "";
+              return [node.textContent || "", ...(node.children || []).map(collectText)].join(" ");
+            }}
+
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41741" }},
+              localStorage: {{
+                getItem: () => "token",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              createNode,
+              document: {{
+                addEventListener: () => {{}},
+                createElement: createNode,
+              }},
+              window: {{}},
+              fetch: async () => {{
+                throw new Error("unexpected request");
+              }},
+            }};
+            context.window.localStorage = context.localStorage;
+            context.globalThis = context;
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            function payloadWithSemantics(applySemantics) {{
+              return {{
+                brain: {{
+                  current_adapter: {{ effective_value: "claude_cli" }},
+                }},
+                capability_graph: {{
+                  brain_capabilities: {{
+                    current_provider: "claude_cli",
+                    current_model: "claude-sonnet",
+                    providers: [
+                      {{
+                        id: "claude_cli",
+                        provider_id: "claude_cli",
+                        label: "Claude CLI",
+                        kind: "cli",
+                        transport: "subprocess",
+                        available: true,
+                        models: [{{ id: "claude-sonnet", label: "Claude Sonnet", available: true }}],
+                        current_model: "claude-sonnet",
+                        selected_model: "claude-sonnet",
+                        effective_model: "claude-sonnet",
+                        model_source: "jarvis_explicit",
+                        allowed_effort_values: ["low", "xhigh"],
+                        selected_effort: "xhigh",
+                        effective_effort: "xhigh",
+                        effort_source: "jarvis_explicit",
+                        fast_supported: false,
+                        command_status: "found",
+                        auth_status: "logged_in",
+                        permission_mode: "acceptEdits",
+                        allowed_tools: ["file_read"],
+                        disallowed_tools: ["network"],
+                        mcp_config_status: "missing",
+                        strict_mcp_config: "unknown",
+                        output_format: "stream-json",
+                        input_format: "text",
+                        streaming_supported: true,
+                        streaming_supported_state: "yes",
+                        partial_messages_supported: "yes",
+                        hook_events_supported: "unknown",
+                        apply_semantics: applySemantics,
+                        command_preview: "claude -p --model claude-sonnet --effort xhigh --permission-mode acceptEdits --output-format stream-json",
+                      }},
+                    ],
+                  }},
+                }},
+                settings_preview: {{
+                  sections: {{
+                    brain_provider: {{
+                      label: "Brain / Provider",
+                      fields: {{
+                        provider: {{ id: "brain_provider.provider", label: "Provider", current: "claude_cli", effective: "claude_cli", status: "ok", editable_now: true }},
+                        model: {{ id: "brain_provider.model", label: "Model", current: "claude-sonnet", effective: "claude-sonnet", status: "ok", editable_now: true, allowed_values: ["claude-sonnet"] }},
+                        effort: {{ id: "brain_provider.effort", label: "Effort", current: "xhigh", effective: "xhigh", status: "ok", allowed_values: ["low", "xhigh"], editable_now: true }},
+                        fast: {{ id: "brain_provider.fast", label: "Fast", current: false, effective: false, status: "unsupported", editable_now: false }},
+                        command_preview: {{ id: "brain_provider.command_preview", label: "Next-turn command preview", current: "claude -p --model claude-sonnet --effort xhigh", effective: "claude -p --model claude-sonnet --effort xhigh", status: "ok" }},
+                        apply_semantics: {{ id: "brain_provider.apply_semantics", label: "Apply semantics", current: applySemantics, effective: applySemantics, status: applySemantics === "next_turn" ? "ok" : "unsupported" }},
+                      }},
+                    }},
+                  }},
+                }},
+              }};
+            }}
+
+            vm.runInContext(`
+              el.activeBrainProviderSelect = createNode("select");
+              el.activeBrainModelSelect = createNode("select");
+              el.activeBrainEffortSelect = createNode("select");
+              el.activeBrainFastToggle = createNode("input");
+              el.brainSettingsSummaryList = createNode("div");
+              el.brainApplyStatus = createNode("p");
+              el.applyBrainSettingsButton = createNode("button");
+              cockpit.online = true;
+              globalThis.__el = el;
+            `, context);
+
+            const nextTurnPayload = payloadWithSemantics("next_turn");
+            context.nextTurnPayload = nextTurnPayload;
+            vm.runInContext(`
+              cockpit.runtimeSettingsApply.payload = nextTurnPayload;
+              renderBrainApplyControls(nextTurnPayload);
+            `, context);
+            const summary = collectText(context.__el.brainSettingsSummaryList);
+            assert.match(summary, /Claude CLI provider contract/);
+            assert.match(summary, /claude-sonnet/);
+            assert.match(summary, /xhigh/);
+            assert.match(summary, /acceptEdits/);
+            assert.match(summary, /stream-json/);
+            assert.match(summary, /--model claude-sonnet/);
+            assert.doesNotMatch(summary, /sk-/);
+
+            const newSessionPayload = payloadWithSemantics("requires_new_session");
+            context.newSessionPayload = newSessionPayload;
+            vm.runInContext(`
+              cockpit.runtimeSettingsApply.payload = newSessionPayload;
+              renderBrainApplyControls(newSessionPayload);
+            `, context);
+            assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
+            assert.match(context.__el.brainApplyStatus.textContent, /requires new session/i);
+            assert.strictEqual(
+              context.providerApplyBlocker(newSessionPayload.capability_graph.brain_capabilities.providers[0], "claude_cli"),
+              "requires new session",
+            );
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_settings_apply_feedback_preserves_pending_preview_and_reset_is_explicit(
     tmp_path: Path,
 ) -> None:

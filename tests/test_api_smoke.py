@@ -24,7 +24,7 @@ from jarvis.tools.permissions import RequestSource
 
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from jarvis.config import COMPILED_MEMORY_ENABLED_ENV, COMPILED_MEMORY_FORCE_DISABLED_ENV
-from jarvis.daemon.app import DaemonApp, create_daemon_app
+from jarvis.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
 from jarvis.daemon.state_machine import RuntimeState
 from jarvis.memory.compiler import CompiledMemoryContext, MemoryCompiler, MemoryCompilerConfig
@@ -308,6 +308,10 @@ def event_types(app: DaemonApp) -> list[str]:
 def table_count(app: DaemonApp, table: str) -> int:
     assert app.conn is not None
     return int(app.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+
+def settings_value(app: DaemonApp, key: str) -> object | None:
+    return app.get_settings().get(key)
 
 
 def insert_runtime_conversation(app: DaemonApp, conversation_id: str = "conversation-runtime") -> None:
@@ -2318,13 +2322,34 @@ def test_get_runtime_settings_includes_settings_preview_payload_and_capability_g
     expected_sections = {
         "brain_provider": (
             "provider",
+            "provider_id",
+            "transport",
             "model",
+            "selected_model",
+            "effective_model",
+            "model_source",
             "effort",
+            "selected_effort",
+            "effective_effort",
+            "effort_source",
             "fast",
             "context_budget",
             "provider_sessions_are_memory",
             "tools_support",
             "streaming_support",
+            "auth_status",
+            "version",
+            "permission_mode",
+            "allowed_tools",
+            "disallowed_tools",
+            "mcp_config_status",
+            "strict_mcp_config",
+            "output_format",
+            "input_format",
+            "partial_messages_supported",
+            "hook_events_supported",
+            "apply_semantics",
+            "command_preview",
             "command_status",
             "credentials_or_command_status",
             "latest_provider_error",
@@ -2420,7 +2445,7 @@ def test_get_runtime_settings_includes_settings_preview_payload_and_capability_g
             assert field["status"] in {"ok", "missing", "invalid", "unsupported", "unknown"}
 
     graph = payload["capability_graph"]
-    assert set(graph) == {"brain_capabilities", "voice_capabilities", "local_capabilities"}
+    assert set(graph) == {"brain_capabilities", "voice_capabilities", "tools_capabilities", "local_capabilities"}
     brain_capabilities = graph["brain_capabilities"]
     assert isinstance(brain_capabilities["providers"], list)
     assert "mock" in {provider["id"] for provider in brain_capabilities["providers"]}
@@ -3196,7 +3221,7 @@ def test_runtime_settings_warns_when_network_policy_enabled_without_network_tool
 
     assert status == 200
     warnings = _runtime_warning_messages(payload)
-    assert any("Internet policy is active" in message for message in warnings)
+    assert any("network enabled but no network tool registered" in message for message in warnings)
 
 
 def test_get_runtime_settings_includes_brain_provider_capabilities(app: DaemonApp) -> None:
@@ -3225,12 +3250,313 @@ def test_get_runtime_settings_includes_brain_provider_capabilities(app: DaemonAp
     assert mock_provider["provider_credentials_status"]["value"] == "unknown"
 
 
-def test_post_runtime_settings_is_readonly(app: DaemonApp) -> None:
+def test_post_runtime_settings_apply_rejects_unknown_setting(app: DaemonApp) -> None:
     with running_server(app) as base_url:
-        status, payload = request_json("POST", f"{base_url}/runtime/settings", {"x": 1})
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"brain.provider": "mock", "unknown.setting": True}},
+        )
 
-    assert status == 404
-    assert payload["error"] == "Not found"
+    assert status == 400
+    assert "Unknown runtime setting" in payload["error"]
+
+
+def test_post_runtime_settings_apply_rejects_unavailable_provider(app: DaemonApp) -> None:
+    app.start()
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"brain.provider": "ollama"}},
+        )
+
+    assert status == 422
+    assert "not apply-capable in POC" in payload["error"] or "unavailable" in payload["error"].lower()
+
+
+def test_post_runtime_settings_apply_graph_only_provider_does_not_persist(
+    app: DaemonApp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(
+        routes_runtime,
+        "_build_local_capabilities",
+        lambda _app: {
+            "runtimes": [
+                {
+                    "id": "ollama",
+                    "label": "Ollama",
+                    "kind": "Local",
+                    "configured": True,
+                    "available": True,
+                    "status": "ok",
+                    "command": "ollama",
+                    "command_path": "/usr/bin/ollama",
+                    "models": [
+                        {
+                            "id": "llama3",
+                            "label": "llama3",
+                            "available": True,
+                            "configured": False,
+                        }
+                    ],
+                    "local_models": [
+                        {
+                            "id": "llama3",
+                            "label": "llama3",
+                            "available": True,
+                        }
+                    ],
+                    "warning": None,
+                    "blocker": None,
+                }
+            ],
+            "local_runtime_status": "ok",
+            "local_models": [{"id": "llama3", "label": "llama3", "available": True}],
+        },
+    )
+
+    app.start()
+    app.update_settings({BRAIN_ADAPTER_SETTING_KEY: "mock"})
+    assert app.brain_manager is not None
+    assert "ollama" not in app.brain_manager.adapter_names()
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"brain.provider": "ollama", "brain.model": "llama3"}},
+        )
+        _, refreshed = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status in {409, 422}
+    assert "not apply-capable" in payload["error"] or "registered" in payload["error"]
+    assert settings_value(app, BRAIN_ADAPTER_SETTING_KEY) == "mock"
+    assert app.brain_manager.current_adapter_name == "mock"
+    assert refreshed["capability_graph"]["brain_capabilities"]["current_provider"] == "mock"
+
+
+def test_post_runtime_settings_apply_rejects_unsupported_effort(app: DaemonApp) -> None:
+    app.start()
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"brain.effort": "x-large"}},
+        )
+
+    assert status == 422
+    assert "Effort" in payload["error"]
+
+
+def test_post_runtime_settings_apply_updates_session_voice_projection(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"voice.speak_responses": True}},
+        )
+        assert status == 200, payload
+        status, refreshed = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    assert payload["applied"] == ["voice.speak_responses"]
+    assert payload["runtime_settings"]["voice"]["speak_responses"]["effective_value"] is True
+    assert refreshed["voice"]["speak_responses"]["effective_value"] is True
+    assert payload["status"] == "applied"
+    assert payload["applied_keys"] == ["voice.speak_responses"]
+    assert payload["rejected_keys"] == []
+    assert payload["unchanged_keys"] == []
+    assert payload["requires_restart_keys"] == []
+    assert payload["blockers"] == []
+
+
+def test_post_runtime_settings_apply_blocks_speak_responses_without_tts(tmp_path: Path) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = true\nspeak_responses = false\nbroker_enabled = false\ndefault_tts = ''\ndefault_stt = 'mock'\n",
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"voice.speak_responses": True}},
+            )
+    finally:
+        daemon_app.close()
+
+    assert status == 422
+    assert "TTS" in payload["error"]
+
+
+def test_post_runtime_settings_apply_blocks_supertonic_tts_without_voice_id(
+    tmp_path: Path,
+) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = false\nspeak_responses = false\nbroker_enabled = false\n"
+        "default_tts = 'mock'\ndefault_stt = 'mock'\n"
+        "supertonic_binary = '/bin/echo'\nsupertonic_voice = ''\nsupertonic_lang = 'pl'\n",
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"voice.default_tts": "supertonic"}},
+            )
+            _, refreshed = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        daemon_app.close()
+
+    assert status == 422
+    assert "voice_id" in payload["error"] or "voice profile" in payload["error"]
+    assert refreshed["voice"]["default_tts"]["effective_value"] == "mock"
+
+
+def test_post_runtime_settings_apply_blocks_default_tts_restart_only(
+    tmp_path: Path,
+) -> None:
+    config_path = rewrite_voice_section(
+        write_config(
+            tmp_path / "jarvis.toml",
+            tmp_path / "home" / "jarvis.db",
+            extra_toml="\n",
+        ),
+        "enabled = false\nspeak_responses = false\nbroker_enabled = false\n"
+        "default_tts = 'mock'\ndefault_stt = 'mock'\n"
+        "supertonic_binary = '/bin/echo'\nsupertonic_voice = 'M2'\nsupertonic_lang = 'pl'\n",
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"voice.default_tts": "supertonic"}},
+            )
+            _, refreshed = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        daemon_app.close()
+
+    assert status == 409
+    assert "runtime engine reload not implemented in POC" in payload["error"]
+    assert refreshed["voice"]["default_tts"]["effective_value"] == "mock"
+    assert payload["status"] == "requires_restart"
+    assert "voice.default_tts" in payload["requires_restart_keys"]
+    assert "voice.default_tts" in payload["rejected_keys"]
+    assert payload["applied_keys"] == []
+    assert payload["blockers"]
+
+
+def test_post_runtime_settings_apply_rejects_unsupported_ptt_mode(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"voice.ptt_mode": "off"}},
+        )
+
+    assert status == 422
+    assert "voice.ptt_mode" in payload["error"]
+
+
+def test_post_runtime_settings_apply_blocks_merge_window_restart_only(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"voice.merge_window": 2.5}},
+        )
+
+    assert status == 409
+    assert "runtime gateway reload not implemented in POC" in payload["error"]
+
+
+def test_runtime_settings_tools_internet_projection_uses_registered_network_tool_truth(
+    app: DaemonApp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(routes_runtime, "_safe_probe_network_capability", lambda: ("yes", "curl"))
+
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    tools = payload["tools"]
+    assert tools["tools_enabled"]["effective_value"] is True
+    assert tools["tools_master_flag"]["effective_value"] == "enabled"
+    assert tools["tool_registry_status"]["effective_value"] == "registered"
+    assert tools["network_search_tool"]["effective_value"] == "missing"
+    assert tools["internet_capability"]["effective_value"]["state"] == "unavailable"
+    assert "no network/search tool registered" in tools["internet_capability"]["warning"]
+    tools_capabilities = payload["capability_graph"]["tools_capabilities"]
+    assert tools_capabilities["tools_master_flag"] == "enabled"
+    assert tools_capabilities["internet_capability"]["state"] == "unavailable"
+    assert tools_capabilities["network_search_tool"] == "missing"
+    assert tools_capabilities["apply_capability"] == "no"
+    assert tools_capabilities["requires_restart"] is True
+    assert "no network/search tool registered" in tools_capabilities["blocker"]
+    warnings = _runtime_warning_messages(payload)
+    assert any("network enabled but no network tool registered" in message for message in warnings)
+
+
+def test_runtime_settings_tools_apply_projection_is_restart_only_not_live_apply(
+    app: DaemonApp,
+) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    tools = payload["tools"]
+    assert tools["apply_capability"]["effective_value"] == "no"
+    assert tools["requires_restart"]["effective_value"] is True
+    assert "runtime tool/network policy reload not implemented" in tools["apply_capability"]["warning"]
+
+    apply_capabilities = payload["capability_graph"]["tools_capabilities"]["apply_capabilities"]
+    for key in (
+        "tools.enabled",
+        "tools.network_enabled",
+        "security.require_approval_for_network",
+        "security.require_approval_for_shell",
+        "security.require_approval_for_file_write",
+    ):
+        capability = apply_capabilities[key]
+        assert capability["apply_capable"] is False
+        assert capability["requires_restart"] is True
+        assert capability["blocker"]
+
+
+def test_post_runtime_settings_apply_tools_policy_returns_blocker(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"security.require_approval_for_network": False}},
+        )
+
+    assert status == 409
+    assert "requires restart" in payload["error"] or "not apply-capable" in payload["error"]
+    assert payload["status"] in {"blocked", "requires_restart"}
+    assert payload["applied_keys"] == []
+    assert "security.require_approval_for_network" in payload["rejected_keys"]
+    assert "security.require_approval_for_network" in payload["requires_restart_keys"]
+    assert payload["blockers"]
 
 
 def test_runtime_settings_marks_invalid_stale_effort_and_fast_state_for_current_provider(
@@ -3290,6 +3616,199 @@ def test_runtime_settings_shows_configured_provider_capabilities_for_claude_and_
         assert claude["tools_support"]["value"] in {"yes", "no", "unknown"}
     finally:
         daemon_app.close()
+
+
+def _install_fake_claude_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    auth_output: str = "Logged in as jarvis@example.test",
+    auth_returncode: int = 0,
+    version_output: str = "claude fake 1.2.3",
+) -> Path:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    claude = bin_dir / "claude"
+    claude.write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                'if [ "$1" = "--version" ]; then',
+                f"  printf '%s\\n' {json.dumps(version_output)}",
+                "  exit 0",
+                "fi",
+                'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then',
+                f"  printf '%s\\n' {json.dumps(auth_output)}",
+                f"  exit {auth_returncode}",
+                "fi",
+                "exit 64",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    claude.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    return claude
+
+
+def test_runtime_settings_claude_cli_missing_command_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="claude_cli",
+        extra_toml='\n[brain.claude_cli]\nenabled = true\ncommand = "definitely-missing-claude"\nmodel = "claude-sonnet"\n',
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        daemon_app.close()
+
+    assert status == 200
+    provider = next(
+        item
+        for item in payload["capability_graph"]["brain_capabilities"]["providers"]
+        if item["id"] == "claude_cli"
+    )
+    assert provider["available"] is False
+    assert provider["command_status"] == "missing"
+    assert provider["apply_semantics"] == "not_apply_capable"
+    assert "missing" in provider["blocker"].lower()
+
+
+def test_runtime_settings_claude_cli_contract_command_preview_and_probes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_claude_cli(tmp_path, monkeypatch)
+    secret = "sk-command-preview-secret"
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="claude_cli",
+        extra_toml=(
+            "\n[brain.claude_cli]\n"
+            "enabled = true\n"
+            'command = "claude"\n'
+            f'args = ["-p", "--permission-mode", "acceptEdits", "--allowedTools", "file_read,shell_read", "--disallowedTools", "{secret}"]\n'
+            'model = "claude-configured"\n'
+        ),
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        daemon_app.start()
+        daemon_app.update_settings({"model": "claude-sonnet-4", "effort": "xhigh"})
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        daemon_app.close()
+
+    assert status == 200
+    provider = next(
+        item
+        for item in payload["capability_graph"]["brain_capabilities"]["providers"]
+        if item["id"] == "claude_cli"
+    )
+    assert provider["provider_id"] == "claude_cli"
+    assert provider["label"] == "Claude CLI"
+    assert provider["kind"] == "cli"
+    assert provider["transport"] == "subprocess"
+    assert provider["command"] == "claude"
+    assert provider["command_status"] == "found"
+    assert provider["auth_status"] == "logged_in"
+    assert provider["version"] == "claude fake 1.2.3"
+    assert provider["selected_model"] == "claude-sonnet-4"
+    assert provider["effective_model"] == "claude-sonnet-4"
+    assert provider["model_source"] == "jarvis_explicit"
+    assert provider["selected_effort"] == "xhigh"
+    assert provider["effective_effort"] == "xhigh"
+    assert provider["effort_source"] == "jarvis_explicit"
+    assert provider["permission_mode"] == "acceptEdits"
+    assert provider["allowed_tools"] == ["file_read", "shell_read"]
+    assert provider["mcp_config_status"] == "missing"
+    assert provider["output_format"] == "stream-json"
+    assert provider["input_format"] == "text"
+    assert provider["streaming_supported_state"] == "yes"
+    assert provider["partial_messages_supported"] == "yes"
+    assert provider["hook_events_supported"] == "unknown"
+    assert provider["apply_semantics"] == "next_turn"
+    preview = provider["command_preview"]
+    assert "--model claude-sonnet-4" in preview
+    assert "--effort xhigh" in preview
+    assert "--permission-mode acceptEdits" in preview
+    assert "--output-format stream-json" in preview
+    encoded = json.dumps(payload, sort_keys=True)
+    assert secret not in encoded
+    assert "[REDACTED]" in encoded
+
+
+def test_runtime_settings_claude_cli_missing_auth_is_redacted_and_blocks_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_claude_cli(
+        tmp_path,
+        monkeypatch,
+        auth_output="not logged in; token sk-auth-secret is unavailable",
+        auth_returncode=1,
+    )
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="claude_cli",
+        extra_toml='\n[brain.claude_cli]\nenabled = true\ncommand = "claude"\nmodel = "claude-sonnet"\n',
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        daemon_app.close()
+
+    assert status == 200
+    provider = next(
+        item
+        for item in payload["capability_graph"]["brain_capabilities"]["providers"]
+        if item["id"] == "claude_cli"
+    )
+    assert provider["auth_status"] == "missing"
+    assert provider["available"] is False
+    assert provider["apply_semantics"] == "not_apply_capable"
+    encoded = json.dumps(payload, sort_keys=True)
+    assert "sk-auth-secret" not in encoded
+
+
+def test_runtime_settings_claude_cli_unknown_effort_does_not_enter_command_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_claude_cli(tmp_path, monkeypatch)
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="claude_cli",
+        extra_toml='\n[brain.claude_cli]\nenabled = true\ncommand = "claude"\nmodel = "claude-sonnet"\n',
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        daemon_app.close()
+
+    assert status == 200
+    provider = next(
+        item
+        for item in payload["capability_graph"]["brain_capabilities"]["providers"]
+        if item["id"] == "claude_cli"
+    )
+    assert provider["selected_effort"] is None
+    assert provider["effective_effort"] is None
+    assert "--effort" not in provider["command_preview"]
 
 
 

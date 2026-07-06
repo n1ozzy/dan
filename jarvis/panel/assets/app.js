@@ -1211,6 +1211,12 @@ function humanDisplayValue(value) {
   if (text === "no") return "Off";
   if (text === "unknown") return "Unknown";
   if (text === "missing") return "Missing";
+  if (text === "found") return "Found";
+  if (text === "logged_in") return "Logged in";
+  if (text === "next_turn") return "Next turn";
+  if (text === "requires_new_session") return "Requires new session";
+  if (text === "requires_daemon_restart") return "Requires daemon restart";
+  if (text === "not_apply_capable") return "Not apply-capable";
   if (text === "available") return "Available";
   if (text === "unavailable") return "Missing";
   if (text === "approval_required") return "Approval required";
@@ -1736,8 +1742,41 @@ function renderBrainApplyControls(payload) {
       : "";
     el.activeBrainProviderSelect.disabled = keepDeveloperProviderActive && providerOptions.length === 1;
   }
-  renderSettingsSectionSummary(el.brainSettingsSummaryList, payload, "brain_provider");
+  renderBrainProviderContractSummary(el.brainSettingsSummaryList, payload);
   updateBrainControlOptions();
+}
+
+function renderBrainProviderContractSummary(node, payload) {
+  if (!node) {
+    return;
+  }
+  const provider = runtimeSettingsBrainProvider(payload, runtimeSettingsCurrentProvider(payload));
+  if (!provider || provider.provider_id !== "claude_cli") {
+    renderSettingsSectionSummary(node, payload, "brain_provider");
+    return;
+  }
+  clearNode(node);
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, "Claude CLI provider contract", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["Available", provider.available ? "Available" : "Missing"],
+    ["Auth", humanDisplayValue(provider.auth_status)],
+    ["Model", `${humanDisplayValue(provider.effective_model || provider.selected_model)} (${humanDisplayValue(provider.model_source)})`],
+    ["Effort", `${humanDisplayValue(provider.effective_effort || provider.selected_effort)} (${humanDisplayValue(provider.effort_source)})`],
+    ["Permission", humanDisplayValue(provider.permission_mode)],
+    ["Tools", `allowed: ${humanDisplayValue(provider.allowed_tools)}; disallowed: ${humanDisplayValue(provider.disallowed_tools)}`],
+    ["MCP", `${humanDisplayValue(provider.mcp_config_status)}; strict: ${humanDisplayValue(provider.strict_mcp_config)}`],
+    ["Streaming", `${humanDisplayValue(provider.streaming_supported_state)}; output: ${humanDisplayValue(provider.output_format)}; partials: ${humanDisplayValue(provider.partial_messages_supported)}`],
+    ["Apply", humanDisplayValue(provider.apply_semantics)],
+  ]);
+  row.appendChild(values);
+  if (provider.command_preview) {
+    appendLine(row, provider.command_preview, "payload-line");
+  }
+  node.appendChild(row);
 }
 
 function updateBrainControlOptions() {
@@ -2996,6 +3035,15 @@ function providerApplyBlocker(provider, currentProviderId) {
   if (!provider.available) {
     return provider.blocker || "missing";
   }
+  if (provider.auth_status === "missing") {
+    return "auth missing";
+  }
+  const applySemantics = String(provider.apply_semantics || "").trim();
+  if (applySemantics && applySemantics !== "next_turn") {
+    if (applySemantics === "requires_new_session") return "requires new session";
+    if (applySemantics === "requires_daemon_restart") return "requires restart";
+    return "not apply-capable";
+  }
   if (settingsPreviewSupportState(provider.command_status) === "no") {
     return "command missing";
   }
@@ -3251,7 +3299,10 @@ function settingsPreviewSupportState(value) {
   if (["yes", "true", "supported", "available", "ok", "enabled"].includes(normalized)) {
     return "yes";
   }
-  if (["no", "false", "unsupported", "missing", "unavailable", "disabled"].includes(normalized)) {
+  if (["found", "logged_in"].includes(normalized)) {
+    return "yes";
+  }
+  if (["no", "false", "unsupported", "missing", "unavailable", "disabled", "not_found"].includes(normalized)) {
     return "no";
   }
   return "unknown";

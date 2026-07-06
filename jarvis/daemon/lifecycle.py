@@ -50,10 +50,12 @@ from jarvis.api.routes_memory import (
     reject_memory_candidate,
 )
 from jarvis.api.routes_runtime import (
+    RuntimeSettingsApplyError,
     get_runtime_legacy,
     get_runtime_settings,
     get_runtime_processes,
     get_runtime_startup,
+    post_runtime_settings_apply,
 )
 from jarvis.api.routes_audio import get_audio_devices
 from jarvis.api.routes_settings import get_settings, update_settings
@@ -412,6 +414,13 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, get_runtime_settings(app))
             return
 
+        if method == "POST" and path == "/runtime/settings/apply":
+            request_payload = _read_json_body(handler)
+            if not isinstance(request_payload, dict):
+                raise RuntimeSettingsApplyError("Request JSON must be an object.")
+            _write_json(handler, 200, post_runtime_settings_apply(app, request_payload))
+            return
+
         if method == "GET" and path == "/tools":
             _write_json(handler, 200, get_tools(app))
             return
@@ -626,6 +635,24 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         WorkerRequestValidationError,
     ) as exc:
         _write_json(handler, 400, {"error": str(exc), "status": 400})
+    except RuntimeSettingsApplyError as exc:
+        _write_json(
+            handler,
+            exc.status_code,
+            {
+                "error": str(exc),
+                "status": exc.apply_status,
+                "http_status": exc.status_code,
+                "applied": [],
+                "applied_keys": [],
+                "rejected_keys": exc.rejected_keys,
+                "unchanged_keys": exc.unchanged_keys,
+                "requires_restart_keys": exc.requires_restart_keys,
+                "blockers": exc.blockers,
+                "warnings": exc.warnings,
+                "runtime_settings": get_runtime_settings(app),
+            },
+        )
     except VoiceDisabledError as exc:
         _write_json(handler, 409, {"error": str(exc), "status": 409})
     except ListeningLeaseError as exc:

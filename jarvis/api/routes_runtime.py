@@ -6,8 +6,11 @@ import json
 import sqlite3
 import os
 import re
+import shlex
 import shutil
 import subprocess
+from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from datetime import datetime
@@ -19,6 +22,7 @@ from jarvis.brain.context_builder import (
     DEFAULT_PERSONA_PROFILE,
     PERSONA_PROFILE_SETTING_KEY,
 )
+from jarvis.brain.manager import BrainManagerError
 from jarvis.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp
 from jarvis.runtime.models import RuntimeProcessObservation, RuntimeRisk
 from jarvis.runtime.supervisor import OFFICIAL_LABEL
@@ -38,11 +42,104 @@ LEGACY_GUIDANCE = [
 KNOWN_SOURCES = frozenset({"config", "settings", "default", "runtime_detected", "unknown"})
 KNOWN_STATUSES = frozenset({"ok", "missing", "invalid", "unsupported", "unknown"})
 PERSONA_PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-KNOWN_PROVIDER_EFFORT_LEVELS = ("low", "medium", "high")
+KNOWN_PROVIDER_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 KNOWN_PROVIDER_SUPPORT_UNKNOWN = "unknown"
 KNOWN_PROVIDER_SUPPORT_YES = "yes"
 KNOWN_PROVIDER_SUPPORT_NO = "no"
+CLAUDE_CLI_PROVIDER_IDS = frozenset({"claude_cli", "claude_cli_warm"})
+CLAUDE_CLI_COMMAND = "claude"
+CLAUDE_CLI_PERMISSION_MODES = (
+    "default",
+    "manual",
+    "acceptEdits",
+    "plan",
+    "auto",
+    "dontAsk",
+    "bypassPermissions",
+)
+CLAUDE_CLI_OUTPUT_FORMATS = ("text", "json", "stream-json")
+CLAUDE_CLI_INPUT_FORMATS = ("text", "stream-json")
+CLAUDE_CLI_DEFAULT_STREAM_ARGS = (
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--include-partial-messages",
+)
 SUPERTONIC_VOICE_MANUAL_DIAGNOSTIC_WARNING = "Supertonic voice list requires manual diagnostic."
+VOICE_ENGINE_RELOAD_BLOCKER = "runtime engine reload not implemented in POC; requires restart"
+VOICE_GATEWAY_RELOAD_BLOCKER = "runtime gateway reload not implemented in POC; requires restart"
+TOOLS_POLICY_RESTART_BLOCKER = "runtime tool/network policy reload not implemented in POC; requires restart"
+CANONICAL_PTT_MODES = ("hold", "toggle", "locked")
+VOICE_ENGINE_RESTART_ONLY_KEYS = frozenset(
+    {
+        "voice.default_tts",
+        "voice.default_stt",
+        "voice.voice_id",
+        "voice.voice_profile",
+        "voice.profile",
+        "voice.speed",
+        "voice.rate",
+    }
+)
+TOOLS_INTERNET_APPLY_KEYS = frozenset(
+    {
+        "tools.enabled",
+        "tools.network_enabled",
+        "security.network_enabled",
+        "security.require_approval_for_network",
+        "security.require_approval_for_shell",
+        "security.require_approval_for_file_write",
+        "security.destructive_tools_enabled",
+        "destructive_tools_enabled",
+        "provider_tools_enabled",
+    }
+)
+
+RUNTIME_SETTINGS_APPLY_ALLOWED_KEYS = frozenset(
+    {
+        "brain.provider",
+        "brain.adapter",
+        "brain.model",
+        "brain.effort",
+        "brain.fast",
+        "voice.default_tts",
+        "voice.default_stt",
+        "voice.voice_id",
+        "voice.voice_profile",
+        "voice.profile",
+        "voice.speed",
+        "voice.rate",
+        "voice.speak_responses",
+        "voice.broker_enabled",
+        "voice.ptt_mode",
+        "voice.merge_window",
+        "persona.profile",
+    }
+    | TOOLS_INTERNET_APPLY_KEYS
+)
+
+
+class RuntimeSettingsApplyError(ValueError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 400,
+        apply_status: str = "blocked",
+        rejected_keys: list[str] | None = None,
+        unchanged_keys: list[str] | None = None,
+        requires_restart_keys: list[str] | None = None,
+        blockers: list[str] | None = None,
+        warnings: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.apply_status = apply_status
+        self.rejected_keys = list(rejected_keys or [])
+        self.unchanged_keys = list(unchanged_keys or [])
+        self.requires_restart_keys = list(requires_restart_keys or [])
+        self.blockers = list(blockers or [message])
+        self.warnings = list(warnings or [])
 
 PROVIDER_PRESET: dict[str, dict[str, Any]] = {
     "mock": {
@@ -56,7 +153,7 @@ PROVIDER_PRESET: dict[str, dict[str, Any]] = {
     },
     "claude_cli": {
         "display_name": "Claude CLI",
-        "kind": "Provider",
+        "kind": "cli",
         "supported_efforts": list(KNOWN_PROVIDER_EFFORT_LEVELS),
         "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
         "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
@@ -64,7 +161,7 @@ PROVIDER_PRESET: dict[str, dict[str, Any]] = {
     },
     "claude_cli_warm": {
         "display_name": "Claude CLI",
-        "kind": "Provider",
+        "kind": "cli",
         "supported_efforts": list(KNOWN_PROVIDER_EFFORT_LEVELS),
         "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
         "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
@@ -214,6 +311,75 @@ def _safe_to_int(value: Any) -> int | None:
     return None
 
 
+def _cli_arg_value(args: list[str], *flags: str) -> str | None:
+    flag_set = set(flags)
+    index = 0
+    while index < len(args):
+        token = str(args[index])
+        for flag in flag_set:
+            if token == flag and index + 1 < len(args):
+                return str(args[index + 1])
+            prefix = f"{flag}="
+            if token.startswith(prefix):
+                return token[len(prefix) :]
+        index += 1
+    return None
+
+
+def _cli_arg_present(args: list[str], *flags: str) -> bool:
+    flag_set = set(flags)
+    for token in args:
+        raw = str(token)
+        if raw in flag_set:
+            return True
+        if any(raw.startswith(f"{flag}=") for flag in flag_set):
+            return True
+    return False
+
+
+def _split_cli_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+    items: list[str] = []
+    for item in re.split(r"[,\s]+", value):
+        normalized = item.strip()
+        if normalized:
+            items.append(normalized)
+    return items
+
+
+def _normalize_claude_permission_mode(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "default"
+    aliases = {
+        "accept-edits": "acceptEdits",
+        "acceptedits": "acceptEdits",
+        "dont-ask": "dontAsk",
+        "dontask": "dontAsk",
+        "bypass-permissions": "bypassPermissions",
+        "bypasspermissions": "bypassPermissions",
+    }
+    normalized = aliases.get(raw, aliases.get(raw.lower(), raw))
+    return normalized if normalized in CLAUDE_CLI_PERMISSION_MODES else "unknown"
+
+
+def _normalize_bool_or_unknown(value: str | None) -> bool | str:
+    if value is None:
+        return "unknown"
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return "unknown"
+
+
+def _redacted_command_preview(tokens: list[str]) -> str:
+    rendered = " ".join(shlex.quote(str(token)) for token in tokens if str(token))
+    return redact_secrets(rendered)
+
+
 def _normalize_turn_source(raw_source: Any) -> str:
     source = str(raw_source).strip().lower() if isinstance(raw_source, str) else ""
     if source == "api":
@@ -344,6 +510,59 @@ def _safe_is_executable(path: str | None) -> tuple[str, str | None, bool]:
             return ("ok", str(which_path), True)
 
     return ("missing", expanded, False)
+
+
+def _safe_cli_probe(command: str, args: list[str], *, timeout: float = 2.0) -> tuple[int | None, str, str | None]:
+    status, resolved, exists = _safe_is_executable(command)
+    if status != "ok" or not exists:
+        return None, "", "command missing"
+    try:
+        proc = subprocess.run(
+            [resolved or command, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "", "probe timed out"
+    except OSError as exc:
+        return None, "", redact_secrets(str(exc))
+    output = "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+    return proc.returncode, redact_secrets(output.strip()), None
+
+
+def _safe_probe_cli_version(command: str) -> tuple[str | None, str, str | None]:
+    returncode, output, error = _safe_cli_probe(command, ["--version"])
+    if error:
+        return None, "unknown", error
+    if returncode == 0 and output:
+        return output.splitlines()[0].strip(), "ok", None
+    return None, "unknown", "version probe returned no safe version"
+
+
+def _safe_probe_claude_auth_status(command: str) -> tuple[str, str | None]:
+    returncode, output, error = _safe_cli_probe(command, ["auth", "status"])
+    if error:
+        return "unknown", error
+    normalized = output.lower()
+    if returncode == 0 and any(token in normalized for token in ("logged in", "authenticated", "valid")):
+        return "logged_in", None
+    if any(
+        token in normalized
+        for token in (
+            "not logged in",
+            "not authenticated",
+            "login required",
+            "no active account",
+            "missing",
+            "unauthorized",
+        )
+    ):
+        return "missing", None
+    if returncode != 0:
+        return "unknown", "auth status probe returned a non-zero exit code"
+    return "unknown", "auth status probe output was not recognized"
 
 
 def _safe_probe_supertonic_binary(explicit: str) -> tuple[str, str | None, str | None]:
@@ -748,6 +967,163 @@ def _provider_credentials_projection(*, provider_name: str) -> dict[str, Any]:
     )
 
 
+def _claude_cli_contract(
+    *,
+    app: DaemonApp,
+    adapter_name: str,
+    adapter: Any,
+    current: bool,
+    supported_models: list[str],
+    requested_model: Any,
+    requested_model_status: str,
+    requested_effort: Any,
+    requested_effort_status: str,
+    command_projection: dict[str, Any],
+) -> dict[str, Any]:
+    config = getattr(getattr(app.config, "brain", None), "claude_cli", None)
+    command = str(getattr(adapter, "command", None) or getattr(config, "command", None) or CLAUDE_CLI_COMMAND).strip()
+    args = list(getattr(adapter, "args", None) or getattr(config, "args", None) or ["-p"])
+    raw_stream_args = getattr(adapter, "stream_args", None)
+    if raw_stream_args is None:
+        raw_stream_args = getattr(config, "stream_args", None)
+    stream_args = list(raw_stream_args or CLAUDE_CLI_DEFAULT_STREAM_ARGS)
+    command_found = _support_bool(command_projection) is True
+    command_status = "found" if command_found else "missing"
+    version = None
+    version_status = "unknown"
+    version_warning = None
+    auth_status = "unknown"
+    auth_warning = None
+    if command_found:
+        version, version_status, version_warning = _safe_probe_cli_version(command)
+        auth_status, auth_warning = _safe_probe_claude_auth_status(command)
+
+    configured_model = str(getattr(config, "model", "") or "").strip()
+    args_model = _cli_arg_value(args, "--model")
+    requested_model_text = str(requested_model).strip() if isinstance(requested_model, str) else ""
+    selected_model = None
+    if current and requested_model_status == "ok" and requested_model_text:
+        selected_model = requested_model_text
+    elif args_model:
+        selected_model = args_model.strip()
+    elif configured_model:
+        selected_model = configured_model
+
+    effective_model = selected_model
+    if selected_model:
+        model_source = "jarvis_explicit"
+    elif command_found:
+        model_source = "claude_default"
+    else:
+        model_source = "unknown"
+    allowed_models = list(dict.fromkeys([model for model in [*supported_models, selected_model] if model]))
+
+    args_effort = _cli_arg_value(args, "--effort")
+    requested_effort_text = str(requested_effort).strip() if isinstance(requested_effort, str) else ""
+    selected_effort = None
+    if current and requested_effort_status == "ok" and requested_effort_text:
+        selected_effort = requested_effort_text
+    elif args_effort:
+        selected_effort = args_effort.strip()
+    effort_valid = selected_effort in KNOWN_PROVIDER_EFFORT_LEVELS if selected_effort else False
+    effective_effort = selected_effort if effort_valid else None
+    if effective_effort:
+        effort_source = "jarvis_explicit"
+    elif KNOWN_PROVIDER_EFFORT_LEVELS:
+        effort_source = "model_default"
+    else:
+        effort_source = "unsupported"
+
+    permission_arg = _cli_arg_value(args, "--permission-mode")
+    permission_mode = _normalize_claude_permission_mode(permission_arg)
+    allowed_tools = _split_cli_list(_cli_arg_value(args, "--allowedTools", "--allowed-tools"))
+    disallowed_tools = _split_cli_list(_cli_arg_value(args, "--disallowedTools", "--disallowed-tools"))
+    mcp_config = _cli_arg_value(args, "--mcp-config")
+    if mcp_config:
+        mcp_config_status = "configured" if _safe_path_exists(mcp_config) else "missing"
+    else:
+        mcp_config_status = "missing"
+    strict_mcp_config: bool | str = "unknown"
+    if _cli_arg_present(args, "--strict-mcp-config"):
+        strict_mcp_config = _normalize_bool_or_unknown(
+            _cli_arg_value(args, "--strict-mcp-config") or "true"
+        )
+
+    output_format = _cli_arg_value(stream_args, "--output-format") or _cli_arg_value(args, "--output-format") or "text"
+    if output_format not in CLAUDE_CLI_OUTPUT_FORMATS:
+        output_format = "text"
+    input_format = _cli_arg_value(stream_args, "--input-format") or _cli_arg_value(args, "--input-format") or "text"
+    if input_format not in CLAUDE_CLI_INPUT_FORMATS:
+        input_format = "text"
+    streaming_supported = KNOWN_PROVIDER_SUPPORT_YES if output_format == "stream-json" else KNOWN_PROVIDER_SUPPORT_NO
+    partial_messages_supported = (
+        KNOWN_PROVIDER_SUPPORT_YES if _cli_arg_present(stream_args, "--include-partial-messages") else KNOWN_PROVIDER_SUPPORT_NO
+    )
+
+    apply_semantics = "next_turn"
+    blocker = None
+    if adapter_name == "claude_cli_warm":
+        apply_semantics = "requires_new_session"
+        blocker = "Claude warm CLI keeps a provider process; changes require a new provider session."
+    elif not command_found:
+        apply_semantics = "not_apply_capable"
+        blocker = f"Claude CLI command is missing: {command!r}."
+    elif auth_status == "missing":
+        apply_semantics = "not_apply_capable"
+        blocker = "Claude CLI auth is missing; run claude auth login outside Jarvis."
+
+    preview_tokens = [command, *args]
+    if selected_model and not _cli_arg_present(preview_tokens, "--model"):
+        preview_tokens.extend(["--model", selected_model])
+    if effective_effort and not _cli_arg_present(preview_tokens, "--effort"):
+        preview_tokens.extend(["--effort", effective_effort])
+    if permission_arg and permission_mode != "unknown" and not _cli_arg_present(preview_tokens, "--permission-mode"):
+        preview_tokens.extend(["--permission-mode", permission_mode])
+    if output_format == "stream-json":
+        preview_tokens.extend(stream_args)
+
+    warnings = [
+        warning
+        for warning in (version_warning, auth_warning)
+        if warning
+    ]
+    return {
+        "provider_id": "claude_cli",
+        "label": "Claude CLI",
+        "kind": "cli",
+        "transport": "subprocess",
+        "command": command or CLAUDE_CLI_COMMAND,
+        "command_status": command_status,
+        "auth_status": auth_status,
+        "version": version,
+        "version_status": version_status,
+        "selected_model": selected_model,
+        "effective_model": effective_model,
+        "model_source": model_source,
+        "allowed_models": allowed_models,
+        "selected_effort": selected_effort,
+        "effective_effort": effective_effort,
+        "effort_source": effort_source,
+        "allowed_effort_values": list(KNOWN_PROVIDER_EFFORT_LEVELS),
+        "fast_supported": KNOWN_PROVIDER_SUPPORT_NO,
+        "fast_supported_state": KNOWN_PROVIDER_SUPPORT_NO,
+        "permission_mode": permission_mode,
+        "allowed_tools": allowed_tools,
+        "disallowed_tools": disallowed_tools,
+        "mcp_config_status": mcp_config_status,
+        "strict_mcp_config": strict_mcp_config,
+        "output_format": output_format,
+        "input_format": input_format,
+        "streaming_supported": streaming_supported,
+        "partial_messages_supported": partial_messages_supported,
+        "hook_events_supported": KNOWN_PROVIDER_SUPPORT_UNKNOWN,
+        "apply_semantics": apply_semantics,
+        "command_preview": _redacted_command_preview(preview_tokens),
+        "blocker": blocker,
+        "contract_warnings": warnings,
+    }
+
+
 def _provider_capabilities_for_adapter(
     app: DaemonApp,
     adapter_name: str,
@@ -846,6 +1222,28 @@ def _provider_capabilities_for_adapter(
         adapter=adapter,
     )
     credentials_projection = _provider_credentials_projection(provider_name=adapter_name)
+    claude_cli_contract: dict[str, Any] = {}
+    if adapter_name in CLAUDE_CLI_PROVIDER_IDS:
+        claude_cli_contract = _claude_cli_contract(
+            app=app,
+            adapter_name=adapter_name,
+            adapter=adapter,
+            current=current,
+            supported_models=supported_models,
+            requested_model=requested_model,
+            requested_model_status=requested_model_status,
+            requested_effort=requested_effort,
+            requested_effort_status=requested_effort_status,
+            command_projection=command_projection,
+        )
+        if claude_cli_contract.get("command_status") == "missing":
+            available = False
+            status = "missing"
+            adapter_warning = str(claude_cli_contract.get("blocker") or "Claude CLI command is missing.")
+        elif claude_cli_contract.get("auth_status") == "missing":
+            available = False
+            status = "missing"
+            adapter_warning = str(claude_cli_contract.get("blocker") or "Claude CLI auth is missing.")
 
     return {
         "name": adapter_name,
@@ -943,6 +1341,7 @@ def _provider_capabilities_for_adapter(
             editable_later=False,
             warning=None if latest_error_status == "ok" else "Could not determine latest provider error.",
         ),
+        "claude_cli_contract": claude_cli_contract or None,
         "warning": adapter_warning,
         "status": status,
     }
@@ -994,6 +1393,428 @@ def _resolve_persona_profile(requested: Any) -> tuple[str, str]:
     return normalized, "ok"
 
 
+def _available_persona_profiles() -> list[str]:
+    profiles = [DEFAULT_PERSONA_PROFILE]
+    persona_dir = DEFAULT_PERSONA_PATH.parent
+    try:
+        for path in sorted(persona_dir.glob("*.md")):
+            if path == DEFAULT_PERSONA_PATH:
+                continue
+            profile = path.stem
+            if PERSONA_PROFILE_PATTERN.fullmatch(profile):
+                profiles.append(profile)
+    except Exception:
+        return profiles
+    return list(dict.fromkeys(profiles))
+
+
+def _required_apply_text(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeSettingsApplyError(f"{label} must be a non-empty string.")
+    return value.strip()
+
+
+def _optional_apply_bool(value: Any, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise RuntimeSettingsApplyError(f"{label} must be a boolean.")
+    return value
+
+
+def _optional_apply_float(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeSettingsApplyError(f"{label} must be a number.")
+    return float(value)
+
+
+def _runtime_settings_apply_request(request_payload: Mapping[str, Any]) -> dict[str, Any]:
+    settings = request_payload.get("settings")
+    if not isinstance(settings, Mapping):
+        raise RuntimeSettingsApplyError("Request must include settings JSON object.")
+    unknown = sorted(str(key) for key in settings if str(key) not in RUNTIME_SETTINGS_APPLY_ALLOWED_KEYS)
+    if unknown:
+        raise RuntimeSettingsApplyError(
+            f"Unknown runtime setting: {unknown[0]}",
+            apply_status="blocked",
+            rejected_keys=unknown,
+            blockers=[f"Unknown runtime setting: {key}" for key in unknown],
+        )
+    return {str(key): value for key, value in settings.items()}
+
+
+def _current_capability_payload(app: DaemonApp) -> dict[str, Any]:
+    return get_runtime_settings(app)
+
+
+def _apply_error(message: str, *, status_code: int = 422) -> RuntimeSettingsApplyError:
+    return RuntimeSettingsApplyError(
+        message,
+        status_code=status_code,
+        apply_status="blocked",
+        blockers=[message],
+    )
+
+
+def _provider_apply_blocker(
+    provider: dict[str, Any],
+    *,
+    current_provider_id: str | None,
+    requested_provider_id: str,
+) -> str | None:
+    if provider.get("developer_only") and requested_provider_id != current_provider_id:
+        return f"Provider {requested_provider_id!r} is Developer/Test only; not apply-capable in POC."
+    if not provider.get("available", False):
+        blocker = provider.get("blocker")
+        if blocker:
+            return f"{blocker} Provider {requested_provider_id!r} is not apply-capable in POC."
+        return f"Provider {requested_provider_id!r} is unavailable; not apply-capable in POC."
+    apply_semantics = provider.get("apply_semantics")
+    if apply_semantics and apply_semantics != "next_turn":
+        if apply_semantics == "requires_new_session":
+            return f"Provider {requested_provider_id!r} requires a new provider session; not apply-capable in POC."
+        if apply_semantics == "requires_daemon_restart":
+            return f"Provider {requested_provider_id!r} requires daemon restart; not apply-capable in POC."
+        return f"Provider {requested_provider_id!r} is not apply-capable in POC."
+    if provider.get("auth_status") == "missing":
+        return f"Provider {requested_provider_id!r} auth is missing; not apply-capable in POC."
+    if _support_bool(provider.get("command_status")) is False:
+        return f"Provider {requested_provider_id!r} command is missing; not apply-capable in POC."
+    return None
+
+
+def _brain_provider_for_apply(
+    capability_graph: dict[str, Any],
+    provider_id: Any,
+) -> dict[str, Any]:
+    provider_name = _required_apply_text(provider_id, "brain.provider")
+    provider = _provider_by_id(capability_graph, provider_name)
+    if provider is None:
+        raise _apply_error(
+            f"Provider {provider_name!r} is not present in capability_graph; not apply-capable in POC."
+        )
+    current_provider_id = capability_graph.get("brain_capabilities", {}).get("current_provider")
+    blocker = _provider_apply_blocker(
+        provider,
+        current_provider_id=str(current_provider_id) if current_provider_id else None,
+        requested_provider_id=provider_name,
+    )
+    if blocker:
+        raise _apply_error(blocker)
+    return provider
+
+
+def _apply_brain_settings(
+    app: DaemonApp,
+    settings: dict[str, Any],
+    capability_graph: dict[str, Any],
+) -> list[str]:
+    if not any(key.startswith("brain.") for key in settings):
+        return []
+
+    applied: list[str] = []
+    provider_value = settings.get("brain.provider", settings.get("brain.adapter"))
+    if "brain.provider" in settings and "brain.adapter" in settings and settings["brain.provider"] != settings["brain.adapter"]:
+        raise RuntimeSettingsApplyError("brain.provider and brain.adapter must match when both are supplied.")
+
+    brain_capabilities = capability_graph.get("brain_capabilities", {})
+    target_provider_id = provider_value if provider_value is not None else brain_capabilities.get("current_provider")
+    provider = _brain_provider_for_apply(capability_graph, target_provider_id)
+    provider_id = str(provider["id"])
+    manager = app.brain_manager
+    if manager is None:
+        raise _apply_error("Brain manager is not initialized; provider is not apply-capable in POC.", status_code=409)
+    if provider_id not in set(manager.adapter_names()):
+        raise _apply_error(
+            f"Provider {provider_id!r} is not registered in BrainManager; not apply-capable in POC."
+        )
+
+    settings_updates: dict[str, Any] = {}
+    adapter_model_value: str | None = None
+    if "brain.model" in settings:
+        model = _required_apply_text(settings["brain.model"], "brain.model")
+        allowed_models = [
+            str(model_node.get("id"))
+            for model_node in provider.get("models", [])
+            if model_node.get("id") and model_node.get("available", True)
+        ]
+        if not allowed_models:
+            raise _apply_error(
+                f"Provider {provider_id!r} has no apply-capable model in POC."
+            )
+        if model not in allowed_models:
+            raise _apply_error(
+                f"Model {model!r} is not supported for provider {provider_id!r}."
+            )
+        settings_updates["model"] = model
+        adapter_model_value = model
+
+    if "brain.effort" in settings:
+        effort = _required_apply_text(settings["brain.effort"], "brain.effort")
+        allowed_efforts = [str(value) for value in provider.get("allowed_effort_values") or []]
+        if not allowed_efforts:
+            raise _apply_error(
+                f"Effort is not apply-capable in POC for provider {provider_id!r}."
+            )
+        if effort not in allowed_efforts:
+            raise _apply_error(
+                f"Effort {effort!r} is not supported for provider {provider_id!r}."
+            )
+        settings_updates["effort"] = effort
+
+    if "brain.fast" in settings:
+        fast = _optional_apply_bool(settings["brain.fast"], "brain.fast")
+        if not provider.get("fast_supported"):
+            raise _apply_error(
+                f"Fast is not apply-capable in POC for provider {provider_id!r}."
+            )
+        settings_updates["fast"] = fast
+
+    if provider_value is not None:
+        previous = manager.current_adapter_name
+        try:
+            manager.switch_adapter(provider_id)
+        except BrainManagerError as exc:
+            raise _apply_error(
+                f"Provider {provider_id!r} switch failed: {exc}; not apply-capable in POC.",
+                status_code=409,
+            ) from exc
+        if app.started and previous != provider_id:
+            app._require_event_store().append(
+                EventType.BRAIN_SWITCHED,
+                "api",
+                {"from": previous, "to": provider_id, "persisted": True, "runtime_apply": True},
+            )
+        app.update_settings({BRAIN_ADAPTER_SETTING_KEY: provider_id})
+        applied.append("brain.provider")
+
+    if adapter_model_value is not None:
+        try:
+            adapter = manager.get_adapter(provider_id)
+            if hasattr(adapter, "default_model"):
+                setattr(adapter, "default_model", adapter_model_value)
+        except BrainManagerError as exc:
+            raise _apply_error(
+                f"Provider {provider_id!r} model update failed: {exc}; not apply-capable in POC.",
+                status_code=409,
+            ) from exc
+
+    if settings_updates:
+        app.update_settings(settings_updates)
+        applied.extend(f"brain.{key}" for key in settings_updates)
+
+    return applied
+
+
+def _voice_provider_for_apply(
+    capability_graph: dict[str, Any],
+    provider_id: str,
+    provider_type: str,
+) -> dict[str, Any]:
+    voice_capabilities = capability_graph.get("voice_capabilities", {})
+    providers_key = "stt_providers" if provider_type == "stt" else "tts_providers"
+    providers = voice_capabilities.get(providers_key, [])
+    provider = _voice_provider_by_id(providers if isinstance(providers, list) else [], provider_id)
+    if provider is None:
+        raise _apply_error(
+            f"{provider_type.upper()} provider {provider_id!r} is not present in capability_graph."
+        )
+    if not provider.get("available", False):
+        raise _apply_error(
+            f"{provider_type.upper()} provider {provider_id!r} is unavailable; not apply-capable in POC."
+        )
+    return provider
+
+
+def _validate_supertonic_voice_requirements(
+    app: DaemonApp,
+    settings: dict[str, Any],
+    capability_graph: dict[str, Any],
+    target_tts: str,
+) -> None:
+    if target_tts != "supertonic":
+        return
+
+    tts_provider = _voice_provider_for_apply(capability_graph, target_tts, "tts")
+    voice_id = str(settings.get("voice.voice_id", app.config.voice.supertonic_voice) or "").strip()
+    profile = str(
+        settings.get(
+            "voice.voice_profile",
+            settings.get("voice.profile", app.config.voice.supertonic_lang),
+        )
+        or ""
+    ).strip()
+    if not voice_id:
+        raise _apply_error(
+            "voice.default_tts=supertonic requires voice_id; no Supertonic API call was made."
+        )
+    if not profile:
+        raise _apply_error(
+            "voice.default_tts=supertonic requires voice profile; no Supertonic API call was made."
+        )
+
+    allowed_voice_ids = [str(value) for value in tts_provider.get("voice_ids") or []]
+    if allowed_voice_ids and voice_id not in allowed_voice_ids:
+        raise _apply_error(f"voice.voice_id {voice_id!r} is not supported by TTS provider {target_tts!r}.")
+    allowed_profiles = [str(value) for value in tts_provider.get("voice_profiles") or []]
+    if allowed_profiles and profile not in allowed_profiles:
+        raise _apply_error(f"voice.voice_profile {profile!r} is not supported by TTS provider {target_tts!r}.")
+
+
+def _apply_voice_and_ptt_settings(
+    app: DaemonApp,
+    settings: dict[str, Any],
+    capability_graph: dict[str, Any],
+) -> list[str]:
+    voice_keys = [key for key in settings if key.startswith("voice.")]
+    if not voice_keys:
+        return []
+
+    voice = app.config.voice
+    updates: dict[str, Any] = {}
+
+    target_tts = str(settings.get("voice.default_tts", voice.default_tts) or "").strip()
+    target_stt = str(settings.get("voice.default_stt", voice.default_stt) or "").strip()
+    target_speak = (
+        _optional_apply_bool(settings["voice.speak_responses"], "voice.speak_responses")
+        if "voice.speak_responses" in settings
+        else bool(voice.speak_responses)
+    )
+
+    if "voice.default_tts" in settings:
+        target_tts = _required_apply_text(settings["voice.default_tts"], "voice.default_tts")
+        _voice_provider_for_apply(capability_graph, target_tts, "tts")
+        _validate_supertonic_voice_requirements(app, settings, capability_graph, target_tts)
+
+    if "voice.default_stt" in settings:
+        target_stt = _required_apply_text(settings["voice.default_stt"], "voice.default_stt")
+        _voice_provider_for_apply(capability_graph, target_stt, "stt")
+
+    engine_restart_keys = sorted(key for key in voice_keys if key in VOICE_ENGINE_RESTART_ONLY_KEYS)
+    if engine_restart_keys:
+        raise RuntimeSettingsApplyError(
+            f"{', '.join(engine_restart_keys)}: {VOICE_ENGINE_RELOAD_BLOCKER}",
+            status_code=409,
+            apply_status="requires_restart",
+            rejected_keys=engine_restart_keys,
+            requires_restart_keys=engine_restart_keys,
+        )
+
+    if "voice.broker_enabled" in settings:
+        raise RuntimeSettingsApplyError(
+            "voice.broker_enabled is not apply-capable in POC; voice broker lifecycle rebuild is not wired.",
+            status_code=409,
+            apply_status="blocked",
+            rejected_keys=["voice.broker_enabled"],
+        )
+
+    if "voice.merge_window" in settings:
+        merge_window = _optional_apply_float(settings["voice.merge_window"], "voice.merge_window")
+        if merge_window < 0:
+            raise RuntimeSettingsApplyError("voice.merge_window must be non-negative.")
+        raise RuntimeSettingsApplyError(
+            f"voice.merge_window: {VOICE_GATEWAY_RELOAD_BLOCKER}",
+            status_code=409,
+            apply_status="requires_restart",
+            rejected_keys=["voice.merge_window"],
+            requires_restart_keys=["voice.merge_window"],
+        )
+
+    if target_speak:
+        if not target_tts:
+            raise _apply_error("voice.speak_responses cannot be enabled because TTS provider is missing.")
+        _voice_provider_for_apply(capability_graph, target_tts, "tts")
+        _validate_supertonic_voice_requirements(app, settings, capability_graph, target_tts)
+
+    if "voice.speak_responses" in settings:
+        updates["speak_responses"] = target_speak
+
+    if "voice.ptt_mode" in settings:
+        ptt_mode = _required_apply_text(settings["voice.ptt_mode"], "voice.ptt_mode")
+        if ptt_mode not in CANONICAL_PTT_MODES:
+            raise _apply_error(
+                f"voice.ptt_mode must be one of {', '.join(CANONICAL_PTT_MODES)}."
+            )
+        updates["ptt_mode"] = ptt_mode
+
+    if not updates:
+        return []
+
+    app.config = replace(app.config, voice=replace(voice, **updates))
+    if app.context_builder is not None:
+        try:
+            app.context_builder._config = app.config
+        except Exception:
+            pass
+
+    applied: list[str] = []
+    for key in voice_keys:
+        if key == "voice.broker_enabled":
+            continue
+        if key == "voice.voice_profile":
+            applied.append("voice.voice_profile")
+        elif key == "voice.profile":
+            applied.append("voice.profile")
+        elif key == "voice.rate":
+            applied.append("voice.rate")
+        else:
+            applied.append(key)
+    return applied
+
+
+def _apply_persona_settings(app: DaemonApp, settings: dict[str, Any]) -> list[str]:
+    if "persona.profile" not in settings:
+        return []
+    profile = _required_apply_text(settings["persona.profile"], "persona.profile")
+    _, status = _resolve_persona_profile(profile)
+    if status != "ok":
+        raise _apply_error(f"persona.profile {profile!r} is not apply-capable in this POC.")
+    app.update_settings({PERSONA_PROFILE_SETTING_KEY: profile})
+    return ["persona.profile"]
+
+
+def _apply_tools_internet_settings(
+    app: DaemonApp,
+    settings: dict[str, Any],
+    capability_graph: dict[str, Any],
+) -> list[str]:
+    tool_keys = [key for key in settings if key in TOOLS_INTERNET_APPLY_KEYS]
+    if not tool_keys:
+        return []
+
+    capabilities = capability_graph.get("tools_capabilities", {})
+    apply_capabilities = capabilities.get("apply_capabilities")
+    if not isinstance(apply_capabilities, dict):
+        apply_capabilities = {}
+    network_tools = capabilities.get("registered_network_tools")
+    network_tool_names = network_tools if isinstance(network_tools, list) else []
+    blockers: list[str] = []
+    requires_restart_keys: list[str] = []
+    for key in sorted(tool_keys):
+        if not isinstance(settings[key], bool):
+            raise RuntimeSettingsApplyError(
+                f"{key} must be a boolean.",
+                rejected_keys=[key],
+            )
+        if key in {"tools.network_enabled", "security.network_enabled"} and settings[key] and not network_tool_names:
+            blockers.append("Internet unavailable: no network/search tool registered")
+            continue
+        capability = apply_capabilities.get(key) if isinstance(apply_capabilities.get(key), dict) else {}
+        blocker = capability.get("blocker") or "not apply-capable in POC"
+        if capability.get("requires_restart"):
+            requires_restart_keys.append(key)
+            blockers.append(f"{key}: {blocker}")
+        else:
+            blockers.append(f"{key}: {blocker}")
+
+    raise RuntimeSettingsApplyError(
+        blockers[0],
+        status_code=409,
+        apply_status="requires_restart" if requires_restart_keys else "blocked",
+        rejected_keys=sorted(tool_keys),
+        requires_restart_keys=sorted(requires_restart_keys),
+        blockers=blockers,
+    )
+
+
 def _append_compatibility_warning(target: list[str], message: str) -> None:
     if not message:
         return
@@ -1011,6 +1832,18 @@ def _current_provider_capability(
         if capability.get("current", False):
             return capability
     return None
+
+
+def _tool_spec_supports_network(spec: Mapping[str, Any]) -> bool:
+    risk = str(spec.get("risk") or "").strip().lower()
+    if risk == "network":
+        return True
+    text = f"{spec.get('name') or ''} {spec.get('description') or ''}".lower()
+    return any(token in text for token in ("network", "internet", "web", "search", "http", "url", "fetch", "browser"))
+
+
+def _network_tool_specs(specs: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    return [spec for spec in specs or [] if _tool_spec_supports_network(spec)]
 
 
 def _collect_voice_runtime_compatibility_warnings(
@@ -1034,7 +1867,7 @@ def _collect_voice_runtime_compatibility_warnings(
     )
     stt_package_status, stt_package_name = _safe_probe_stt_package(default_stt)
     stt_model_status, _, stt_model_warning = _safe_probe_model_path(str(app.config.voice.stt_model))
-    network_status, network_tool = _safe_probe_network_capability()
+    registered_network_tools = _network_tool_specs(tools_registered)
 
     if voice_enabled:
         if tts_engine and tts_engine != "mock" and tts_binary_status != "ok":
@@ -1146,11 +1979,10 @@ def _collect_voice_runtime_compatibility_warnings(
                 "Requested persona profile is missing; using fallback profile.",
             )
 
-    if getattr(app.config.security, "require_approval_for_network", False) and network_status == KNOWN_PROVIDER_SUPPORT_NO:
-        tool_hint = network_tool or "curl/wget"
+    if getattr(app.config.security, "require_approval_for_network", False) and not registered_network_tools:
         _append_compatibility_warning(
             warnings,
-            f"Internet policy is active but no network tool is available (missing: {tool_hint}).",
+            "network enabled but no network tool registered",
         )
 
     return warnings
@@ -3046,7 +3878,7 @@ def _voice_layer_projection_endpointing(app: DaemonApp, *, event_snapshot: dict[
     enabled = bool(app.config.voice.enabled)
     gateway_ready = app.voice_gateway is not None
     ptt_mode = str(app.config.voice.ptt_mode or "").strip()
-    ptt_mode_ready = ptt_mode in {"hold", "toggle", "off"}
+    ptt_mode_ready = ptt_mode in CANONICAL_PTT_MODES
     anti_echo_window_status = (
         "ok" if app.config.voice.anti_echo_window_seconds >= 0 else "invalid"
     )
@@ -3503,6 +4335,20 @@ def _voice_projection(
             status="ok",
             editable_later=False,
         ),
+        "speak_responses": _projection(
+            value=app.config.voice.speak_responses,
+            effective_value=app.config.voice.speak_responses,
+            source="config",
+            status="ok",
+            editable_later=True,
+        ),
+        "broker_enabled": _projection(
+            value=app.config.voice.broker_enabled,
+            effective_value=app.config.voice.broker_enabled,
+            source="config",
+            status="ok",
+            editable_later=True,
+        ),
         "default_tts": _projection(
             value=app.config.voice.default_tts,
             effective_value=app.config.voice.default_tts,
@@ -3516,6 +4362,13 @@ def _voice_projection(
             source="config",
             status="ok",
             editable_later=False,
+        ),
+        "ptt_mode": _projection(
+            value=app.config.voice.ptt_mode,
+            effective_value=app.config.voice.ptt_mode,
+            source="config",
+            status="ok" if app.config.voice.ptt_mode in CANONICAL_PTT_MODES else "invalid",
+            editable_later=True,
         ),
         "queue_size": _projection(
             value=queue_size,
@@ -3600,7 +4453,11 @@ def _voice_projection(
     }
 
 
-def _tools_projection(app: DaemonApp) -> dict[str, Any]:
+def _tools_projection(
+    app: DaemonApp,
+    settings: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    settings = settings or {}
     specs = []
     try:
         specs = [
@@ -3617,7 +4474,70 @@ def _tools_projection(app: DaemonApp) -> dict[str, Any]:
         status = "invalid"
         warning = str(exc)
 
+    network_specs = _network_tool_specs(specs)
+    has_network_tool = bool(network_specs)
+    tool_registry_value = "unknown" if status == "invalid" else ("registered" if specs else "missing")
+    configured_enabled, configured_status = _settings_value(settings, "tools.enabled")
+    configured_tools_enabled: bool | None
+    tools_master_source = "settings"
+    tools_master_warning = None
+    if configured_status == "ok":
+        configured_tools_enabled = bool(configured_enabled)
+        tools_master_status = "ok"
+    elif configured_status == "invalid":
+        configured_tools_enabled = None
+        tools_master_status = "invalid"
+        tools_master_warning = "Configured tools.enabled is invalid."
+    else:
+        configured_tools_enabled = bool(specs) if status != "invalid" else None
+        tools_master_source = "runtime_detected" if status != "invalid" else "unknown"
+        tools_master_status = status if status == "invalid" else ("ok" if specs else "unknown")
+    if configured_tools_enabled is None:
+        tools_master_flag = "unknown"
+    else:
+        tools_master_flag = "enabled" if configured_tools_enabled else "disabled"
+    approval_required = []
+    if app.config.security.require_approval_for_shell:
+        approval_required.append("shell")
+    if app.config.security.require_approval_for_file_write:
+        approval_required.append("file_write")
+    if app.config.security.require_approval_for_network:
+        approval_required.append("network")
+    internet_warning = None
+    if status == "invalid":
+        internet_state = "unknown"
+        internet_status = "invalid"
+        internet_warning = warning
+    elif has_network_tool:
+        internet_state = "available"
+        internet_status = "ok"
+    else:
+        internet_state = "unavailable"
+        internet_status = "missing"
+        internet_warning = "Internet unavailable: no network/search tool registered"
+    network_search_tool_status = "ok" if has_network_tool else ("invalid" if status == "invalid" else "missing")
+    network_search_tool_value = "unknown" if status == "invalid" else ("registered" if has_network_tool else "missing")
+    apply_capability_warning = TOOLS_POLICY_RESTART_BLOCKER
+    requires_restart_value = True
+    blocker_value = internet_warning or apply_capability_warning
+
     return {
+        "tools_enabled": _projection(
+            value=bool(specs),
+            effective_value=bool(specs),
+            source="runtime_detected",
+            status=status if specs or status == "invalid" else "missing",
+            editable_later=False,
+            warning=warning,
+        ),
+        "tools_master_flag": _projection(
+            value=tools_master_flag,
+            effective_value=tools_master_flag,
+            source=tools_master_source,
+            status=tools_master_status,
+            editable_later=True,
+            warning=tools_master_warning,
+        ),
         "registered": _projection(
             value=specs,
             effective_value=specs,
@@ -3631,6 +4551,84 @@ def _tools_projection(app: DaemonApp) -> dict[str, Any]:
             effective_value=sorted({spec.get("risk") for spec in specs}),
             source="runtime_detected",
             status=status,
+            editable_later=False,
+            warning=warning,
+        ),
+        "internet_capability": _projection(
+            value={
+                "state": internet_state,
+                "registered_network_tools": [spec["name"] for spec in network_specs],
+            },
+            effective_value={
+                "state": internet_state,
+                "registered_network_tools": [spec["name"] for spec in network_specs],
+            },
+            source="runtime_detected",
+            status=internet_status,
+            editable_later=False,
+            warning=internet_warning,
+        ),
+        "network_search_tool": _projection(
+            value=network_search_tool_value,
+            effective_value=network_search_tool_value,
+            source="runtime_detected" if status != "invalid" else "unknown",
+            status=network_search_tool_status,
+            editable_later=False,
+            warning=None if has_network_tool else "no network/search tool registered",
+        ),
+        "network_policy": _projection(
+            value="approval_required" if app.config.security.require_approval_for_network else "allowed",
+            effective_value="approval_required" if app.config.security.require_approval_for_network else "allowed",
+            source="config",
+            status="ok",
+            editable_later=True,
+            warning=None if has_network_tool else "network enabled but no network tool registered",
+        ),
+        "approval_required_tools": _projection(
+            value=approval_required,
+            effective_value=approval_required,
+            source="config",
+            status="ok" if approval_required else "missing",
+            editable_later=True,
+            warning=None,
+        ),
+        "tool_registry_status": _projection(
+            value=tool_registry_value,
+            effective_value=tool_registry_value,
+            source="runtime_detected",
+            status=status if specs or status == "invalid" else "missing",
+            editable_later=False,
+            warning=warning,
+        ),
+        "apply_capability": _projection(
+            value="no",
+            effective_value="no",
+            source="runtime_detected",
+            status="unsupported",
+            editable_later=True,
+            warning=apply_capability_warning,
+        ),
+        "requires_restart": _projection(
+            value=requires_restart_value,
+            effective_value=requires_restart_value,
+            source="runtime_detected",
+            status="ok",
+            editable_later=True,
+            warning=apply_capability_warning,
+        ),
+        "blocker": _projection(
+            value=blocker_value,
+            effective_value=blocker_value,
+            source="runtime_detected",
+            status="invalid" if blocker_value else "ok",
+            editable_later=False,
+            warning=blocker_value,
+        ),
+        "latest_safe_error": _projection(
+            value=warning,
+            effective_value=warning,
+            source="runtime_detected",
+            status="ok" if warning is None else "invalid",
             editable_later=False,
             warning=warning,
         ),
@@ -3697,9 +4695,9 @@ def _support_bool(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
     normalized = str(value).strip().lower() if value is not None else ""
-    if normalized in {"yes", "true", "supported", "available", "ok", "enabled"}:
+    if normalized in {"yes", "true", "supported", "available", "ok", "enabled", "found", "logged_in"}:
         return True
-    if normalized in {"no", "false", "unsupported", "missing", "disabled"}:
+    if normalized in {"no", "false", "unsupported", "missing", "disabled", "not_found"}:
         return False
     return None
 
@@ -3842,6 +4840,9 @@ def _build_local_capabilities(app: DaemonApp) -> dict[str, Any]:
 
 def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
     provider_id = str(raw.get("name") or raw.get("id") or "").strip()
+    claude_contract = raw.get("claude_cli_contract")
+    if not isinstance(claude_contract, dict):
+        claude_contract = {}
     supported_models = [str(model) for model in raw.get("supported_models", []) if str(model)]
     current_model_projection = raw.get("current_model")
     allowed_efforts = _runtime_projection_value(raw.get("allowed_effort_values")) or []
@@ -3861,12 +4862,14 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
             _projection_warning(raw.get("fast")),
             _projection_warning(raw.get("latest_error")),
             _projection_warning(command),
+            *(claude_contract.get("contract_warnings") or []),
         )
         if warning
     ]
+    blocker = raw.get("warning") or claude_contract.get("blocker")
     if not available and configured:
         status = "missing"
-        warnings.append("Provider is configured but not available from safe runtime probes.")
+        warnings.append(str(blocker or "Provider is configured but not available from safe runtime probes."))
     models = [
         {
             "id": model,
@@ -3892,12 +4895,50 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
         },
         "tools_supported": _support_bool(raw.get("tools_support")) is True,
         "streaming_supported": _support_bool(raw.get("streaming_support")) is True,
-        "command_status": command_value,
+        "streaming_supported_state": claude_contract.get("streaming_supported"),
+        "provider_command_status": command_value,
+        "command_status": claude_contract.get("command_status") or command_value,
         "latest_provider_error": _runtime_projection_value(raw.get("latest_error")),
         "status": status,
         "warnings": list(dict.fromkeys(str(item) for item in warnings if item)),
         "developer_only": provider_id == "mock" or str(raw.get("kind")) == "Developer/Test",
+        "blocker": blocker,
         "raw": raw,
+        **(
+            {
+                key: claude_contract.get(key)
+                for key in (
+                    "provider_id",
+                    "transport",
+                    "command",
+                    "auth_status",
+                    "version",
+                    "version_status",
+                    "selected_model",
+                    "effective_model",
+                    "model_source",
+                    "allowed_models",
+                    "selected_effort",
+                    "effective_effort",
+                    "effort_source",
+                    "fast_supported_state",
+                    "permission_mode",
+                    "allowed_tools",
+                    "disallowed_tools",
+                    "mcp_config_status",
+                    "strict_mcp_config",
+                    "output_format",
+                    "input_format",
+                    "partial_messages_supported",
+                    "hook_events_supported",
+                    "apply_semantics",
+                    "command_preview",
+                )
+                if key in claude_contract
+            }
+            if claude_contract
+            else {}
+        ),
     }
 
 
@@ -4140,7 +5181,7 @@ def _build_voice_capabilities(
             for provider in stt_providers
             for model in provider.get("models", [])
         ],
-        "endpointing_support": app.config.voice.ptt_mode in {"hold", "toggle", "off"},
+        "endpointing_support": app.config.voice.ptt_mode in CANONICAL_PTT_MODES,
         "ptt_support": True,
         "playback_support": playback_status == "ok",
         "playback_binary": playback_binary,
@@ -4151,10 +5192,83 @@ def _build_voice_capabilities(
     }
 
 
+def _build_tools_capabilities(
+    app: DaemonApp,
+    *,
+    tools_projection: dict[str, Any],
+) -> dict[str, Any]:
+    registered = _runtime_projection_value(tools_projection.get("registered")) or []
+    network_tools = _network_tool_specs(registered if isinstance(registered, list) else [])
+    internet_capability = _runtime_projection_value(tools_projection.get("internet_capability")) or {}
+    approval_required = _runtime_projection_value(tools_projection.get("approval_required_tools")) or []
+    live_toggle_blocker = TOOLS_POLICY_RESTART_BLOCKER
+    return {
+        "tools_enabled": bool(registered),
+        "tools_master_flag": _runtime_projection_value(tools_projection.get("tools_master_flag")) or "unknown",
+        "internet_capability": internet_capability,
+        "network_policy": _runtime_projection_value(tools_projection.get("network_policy")),
+        "network_search_tool": _runtime_projection_value(tools_projection.get("network_search_tool")) or "unknown",
+        "registered_network_tools": [spec["name"] for spec in network_tools],
+        "approval_required_tools": approval_required if isinstance(approval_required, list) else [],
+        "tool_registry_status": _runtime_projection_value(tools_projection.get("tool_registry_status")),
+        "apply_capability": _runtime_projection_value(tools_projection.get("apply_capability")) or "no",
+        "requires_restart": bool(_runtime_projection_value(tools_projection.get("requires_restart"))),
+        "blocker": _runtime_projection_value(tools_projection.get("blocker")),
+        "apply_capabilities": {
+            "tools.enabled": {
+                "apply_capable": False,
+                "requires_restart": True,
+                "blocker": "tool registry enable/disable is not apply-capable in POC; requires restart",
+            },
+            "tools.network_enabled": {
+                "apply_capable": False,
+                "requires_restart": True,
+                "blocker": "network capability is registry-backed; no live network tool toggle is wired in POC",
+            },
+            "security.network_enabled": {
+                "apply_capable": False,
+                "requires_restart": True,
+                "blocker": "network security toggle is not backed by a live runtime setting in POC",
+            },
+            "security.require_approval_for_network": {
+                "apply_capable": False,
+                "requires_restart": True,
+                "blocker": live_toggle_blocker,
+            },
+            "security.require_approval_for_shell": {
+                "apply_capable": False,
+                "requires_restart": True,
+                "blocker": live_toggle_blocker,
+            },
+            "security.require_approval_for_file_write": {
+                "apply_capable": False,
+                "requires_restart": True,
+                "blocker": live_toggle_blocker,
+            },
+            "security.destructive_tools_enabled": {
+                "apply_capable": False,
+                "requires_restart": True,
+                "blocker": "destructive tools remain read-only/high-risk in this POC",
+            },
+            "destructive_tools_enabled": {
+                "apply_capable": False,
+                "requires_restart": True,
+                "blocker": "destructive tools remain read-only/high-risk in this POC",
+            },
+            "provider_tools_enabled": {
+                "apply_capable": False,
+                "requires_restart": True,
+                "blocker": "provider tool support is provider capability, not a live toggle in this POC",
+            },
+        },
+    }
+
+
 def _build_capability_graph(
     app: DaemonApp,
     *,
     brain_projection: dict[str, Any],
+    tools_projection: dict[str, Any],
     tts_projection: dict[str, Any],
     stt_projection: dict[str, Any],
     queue_snapshot: dict[str, Any],
@@ -4170,6 +5284,10 @@ def _build_capability_graph(
             tts_projection=tts_projection,
             stt_projection=stt_projection,
             queue_snapshot=queue_snapshot,
+        ),
+        "tools_capabilities": _build_tools_capabilities(
+            app,
+            tools_projection=tools_projection,
         ),
         "local_capabilities": local_capabilities,
     }
@@ -4257,6 +5375,21 @@ def _build_settings_preview(
         "unavailable": "missing",
         "unknown": "unknown",
     }.get(credentials_or_command_status, "unknown")
+    provider_command_status = current_provider.get("command_status")
+    provider_command_ready = _support_bool(provider_command_status)
+    auth_status = str(current_provider.get("auth_status") or "unknown")
+    auth_field_status = "ok" if auth_status == "logged_in" else ("missing" if auth_status == "missing" else "unknown")
+    apply_semantics = str(current_provider.get("apply_semantics") or "not_apply_capable")
+    apply_semantics_status = "ok" if apply_semantics == "next_turn" else (
+        "invalid" if apply_semantics == "not_apply_capable" else "unsupported"
+    )
+    brain_next_turn_apply = apply_semantics == "next_turn"
+    selected_model = current_provider.get("selected_model")
+    effective_model = current_provider.get("effective_model")
+    selected_effort = current_provider.get("selected_effort")
+    effective_effort = current_provider.get("effective_effort")
+    permission_mode = current_provider.get("permission_mode") or "unknown"
+    command_preview = current_provider.get("command_preview")
     brain_fields = {
         "provider": _preview_field(
             section=section,
@@ -4269,11 +5402,28 @@ def _build_settings_preview(
             disabled_values=provider_disabled,
             warning="Developer/Test provider is active." if current_provider.get("developer_only") else None,
             blocker=current_provider.get("blocker") if not current_provider.get("available", True) else None,
-            invalidates=["brain_provider.model", "brain_provider.effort", "brain_provider.fast", "brain_provider.tools_support", "brain_provider.streaming_support", "brain_provider.context_budget", "brain_provider.command_status", "brain_provider.credentials_or_command_status"],
-            requires_reload=True,
-            editable_now=True,
+            invalidates=["brain_provider.model", "brain_provider.effort", "brain_provider.fast", "brain_provider.tools_support", "brain_provider.streaming_support", "brain_provider.context_budget", "brain_provider.command_status", "brain_provider.credentials_or_command_status", "brain_provider.auth_status", "brain_provider.command_preview", "brain_provider.apply_semantics"],
+            requires_reload=not brain_next_turn_apply,
+            editable_now=brain_next_turn_apply,
             editable_later=True,
             developer_only=bool(current_provider.get("developer_only")),
+        ),
+        "provider_id": _preview_field(
+            section=section,
+            field_id="provider_id",
+            label="Provider id",
+            current=current_provider.get("provider_id") or current_provider_id,
+            status="ok" if current_provider_id else "unknown",
+            source="runtime_detected",
+        ),
+        "transport": _preview_field(
+            section=section,
+            field_id="transport",
+            label="Transport",
+            current=current_provider.get("transport") or "unknown",
+            status="ok" if current_provider.get("transport") else "unknown",
+            source="runtime_detected",
+            dependencies=["brain_provider.provider"],
         ),
         "model": _preview_field(
             section=section,
@@ -4287,9 +5437,36 @@ def _build_settings_preview(
             blocker=model_blocker,
             dependencies=["brain_provider.provider"],
             invalidates=["brain_provider.effort", "brain_provider.fast", "brain_provider.context_budget"],
-            requires_reload=True,
-            editable_now=True,
+            requires_reload=not brain_next_turn_apply,
+            editable_now=brain_next_turn_apply,
             editable_later=True,
+        ),
+        "selected_model": _preview_field(
+            section=section,
+            field_id="selected_model",
+            label="Selected model",
+            current=selected_model,
+            status="ok" if selected_model else "missing",
+            source="settings",
+            dependencies=["brain_provider.provider"],
+        ),
+        "effective_model": _preview_field(
+            section=section,
+            field_id="effective_model",
+            label="Effective model",
+            current=effective_model,
+            status="ok" if effective_model else "unknown",
+            source="runtime_detected",
+            dependencies=["brain_provider.provider"],
+        ),
+        "model_source": _preview_field(
+            section=section,
+            field_id="model_source",
+            label="Model source",
+            current=current_provider.get("model_source") or "unknown",
+            status="ok" if current_provider.get("model_source") in {"jarvis_explicit", "claude_default"} else "unknown",
+            source="runtime_detected",
+            dependencies=["brain_provider.provider"],
         ),
         "effort": _preview_field(
             section=section,
@@ -4303,9 +5480,36 @@ def _build_settings_preview(
             blocker="Effort is unsupported by selected provider/model; reset required."
             if effort_status in {"invalid", "unsupported"} else None,
             dependencies=["brain_provider.provider", "brain_provider.model"],
-            requires_reload=True,
-            editable_now=bool(effort_allowed),
+            requires_reload=not brain_next_turn_apply,
+            editable_now=brain_next_turn_apply and bool(effort_allowed),
             editable_later=True,
+        ),
+        "selected_effort": _preview_field(
+            section=section,
+            field_id="selected_effort",
+            label="Selected effort",
+            current=selected_effort,
+            status="ok" if selected_effort in effort_allowed else ("missing" if selected_effort in {None, ""} else "invalid"),
+            source="settings",
+            dependencies=["brain_provider.provider", "brain_provider.model"],
+        ),
+        "effective_effort": _preview_field(
+            section=section,
+            field_id="effective_effort",
+            label="Effective effort",
+            current=effective_effort,
+            status="ok" if effective_effort in effort_allowed else "unknown",
+            source="runtime_detected",
+            dependencies=["brain_provider.provider", "brain_provider.model"],
+        ),
+        "effort_source": _preview_field(
+            section=section,
+            field_id="effort_source",
+            label="Effort source",
+            current=current_provider.get("effort_source") or "unknown",
+            status="ok" if current_provider.get("effort_source") in {"jarvis_explicit", "model_default", "unsupported"} else "unknown",
+            source="runtime_detected",
+            dependencies=["brain_provider.provider", "brain_provider.model"],
         ),
         "fast": _preview_field(
             section=section,
@@ -4319,8 +5523,8 @@ def _build_settings_preview(
             warning=_projection_warning(raw_provider.get("fast")) if raw_provider else None,
             blocker="Fast is unsupported by selected provider/model." if fast_status in {"invalid", "unsupported"} else None,
             dependencies=["brain_provider.provider", "brain_provider.model"],
-            requires_reload=True,
-            editable_now=True,
+            requires_reload=not brain_next_turn_apply,
+            editable_now=brain_next_turn_apply,
             editable_later=True,
         ),
         "context_budget": _preview_field(
@@ -4362,15 +5566,137 @@ def _build_settings_preview(
             status="ok" if current_provider else "unknown",
             dependencies=["brain_provider.provider", "brain_provider.model"],
         ),
+        "auth_status": _preview_field(
+            section=section,
+            field_id="auth_status",
+            label="Auth status",
+            current=auth_status,
+            source="runtime_detected",
+            status=auth_field_status,
+            blocker="Claude CLI auth is missing." if auth_status == "missing" else None,
+            dependencies=["brain_provider.provider"],
+        ),
+        "version": _preview_field(
+            section=section,
+            field_id="version",
+            label="Version",
+            current=current_provider.get("version"),
+            source="runtime_detected",
+            status="ok" if current_provider.get("version") else "unknown",
+            dependencies=["brain_provider.provider"],
+        ),
+        "permission_mode": _preview_field(
+            section=section,
+            field_id="permission_mode",
+            label="Permission mode",
+            current=permission_mode,
+            source="config",
+            status="ok" if permission_mode in CLAUDE_CLI_PERMISSION_MODES else "unknown",
+            allowed_values=list(CLAUDE_CLI_PERMISSION_MODES),
+            dependencies=["brain_provider.provider"],
+        ),
+        "allowed_tools": _preview_field(
+            section=section,
+            field_id="allowed_tools",
+            label="Allowed tools",
+            current=current_provider.get("allowed_tools") or [],
+            source="config",
+            status="ok" if current_provider.get("allowed_tools") else "missing",
+            dependencies=["brain_provider.provider"],
+        ),
+        "disallowed_tools": _preview_field(
+            section=section,
+            field_id="disallowed_tools",
+            label="Disallowed tools",
+            current=current_provider.get("disallowed_tools") or [],
+            source="config",
+            status="ok" if current_provider.get("disallowed_tools") else "missing",
+            dependencies=["brain_provider.provider"],
+        ),
+        "mcp_config_status": _preview_field(
+            section=section,
+            field_id="mcp_config_status",
+            label="MCP config",
+            current=current_provider.get("mcp_config_status") or "unknown",
+            source="config",
+            status="ok" if current_provider.get("mcp_config_status") == "configured" else ("missing" if current_provider.get("mcp_config_status") == "missing" else "unknown"),
+            dependencies=["brain_provider.provider"],
+        ),
+        "strict_mcp_config": _preview_field(
+            section=section,
+            field_id="strict_mcp_config",
+            label="Strict MCP config",
+            current=current_provider.get("strict_mcp_config"),
+            source="config",
+            status="unknown" if current_provider.get("strict_mcp_config") in {None, "unknown"} else "ok",
+            dependencies=["brain_provider.provider"],
+        ),
+        "output_format": _preview_field(
+            section=section,
+            field_id="output_format",
+            label="Output format",
+            current=current_provider.get("output_format") or "unknown",
+            source="config",
+            status="ok" if current_provider.get("output_format") in CLAUDE_CLI_OUTPUT_FORMATS else "unknown",
+            allowed_values=list(CLAUDE_CLI_OUTPUT_FORMATS),
+            dependencies=["brain_provider.provider"],
+        ),
+        "input_format": _preview_field(
+            section=section,
+            field_id="input_format",
+            label="Input format",
+            current=current_provider.get("input_format") or "unknown",
+            source="config",
+            status="ok" if current_provider.get("input_format") in CLAUDE_CLI_INPUT_FORMATS else "unknown",
+            allowed_values=list(CLAUDE_CLI_INPUT_FORMATS),
+            dependencies=["brain_provider.provider"],
+        ),
+        "partial_messages_supported": _preview_field(
+            section=section,
+            field_id="partial_messages_supported",
+            label="Partial messages",
+            current=current_provider.get("partial_messages_supported") or "unknown",
+            source="runtime_detected",
+            status="ok" if _support_bool(current_provider.get("partial_messages_supported")) is not None else "unknown",
+            dependencies=["brain_provider.provider"],
+        ),
+        "hook_events_supported": _preview_field(
+            section=section,
+            field_id="hook_events_supported",
+            label="Hook events",
+            current=current_provider.get("hook_events_supported") or "unknown",
+            source="runtime_detected",
+            status="unknown",
+            dependencies=["brain_provider.provider"],
+        ),
+        "apply_semantics": _preview_field(
+            section=section,
+            field_id="apply_semantics",
+            label="Apply semantics",
+            current=apply_semantics,
+            source="runtime_detected",
+            status=apply_semantics_status,
+            blocker=current_provider.get("blocker") if apply_semantics != "next_turn" else None,
+            dependencies=["brain_provider.provider"],
+        ),
+        "command_preview": _preview_field(
+            section=section,
+            field_id="command_preview",
+            label="Next-turn command preview",
+            current=command_preview,
+            source="runtime_detected",
+            status="ok" if command_preview else "missing",
+            dependencies=["brain_provider.provider", "brain_provider.model", "brain_provider.effort", "brain_provider.permission_mode"],
+        ),
         "command_status": _preview_field(
             section=section,
             field_id="command_status",
             label="Command status",
-            current=current_provider.get("command_status"),
+            current=provider_command_status,
             source="runtime_detected",
-            status="ok" if current_provider.get("command_status") == KNOWN_PROVIDER_SUPPORT_YES else "missing",
+            status="ok" if provider_command_ready is True else ("missing" if provider_command_ready is False else "unknown"),
             blocker="Provider command is missing."
-            if current_provider.get("command_status") == KNOWN_PROVIDER_SUPPORT_NO else None,
+            if provider_command_ready is False else None,
         ),
         "credentials_or_command_status": _preview_field(
             section=section,
@@ -4428,10 +5754,10 @@ def _build_settings_preview(
             source="config",
             allowed_values=[provider["id"] for provider in voice_capabilities["tts_providers"]],
             disabled_values=tts_disabled,
-            blocker=tts_blocker,
+            blocker=tts_blocker or VOICE_ENGINE_RELOAD_BLOCKER,
             invalidates=["voice_tts.tts_model", "voice_tts.voice_id", "voice_tts.speed_or_rate"],
             requires_restart=True,
-            editable_now=True,
+            editable_now=False,
             editable_later=True,
             developer_only=bool((tts_provider or {}).get("developer_only")),
         ),
@@ -4459,7 +5785,7 @@ def _build_settings_preview(
             blocker=voice_id_blocker,
             dependencies=["voice_tts.tts_provider"],
             requires_restart=True,
-            editable_now=bool(voice_id_values),
+            editable_now=False,
             editable_later=True,
         ),
         "voice_profile": _preview_field(
@@ -4471,7 +5797,9 @@ def _build_settings_preview(
             source="config",
             allowed_values=voice_profile_values,
             dependencies=["voice_tts.tts_provider"],
+            blocker=VOICE_ENGINE_RELOAD_BLOCKER if configured_tts == "supertonic" else None,
             requires_restart=True,
+            editable_now=False,
             editable_later=True,
         ),
         "speed_or_rate": _preview_field(
@@ -4483,9 +5811,10 @@ def _build_settings_preview(
             source="config",
             allowed_values=[0.8, 1.0, 1.15, 1.35] if speed_supported else [],
             disabled_values=[] if speed_supported else [_preview_disabled("speed", "Selected TTS provider does not support speed/rate.")],
+            blocker=VOICE_ENGINE_RELOAD_BLOCKER if speed_supported else None,
             dependencies=["voice_tts.tts_provider"],
             requires_restart=True,
-            editable_now=speed_supported,
+            editable_now=False,
             editable_later=True,
         ),
         "style": _preview_field(section=tts_section, field_id="style", label="Style", current=None, status="unsupported", source="unknown"),
@@ -4523,10 +5852,10 @@ def _build_settings_preview(
             source="config",
             allowed_values=[provider["id"] for provider in voice_capabilities["stt_providers"]],
             disabled_values=stt_disabled,
-            blocker=stt_blocker,
+            blocker=stt_blocker or VOICE_ENGINE_RELOAD_BLOCKER,
             invalidates=["voice_stt.stt_model", "voice_stt.endpointing_support"],
             requires_restart=True,
-            editable_now=True,
+            editable_now=False,
             editable_later=True,
             developer_only=bool((stt_provider or {}).get("developer_only")),
         ),
@@ -4551,9 +5880,9 @@ def _build_settings_preview(
 
     endpoint_section = "endpointing_ptt"
     endpoint_fields = {
-        "ptt_mode": _preview_field(section=endpoint_section, field_id="ptt_mode", label="PTT mode", current=app.config.voice.ptt_mode, status="ok" if app.config.voice.ptt_mode in {"hold", "toggle", "off"} else "invalid", source="config", allowed_values=["hold", "toggle", "off"], requires_restart=True, editable_now=True, editable_later=True),
-        "ptt_hotkey": _preview_field(section=endpoint_section, field_id="ptt_hotkey", label="PTT hotkey", current=app.config.voice.ptt_hotkey, status="ok" if app.config.voice.ptt_hotkey else "missing", source="config", warning="PTT hotkey is missing." if app.config.voice.ptt_mode != "off" and not app.config.voice.ptt_hotkey else None, requires_restart=True, editable_later=True),
-        "merge_window": _preview_field(section=endpoint_section, field_id="merge_window", label="Merge window", current=app.config.voice.transcript_turn_retry_seconds, status="ok", source="config", requires_restart=True, editable_later=True),
+        "ptt_mode": _preview_field(section=endpoint_section, field_id="ptt_mode", label="PTT mode", current=app.config.voice.ptt_mode, status="ok" if app.config.voice.ptt_mode in CANONICAL_PTT_MODES else "invalid", source="config", allowed_values=list(CANONICAL_PTT_MODES), editable_now=True, editable_later=True),
+        "ptt_hotkey": _preview_field(section=endpoint_section, field_id="ptt_hotkey", label="PTT hotkey", current=app.config.voice.ptt_hotkey, status="ok" if app.config.voice.ptt_hotkey else "missing", source="config", warning="PTT hotkey is missing." if app.config.voice.ptt_mode in CANONICAL_PTT_MODES and not app.config.voice.ptt_hotkey else None, requires_restart=True, editable_later=True),
+        "merge_window": _preview_field(section=endpoint_section, field_id="merge_window", label="Merge window", current=app.config.voice.transcript_turn_retry_seconds, status="ok", source="config", blocker=VOICE_GATEWAY_RELOAD_BLOCKER, requires_restart=True, editable_now=False, editable_later=True),
         "silence_threshold": _preview_field(section=endpoint_section, field_id="silence_threshold", label="Silence threshold", current=app.config.voice.stt_min_rms, status="ok", source="config", requires_restart=True, editable_later=True),
         "silence_duration": _preview_field(section=endpoint_section, field_id="silence_duration", label="Silence duration", current=app.config.voice.stt_min_voiced_seconds, status="ok", source="config", requires_restart=True, editable_later=True),
         "interrupt_policy": _preview_field(section=endpoint_section, field_id="interrupt_policy", label="Interrupt policy", current="barge-in cancels active speech" if voice_capabilities["cancellation_support"] else "not available", status="ok" if voice_capabilities["cancellation_support"] else "unsupported", source="runtime_detected"),
@@ -4573,27 +5902,72 @@ def _build_settings_preview(
     }
 
     tools_section = "tools_internet"
+    tools_enabled_projection = tools_projection.get("tools_enabled")
     tools_registered = _runtime_projection_value(tools_projection.get("registered")) or []
-    network_status, network_tool = _safe_probe_network_capability()
-    approval_required = []
-    if app.config.security.require_approval_for_shell:
-        approval_required.append("shell")
-    if app.config.security.require_approval_for_file_write:
-        approval_required.append("file_write")
-    if app.config.security.require_approval_for_network:
-        approval_required.append("network")
+    internet_projection = tools_projection.get("internet_capability")
+    internet_value = _runtime_projection_value(internet_projection)
+    internet_status = _projection_status(internet_projection)
+    internet_warning = _projection_warning(internet_projection)
+    network_policy_projection = tools_projection.get("network_policy")
+    approval_required = _runtime_projection_value(tools_projection.get("approval_required_tools")) or []
+    if not isinstance(approval_required, list):
+        approval_required = []
+    tools_apply_capabilities = capability_graph.get("tools_capabilities", {}).get("apply_capabilities", {})
+    tools_enabled_capability = (
+        tools_apply_capabilities.get("tools.enabled")
+        if isinstance(tools_apply_capabilities, dict)
+        else {}
+    )
+    network_policy_capability = (
+        tools_apply_capabilities.get("security.require_approval_for_network")
+        if isinstance(tools_apply_capabilities, dict)
+        else {}
+    )
     tools_fields = {
-        "tools_enabled": _preview_field(section=tools_section, field_id="tools_enabled", label="Tools enabled", current=bool(tools_registered), status="ok" if tools_registered else "missing", source="runtime_detected"),
+        "tools_enabled": _preview_field(
+            section=tools_section,
+            field_id="tools_enabled",
+            label="Tools enabled",
+            current=_runtime_projection_value(tools_enabled_projection),
+            status=_projection_status(tools_enabled_projection),
+            source="runtime_detected",
+            warning=_projection_warning(tools_enabled_projection),
+            blocker=tools_enabled_capability.get("blocker") if isinstance(tools_enabled_capability, dict) else None,
+            requires_restart=True,
+            editable_now=False,
+            editable_later=True,
+        ),
         "tools_support": _preview_field(section=tools_section, field_id="tools_support", label="Provider tools support", current=_support_word(current_provider.get("tools_supported")), status="ok" if current_provider.get("tools_supported") else "unsupported", source="runtime_detected", dependencies=["brain_provider.provider"]),
-        "internet_capability": _preview_field(section=tools_section, field_id="internet_capability", label="Internet capability", current={"status": network_status, "tool": network_tool}, status="ok" if network_status == KNOWN_PROVIDER_SUPPORT_YES else "missing", source="runtime_detected"),
-        "network_policy": _preview_field(section=tools_section, field_id="network_policy", label="Network policy", current=app.config.security.require_approval_for_network, status="ok", source="config"),
+        "internet_capability": _preview_field(
+            section=tools_section,
+            field_id="internet_capability",
+            label="Internet capability",
+            current=internet_value,
+            status=internet_status,
+            source="runtime_detected",
+            warning=internet_warning,
+            blocker=internet_warning if internet_status == "missing" else None,
+        ),
+        "network_policy": _preview_field(
+            section=tools_section,
+            field_id="network_policy",
+            label="Network policy",
+            current=_runtime_projection_value(network_policy_projection),
+            status=_projection_status(network_policy_projection),
+            source="config",
+            warning=_projection_warning(network_policy_projection),
+            blocker=network_policy_capability.get("blocker") if isinstance(network_policy_capability, dict) else None,
+            requires_restart=True,
+            editable_now=False,
+            editable_later=True,
+        ),
         "approval_required_tools": _preview_field(section=tools_section, field_id="approval_required_tools", label="Approval required tools", current=approval_required, status="ok" if approval_required else "missing", source="config"),
-        "latest_tool_error": _preview_field(section=tools_section, field_id="latest_tool_error", label="Latest tool error", current=event_snapshot.get("latest_tool_error"), status="ok" if not event_snapshot.get("latest_tool_error") else "invalid", source="runtime_detected"),
+        "latest_tool_error": _preview_field(section=tools_section, field_id="latest_tool_error", label="Latest tool error", current=event_snapshot.get("latest_tool_error") or _runtime_projection_value(tools_projection.get("latest_safe_error")), status="ok" if not event_snapshot.get("latest_tool_error") and not _runtime_projection_value(tools_projection.get("latest_safe_error")) else "invalid", source="runtime_detected"),
     }
 
     personality_section = "personality"
     personality_fields = {
-        "active_persona": _preview_field(section=personality_section, field_id="active_persona", label="Active persona", current=_runtime_projection_value(brain_projection.get("persona_profile")), status=_projection_status(brain_projection.get("persona_profile")), source="settings", requires_reload=True, editable_later=True),
+        "active_persona": _preview_field(section=personality_section, field_id="active_persona", label="Active persona", current=_runtime_projection_value(brain_projection.get("persona_profile")), status=_projection_status(brain_projection.get("persona_profile")), source="settings", allowed_values=_available_persona_profiles(), requires_reload=True, editable_now=True, editable_later=True),
         "active_style": _preview_field(section=personality_section, field_id="active_style", label="Active style", current=None, status="unknown", source="unknown", editable_later=True),
         "personality_source": _preview_field(section=personality_section, field_id="personality_source", label="Personality source", current="persona.profile setting + default persona file", status="ok", source="runtime_detected"),
         "editable_later": _preview_field(section=personality_section, field_id="editable_later", label="Editable later", current=True, status="ok", source="runtime_detected", editable_later=True),
@@ -4822,7 +6196,7 @@ def _build_structured_compatibility_warnings(
             suggested_action="Start/configure the voice runtime cancellation path before relying on barge-in.",
         )
     ptt_fields = settings_preview["sections"]["endpointing_ptt"]["fields"]
-    if ptt_fields["ptt_mode"]["current"] != "off" and ptt_fields["ptt_hotkey"]["status"] == "missing":
+    if ptt_fields["ptt_mode"]["current"] in CANONICAL_PTT_MODES and ptt_fields["ptt_hotkey"]["status"] == "missing":
         add(
             warning_id="ptt_hotkey_missing",
             severity="warning",
@@ -4851,8 +6225,8 @@ def _build_structured_compatibility_warnings(
             severity="warning",
             group="tools",
             field_ids=["tools_internet.network_policy", "tools_internet.internet_capability"],
-            message="Network policy exists but no internet capability/tool is available.",
-            reason="Network approval policy is present, but safe probe found no network tool.",
+            message="network enabled but no network tool registered",
+            reason="Network approval policy is present, but the Jarvis tool registry has no network/search tool.",
             suggested_action="Install a network tool or remove the network policy from this profile.",
         )
     if tools_fields["approval_required_tools"]["current"] and not hasattr(app, "approval_gate"):
@@ -5032,19 +6406,18 @@ def _runtime_readiness_projection(
         warning=playback_warning,
     )
 
-    network_status, network_tool = _safe_probe_network_capability()
-    if network_status == KNOWN_PROVIDER_SUPPORT_YES:
-        network_value = "enabled"
-        network_projection_status = "ok"
-    elif network_status == KNOWN_PROVIDER_SUPPORT_NO:
-        network_value = "disabled"
-        network_projection_status = "missing"
+    internet_capability = _runtime_projection_value(tools_projection.get("internet_capability")) or {}
+    if isinstance(internet_capability, dict):
+        network_value = internet_capability.get("state", "unknown")
+        network_tools = internet_capability.get("registered_network_tools", [])
     else:
         network_value = "unknown"
-        network_projection_status = "unknown"
+        network_tools = []
+    network_projection_status = _projection_status(tools_projection.get("internet_capability"))
     fields["network_tools_capability"] = _readiness_projection(
-        value={"capability": network_value, "tool": network_tool},
+        value={"capability": network_value, "registered_network_tools": network_tools},
         status=network_projection_status,
+        warning=_projection_warning(tools_projection.get("internet_capability")),
     )
 
     if app.config.voice.enabled and not app.config.voice.broker_enabled:
@@ -5239,13 +6612,80 @@ def _panel_projection(app: DaemonApp) -> dict[str, Any]:
     }
 
 
+def post_runtime_settings_apply(
+    app: DaemonApp,
+    request_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    settings = _runtime_settings_apply_request(request_payload)
+    if not settings:
+        return redact_secrets(
+            _runtime_settings_apply_response(
+                status="unchanged",
+                requested_keys=[],
+                applied_keys=[],
+                warnings=["No runtime settings were submitted."],
+                runtime_settings=get_runtime_settings(app),
+            )
+        )
+
+    runtime_payload = _current_capability_payload(app)
+    capability_graph = runtime_payload.get("capability_graph", {})
+    applied: list[str] = []
+    applied.extend(_apply_tools_internet_settings(app, settings, capability_graph))
+    applied.extend(_apply_brain_settings(app, settings, capability_graph))
+    applied.extend(_apply_voice_and_ptt_settings(app, settings, capability_graph))
+    applied.extend(_apply_persona_settings(app, settings))
+    applied = list(dict.fromkeys(applied))
+
+    requested_keys = sorted(settings)
+    return redact_secrets(
+        _runtime_settings_apply_response(
+            status="applied" if applied else "unchanged",
+            requested_keys=requested_keys,
+            applied_keys=applied,
+            unchanged_keys=sorted(set(requested_keys) - set(applied)),
+            runtime_settings=get_runtime_settings(app),
+        )
+    )
+
+
+def _runtime_settings_apply_response(
+    *,
+    status: str,
+    requested_keys: list[str],
+    applied_keys: list[str],
+    rejected_keys: list[str] | None = None,
+    unchanged_keys: list[str] | None = None,
+    requires_restart_keys: list[str] | None = None,
+    blockers: list[str] | None = None,
+    warnings: list[str] | None = None,
+    runtime_settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    rejected = list(rejected_keys or [])
+    unchanged = list(unchanged_keys or [])
+    restart = list(requires_restart_keys or [])
+    return {
+        "ok": status == "applied" or status == "unchanged",
+        "status": status,
+        "requested_keys": list(requested_keys),
+        "applied": list(applied_keys),
+        "applied_keys": list(applied_keys),
+        "rejected_keys": rejected,
+        "unchanged_keys": unchanged,
+        "requires_restart_keys": restart,
+        "blockers": list(blockers or []),
+        "warnings": list(warnings or []),
+        "runtime_settings": runtime_settings or {},
+    }
+
+
 def get_runtime_settings(app: DaemonApp) -> dict[str, Any]:
     settings = _safe_read_settings(app)
     audio_projection = _audio_projection(app)
     queue_snapshot = _collect_voice_queue_snapshot(app)
     event_snapshot = _collect_voice_events_snapshot(app)
     brain_projection = _brain_projection(app, settings)
-    tools_projection = _tools_projection(app)
+    tools_projection = _tools_projection(app, settings)
     stt_projection = _voice_layer_projection_stt(
         app,
         queue_snapshot=queue_snapshot,
@@ -5270,6 +6710,7 @@ def get_runtime_settings(app: DaemonApp) -> dict[str, Any]:
     capability_graph = _build_capability_graph(
         app,
         brain_projection=brain_projection,
+        tools_projection=tools_projection,
         tts_projection=tts_projection,
         stt_projection=stt_projection,
         queue_snapshot=queue_snapshot,
@@ -5405,9 +6846,11 @@ def register_routes(app: object) -> None:
 __all__ = [
     "LEGACY_GUIDANCE",
     "ROUTE_GROUP",
+    "RuntimeSettingsApplyError",
     "get_runtime_legacy",
     "get_runtime_processes",
     "get_runtime_settings",
     "get_runtime_startup",
+    "post_runtime_settings_apply",
     "register_routes",
 ]

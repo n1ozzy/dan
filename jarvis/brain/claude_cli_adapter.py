@@ -49,6 +49,7 @@ DEFAULT_STREAM_ARGS = (
     "--verbose",
     "--include-partial-messages",
 )
+SUPPORTED_CLAUDE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 
 def format_cli_prompt(request: BrainRequest) -> str:
@@ -247,7 +248,13 @@ def stream_cli_response(
     on_delta: Callable[[str], None],
     generation_registry: Any | None = None,
 ) -> BrainResponse:
-    command = [command_name, *list(args), *list(stream_args)]
+    command = _runtime_command(
+        command_name=command_name,
+        args=args,
+        runtime_args=stream_args,
+        default_model=default_model,
+        request_settings=request.settings,
+    )
     _reject_unsafe_args(command)
     prompt = format_cli_prompt(request)
     try:
@@ -409,7 +416,13 @@ def generate_cli_response(
     runner: CliRunner,
     request: BrainRequest,
 ) -> BrainResponse:
-    command = [command_name, *list(args)]
+    command = _runtime_command(
+        command_name=command_name,
+        args=args,
+        runtime_args=[],
+        default_model=default_model,
+        request_settings=request.settings,
+    )
     _reject_unsafe_args(command)
     prompt = format_cli_prompt(request)
     try:
@@ -451,6 +464,41 @@ def generate_cli_response(
         model=default_model,
         raw_metadata=raw_metadata,
     )
+
+
+def _arg_present(tokens: Sequence[str], flag: str) -> bool:
+    for token in tokens:
+        raw = str(token)
+        if raw == flag or raw.startswith(f"{flag}="):
+            return True
+    return False
+
+
+def _request_effort(settings: Mapping[str, Any]) -> str | None:
+    value = settings.get("effort")
+    if not isinstance(value, str):
+        return None
+    effort = value.strip()
+    return effort if effort in SUPPORTED_CLAUDE_EFFORTS else None
+
+
+def _runtime_command(
+    *,
+    command_name: str,
+    args: Sequence[str],
+    runtime_args: Sequence[str],
+    default_model: str,
+    request_settings: Mapping[str, Any],
+) -> list[str]:
+    command = [command_name, *list(args)]
+    model = str(default_model or "").strip()
+    if model and model != "claude-cli" and not _arg_present(command, "--model"):
+        command.extend(["--model", model])
+    effort = _request_effort(request_settings)
+    if effort and not _arg_present(command, "--effort"):
+        command.extend(["--effort", effort])
+    command.extend(list(runtime_args))
+    return command
 
 
 class ClaudeCliAdapter:
@@ -623,6 +671,13 @@ _ALLOWED_CLI_FLAGS = frozenset(
         "--include-partial-messages",
         "--model",
         "--effort",
+        "--permission-mode",
+        "--allowedTools",
+        "--allowed-tools",
+        "--disallowedTools",
+        "--disallowed-tools",
+        "--mcp-config",
+        "--strict-mcp-config",
     }
 )
 
