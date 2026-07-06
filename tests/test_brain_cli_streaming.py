@@ -235,6 +235,19 @@ def test_streaming_emits_partial_deltas_and_result_stays_canonical() -> None:
         assert flag in command
 
 
+def test_streaming_forces_stream_json_even_when_blocking_output_format_is_text() -> None:
+    process = FakeStreamProcess([result("Odpowiedź.")])
+    adapter, factory = streaming_adapter(process, output_format="text")
+
+    response = adapter.generate(make_request(), on_delta=lambda _: None)
+
+    assert response.text == "Odpowiedź."
+    command = factory.calls[0]["command"]
+    output_index = command.index("--output-format")
+    assert command[output_index + 1] == "stream-json"
+    assert "text" not in command[output_index + 1 :]
+
+
 def test_streaming_without_partial_events_emits_assistant_messages() -> None:
     process = FakeStreamProcess(
         [

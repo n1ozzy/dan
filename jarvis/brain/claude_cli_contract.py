@@ -32,6 +32,7 @@ DEFAULT_STREAM_ARGS = (
     "--verbose",
     "--include-partial-messages",
 )
+INTERNAL_MODEL_SENTINELS = frozenset({"claude-cli"})
 
 _MANAGED_VALUE_FLAGS = frozenset(
     {
@@ -116,8 +117,9 @@ def build_claude_cli_command(
     runtime_effort = runtime_effort if runtime_effort is not None else request_settings.get("effort")
 
     args_model = _cli_arg_value(args, "--model")
-    requested_model = _optional_text(runtime_model)
-    configured_model = _optional_text(settings.model)
+    requested_model = _non_sentinel_model(_optional_text(runtime_model))
+    configured_model = _non_sentinel_model(_optional_text(settings.model))
+    args_model = _non_sentinel_model(args_model)
     selected_model = requested_model or args_model or configured_model
     effective_model = selected_model
     model_source = "jarvis_explicit" if selected_model else "claude_default"
@@ -137,11 +139,11 @@ def build_claude_cli_command(
     permission_raw = _optional_text(settings.permission_mode) or _cli_arg_value(args, "--permission-mode")
     permission_mode = normalize_claude_permission_mode(permission_raw)
     tools = _configured_or_arg_tools(settings.tools, _cli_arg_value(args, "--tools"))
-    allowed_tools = _configured_or_arg_list(
+    allowed_tools = _configured_or_arg_tool_selectors(
         settings.allowed_tools,
         _cli_arg_value(args, "--allowedTools", "--allowed-tools"),
     )
-    disallowed_tools = _configured_or_arg_list(
+    disallowed_tools = _configured_or_arg_tool_selectors(
         settings.disallowed_tools,
         _cli_arg_value(args, "--disallowedTools", "--disallowed-tools"),
     )
@@ -150,13 +152,14 @@ def build_claude_cli_command(
     strict_mcp_config = _strict_mcp_config(settings.strict_mcp_config, args)
 
     args_output_format = _cli_arg_value(args, "--output-format")
-    stream_output_format = _cli_arg_value(stream_args, "--output-format")
-    output_format = normalize_claude_output_format(
-        _optional_text(settings.output_format)
-        or (stream_output_format if streaming else None)
-        or args_output_format
-        or "text"
-    )
+    if streaming:
+        output_format = "stream-json"
+    else:
+        output_format = normalize_claude_output_format(
+            _optional_text(settings.output_format)
+            or args_output_format
+            or "text"
+        )
     args_input_format = _cli_arg_value(args, "--input-format")
     stream_input_format = _cli_arg_value(stream_args, "--input-format")
     input_format = normalize_claude_input_format(
@@ -167,7 +170,7 @@ def build_claude_cli_command(
     )
 
     argv = [command, *_strip_managed_options(args)]
-    _append_value(argv, "--model", selected_model if selected_model != "claude-cli" else None)
+    _append_value(argv, "--model", selected_model)
     _append_value(argv, "--effort", effective_effort)
     _append_value(
         argv,
@@ -180,11 +183,9 @@ def build_claude_cli_command(
     _append_value(argv, "--mcp-config", mcp_config_path)
     if strict_mcp_config is True:
         _append_flag(argv, "--strict-mcp-config")
-    elif strict_mcp_config is False and settings.strict_mcp_config is False:
-        _append_value(argv, "--strict-mcp-config", "false")
 
     output_format_explicit = bool(
-        settings.output_format or args_output_format or (streaming and stream_output_format)
+        streaming or settings.output_format or args_output_format
     )
     input_format_explicit = bool(
         settings.input_format or args_input_format or (streaming and stream_input_format)
@@ -267,6 +268,12 @@ def _optional_text(value: Any) -> str | None:
     return normalized or None
 
 
+def _non_sentinel_model(value: str | None) -> str | None:
+    if value in INTERNAL_MODEL_SENTINELS:
+        return None
+    return value
+
+
 def _cli_arg_value(args: Sequence[str], *flags: str) -> str | None:
     flag_set = set(flags)
     index = 0
@@ -293,11 +300,17 @@ def _cli_arg_present(args: Sequence[str], *flags: str) -> bool:
     return False
 
 
-def _configured_or_arg_list(configured: Sequence[str], arg_value: str | None) -> list[str]:
+def _configured_or_arg_tool_selectors(
+    configured: Sequence[str],
+    arg_value: str | None,
+) -> list[str]:
     values = [str(item).strip() for item in configured if str(item).strip()]
     if values:
         return values
-    return _split_cli_list(arg_value)
+    if arg_value is None:
+        return []
+    normalized = str(arg_value).strip()
+    return [normalized] if normalized else []
 
 
 def _configured_or_arg_tools(configured: Sequence[str], arg_value: str | None) -> list[str]:

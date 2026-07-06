@@ -569,7 +569,7 @@ class ClaudeCliAdapter:
         return ClaudeCliCommandSettings(
             command=self.command,
             args=list(self.args),
-            model=self.default_model,
+            model="" if self.default_model == "claude-cli" else self.default_model,
             effort=self.effort,
             permission_mode=self.permission_mode,
             output_format=self.output_format,

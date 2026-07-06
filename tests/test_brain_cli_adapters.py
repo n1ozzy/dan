@@ -721,6 +721,88 @@ def test_claude_cli_command_builder_preserves_empty_tools_restriction() -> None:
     assert "--tools ''" in contract.command_preview
 
 
+def test_claude_cli_command_builder_preserves_arg_tool_permission_selectors() -> None:
+    contract = build_claude_cli_command(
+        ClaudeCliCommandSettings(
+            command="claude",
+            args=[
+                "-p",
+                "--allowedTools",
+                "Bash(git *) Edit",
+                "--disallowedTools=Read(./secrets/**) mcp__*",
+            ],
+        )
+    )
+
+    assert contract.allowed_tools == ["Bash(git *) Edit"]
+    assert contract.disallowed_tools == ["Read(./secrets/**) mcp__*"]
+    assert contract.argv == [
+        "claude",
+        "-p",
+        "--allowedTools",
+        "Bash(git *) Edit",
+        "--disallowedTools",
+        "Read(./secrets/**) mcp__*",
+    ]
+
+
+def test_claude_cli_command_builder_omits_false_strict_mcp_config() -> None:
+    contract = build_claude_cli_command(
+        ClaudeCliCommandSettings(
+            command="claude",
+            args=["-p"],
+            strict_mcp_config=False,
+        )
+    )
+
+    assert contract.strict_mcp_config is False
+    assert contract.argv == ["claude", "-p"]
+    assert "--strict-mcp-config" not in contract.command_preview
+
+
+def test_claude_cli_command_builder_forces_stream_json_when_streaming() -> None:
+    contract = build_claude_cli_command(
+        ClaudeCliCommandSettings(
+            command="claude",
+            args=["-p"],
+            output_format="text",
+        ),
+        streaming=True,
+    )
+
+    assert contract.output_format == "stream-json"
+    assert contract.streaming_supported == "yes"
+    assert contract.argv == [
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+    ]
+
+
+def test_claude_cli_command_builder_treats_claude_cli_model_as_internal_sentinel() -> None:
+    contract = build_claude_cli_command(
+        ClaudeCliCommandSettings(
+            command="claude",
+            args=["-p"],
+            model="claude-cli",
+        )
+    )
+
+    assert contract.selected_model is None
+    assert contract.effective_model is None
+    assert contract.model_source == "claude_default"
+    assert contract.argv == ["claude", "-p"]
+
+
+def test_claude_adapter_command_settings_omits_internal_model_sentinel() -> None:
+    adapter = ClaudeCliAdapter(command="claude")
+
+    assert adapter.command_settings().model == ""
+
+
 def test_claude_adapter_argv_uses_first_class_contract_fields(tmp_path: Path) -> None:
     runner = FakeRunner(stdout="ok\n")
 
