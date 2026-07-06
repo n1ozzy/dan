@@ -773,6 +773,7 @@ const RUNTIME_OVERVIEW_SECTIONS = [
         dependency: (ctx, value) => adapterDependency(ctx.adapters, value),
       }),
       field("configured model", "settings", (ctx) => configuredSetting(ctx, [
+        "brain.default_model",
         "brain.model",
         "provider.model",
         "model",
@@ -792,6 +793,7 @@ const RUNTIME_OVERVIEW_SECTIONS = [
         "fast_mode",
       ])),
       field("context budget/window", "settings", (ctx) => configuredSetting(ctx, [
+        "brain.context_budget_chars",
         "brain.context_budget",
         "brain.context_window",
         "context.budget",
@@ -833,6 +835,7 @@ const RUNTIME_OVERVIEW_SECTIONS = [
       field("bluetooth mic allowed", "audio", (ctx) => ctx.audio.allow_bluetooth_microphone),
       field("configured TTS", "settings", (ctx) => configuredTts(ctx), {
         readiness: voiceConfiguredReadiness,
+        dependency: configuredRuntimeDependency,
         warnings: voiceConfiguredWarnings("TTS"),
       }),
       field("effective TTS", "events", (ctx) => effectiveTts(ctx), {
@@ -840,6 +843,7 @@ const RUNTIME_OVERVIEW_SECTIONS = [
       }),
       field("configured STT", "settings", (ctx) => configuredStt(ctx), {
         readiness: voiceConfiguredReadiness,
+        dependency: configuredRuntimeDependency,
         warnings: voiceConfiguredWarnings("STT"),
       }),
       field("effective STT", "events", (ctx) => effectiveStt(ctx), {
@@ -847,16 +851,20 @@ const RUNTIME_OVERVIEW_SECTIONS = [
       }),
       field("voice/model/speaker", "settings", (ctx) => configuredVoiceIdentity(ctx), {
         readiness: voiceIdentityReadiness,
+        dependency: configuredRuntimeDependency,
       }),
       field("playback engine", "audio", (ctx) => playbackEngine(ctx)),
       field("recorder/input engine", "audio", (ctx) => recorderEngine(ctx)),
       field("speech speed/rate", "settings", (ctx) => configuredSetting(ctx, [
+        "voice.supertonic_speed",
         "voice.speed",
         "voice.rate",
         "tts.speed",
         "tts.rate",
       ])),
       field("pauses/timing/chunking", "settings", (ctx) => configuredSetting(ctx, [
+        "voice.filler_after_ms",
+        "voice.min_sentence_chars",
         "voice.pause_ms",
         "voice.chunking",
         "tts.pause_ms",
@@ -920,6 +928,8 @@ const RUNTIME_OVERVIEW_SECTIONS = [
         latestEventIssue(ctx.events, ["approval", "tool"]),
       ),
       field("last failure source", "events", (ctx) => runtimeOverviewSourceFailures(ctx.failures)),
+      field("backend data gaps", "contract", (ctx) => backendDataGapsSummary(ctx)),
+      field("warnings summary", "contract", (ctx) => runtimeOverviewWarningsSummary(ctx)),
       field("test/debug status", "events", () => RUNTIME_OVERVIEW_NOT_EXPOSED),
     ],
   },
@@ -1154,6 +1164,7 @@ function effectiveStt(context) {
 
 function configuredVoiceIdentity(context) {
   return configuredSetting(context, [
+    "voice.supertonic_voice",
     "voice.voice_id",
     "voice.voice_model",
     "voice.voice_profile",
@@ -1170,6 +1181,7 @@ function playbackEngine(context) {
     context.audio.playback_engine,
     context.audio.output_engine,
     configuredSetting(context, [
+      "voice.playback_binary",
       "voice.playback_engine",
       "audio.playback_engine",
       "playback.command",
@@ -1183,6 +1195,8 @@ function recorderEngine(context) {
     context.audio.recorder_engine,
     context.audio.input_engine,
     configuredSetting(context, [
+      "voice.recorder",
+      "voice.recorder_binary",
       "voice.recorder_engine",
       "audio.recorder_engine",
       "recorder.command",
@@ -1195,9 +1209,7 @@ function voiceConfiguredReadiness(context, value) {
   if (context.voiceEnabled === true && !firstPresent(value)) {
     return RUNTIME_OVERVIEW_READINESS.MISSING;
   }
-  return firstPresent(value)
-    ? RUNTIME_OVERVIEW_READINESS.OK
-    : RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
 }
 
 function voiceEffectiveReadiness(context, value) {
@@ -1220,9 +1232,71 @@ function voiceIdentityReadiness(context, value) {
   if (needsIdentity && !firstPresent(value)) {
     return RUNTIME_OVERVIEW_READINESS.MISSING;
   }
-  return firstPresent(value)
-    ? RUNTIME_OVERVIEW_READINESS.OK
-    : RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+}
+
+function configuredRuntimeDependency(context, value) {
+  return firstPresent(value) ? "configured only; dependency not probed" : undefined;
+}
+
+function backendDataGapsSummary(context) {
+  const gaps = [];
+  if (!runtimeOverviewSourceAvailable(context, "events")) {
+    gaps.push("latest runtime events unavailable");
+  } else {
+    if (!firstPresent(effectiveTts(context))) {
+      gaps.push("effective_tts not exposed by runtime");
+    }
+    if (!firstPresent(effectiveStt(context))) {
+      gaps.push("effective_stt not exposed by runtime");
+    }
+  }
+  if (!runtimeOverviewSourceAvailable(context, "settings")) {
+    gaps.push("settings unavailable");
+  } else {
+    if (!firstPresent(configuredTts(context))) {
+      gaps.push("configured_tts missing/not exposed");
+    }
+    if (!firstPresent(configuredStt(context))) {
+      gaps.push("configured_stt missing/not exposed");
+    }
+    if (!firstPresent(configuredVoiceIdentity(context))) {
+      gaps.push("voice identity missing/not exposed");
+    }
+  }
+  if (!firstPresent(playbackEngine(context))) {
+    gaps.push("playback engine not exposed");
+  }
+  if (!firstPresent(recorderEngine(context))) {
+    gaps.push("recorder engine not exposed");
+  }
+  return gaps.length > 0 ? gaps.join("; ") : "none";
+}
+
+function runtimeOverviewWarningsSummary(context) {
+  const warnings = [];
+  for (const failure of context.failures) {
+    warnings.push(`source unavailable: ${overviewValue(failure)}`);
+  }
+  if (context.voiceEnabled === true && !firstPresent(configuredTts(context))) {
+    warnings.push("voice enabled but configured TTS missing/not exposed");
+  }
+  if (context.voiceEnabled === true && !firstPresent(configuredStt(context))) {
+    warnings.push("voice enabled but configured STT missing/not exposed");
+  }
+  if (configuredTts(context) && !firstPresent(effectiveTts(context))) {
+    warnings.push("effective TTS not reported by runtime");
+  }
+  if (configuredStt(context) && !firstPresent(effectiveStt(context))) {
+    warnings.push("effective STT not reported by runtime");
+  }
+  if (configuredTts(context) && !firstPresent(configuredVoiceIdentity(context))) {
+    warnings.push("TTS configured but voice identity missing/not exposed");
+  }
+  if (networkToolCandidates(context.tools).length === 0) {
+    warnings.push("no network-capable tool detected");
+  }
+  return warnings.length > 0 ? warnings.join("; ") : "none";
 }
 
 function overviewValue(value) {
@@ -2455,7 +2529,7 @@ async function refreshEvents() {
   clearError(el.eventsError);
 
   try {
-    const payload = await requestJson("/events?after_id=0&limit=50");
+    const payload = await requestJson("/events?latest=true&limit=50");
     const events = Array.isArray(payload.events) ? payload.events : [];
     renderEvents(events);
     const latestId = Number(payload.latest_event_id);

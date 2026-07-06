@@ -253,7 +253,7 @@ def test_runtime_overview_is_read_only_inventory_from_existing_safe_routes() -> 
         "/voice/listening",
         "/voice/queue?limit=12",
         "/tools",
-        "/events?after_id=0&limit=50",
+        "/events?latest=true&limit=50",
     ):
         assert route in script
 
@@ -312,6 +312,8 @@ def test_runtime_overview_pins_real_diagnostic_fields() -> None:
         "speak responses",
         "queue counts",
         "last failure source",
+        "backend data gaps",
+        "warnings summary",
     ):
         assert expected in script
 
