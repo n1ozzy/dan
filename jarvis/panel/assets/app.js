@@ -75,6 +75,7 @@ const RUNTIME_OVERVIEW_FIELD_SOURCES = Object.freeze({
   brain: "Brain adapters",
   audio: "Audio devices",
   voice: "Voice listening",
+  voiceRuntime: "Voice runtime",
   voiceQueue: "Voice queue",
   tools: "Tools registry",
   events: "Events",
@@ -695,6 +696,7 @@ async function refreshRuntimeOverview() {
     ["brain", "/brain/adapters"],
     ["audio", "/audio/devices"],
     ["voice", "/voice/listening"],
+    ["voiceRuntime", "/voice/runtime"],
     ["voiceQueue", "/voice/queue?limit=12"],
     ["tools", "/tools"],
     ["events", "/events?latest=true&limit=50"],
@@ -833,28 +835,54 @@ const RUNTIME_OVERVIEW_SECTIONS = [
         ])),
       ),
       field("bluetooth mic allowed", "audio", (ctx) => ctx.audio.allow_bluetooth_microphone),
-      field("configured TTS", "settings", (ctx) => configuredTts(ctx), {
-        readiness: voiceConfiguredReadiness,
-        dependency: configuredRuntimeDependency,
-        warnings: voiceConfiguredWarnings("TTS"),
+      field("backend projection", "voiceRuntime", (ctx) => voiceRuntimeProjectionSummary(ctx), {
+        readiness: (ctx) => voiceRuntimeOverallReadiness(ctx),
+        dependency: (ctx) => voiceRuntimeCannotProbeSummary(ctx),
+        warnings: (ctx) => voiceRuntimeWarnings(ctx),
       }),
-      field("effective TTS", "events", (ctx) => effectiveTts(ctx), {
-        readiness: voiceEffectiveReadiness,
+      field("configured TTS", "settings", (ctx) => configuredTts(ctx), {
+        readiness: (ctx, value) =>
+          voiceRuntimeGroupReadiness(ctx, "tts_voice_model", voiceConfiguredReadiness(ctx, value)),
+        dependency: (ctx, value) =>
+          voiceRuntimeGroupDependency(ctx, "tts_voice_model", configuredRuntimeDependency(ctx, value)),
+        warnings: (ctx, value) =>
+          voiceRuntimeGroupWarnings(ctx, "tts_voice_model", voiceConfiguredWarnings("TTS")(ctx, value)),
+      }),
+      field("effective TTS", "voiceRuntime", (ctx) => effectiveTts(ctx), {
+        readiness: (ctx, value) =>
+          voiceRuntimeGroupReadiness(ctx, "tts_voice_model", voiceEffectiveReadiness(ctx, value)),
+        dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "tts_voice_model"),
       }),
       field("configured STT", "settings", (ctx) => configuredStt(ctx), {
-        readiness: voiceConfiguredReadiness,
-        dependency: configuredRuntimeDependency,
-        warnings: voiceConfiguredWarnings("STT"),
+        readiness: (ctx, value) =>
+          voiceRuntimeGroupReadiness(ctx, "stt_transcription", voiceConfiguredReadiness(ctx, value)),
+        dependency: (ctx, value) =>
+          voiceRuntimeGroupDependency(ctx, "stt_transcription", configuredRuntimeDependency(ctx, value)),
+        warnings: (ctx, value) =>
+          voiceRuntimeGroupWarnings(ctx, "stt_transcription", voiceConfiguredWarnings("STT")(ctx, value)),
       }),
-      field("effective STT", "events", (ctx) => effectiveStt(ctx), {
-        readiness: voiceEffectiveReadiness,
+      field("effective STT", "voiceRuntime", (ctx) => effectiveStt(ctx), {
+        readiness: (ctx, value) =>
+          voiceRuntimeGroupReadiness(ctx, "stt_transcription", voiceEffectiveReadiness(ctx, value)),
+        dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "stt_transcription"),
       }),
       field("voice/model/speaker", "settings", (ctx) => configuredVoiceIdentity(ctx), {
-        readiness: voiceIdentityReadiness,
-        dependency: configuredRuntimeDependency,
+        readiness: (ctx, value) =>
+          voiceRuntimeGroupReadiness(ctx, "tts_voice_model", voiceIdentityReadiness(ctx, value)),
+        dependency: (ctx, value) =>
+          voiceRuntimeGroupDependency(ctx, "tts_voice_model", configuredRuntimeDependency(ctx, value)),
+        warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "tts_voice_model"),
       }),
-      field("playback engine", "audio", (ctx) => playbackEngine(ctx)),
-      field("recorder/input engine", "audio", (ctx) => recorderEngine(ctx)),
+      field("playback engine", "voiceRuntime", (ctx) => playbackEngine(ctx), {
+        readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "playback"),
+        dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "playback"),
+        warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "playback"),
+      }),
+      field("recorder/input engine", "voiceRuntime", (ctx) => recorderEngine(ctx), {
+        readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "capture_input"),
+        dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "capture_input"),
+        warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "capture_input"),
+      }),
       field("speech speed/rate", "settings", (ctx) => configuredSetting(ctx, [
         "voice.supertonic_speed",
         "voice.speed",
@@ -880,7 +908,12 @@ const RUNTIME_OVERVIEW_SECTIONS = [
         "voice.mute_mic_on_ptt",
         "ptt.mute_mic",
       ])),
-      field("barge-in/cancel policy", "events", (ctx) => latestBargeInSummary(ctx.events)),
+      field("barge-in/cancel policy", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeEffectiveValue(ctx, "queue_barge_in", ["cancellation_reason"]),
+          latestBargeInSummary(ctx.events),
+        ),
+      ),
       field("broker enabled", "settings", (ctx) => configuredSetting(ctx, [
         "voice.broker_enabled",
         "voice_broker.enabled",
@@ -891,7 +924,12 @@ const RUNTIME_OVERVIEW_SECTIONS = [
         "tts.speak_responses",
         "speak_responses",
       ])),
-      field("queue counts", "voiceQueue", (ctx) => voiceQueueCounts(ctx.queueRows)),
+      field("queue counts", "voiceQueue", (ctx) =>
+        firstPresent(
+          voiceRuntimeEffectiveValue(ctx, "queue_barge_in", ["queue_counts"]),
+          voiceQueueCounts(ctx.queueRows),
+        ),
+      ),
       field("voice queue", "voiceQueue", (ctx) => voiceQueueSummary(ctx.queueRows, ctx.voiceQueue)),
     ],
   },
@@ -907,7 +945,13 @@ const RUNTIME_OVERVIEW_SECTIONS = [
         readiness: (ctx) =>
           networkToolCandidates(ctx.tools).length > 0
             ? RUNTIME_OVERVIEW_READINESS.OK
-            : RUNTIME_OVERVIEW_READINESS.MISSING,
+            : networkPolicyRequiresTool(ctx)
+              ? RUNTIME_OVERVIEW_READINESS.MISSING
+              : RUNTIME_OVERVIEW_READINESS.UNKNOWN,
+        warnings: (ctx) =>
+          networkPolicyRequiresTool(ctx) && networkToolCandidates(ctx.tools).length === 0
+            ? ["network/internet policy exists but no network tool exists"]
+            : [],
       }),
       field("missing credentials/config status", "settings", () => RUNTIME_OVERVIEW_NOT_EXPOSED),
     ],
@@ -927,6 +971,7 @@ const RUNTIME_OVERVIEW_SECTIONS = [
       field("latest approval/tool error", "events", (ctx) =>
         latestEventIssue(ctx.events, ["approval", "tool"]),
       ),
+      field("events window", "events", () => "latest 50 events"),
       field("last failure source", "events", (ctx) => runtimeOverviewSourceFailures(ctx.failures)),
       field("backend data gaps", "contract", (ctx) => backendDataGapsSummary(ctx)),
       field("warnings summary", "contract", (ctx) => runtimeOverviewWarningsSummary(ctx)),
@@ -964,6 +1009,7 @@ function runtimeOverviewContext(snapshot) {
   const state = safeObject(snapshot.state);
   const audio = safeObject(snapshot.audio).audio || {};
   const voice = safeObject(snapshot.voice);
+  const voiceRuntime = safeObject(safeObject(snapshot.voiceRuntime).voice_runtime);
   const queueRows = Array.isArray(safeObject(snapshot.voiceQueue).voice_queue)
     ? snapshot.voiceQueue.voice_queue
     : [];
@@ -973,7 +1019,12 @@ function runtimeOverviewContext(snapshot) {
   const activeAdapter = firstPresent(brain.current, state.brain_adapter, health.brain_adapter);
   const failures = Array.isArray(snapshot.failures) ? snapshot.failures : [];
   const sourceStatus = safeObject(snapshot.sourceStatus);
-  const voiceEnabled = firstPresent(voice.voice_enabled, state.voice_enabled, health.voice_enabled);
+  const voiceEnabled = firstPresent(
+    voiceRuntime.voice_enabled,
+    voice.voice_enabled,
+    state.voice_enabled,
+    health.voice_enabled,
+  );
 
   return {
     readOnlyMode: RUNTIME_OVERVIEW_READ_ONLY,
@@ -983,6 +1034,7 @@ function runtimeOverviewContext(snapshot) {
     state,
     audio,
     voice,
+    voiceRuntime,
     voiceQueue: safeObject(snapshot.voiceQueue),
     queueRows,
     tools,
@@ -1094,6 +1146,110 @@ function safeObject(value) {
   return value;
 }
 
+function voiceRuntimeGroups(context) {
+  return safeObject(safeObject(context.voiceRuntime).groups);
+}
+
+function voiceRuntimeGroup(context, key) {
+  return safeObject(voiceRuntimeGroups(context)[key]);
+}
+
+function voiceRuntimeProjectionSummary(context) {
+  const groups = voiceRuntimeGroups(context);
+  const names = Object.keys(groups);
+  if (names.length === 0) {
+    return RUNTIME_OVERVIEW_NOT_EXPOSED;
+  }
+  return `${names.length} backend-owned groups · read-only`;
+}
+
+function voiceRuntimeOverallReadiness(context) {
+  const groups = Object.values(voiceRuntimeGroups(context));
+  if (groups.length === 0) {
+    return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  }
+  return groups
+    .map((group) => normalizeRuntimeReadiness(safeObject(group).readiness))
+    .sort(runtimeReadinessCompare)[0];
+}
+
+function runtimeReadinessCompare(left, right) {
+  return runtimeReadinessRank(left) - runtimeReadinessRank(right);
+}
+
+function runtimeReadinessRank(value) {
+  if (value === RUNTIME_OVERVIEW_READINESS.INVALID) {
+    return 0;
+  }
+  if (value === RUNTIME_OVERVIEW_READINESS.MISSING) {
+    return 1;
+  }
+  if (value === RUNTIME_OVERVIEW_READINESS.UNKNOWN) {
+    return 2;
+  }
+  return 3;
+}
+
+function voiceRuntimeCannotProbeSummary(context) {
+  const cannotProbe = safeObject(context.voiceRuntime).cannot_probe_safely;
+  if (!Array.isArray(cannotProbe) || cannotProbe.length === 0) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return cannotProbe.map(overviewValue).join("; ");
+}
+
+function voiceRuntimeWarnings(context) {
+  const warnings = safeObject(context.voiceRuntime).warnings;
+  return Array.isArray(warnings) ? warnings.map(overviewValue).filter(Boolean) : [];
+}
+
+function voiceRuntimeGroupReadiness(context, groupKey, fallback = RUNTIME_OVERVIEW_READINESS.UNKNOWN) {
+  const readiness = voiceRuntimeGroup(context, groupKey).readiness;
+  return readiness ? normalizeRuntimeReadiness(readiness) : normalizeRuntimeReadiness(fallback);
+}
+
+function voiceRuntimeGroupDependency(context, groupKey, fallback) {
+  return firstPresent(voiceRuntimeGroup(context, groupKey).dependency_status, fallback);
+}
+
+function voiceRuntimeGroupWarnings(context, groupKey, fallback = []) {
+  const groupWarnings = voiceRuntimeGroup(context, groupKey).warnings;
+  const warnings = Array.isArray(fallback) ? [...fallback] : [];
+  if (Array.isArray(groupWarnings)) {
+    warnings.push(...groupWarnings.map(overviewValue));
+  }
+  return [...new Set(warnings.filter(Boolean))];
+}
+
+function voiceRuntimeConfiguredValue(context, groupKey, keys) {
+  return voiceRuntimeValueAt(voiceRuntimeGroup(context, groupKey).configured, keys);
+}
+
+function voiceRuntimeEffectiveValue(context, groupKey, keys) {
+  return voiceRuntimeValueAt(voiceRuntimeGroup(context, groupKey).effective, keys);
+}
+
+function voiceRuntimeValueAt(source, keys) {
+  const object = safeObject(source);
+  for (const key of keys) {
+    const value = valueAtPath(object, key);
+    if (value !== undefined && value !== null && value !== "") {
+      return overviewScalarOrObjectSummary(value);
+    }
+  }
+  return undefined;
+}
+
+function overviewScalarOrObjectSummary(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const entries = Object.entries(value)
+    .filter(([, item]) => item !== undefined && item !== null && item !== "")
+    .map(([key, item]) => `${key}: ${overviewValue(item)}`);
+  return entries.length > 0 ? entries.join(", ") : undefined;
+}
+
 function overviewPersona(settings) {
   if (Object.prototype.hasOwnProperty.call(settings, "persona.profile")) {
     return overviewValue(settings["persona.profile"]);
@@ -1131,53 +1287,74 @@ function valueAtPath(object, path) {
 }
 
 function configuredTts(context) {
-  return configuredSetting(context, [
-    "voice.default_tts",
-    "voice.tts",
-    "voice.tts.engine",
-    "voice.tts_provider",
-    "tts.engine",
-    "tts.provider",
-    "default_tts",
-  ]);
+  return firstPresent(
+    voiceRuntimeConfiguredValue(context, "tts_voice_model", ["default_tts", "tts", "engine"]),
+    configuredSetting(context, [
+      "voice.default_tts",
+      "voice.tts",
+      "voice.tts.engine",
+      "voice.tts_provider",
+      "tts.engine",
+      "tts.provider",
+      "default_tts",
+    ]),
+  );
 }
 
 function configuredStt(context) {
-  return configuredSetting(context, [
-    "voice.default_stt",
-    "voice.stt",
-    "voice.stt.engine",
-    "voice.stt_provider",
-    "stt.engine",
-    "stt.provider",
-    "default_stt",
-  ]);
+  return firstPresent(
+    voiceRuntimeConfiguredValue(context, "stt_transcription", ["default_stt", "stt", "engine"]),
+    configuredSetting(context, [
+      "voice.default_stt",
+      "voice.stt",
+      "voice.stt.engine",
+      "voice.stt_provider",
+      "stt.engine",
+      "stt.provider",
+      "default_stt",
+    ]),
+  );
 }
 
 function effectiveTts(context) {
-  return latestEventPayloadValue(context.events, ["tts_engine", "tts_provider", "default_tts"]);
+  return firstPresent(
+    voiceRuntimeEffectiveValue(context, "tts_voice_model", ["engine", "default_tts", "tts"]),
+    latestEventPayloadValue(context.events, ["tts_engine", "tts_provider", "default_tts"]),
+  );
 }
 
 function effectiveStt(context) {
-  return latestEventPayloadValue(context.events, ["stt_engine", "stt_provider", "default_stt"]);
+  return firstPresent(
+    voiceRuntimeEffectiveValue(context, "stt_transcription", ["engine", "default_stt", "stt"]),
+    latestEventPayloadValue(context.events, ["stt_engine", "stt_provider", "default_stt"]),
+  );
 }
 
 function configuredVoiceIdentity(context) {
-  return configuredSetting(context, [
-    "voice.supertonic_voice",
-    "voice.voice_id",
-    "voice.voice_model",
-    "voice.voice_profile",
-    "voice.model",
-    "voice.profile",
-    "tts.voice_id",
-    "tts.model",
-    "voice_id",
-  ]);
+  return firstPresent(
+    voiceRuntimeConfiguredValue(context, "tts_voice_model", [
+      "voice_id",
+      "voice_model",
+      "voice_profile",
+    ]),
+    configuredSetting(context, [
+      "voice.supertonic_voice",
+      "voice.voice_id",
+      "voice.voice_model",
+      "voice.voice_profile",
+      "voice.model",
+      "voice.profile",
+      "tts.voice_id",
+      "tts.model",
+      "voice_id",
+    ]),
+  );
 }
 
 function playbackEngine(context) {
   return firstPresent(
+    voiceRuntimeConfiguredValue(context, "playback", ["playback_binary", "engine"]),
+    voiceRuntimeEffectiveValue(context, "playback", ["broker", "output_device"]),
     context.audio.playback_engine,
     context.audio.output_engine,
     configuredSetting(context, [
@@ -1192,6 +1369,8 @@ function playbackEngine(context) {
 
 function recorderEngine(context) {
   return firstPresent(
+    voiceRuntimeConfiguredValue(context, "capture_input", ["recorder", "recorder_binary"]),
+    voiceRuntimeEffectiveValue(context, "capture_input", ["recorder", "input_device"]),
     context.audio.recorder_engine,
     context.audio.input_engine,
     configuredSetting(context, [
@@ -1228,8 +1407,7 @@ function voiceConfiguredWarnings(label) {
 }
 
 function voiceIdentityReadiness(context, value) {
-  const needsIdentity = Boolean(configuredTts(context) || effectiveTts(context));
-  if (needsIdentity && !firstPresent(value)) {
+  if (ttsRequiresVoiceIdentity(context) && !firstPresent(value)) {
     return RUNTIME_OVERVIEW_READINESS.MISSING;
   }
   return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
@@ -1239,11 +1417,25 @@ function configuredRuntimeDependency(context, value) {
   return firstPresent(value) ? "configured only; dependency not probed" : undefined;
 }
 
+function ttsRequiresVoiceIdentity(context) {
+  const selected = String(firstPresent(configuredTts(context), effectiveTts(context)) || "").toLowerCase();
+  return selected && selected !== "mock";
+}
+
 function backendDataGapsSummary(context) {
   const gaps = [];
+  const voiceRuntimeAvailable = runtimeOverviewSourceAvailable(context, "voiceRuntime");
+  if (!voiceRuntimeAvailable) {
+    gaps.push("voice_runtime projection unavailable");
+  }
+  if (context.voiceEnabled === false) {
+    return gaps.length > 0
+      ? gaps.join("; ")
+      : "voice runtime not required while voice disabled";
+  }
   if (!runtimeOverviewSourceAvailable(context, "events")) {
     gaps.push("latest runtime events unavailable");
-  } else {
+  } else if (!voiceRuntimeAvailable) {
     if (!firstPresent(effectiveTts(context))) {
       gaps.push("effective_tts not exposed by runtime");
     }
@@ -1260,7 +1452,7 @@ function backendDataGapsSummary(context) {
     if (!firstPresent(configuredStt(context))) {
       gaps.push("configured_stt missing/not exposed");
     }
-    if (!firstPresent(configuredVoiceIdentity(context))) {
+    if (ttsRequiresVoiceIdentity(context) && !firstPresent(configuredVoiceIdentity(context))) {
       gaps.push("voice identity missing/not exposed");
     }
   }
@@ -1276,27 +1468,31 @@ function backendDataGapsSummary(context) {
 function runtimeOverviewWarningsSummary(context) {
   const warnings = [];
   for (const failure of context.failures) {
-    warnings.push(`source unavailable: ${overviewValue(failure)}`);
+    warnings.push(`source: unavailable ${overviewValue(failure)}`);
+  }
+  for (const warning of voiceRuntimeWarnings(context)) {
+    warnings.push(`voice: ${warning}`);
   }
   if (context.voiceEnabled === true && !firstPresent(configuredTts(context))) {
-    warnings.push("voice enabled but configured TTS missing/not exposed");
+    warnings.push("missing: voice enabled but configured TTS missing/not exposed");
   }
   if (context.voiceEnabled === true && !firstPresent(configuredStt(context))) {
-    warnings.push("voice enabled but configured STT missing/not exposed");
+    warnings.push("missing: voice enabled but configured STT missing/not exposed");
   }
-  if (configuredTts(context) && !firstPresent(effectiveTts(context))) {
-    warnings.push("effective TTS not reported by runtime");
+  if (context.voiceEnabled === true && configuredTts(context) && !firstPresent(effectiveTts(context))) {
+    warnings.push("unknown: effective TTS not reported by runtime");
   }
-  if (configuredStt(context) && !firstPresent(effectiveStt(context))) {
-    warnings.push("effective STT not reported by runtime");
+  if (context.voiceEnabled === true && configuredStt(context) && !firstPresent(effectiveStt(context))) {
+    warnings.push("unknown: effective STT not reported by runtime");
   }
-  if (configuredTts(context) && !firstPresent(configuredVoiceIdentity(context))) {
-    warnings.push("TTS configured but voice identity missing/not exposed");
+  if (ttsRequiresVoiceIdentity(context) && !firstPresent(configuredVoiceIdentity(context))) {
+    warnings.push("missing: TTS requires voice identity/model but none is exposed");
   }
-  if (networkToolCandidates(context.tools).length === 0) {
-    warnings.push("no network-capable tool detected");
+  if (networkPolicyRequiresTool(context) && networkToolCandidates(context.tools).length === 0) {
+    warnings.push("compat: network/internet policy exists but no network tool exists");
   }
-  return warnings.length > 0 ? warnings.join("; ") : "none";
+  warnings.push(...runtimeOverviewCompatibilityWarnings(context));
+  return warnings.length > 0 ? [...new Set(warnings)].join("; ") : "none";
 }
 
 function overviewValue(value) {
@@ -1442,6 +1638,72 @@ function toolSupportsNetwork(tool) {
     .map((value) => String(value || "").toLowerCase())
     .join(" ");
   return /\b(network|internet|http|https|url|web|browser|fetch)\b/.test(haystack);
+}
+
+function networkPolicyRequiresTool(context) {
+  const value = configuredSetting(context, [
+    "security.require_approval_for_network",
+    "tools.internet_enabled",
+    "internet.enabled",
+    "network.enabled",
+    "provider.network_enabled",
+  ]);
+  return value === true || ["true", "yes", "on", "1", "required", "enabled"].includes(
+    String(value || "").toLowerCase(),
+  );
+}
+
+function runtimeOverviewCompatibilityWarnings(context) {
+  const warnings = [];
+  const adapter = adapterByName(context.adapters, context.activeAdapter);
+  if (context.activeAdapter && !adapter) {
+    warnings.push(`compat: active adapter ${overviewValue(context.activeAdapter)} is not registered`);
+  }
+
+  const effort = configuredSetting(context, [
+    "brain.effort",
+    "provider.effort",
+    "reasoning.effort",
+    "effort",
+  ]);
+  if (firstPresent(effort) && adapterCapability(adapter, ["supports_effort", "effort_supported"]) === false) {
+    warnings.push("compat: effort configured but active provider declares no effort support");
+  } else if (firstPresent(effort) && adapter && adapterCapability(adapter, ["supports_effort", "effort_supported"]) === undefined) {
+    warnings.push("unknown: effort configured but provider effort capability is not exposed");
+  }
+
+  const fastMode = configuredSetting(context, [
+    "brain.fast_mode",
+    "provider.fast_mode",
+    "fast_mode",
+  ]);
+  if (fastMode === true && adapterCapability(adapter, ["supports_fast_mode", "fast_mode_supported"]) === false) {
+    warnings.push("compat: fast mode enabled but active provider declares no fast-mode support");
+  } else if (fastMode === true && adapter && adapterCapability(adapter, ["supports_fast_mode", "fast_mode_supported"]) === undefined) {
+    warnings.push("unknown: fast mode enabled but provider fast-mode capability is not exposed");
+  }
+
+  if (context.tools.length > 0 && adapterCapability(adapter, ["supports_tools", "tools_supported"]) === false) {
+    warnings.push("compat: tools are registered but active provider declares no tool support");
+  }
+
+  const persona = configuredSetting(context, ["persona.profile"]);
+  if (firstPresent(persona) && !configuredSetting(context, ["persona.effective_profile"])) {
+    warnings.push("unknown: persona profile requested but effective profile/fallback is not exposed");
+  }
+
+  return warnings;
+}
+
+function adapterCapability(adapter, keys) {
+  const source = safeObject(adapter);
+  for (const key of keys) {
+    const value = valueAtPath(source, key);
+    if (value === true || value === false) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function runtimeOverviewSourceFailures(failures) {

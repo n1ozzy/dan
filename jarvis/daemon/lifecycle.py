@@ -61,6 +61,7 @@ from jarvis.api.routes_voice import (
     VoiceDisabledError,
     VoiceRequestValidationError,
     get_voice_queue,
+    get_voice_runtime,
     get_listening,
     post_listen_lock,
     post_listen_unlock,
@@ -129,6 +130,7 @@ TOKEN_PROTECTED_GET_PATHS = {
     "/settings",
     "/runtime/settings",
     "/voice/queue",
+    "/voice/runtime",
 }
 
 
@@ -574,6 +576,10 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         if method == "GET" and path == "/voice/queue":
             limit = _query_int(query, "limit", default=20)
             _write_json(handler, 200, get_voice_queue(app, limit=limit))
+            return
+
+        if method == "GET" and path == "/voice/runtime":
+            _write_json(handler, 200, get_voice_runtime(app))
             return
 
         if method == "POST" and path in {
