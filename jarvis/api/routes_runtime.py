@@ -92,7 +92,9 @@ LOCAL_RUNTIME_PROBES: tuple[dict[str, Any], ...] = (
         "id": "mlx",
         "label": "MLX",
         "kind": "Local",
-        "commands": ("mlx_lm.generate", "mlx_lm", "python"),
+        "commands": ("mlx_lm.generate", "mlx_lm"),
+        "python_modules": ("mlx_lm",),
+        "base_python_modules": ("mlx",),
         "model_env": ("JARVIS_MLX_MODEL", "MLX_MODEL"),
         "planned": True,
     },
@@ -3735,6 +3737,20 @@ def _safe_command_probe(commands: tuple[str, ...] | list[str]) -> tuple[str, str
     return "missing", None, last_candidate
 
 
+def _safe_python_module_probe(modules: tuple[str, ...] | list[str]) -> tuple[str, str | None, str | None]:
+    for module in modules:
+        module_name = str(module or "").strip()
+        if not module_name:
+            continue
+        try:
+            spec = importlib.util.find_spec(module_name)
+        except Exception:
+            spec = None
+        if spec is not None:
+            return "ok", f"python-module:{module_name}", None
+    return "missing", None, None
+
+
 def _safe_model_env_hints(env_names: tuple[str, ...] | list[str]) -> list[dict[str, Any]]:
     models: list[dict[str, Any]] = []
     for env_name in env_names:
@@ -3760,6 +3776,17 @@ def _build_local_capabilities(app: DaemonApp) -> dict[str, Any]:
         runtime_id = str(probe["id"])
         commands = tuple(probe.get("commands", ()))
         command_status, command_name, command_path = _safe_command_probe(commands)
+        base_module_status = "missing"
+        if probe.get("base_python_modules"):
+            base_module_status, _, _ = _safe_python_module_probe(
+                tuple(probe.get("base_python_modules", ()))
+            )
+        if command_status != "ok":
+            module_status, module_name, module_path = _safe_python_module_probe(
+                tuple(probe.get("python_modules", ()))
+            )
+            if module_status == "ok":
+                command_status, command_name, command_path = module_status, module_name, module_path
         models = _safe_model_env_hints(tuple(probe.get("model_env", ())))
         if default_model and runtime_id in default_model.lower() and not models:
             models.append(
@@ -3776,8 +3803,15 @@ def _build_local_capabilities(app: DaemonApp) -> dict[str, Any]:
         status = "ok" if available and (model_ready or runtime_id not in {"ollama", "bielik", "mistral"}) else "missing"
         warning = None
         blocker = None
-        if not available and not models:
-            warning = "Local runtime is not detected from safe command/env probes."
+        if not available:
+            if runtime_id == "mlx" and base_module_status == "ok":
+                warning = "Base MLX package detected but MLX-LM generation package missing."
+                blocker = warning
+            elif models:
+                warning = f"{probe['label']} model configured but {probe['label']} runtime not detected."
+                blocker = warning
+            else:
+                warning = "Local runtime is not detected from safe command/env probes."
         if runtime_id in {"ollama", "bielik", "mistral"} and not models:
             blocker = "Local provider has no safely detected local model."
         runtimes.append(
@@ -4155,6 +4189,17 @@ def _voice_provider_by_id(providers: list[dict[str, Any]], provider_id: Any) -> 
     return None
 
 
+def _credentials_or_command_status_value(provider: dict[str, Any]) -> str:
+    command_status = provider.get("command_status")
+    if _support_bool(command_status) is True:
+        return "ok"
+    if _support_bool(command_status) is False:
+        return "missing"
+    if provider and provider.get("available") is False:
+        return "unavailable"
+    return "unknown"
+
+
 def _build_settings_preview(
     app: DaemonApp,
     *,
@@ -4204,6 +4249,14 @@ def _build_settings_preview(
         fast_disabled.append(_preview_disabled(True, "Selected provider/model does not support fast mode."))
         if fast_value is True:
             fast_status = "unsupported"
+    credentials_or_command_status = _credentials_or_command_status_value(current_provider)
+    credentials_or_command_field_status = {
+        "ok": "ok",
+        "missing": "missing",
+        "invalid": "invalid",
+        "unavailable": "missing",
+        "unknown": "unknown",
+    }.get(credentials_or_command_status, "unknown")
     brain_fields = {
         "provider": _preview_field(
             section=section,
@@ -4216,7 +4269,7 @@ def _build_settings_preview(
             disabled_values=provider_disabled,
             warning="Developer/Test provider is active." if current_provider.get("developer_only") else None,
             blocker=current_provider.get("blocker") if not current_provider.get("available", True) else None,
-            invalidates=["brain_provider.model", "brain_provider.effort", "brain_provider.fast", "brain_provider.tools_support", "brain_provider.streaming_support", "brain_provider.context_budget"],
+            invalidates=["brain_provider.model", "brain_provider.effort", "brain_provider.fast", "brain_provider.tools_support", "brain_provider.streaming_support", "brain_provider.context_budget", "brain_provider.command_status", "brain_provider.credentials_or_command_status"],
             requires_reload=True,
             editable_now=True,
             editable_later=True,
@@ -4318,6 +4371,16 @@ def _build_settings_preview(
             status="ok" if current_provider.get("command_status") == KNOWN_PROVIDER_SUPPORT_YES else "missing",
             blocker="Provider command is missing."
             if current_provider.get("command_status") == KNOWN_PROVIDER_SUPPORT_NO else None,
+        ),
+        "credentials_or_command_status": _preview_field(
+            section=section,
+            field_id="credentials_or_command_status",
+            label="Credentials or command status",
+            current=credentials_or_command_status,
+            source="runtime_detected",
+            status=credentials_or_command_field_status,
+            blocker="Provider command or credential readiness is missing."
+            if credentials_or_command_status in {"missing", "unavailable"} else None,
         ),
         "latest_provider_error": _preview_field(
             section=section,

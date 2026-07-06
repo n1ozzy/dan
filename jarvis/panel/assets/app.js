@@ -956,6 +956,11 @@ function settingsPreviewEvaluateBrain(model) {
   providerField.disabled_values = settingsPreviewBrainProviders(model)
     .map((item) => settingsPreviewDisabledProviderOption(item))
     .filter(Boolean);
+  providerField.invalidates = uniqueNonEmpty([
+    ...(Array.isArray(providerField.invalidates) ? providerField.invalidates : []),
+    "brain_provider.command_status",
+    "brain_provider.credentials_or_command_status",
+  ]);
   providerField.developer_only = Boolean(provider && provider.developer_only);
   if (!provider) {
     providerField.status = "invalid";
@@ -974,6 +979,8 @@ function settingsPreviewEvaluateBrain(model) {
   const toolsField = settingsPreviewFieldById(model, "brain_provider.tools_support");
   const streamingField = settingsPreviewFieldById(model, "brain_provider.streaming_support");
   const contextField = settingsPreviewFieldById(model, "brain_provider.context_budget");
+  const commandField = settingsPreviewFieldById(model, "brain_provider.command_status");
+  const credentialsField = settingsPreviewFieldById(model, "brain_provider.credentials_or_command_status");
 
   const models = settingsPreviewProviderModels(provider);
   if (modelField) {
@@ -1044,6 +1051,77 @@ function settingsPreviewEvaluateBrain(model) {
     contextField.effective = safeObject(provider.context_info).budget_chars || null;
     contextField.status = contextField.effective ? "ok" : "unknown";
   }
+  if (commandField) {
+    const command = settingsPreviewProviderCommandState(provider);
+    commandField.effective = command.value;
+    commandField.status = command.status;
+    commandField.blocker = command.blocker;
+    commandField.dependencies = ["brain_provider.provider"];
+  }
+  if (credentialsField) {
+    const credentials = settingsPreviewProviderCredentialsOrCommandState(provider);
+    credentialsField.effective = credentials.value;
+    credentialsField.status = credentials.status;
+    credentialsField.blocker = credentials.blocker;
+    credentialsField.dependencies = ["brain_provider.provider"];
+  }
+}
+
+function settingsPreviewProviderCommandState(provider) {
+  const support = settingsPreviewSupportState(firstPresent(
+    safeObject(provider).command_status,
+    safeObject(provider).provider_command_status,
+  ));
+  if (support === "yes") {
+    return { value: "yes", status: "ok", blocker: null };
+  }
+  if (support === "no") {
+    return { value: "no", status: "missing", blocker: "Provider command is missing." };
+  }
+  if (provider && provider.available === false) {
+    return { value: "unknown", status: "missing", blocker: "Provider command readiness is unavailable." };
+  }
+  return { value: "unknown", status: "unknown", blocker: null };
+}
+
+function settingsPreviewProviderCredentialsOrCommandState(provider) {
+  const support = settingsPreviewSupportState(firstPresent(
+    safeObject(provider).command_status,
+    safeObject(provider).provider_command_status,
+  ));
+  if (support === "yes") {
+    return { value: "ok", status: "ok", blocker: null };
+  }
+  if (support === "no") {
+    return {
+      value: "missing",
+      status: "missing",
+      blocker: "Provider command or credential readiness is missing.",
+    };
+  }
+  if (provider && provider.available === false) {
+    return {
+      value: "unavailable",
+      status: "missing",
+      blocker: "Provider command or credential readiness is unavailable.",
+    };
+  }
+  return { value: "unknown", status: "unknown", blocker: null };
+}
+
+function settingsPreviewSupportState(value) {
+  const raw = typeof value === "object" && value !== null ? projectionValue(value) : value;
+  if (typeof raw === "boolean") {
+    return raw ? "yes" : "no";
+  }
+  const normalized = String(raw ?? "").trim().toLowerCase();
+  if (["yes", "true", "supported", "available", "ok", "enabled"].includes(normalized)) {
+    return "yes";
+  }
+  if (["no", "false", "unsupported", "missing", "unavailable", "disabled"].includes(normalized)) {
+    return "no";
+  }
+  return "unknown";
 }
 
 function settingsPreviewEvaluateVoiceTts(model) {
@@ -1327,39 +1405,59 @@ function renderSettingsPreviewDiff(model) {
 }
 
 function settingsPreviewDiffRows(model) {
-  const rows = [];
+  const rows = new Map();
   for (const fieldId of Object.keys(safeObject(model.overrides))) {
     const field = settingsPreviewFieldById(model, fieldId);
     if (!field) {
       continue;
     }
     const invalidated = Array.isArray(field.invalidates) ? field.invalidates : [];
-    const warnings = [];
-    const blockers = [];
-    if (field.warning) warnings.push(field.warning);
-    if (field.blocker) blockers.push(field.blocker);
+    rows.set(field.id, settingsPreviewDiffRow(field, invalidated));
     for (const childId of invalidated) {
       const child = settingsPreviewFieldById(model, childId);
       if (!child) {
         continue;
       }
-      if (child.warning) warnings.push(`${childId}: ${child.warning}`);
-      if (child.blocker) blockers.push(`${childId}: ${child.blocker}`);
+      if (
+        child.warning ||
+        child.blocker ||
+        ["invalid", "missing", "unsupported"].includes(child.status) ||
+        child.current !== child.effective
+      ) {
+        rows.set(child.id, settingsPreviewDiffRow(child, child.invalidates || []));
+      }
     }
-    rows.push({
-      field: field.id,
-      oldValue: settingsPreviewValue(field.current),
-      previewValue: settingsPreviewValue(field.effective),
-      invalidatedChildren: invalidated.length > 0 ? invalidated.join(", ") : "none",
-      warningsIntroduced: uniqueNonEmpty(warnings).join("; ") || "none",
-      blockersIntroduced: uniqueNonEmpty(blockers).join("; ") || "none",
-      restartReload: [
-        field.requires_restart ? "restart required" : null,
-        field.requires_reload ? "reload required" : null,
-      ].filter(Boolean).join(", ") || "none",
-    });
   }
-  return rows;
+  return [...rows.values()];
+}
+
+function settingsPreviewDiffRow(field, invalidated) {
+  const invalidatedChildren = Array.isArray(invalidated) ? invalidated : [];
+  const warnings = [];
+  const blockers = [];
+  if (field.warning) warnings.push(field.warning);
+  if (field.blocker) blockers.push(field.blocker);
+  const restartReload = [
+    field.requires_restart ? "restart required" : null,
+    field.requires_reload ? "reload required" : null,
+  ].filter(Boolean).join(", ") || "none";
+  const message = uniqueNonEmpty([...blockers, ...warnings]).join("; ") ||
+    (invalidatedChildren.length > 0 ? "Preview invalidates dependent settings." : "Preview value changed.");
+  const current = settingsPreviewValue(field.current);
+  const preview = settingsPreviewValue(field.effective);
+  return {
+    field: field.id,
+    fieldId: field.id,
+    oldValue: current,
+    current,
+    previewValue: preview,
+    preview,
+    invalidatedChildren: invalidatedChildren.length > 0 ? invalidatedChildren.join(", ") : "none",
+    warningsIntroduced: uniqueNonEmpty(warnings).join("; ") || "none",
+    blockersIntroduced: uniqueNonEmpty(blockers).join("; ") || "none",
+    restartReload,
+    message,
+  };
 }
 
 function renderSettingsPreviewField(field, model) {

@@ -2281,6 +2281,7 @@ def test_get_runtime_settings_includes_settings_preview_payload_and_capability_g
             "tools_support",
             "streaming_support",
             "command_status",
+            "credentials_or_command_status",
             "latest_provider_error",
         ),
         "voice_tts": (
@@ -2386,6 +2387,15 @@ def test_get_runtime_settings_includes_settings_preview_payload_and_capability_g
     assert {"ollama", "mlx", "llama_cpp_metal", "bielik", "mistral"}.issubset(
         {runtime["id"] for runtime in local_capabilities["runtimes"]}
     )
+    credentials_or_command_status = _settings_preview_field(
+        payload,
+        "brain_provider",
+        "credentials_or_command_status",
+    )
+    expected_status_values = {"ok", "missing", "invalid", "unknown", "unavailable"}
+    assert credentials_or_command_status["current"] in expected_status_values
+    assert credentials_or_command_status["effective"] in expected_status_values
+    assert credentials_or_command_status["status"] in {"ok", "missing", "invalid", "unsupported", "unknown"}
 
 
 def test_runtime_settings_structured_warnings_cover_invalid_preview_fixtures(
@@ -2481,6 +2491,114 @@ def test_runtime_settings_preview_redacts_secret_shaped_values(
     encoded = json.dumps(payload, sort_keys=True)
     assert raw_secret not in encoded
     assert "[REDACTED]" in encoded
+
+
+def test_runtime_settings_mlx_model_env_without_mlx_runtime_is_not_available(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jarvis.api import routes_runtime
+
+    monkeypatch.setenv("JARVIS_MLX_MODEL", "mlx-community/test-model")
+
+    def fake_executable_probe(path: str | None) -> tuple[str, str | None, bool]:
+        if path == "python":
+            return "ok", "/usr/bin/python", True
+        return "missing", str(path), False
+
+    monkeypatch.setattr(routes_runtime, "_safe_is_executable", fake_executable_probe)
+    monkeypatch.setattr(routes_runtime.importlib.util, "find_spec", lambda name: None)
+    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    mlx = next(
+        runtime
+        for runtime in payload["capability_graph"]["local_capabilities"]["runtimes"]
+        if runtime["id"] == "mlx"
+    )
+    assert mlx["available"] is False
+    assert mlx["status"] == "missing"
+    assert "runtime not detected" in (mlx["warning"] or "").lower()
+    assert mlx["blocker"]
+
+
+def test_runtime_settings_base_mlx_without_mlx_lm_is_not_llm_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jarvis.api import routes_runtime
+
+    monkeypatch.setenv("JARVIS_MLX_MODEL", "mlx-community/test-model")
+    monkeypatch.setattr(
+        routes_runtime,
+        "_safe_is_executable",
+        lambda path: ("missing", str(path), False),
+    )
+    monkeypatch.setattr(
+        routes_runtime.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "mlx" else None,
+    )
+    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    mlx = next(
+        runtime
+        for runtime in payload["capability_graph"]["local_capabilities"]["runtimes"]
+        if runtime["id"] == "mlx"
+    )
+    assert mlx["available"] is False
+    assert mlx["status"] in {"missing", "invalid", "partial"}
+    assert "mlx-lm" in (mlx["warning"] or "").lower()
+    assert mlx["blocker"]
+
+
+def test_runtime_settings_mlx_runtime_can_be_detected_by_safe_import_spec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jarvis.api import routes_runtime
+
+    monkeypatch.setenv("JARVIS_MLX_MODEL", "mlx-community/test-model")
+    monkeypatch.setattr(
+        routes_runtime,
+        "_safe_is_executable",
+        lambda path: ("missing", str(path), False),
+    )
+    monkeypatch.setattr(
+        routes_runtime.importlib.util,
+        "find_spec",
+        lambda name: object() if name in {"mlx", "mlx_lm"} else None,
+    )
+    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    mlx = next(
+        runtime
+        for runtime in payload["capability_graph"]["local_capabilities"]["runtimes"]
+        if runtime["id"] == "mlx"
+    )
+    assert mlx["available"] is True
+    assert mlx["status"] == "ok"
+    assert mlx["command"] == "python-module:mlx_lm"
 
 
 def test_runtime_readiness_warns_for_voice_config_blockers(tmp_path: Path) -> None:

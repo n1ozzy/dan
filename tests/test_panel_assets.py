@@ -814,6 +814,8 @@ def test_settings_preview_local_model_catches_invalid_provider_voice_combos(
                       fast: previewField("brain_provider.fast", true, {{
                         allowed_values: [true, false],
                       }}),
+                      command_status: previewField("brain_provider.command_status", "ok"),
+                      credentials_or_command_status: previewField("brain_provider.credentials_or_command_status", "ok"),
                       tools_support: previewField("brain_provider.tools_support", "yes"),
                       streaming_support: previewField("brain_provider.streaming_support", "yes"),
                     }},
@@ -867,6 +869,7 @@ def test_settings_preview_local_model_catches_invalid_provider_voice_combos(
                       fast_supported: true,
                       tools_supported: true,
                       streaming_supported: true,
+                      command_status: "ok",
                     }},
                     {{
                       id: "codex_cli",
@@ -881,6 +884,7 @@ def test_settings_preview_local_model_catches_invalid_provider_voice_combos(
                       fast_supported: false,
                       tools_supported: true,
                       streaming_supported: false,
+                      command_status: "ok",
                     }},
                     {{
                       id: "ollama",
@@ -895,6 +899,7 @@ def test_settings_preview_local_model_catches_invalid_provider_voice_combos(
                       fast_supported: false,
                       tools_supported: false,
                       streaming_supported: false,
+                      command_status: "missing",
                       blocker: "Local runtime/model missing.",
                     }},
                     {{
@@ -910,6 +915,7 @@ def test_settings_preview_local_model_catches_invalid_provider_voice_combos(
                       fast_supported: false,
                       tools_supported: false,
                       streaming_supported: false,
+                      command_status: "ok",
                     }},
                   ],
                 }},
@@ -938,6 +944,20 @@ def test_settings_preview_local_model_catches_invalid_provider_voice_combos(
               "brain_provider.provider",
               "codex_cli",
             );
+            const diffRows = context.settingsPreviewDiffRows(codexPreview);
+            assert.ok(diffRows.some((row) =>
+              row.fieldId === "brain_provider.provider" &&
+              row.current === "claude_cli" &&
+              row.preview === "codex_cli"
+            ));
+            assert.ok(diffRows.some((row) =>
+              row.fieldId === "brain_provider.effort" &&
+              /reset required/i.test(row.message)
+            ));
+            assert.ok(diffRows.some((row) =>
+              row.fieldId === "brain_provider.fast" &&
+              /does not support fast/i.test(row.message)
+            ));
             assert.strictEqual(codexPreview.sections.brain_provider.fields.effort.status, "invalid");
             assert.match(codexPreview.sections.brain_provider.fields.effort.blocker, /reset required/i);
             assert.strictEqual(codexPreview.sections.brain_provider.fields.fast.status, "unsupported");
@@ -954,6 +974,18 @@ def test_settings_preview_local_model_catches_invalid_provider_voice_combos(
             );
             assert.strictEqual(localPreview.sections.brain_provider.fields.model.status, "missing");
             assert.match(localPreview.sections.brain_provider.fields.model.blocker, /local.*model/i);
+            assert.notStrictEqual(
+              localPreview.sections.brain_provider.fields.credentials_or_command_status.effective,
+              "ok",
+            );
+            assert.strictEqual(
+              localPreview.sections.brain_provider.fields.credentials_or_command_status.effective,
+              "missing",
+            );
+            assert.strictEqual(
+              localPreview.sections.brain_provider.fields.credentials_or_command_status.status,
+              "missing",
+            );
 
             const mockPreview = context.settingsPreviewApplyOverride(
               model,
