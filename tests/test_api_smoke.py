@@ -2340,6 +2340,7 @@ def test_get_runtime_settings_includes_settings_preview_payload_and_capability_g
             "auth_status",
             "version",
             "permission_mode",
+            "tools",
             "allowed_tools",
             "disallowed_tools",
             "mcp_config_status",
@@ -3686,6 +3687,8 @@ def test_runtime_settings_claude_cli_contract_command_preview_and_probes(
 ) -> None:
     _install_fake_claude_cli(tmp_path, monkeypatch)
     secret = "sk-command-preview-secret"
+    mcp_config = tmp_path / "claude-mcp.json"
+    mcp_config.write_text("{}", encoding="utf-8")
     config_path = write_config(
         tmp_path / "jarvis.toml",
         tmp_path / "home" / "jarvis.db",
@@ -3694,8 +3697,16 @@ def test_runtime_settings_claude_cli_contract_command_preview_and_probes(
             "\n[brain.claude_cli]\n"
             "enabled = true\n"
             'command = "claude"\n'
-            f'args = ["-p", "--permission-mode", "acceptEdits", "--allowedTools", "file_read,shell_read", "--disallowedTools", "{secret}"]\n'
+            'args = ["-p"]\n'
             'model = "claude-configured"\n'
+            'permission_mode = "acceptEdits"\n'
+            'output_format = "stream-json"\n'
+            'input_format = "text"\n'
+            'tools = ["Bash", "Edit", "Read"]\n'
+            'allowed_tools = ["file_read", "shell_read"]\n'
+            f'disallowed_tools = ["{secret}"]\n'
+            f'mcp_config_path = "{mcp_config}"\n'
+            "strict_mcp_config = true\n"
         ),
     )
     daemon_app = create_daemon_app(config_path)
@@ -3728,8 +3739,12 @@ def test_runtime_settings_claude_cli_contract_command_preview_and_probes(
     assert provider["effective_effort"] == "xhigh"
     assert provider["effort_source"] == "jarvis_explicit"
     assert provider["permission_mode"] == "acceptEdits"
+    assert provider["tools"] == ["Bash", "Edit", "Read"]
     assert provider["allowed_tools"] == ["file_read", "shell_read"]
-    assert provider["mcp_config_status"] == "missing"
+    assert provider["disallowed_tools"] == ["[REDACTED]"]
+    assert provider["mcp_config_path"] == str(mcp_config)
+    assert provider["mcp_config_status"] == "configured"
+    assert provider["strict_mcp_config"] is True
     assert provider["output_format"] == "stream-json"
     assert provider["input_format"] == "text"
     assert provider["streaming_supported_state"] == "yes"
@@ -3740,7 +3755,13 @@ def test_runtime_settings_claude_cli_contract_command_preview_and_probes(
     assert "--model claude-sonnet-4" in preview
     assert "--effort xhigh" in preview
     assert "--permission-mode acceptEdits" in preview
+    assert "--tools Bash,Edit,Read" in preview
+    assert "--allowedTools file_read,shell_read" in preview
+    assert "--disallowedTools [REDACTED]" in preview
+    assert f"--mcp-config {mcp_config}" in preview
+    assert "--strict-mcp-config" in preview
     assert "--output-format stream-json" in preview
+    assert "--input-format text" in preview
     encoded = json.dumps(payload, sort_keys=True)
     assert secret not in encoded
     assert "[REDACTED]" in encoded
@@ -3780,6 +3801,115 @@ def test_runtime_settings_claude_cli_missing_auth_is_redacted_and_blocks_apply(
     assert provider["apply_semantics"] == "not_apply_capable"
     encoded = json.dumps(payload, sort_keys=True)
     assert "sk-auth-secret" not in encoded
+
+
+def test_runtime_settings_claude_cli_unknown_auth_blocks_next_turn_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_claude_cli(
+        tmp_path,
+        monkeypatch,
+        auth_output="Claude account state cannot be determined",
+        auth_returncode=0,
+    )
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="claude_cli",
+        extra_toml='\n[brain.claude_cli]\nenabled = true\ncommand = "claude"\nmodel = "claude-sonnet"\n',
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        daemon_app.close()
+
+    assert status == 200
+    provider = next(
+        item
+        for item in payload["capability_graph"]["brain_capabilities"]["providers"]
+        if item["id"] == "claude_cli"
+    )
+    assert provider["auth_status"] == "unknown"
+    assert provider["apply_semantics"] == "not_apply_capable"
+    assert provider["apply_capable"] is False
+    assert "auth status is unknown" in provider["apply_semantics_reason"]
+
+
+def test_runtime_settings_claude_cli_auto_permission_mode_blocks_next_turn_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_claude_cli(tmp_path, monkeypatch)
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="claude_cli",
+        extra_toml=(
+            "\n[brain.claude_cli]\n"
+            "enabled = true\n"
+            'command = "claude"\n'
+            'model = "claude-sonnet-4.5"\n'
+            'permission_mode = "auto"\n'
+        ),
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        daemon_app.close()
+
+    assert status == 200
+    provider = next(
+        item
+        for item in payload["capability_graph"]["brain_capabilities"]["providers"]
+        if item["id"] == "claude_cli"
+    )
+    assert provider["auth_status"] == "logged_in"
+    assert provider["permission_mode"] == "auto"
+    assert provider["apply_semantics"] == "not_apply_capable"
+    assert provider["apply_capable"] is False
+    assert "auto" in provider["apply_semantics_reason"]
+
+
+def test_runtime_settings_claude_cli_bypass_permission_mode_blocks_next_turn_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_claude_cli(tmp_path, monkeypatch)
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="claude_cli",
+        extra_toml=(
+            "\n[brain.claude_cli]\n"
+            "enabled = true\n"
+            'command = "claude"\n'
+            'model = "claude-sonnet"\n'
+            'permission_mode = "bypassPermissions"\n'
+        ),
+    )
+    daemon_app = create_daemon_app(config_path)
+    try:
+        with running_server(daemon_app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        daemon_app.close()
+
+    assert status == 200
+    provider = next(
+        item
+        for item in payload["capability_graph"]["brain_capabilities"]["providers"]
+        if item["id"] == "claude_cli"
+    )
+    assert provider["auth_status"] == "logged_in"
+    assert provider["permission_mode"] == "bypassPermissions"
+    assert provider["apply_semantics"] == "not_apply_capable"
+    assert provider["apply_capable"] is False
+    assert "bypassPermissions" in provider["apply_semantics_reason"]
 
 
 def test_runtime_settings_claude_cli_unknown_effort_does_not_enter_command_preview(

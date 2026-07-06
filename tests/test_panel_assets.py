@@ -1378,6 +1378,7 @@ def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
                         command_status: "found",
                         auth_status: "logged_in",
                         permission_mode: "acceptEdits",
+                        tools: ["Bash", "Read"],
                         allowed_tools: ["file_read"],
                         disallowed_tools: ["network"],
                         mcp_config_status: "missing",
@@ -1389,7 +1390,12 @@ def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
                         partial_messages_supported: "yes",
                         hook_events_supported: "unknown",
                         apply_semantics: applySemantics,
-                        command_preview: "claude -p --model claude-sonnet --effort xhigh --permission-mode acceptEdits --output-format stream-json",
+                        apply_eligibility: {{
+                          mode: applySemantics,
+                          next_turn: applySemantics === "next_turn",
+                          reason: applySemantics === "next_turn" ? null : "Backend says Claude must start a new provider session.",
+                        }},
+                        command_preview: "claude -p --model claude-sonnet --effort xhigh --permission-mode acceptEdits --tools Bash,Read --output-format stream-json",
                       }},
                     ],
                   }},
@@ -1435,6 +1441,7 @@ def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
             assert.match(summary, /claude-sonnet/);
             assert.match(summary, /xhigh/);
             assert.match(summary, /acceptEdits/);
+            assert.match(summary, /Bash/);
             assert.match(summary, /stream-json/);
             assert.match(summary, /--model claude-sonnet/);
             assert.doesNotMatch(summary, /sk-/);
@@ -1446,10 +1453,10 @@ def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
               renderBrainApplyControls(newSessionPayload);
             `, context);
             assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
-            assert.match(context.__el.brainApplyStatus.textContent, /requires new session/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /new provider session/i);
             assert.strictEqual(
               context.providerApplyBlocker(newSessionPayload.capability_graph.brain_capabilities.providers[0], "claude_cli"),
-              "requires new session",
+              "Backend says Claude must start a new provider session.",
             );
             """
         ),

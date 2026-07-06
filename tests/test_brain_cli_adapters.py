@@ -16,6 +16,10 @@ from jarvis.brain import (
     BrainToolSpec,
 )
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter, format_cli_prompt
+from jarvis.brain.claude_cli_contract import (
+    ClaudeCliCommandSettings,
+    build_claude_cli_command,
+)
 from jarvis.brain.codex_cli_adapter import CodexCliAdapter
 from jarvis.brain.manager import BrainManager
 from jarvis.brain.tool_call_parser import parse_tool_call_blocks
@@ -616,7 +620,8 @@ def test_adapter_allows_the_known_safe_flags() -> None:
     # The legitimate flag set (print + streaming) is not rejected.
     runner = FakeRunner(stdout="ok\n")
     adapter = ClaudeCliAdapter(
-        args=["-p", "--output-format", "text", "--model", "claude-x"], runner=runner
+        args=["-p", "--output-format", "text", "--model", "claude-x", "--tools", "Bash"],
+        runner=runner,
     )
 
     response = adapter.generate(make_request())
@@ -638,6 +643,165 @@ def test_adapter_allows_the_effort_flag() -> None:
     response = adapter.generate(make_request())
 
     assert response.text == "ok"
+
+
+def test_claude_cli_command_builder_uses_first_class_contract_settings(tmp_path: Path) -> None:
+    mcp_config = tmp_path / "claude-mcp.json"
+    mcp_config.write_text("{}", encoding="utf-8")
+
+    contract = build_claude_cli_command(
+        ClaudeCliCommandSettings(
+            command="claude",
+            args=["-p"],
+            model="claude-configured",
+            effort="high",
+            permission_mode="acceptEdits",
+            output_format="stream-json",
+            input_format="text",
+            tools=["Bash", "Edit", "Read"],
+            allowed_tools=["file_read", "shell_read"],
+            disallowed_tools=["network"],
+            mcp_config_path=str(mcp_config),
+            strict_mcp_config=True,
+        ),
+        runtime_model="claude-sonnet-4",
+        runtime_effort="xhigh",
+        streaming=True,
+    )
+
+    assert contract.argv == [
+        "claude",
+        "-p",
+        "--model",
+        "claude-sonnet-4",
+        "--effort",
+        "xhigh",
+        "--permission-mode",
+        "acceptEdits",
+        "--tools",
+        "Bash,Edit,Read",
+        "--allowedTools",
+        "file_read,shell_read",
+        "--disallowedTools",
+        "network",
+        "--mcp-config",
+        str(mcp_config),
+        "--strict-mcp-config",
+        "--output-format",
+        "stream-json",
+        "--input-format",
+        "text",
+        "--verbose",
+        "--include-partial-messages",
+    ]
+    assert contract.selected_model == "claude-sonnet-4"
+    assert contract.effective_effort == "xhigh"
+    assert contract.permission_mode == "acceptEdits"
+    assert contract.tools == ["Bash", "Edit", "Read"]
+    assert contract.allowed_tools == ["file_read", "shell_read"]
+    assert contract.disallowed_tools == ["network"]
+    assert contract.mcp_config_path == str(mcp_config)
+    assert contract.mcp_config_status == "configured"
+    assert contract.strict_mcp_config is True
+    assert "--tools Bash,Edit,Read" in contract.command_preview
+    assert "--allowedTools file_read,shell_read" in contract.command_preview
+    assert "--input-format text" in contract.command_preview
+
+
+def test_claude_cli_command_builder_preserves_empty_tools_restriction() -> None:
+    contract = build_claude_cli_command(
+        ClaudeCliCommandSettings(
+            command="claude",
+            args=["-p", "--tools", ""],
+        )
+    )
+
+    assert contract.tools == [""]
+    assert contract.argv == ["claude", "-p", "--tools", ""]
+    assert "--tools ''" in contract.command_preview
+
+
+def test_claude_adapter_argv_uses_first_class_contract_fields(tmp_path: Path) -> None:
+    runner = FakeRunner(stdout="ok\n")
+
+    adapter = ClaudeCliAdapter(
+        command="claude",
+        args=["-p"],
+        model="claude-sonnet",
+        effort="xhigh",
+        permission_mode="acceptEdits",
+        output_format="text",
+        input_format="text",
+        tools=["Bash", "Read"],
+        allowed_tools=["file_read"],
+        disallowed_tools=["network"],
+        mcp_config_path=str(tmp_path / "missing-mcp.json"),
+        strict_mcp_config=True,
+        runner=runner,
+    )
+    response = adapter.generate(make_request())
+
+    assert response.text == "ok"
+    assert runner.calls[0]["command"] == [
+        "claude",
+        "-p",
+        "--model",
+        "claude-sonnet",
+        "--effort",
+        "xhigh",
+        "--permission-mode",
+        "acceptEdits",
+        "--tools",
+        "Bash,Read",
+        "--allowedTools",
+        "file_read",
+        "--disallowedTools",
+        "network",
+        "--mcp-config",
+        str(tmp_path / "missing-mcp.json"),
+        "--strict-mcp-config",
+        "--output-format",
+        "text",
+        "--input-format",
+        "text",
+    ]
+
+
+def test_brain_cli_config_parses_first_class_claude_contract_settings(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path, claude_enabled=True)
+    config_text = config_path.read_text(encoding="utf-8").replace(
+        "timeout_seconds = 120\n\n[brain.codex_cli]",
+        "\n".join(
+            [
+                "timeout_seconds = 120",
+                'effort = "xhigh"',
+                'permission_mode = "acceptEdits"',
+                'output_format = "stream-json"',
+                'input_format = "text"',
+                'tools = ["Bash", "Edit", "Read"]',
+                'allowed_tools = ["file_read", "shell_read"]',
+                'disallowed_tools = ["network"]',
+                'mcp_config_path = "/tmp/jarvis-claude-mcp.json"',
+                "strict_mcp_config = true",
+                "",
+                "[brain.codex_cli]",
+            ]
+        ),
+    )
+    config_path.write_text(config_text, encoding="utf-8")
+
+    config = load_config(config_path)
+    claude = config.brain.claude_cli
+
+    assert claude.effort == "xhigh"
+    assert claude.permission_mode == "acceptEdits"
+    assert claude.output_format == "stream-json"
+    assert claude.input_format == "text"
+    assert claude.tools == ["Bash", "Edit", "Read"]
+    assert claude.allowed_tools == ["file_read", "shell_read"]
+    assert claude.disallowed_tools == ["network"]
+    assert claude.mcp_config_path == "/tmp/jarvis-claude-mcp.json"
+    assert claude.strict_mcp_config is True
 
 
 def test_adapters_do_not_require_real_provider_cli_when_runner_is_injected() -> None:

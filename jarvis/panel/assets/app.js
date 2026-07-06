@@ -1767,7 +1767,7 @@ function renderBrainProviderContractSummary(node, payload) {
     ["Model", `${humanDisplayValue(provider.effective_model || provider.selected_model)} (${humanDisplayValue(provider.model_source)})`],
     ["Effort", `${humanDisplayValue(provider.effective_effort || provider.selected_effort)} (${humanDisplayValue(provider.effort_source)})`],
     ["Permission", humanDisplayValue(provider.permission_mode)],
-    ["Tools", `allowed: ${humanDisplayValue(provider.allowed_tools)}; disallowed: ${humanDisplayValue(provider.disallowed_tools)}`],
+    ["Tools", `available: ${humanDisplayValue(provider.tools)}; allowed: ${humanDisplayValue(provider.allowed_tools)}; disallowed: ${humanDisplayValue(provider.disallowed_tools)}`],
     ["MCP", `${humanDisplayValue(provider.mcp_config_status)}; strict: ${humanDisplayValue(provider.strict_mcp_config)}`],
     ["Streaming", `${humanDisplayValue(provider.streaming_supported_state)}; output: ${humanDisplayValue(provider.output_format)}; partials: ${humanDisplayValue(provider.partial_messages_supported)}`],
     ["Apply", humanDisplayValue(provider.apply_semantics)],
@@ -3028,6 +3028,13 @@ function providerApplyLabel(provider, currentProviderId) {
 function providerApplyBlocker(provider, currentProviderId) {
   if (!provider) {
     return "missing";
+  }
+  const eligibility = safeObject(provider.apply_eligibility);
+  const backendReason = String(
+    eligibility.reason || provider.apply_semantics_reason || "",
+  ).trim();
+  if (backendReason) {
+    return backendReason;
   }
   if (provider.developer_only && String(provider.id) !== String(currentProviderId)) {
     return "Developer/Test only";

@@ -31,6 +31,12 @@ from jarvis.brain.base import (
     BrainResponse,
     BrainUsage,
 )
+from jarvis.brain.claude_cli_contract import (
+    CLAUDE_CLI_EFFORTS,
+    DEFAULT_STREAM_ARGS as CONTRACT_DEFAULT_STREAM_ARGS,
+    ClaudeCliCommandSettings,
+    build_claude_cli_command,
+)
 from jarvis.brain.tool_call_parser import parse_tool_call_blocks
 from jarvis.logging import get_logger, redact_secrets
 
@@ -43,13 +49,8 @@ DEFAULT_STDERR_PREVIEW_CHARS = 800
 # Streaming flags appended to the configured args when on_delta is passed.
 # stream-json requires --verbose in -p mode; --include-partial-messages is
 # what turns whole-message events into token-level text deltas.
-DEFAULT_STREAM_ARGS = (
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--include-partial-messages",
-)
-SUPPORTED_CLAUDE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+DEFAULT_STREAM_ARGS = tuple(CONTRACT_DEFAULT_STREAM_ARGS)
+SUPPORTED_CLAUDE_EFFORTS = frozenset(CLAUDE_CLI_EFFORTS)
 
 
 def format_cli_prompt(request: BrainRequest) -> str:
@@ -247,14 +248,22 @@ def stream_cli_response(
     request: BrainRequest,
     on_delta: Callable[[str], None],
     generation_registry: Any | None = None,
+    command_settings: ClaudeCliCommandSettings | None = None,
 ) -> BrainResponse:
-    command = _runtime_command(
-        command_name=command_name,
-        args=args,
-        runtime_args=stream_args,
-        default_model=default_model,
-        request_settings=request.settings,
-    )
+    if command_settings is None:
+        command = _runtime_command(
+            command_name=command_name,
+            args=args,
+            runtime_args=stream_args,
+            default_model=default_model,
+            request_settings=request.settings,
+        )
+    else:
+        command = build_claude_cli_command(
+            command_settings,
+            request_settings=request.settings,
+            streaming=True,
+        ).argv
     _reject_unsafe_args(command)
     prompt = format_cli_prompt(request)
     try:
@@ -415,14 +424,22 @@ def generate_cli_response(
     timeout_seconds: float,
     runner: CliRunner,
     request: BrainRequest,
+    command_settings: ClaudeCliCommandSettings | None = None,
 ) -> BrainResponse:
-    command = _runtime_command(
-        command_name=command_name,
-        args=args,
-        runtime_args=[],
-        default_model=default_model,
-        request_settings=request.settings,
-    )
+    if command_settings is None:
+        command = _runtime_command(
+            command_name=command_name,
+            args=args,
+            runtime_args=[],
+            default_model=default_model,
+            request_settings=request.settings,
+        )
+    else:
+        command = build_claude_cli_command(
+            command_settings,
+            request_settings=request.settings,
+            streaming=False,
+        ).argv
     _reject_unsafe_args(command)
     prompt = format_cli_prompt(request)
     try:
@@ -492,7 +509,7 @@ def _runtime_command(
 ) -> list[str]:
     command = [command_name, *list(args)]
     model = str(default_model or "").strip()
-    if model and model != "claude-cli" and not _arg_present(command, "--model"):
+    if model and model not in {"claude-cli", "codex-cli"} and not _arg_present(command, "--model"):
         command.extend(["--model", model])
     effort = _request_effort(request_settings)
     if effort and not _arg_present(command, "--effort"):
@@ -510,6 +527,15 @@ class ClaudeCliAdapter:
         command: str = "claude",
         args: Sequence[str] | None = None,
         model: str = "",
+        effort: str = "",
+        permission_mode: str = "",
+        output_format: str = "",
+        input_format: str = "",
+        tools: Sequence[str] | None = None,
+        allowed_tools: Sequence[str] | None = None,
+        disallowed_tools: Sequence[str] | None = None,
+        mcp_config_path: str = "",
+        strict_mcp_config: bool | None = None,
         timeout_seconds: float = 120,
         runner: CliRunner | None = None,
         stream_args: Sequence[str] | None = None,
@@ -519,6 +545,15 @@ class ClaudeCliAdapter:
         self.command = _required_text(command, "command")
         self.args = list(args) if args is not None else ["-p"]
         self.default_model = model.strip() or "claude-cli"
+        self.effort = effort.strip() if isinstance(effort, str) else ""
+        self.permission_mode = permission_mode.strip() if isinstance(permission_mode, str) else ""
+        self.output_format = output_format.strip() if isinstance(output_format, str) else ""
+        self.input_format = input_format.strip() if isinstance(input_format, str) else ""
+        self.tools = _normalize_optional_cli_list(tools, preserve_single_empty=True)
+        self.allowed_tools = [str(item).strip() for item in allowed_tools or [] if str(item).strip()]
+        self.disallowed_tools = [str(item).strip() for item in disallowed_tools or [] if str(item).strip()]
+        self.mcp_config_path = mcp_config_path.strip() if isinstance(mcp_config_path, str) else ""
+        self.strict_mcp_config = strict_mcp_config
         self.timeout_seconds = float(timeout_seconds)
         self._runner = runner or default_subprocess_runner
         self.stream_args = (
@@ -529,6 +564,23 @@ class ClaudeCliAdapter:
 
     def available_models(self) -> list[str]:
         return [self.default_model]
+
+    def command_settings(self) -> ClaudeCliCommandSettings:
+        return ClaudeCliCommandSettings(
+            command=self.command,
+            args=list(self.args),
+            model=self.default_model,
+            effort=self.effort,
+            permission_mode=self.permission_mode,
+            output_format=self.output_format,
+            input_format=self.input_format,
+            tools=list(self.tools),
+            allowed_tools=list(self.allowed_tools),
+            disallowed_tools=list(self.disallowed_tools),
+            mcp_config_path=self.mcp_config_path,
+            strict_mcp_config=self.strict_mcp_config,
+            stream_args=list(self.stream_args),
+        )
 
     def generate(
         self,
@@ -545,6 +597,7 @@ class ClaudeCliAdapter:
                 timeout_seconds=self.timeout_seconds,
                 runner=self._runner,
                 request=request,
+                command_settings=self.command_settings(),
             )
         return stream_cli_response(
             adapter_name=self.name,
@@ -557,6 +610,7 @@ class ClaudeCliAdapter:
             request=request,
             on_delta=on_delta,
             generation_registry=self._generation_registry,
+            command_settings=self.command_settings(),
         )
 
 
@@ -672,6 +726,7 @@ _ALLOWED_CLI_FLAGS = frozenset(
         "--model",
         "--effort",
         "--permission-mode",
+        "--tools",
         "--allowedTools",
         "--allowed-tools",
         "--disallowedTools",
@@ -689,3 +744,16 @@ def _reject_unsafe_args(command: list[str]) -> None:
         flag = token.split("=", 1)[0]
         if flag not in _ALLOWED_CLI_FLAGS:
             raise BrainAdapterError(f"unsafe CLI argument is not allowed: {flag}")
+
+
+def _normalize_optional_cli_list(
+    values: Sequence[str] | None,
+    *,
+    preserve_single_empty: bool = False,
+) -> list[str]:
+    if values is None:
+        return []
+    normalized = [str(item).strip() for item in values]
+    if preserve_single_empty and normalized == [""]:
+        return [""]
+    return [item for item in normalized if item]

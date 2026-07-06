@@ -6,7 +6,6 @@ import json
 import sqlite3
 import os
 import re
-import shlex
 import shutil
 import subprocess
 from collections.abc import Mapping
@@ -21,6 +20,15 @@ from jarvis.brain.context_builder import (
     DEFAULT_PERSONA_PATH,
     DEFAULT_PERSONA_PROFILE,
     PERSONA_PROFILE_SETTING_KEY,
+)
+from jarvis.brain.claude_cli_contract import (
+    CLAUDE_CLI_COMMAND,
+    CLAUDE_CLI_EFFORTS,
+    CLAUDE_CLI_INPUT_FORMATS,
+    CLAUDE_CLI_OUTPUT_FORMATS,
+    CLAUDE_CLI_PERMISSION_MODES,
+    ClaudeCliCommandSettings,
+    build_claude_cli_command,
 )
 from jarvis.brain.manager import BrainManagerError
 from jarvis.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp
@@ -42,29 +50,11 @@ LEGACY_GUIDANCE = [
 KNOWN_SOURCES = frozenset({"config", "settings", "default", "runtime_detected", "unknown"})
 KNOWN_STATUSES = frozenset({"ok", "missing", "invalid", "unsupported", "unknown"})
 PERSONA_PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-KNOWN_PROVIDER_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+KNOWN_PROVIDER_EFFORT_LEVELS = tuple(CLAUDE_CLI_EFFORTS)
 KNOWN_PROVIDER_SUPPORT_UNKNOWN = "unknown"
 KNOWN_PROVIDER_SUPPORT_YES = "yes"
 KNOWN_PROVIDER_SUPPORT_NO = "no"
 CLAUDE_CLI_PROVIDER_IDS = frozenset({"claude_cli", "claude_cli_warm"})
-CLAUDE_CLI_COMMAND = "claude"
-CLAUDE_CLI_PERMISSION_MODES = (
-    "default",
-    "manual",
-    "acceptEdits",
-    "plan",
-    "auto",
-    "dontAsk",
-    "bypassPermissions",
-)
-CLAUDE_CLI_OUTPUT_FORMATS = ("text", "json", "stream-json")
-CLAUDE_CLI_INPUT_FORMATS = ("text", "stream-json")
-CLAUDE_CLI_DEFAULT_STREAM_ARGS = (
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--include-partial-messages",
-)
 SUPERTONIC_VOICE_MANUAL_DIAGNOSTIC_WARNING = "Supertonic voice list requires manual diagnostic."
 VOICE_ENGINE_RELOAD_BLOCKER = "runtime engine reload not implemented in POC; requires restart"
 VOICE_GATEWAY_RELOAD_BLOCKER = "runtime gateway reload not implemented in POC; requires restart"
@@ -309,75 +299,6 @@ def _safe_to_int(value: Any) -> int | None:
         stripped = value.strip()
         return int(stripped) if stripped and stripped.isdigit() else None
     return None
-
-
-def _cli_arg_value(args: list[str], *flags: str) -> str | None:
-    flag_set = set(flags)
-    index = 0
-    while index < len(args):
-        token = str(args[index])
-        for flag in flag_set:
-            if token == flag and index + 1 < len(args):
-                return str(args[index + 1])
-            prefix = f"{flag}="
-            if token.startswith(prefix):
-                return token[len(prefix) :]
-        index += 1
-    return None
-
-
-def _cli_arg_present(args: list[str], *flags: str) -> bool:
-    flag_set = set(flags)
-    for token in args:
-        raw = str(token)
-        if raw in flag_set:
-            return True
-        if any(raw.startswith(f"{flag}=") for flag in flag_set):
-            return True
-    return False
-
-
-def _split_cli_list(value: str | None) -> list[str]:
-    if not value:
-        return []
-    items: list[str] = []
-    for item in re.split(r"[,\s]+", value):
-        normalized = item.strip()
-        if normalized:
-            items.append(normalized)
-    return items
-
-
-def _normalize_claude_permission_mode(value: str | None) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return "default"
-    aliases = {
-        "accept-edits": "acceptEdits",
-        "acceptedits": "acceptEdits",
-        "dont-ask": "dontAsk",
-        "dontask": "dontAsk",
-        "bypass-permissions": "bypassPermissions",
-        "bypasspermissions": "bypassPermissions",
-    }
-    normalized = aliases.get(raw, aliases.get(raw.lower(), raw))
-    return normalized if normalized in CLAUDE_CLI_PERMISSION_MODES else "unknown"
-
-
-def _normalize_bool_or_unknown(value: str | None) -> bool | str:
-    if value is None:
-        return "unknown"
-    normalized = str(value).strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return "unknown"
-
-
-def _redacted_command_preview(tokens: list[str]) -> str:
-    rendered = " ".join(shlex.quote(str(token)) for token in tokens if str(token))
-    return redact_secrets(rendered)
 
 
 def _normalize_turn_source(raw_source: Any) -> str:
@@ -967,6 +888,66 @@ def _provider_credentials_projection(*, provider_name: str) -> dict[str, Any]:
     )
 
 
+def _claude_cli_command_settings(*, adapter: Any, config: Any) -> ClaudeCliCommandSettings:
+    adapter_settings = getattr(adapter, "command_settings", None)
+    if callable(adapter_settings):
+        return adapter_settings()
+    raw_stream_args = getattr(adapter, "stream_args", None)
+    if raw_stream_args is None:
+        raw_stream_args = getattr(config, "stream_args", None)
+    return ClaudeCliCommandSettings(
+        command=str(
+            getattr(adapter, "command", None)
+            or getattr(config, "command", None)
+            or CLAUDE_CLI_COMMAND
+        ),
+        args=list(getattr(adapter, "args", None) or getattr(config, "args", None) or ["-p"]),
+        model=str(getattr(adapter, "default_model", None) or getattr(config, "model", None) or ""),
+        effort=str(getattr(adapter, "effort", None) or getattr(config, "effort", None) or ""),
+        permission_mode=str(
+            getattr(adapter, "permission_mode", None)
+            or getattr(config, "permission_mode", None)
+            or ""
+        ),
+        output_format=str(
+            getattr(adapter, "output_format", None)
+            or getattr(config, "output_format", None)
+            or ""
+        ),
+        input_format=str(
+            getattr(adapter, "input_format", None)
+            or getattr(config, "input_format", None)
+            or ""
+        ),
+        tools=list(
+            getattr(adapter, "tools", None)
+            or getattr(config, "tools", None)
+            or []
+        ),
+        allowed_tools=list(
+            getattr(adapter, "allowed_tools", None)
+            or getattr(config, "allowed_tools", None)
+            or []
+        ),
+        disallowed_tools=list(
+            getattr(adapter, "disallowed_tools", None)
+            or getattr(config, "disallowed_tools", None)
+            or []
+        ),
+        mcp_config_path=str(
+            getattr(adapter, "mcp_config_path", None)
+            or getattr(config, "mcp_config_path", None)
+            or ""
+        ),
+        strict_mcp_config=getattr(
+            adapter,
+            "strict_mcp_config",
+            getattr(config, "strict_mcp_config", None),
+        ),
+        stream_args=list(raw_stream_args) if raw_stream_args is not None else None,
+    )
+
+
 def _claude_cli_contract(
     *,
     app: DaemonApp,
@@ -981,12 +962,15 @@ def _claude_cli_contract(
     command_projection: dict[str, Any],
 ) -> dict[str, Any]:
     config = getattr(getattr(app.config, "brain", None), "claude_cli", None)
-    command = str(getattr(adapter, "command", None) or getattr(config, "command", None) or CLAUDE_CLI_COMMAND).strip()
-    args = list(getattr(adapter, "args", None) or getattr(config, "args", None) or ["-p"])
-    raw_stream_args = getattr(adapter, "stream_args", None)
-    if raw_stream_args is None:
-        raw_stream_args = getattr(config, "stream_args", None)
-    stream_args = list(raw_stream_args or CLAUDE_CLI_DEFAULT_STREAM_ARGS)
+    command_settings = _claude_cli_command_settings(adapter=adapter, config=config)
+    requested_model_text = str(requested_model).strip() if isinstance(requested_model, str) else ""
+    requested_effort_text = str(requested_effort).strip() if isinstance(requested_effort, str) else ""
+    command_contract = build_claude_cli_command(
+        command_settings,
+        runtime_model=requested_model_text if current and requested_model_status == "ok" else None,
+        runtime_effort=requested_effort_text if current and requested_effort_status == "ok" else None,
+        streaming=True,
+    )
     command_found = _support_bool(command_projection) is True
     command_status = "found" if command_found else "missing"
     version = None
@@ -995,70 +979,8 @@ def _claude_cli_contract(
     auth_status = "unknown"
     auth_warning = None
     if command_found:
-        version, version_status, version_warning = _safe_probe_cli_version(command)
-        auth_status, auth_warning = _safe_probe_claude_auth_status(command)
-
-    configured_model = str(getattr(config, "model", "") or "").strip()
-    args_model = _cli_arg_value(args, "--model")
-    requested_model_text = str(requested_model).strip() if isinstance(requested_model, str) else ""
-    selected_model = None
-    if current and requested_model_status == "ok" and requested_model_text:
-        selected_model = requested_model_text
-    elif args_model:
-        selected_model = args_model.strip()
-    elif configured_model:
-        selected_model = configured_model
-
-    effective_model = selected_model
-    if selected_model:
-        model_source = "jarvis_explicit"
-    elif command_found:
-        model_source = "claude_default"
-    else:
-        model_source = "unknown"
-    allowed_models = list(dict.fromkeys([model for model in [*supported_models, selected_model] if model]))
-
-    args_effort = _cli_arg_value(args, "--effort")
-    requested_effort_text = str(requested_effort).strip() if isinstance(requested_effort, str) else ""
-    selected_effort = None
-    if current and requested_effort_status == "ok" and requested_effort_text:
-        selected_effort = requested_effort_text
-    elif args_effort:
-        selected_effort = args_effort.strip()
-    effort_valid = selected_effort in KNOWN_PROVIDER_EFFORT_LEVELS if selected_effort else False
-    effective_effort = selected_effort if effort_valid else None
-    if effective_effort:
-        effort_source = "jarvis_explicit"
-    elif KNOWN_PROVIDER_EFFORT_LEVELS:
-        effort_source = "model_default"
-    else:
-        effort_source = "unsupported"
-
-    permission_arg = _cli_arg_value(args, "--permission-mode")
-    permission_mode = _normalize_claude_permission_mode(permission_arg)
-    allowed_tools = _split_cli_list(_cli_arg_value(args, "--allowedTools", "--allowed-tools"))
-    disallowed_tools = _split_cli_list(_cli_arg_value(args, "--disallowedTools", "--disallowed-tools"))
-    mcp_config = _cli_arg_value(args, "--mcp-config")
-    if mcp_config:
-        mcp_config_status = "configured" if _safe_path_exists(mcp_config) else "missing"
-    else:
-        mcp_config_status = "missing"
-    strict_mcp_config: bool | str = "unknown"
-    if _cli_arg_present(args, "--strict-mcp-config"):
-        strict_mcp_config = _normalize_bool_or_unknown(
-            _cli_arg_value(args, "--strict-mcp-config") or "true"
-        )
-
-    output_format = _cli_arg_value(stream_args, "--output-format") or _cli_arg_value(args, "--output-format") or "text"
-    if output_format not in CLAUDE_CLI_OUTPUT_FORMATS:
-        output_format = "text"
-    input_format = _cli_arg_value(stream_args, "--input-format") or _cli_arg_value(args, "--input-format") or "text"
-    if input_format not in CLAUDE_CLI_INPUT_FORMATS:
-        input_format = "text"
-    streaming_supported = KNOWN_PROVIDER_SUPPORT_YES if output_format == "stream-json" else KNOWN_PROVIDER_SUPPORT_NO
-    partial_messages_supported = (
-        KNOWN_PROVIDER_SUPPORT_YES if _cli_arg_present(stream_args, "--include-partial-messages") else KNOWN_PROVIDER_SUPPORT_NO
-    )
+        version, version_status, version_warning = _safe_probe_cli_version(command_contract.command)
+        auth_status, auth_warning = _safe_probe_claude_auth_status(command_contract.command)
 
     apply_semantics = "next_turn"
     blocker = None
@@ -1067,20 +989,19 @@ def _claude_cli_contract(
         blocker = "Claude warm CLI keeps a provider process; changes require a new provider session."
     elif not command_found:
         apply_semantics = "not_apply_capable"
-        blocker = f"Claude CLI command is missing: {command!r}."
+        blocker = f"Claude CLI command is missing: {command_settings.command!r}."
     elif auth_status == "missing":
         apply_semantics = "not_apply_capable"
         blocker = "Claude CLI auth is missing; run claude auth login outside Jarvis."
-
-    preview_tokens = [command, *args]
-    if selected_model and not _cli_arg_present(preview_tokens, "--model"):
-        preview_tokens.extend(["--model", selected_model])
-    if effective_effort and not _cli_arg_present(preview_tokens, "--effort"):
-        preview_tokens.extend(["--effort", effective_effort])
-    if permission_arg and permission_mode != "unknown" and not _cli_arg_present(preview_tokens, "--permission-mode"):
-        preview_tokens.extend(["--permission-mode", permission_mode])
-    if output_format == "stream-json":
-        preview_tokens.extend(stream_args)
+    elif auth_status != "logged_in":
+        apply_semantics = "not_apply_capable"
+        blocker = "Claude CLI auth status is unknown; run claude auth status outside Jarvis."
+    elif command_contract.permission_mode == "auto":
+        apply_semantics = "not_apply_capable"
+        blocker = "Claude CLI permission mode auto is not apply-capable until Jarvis can prove Claude Code auto-mode eligibility."
+    elif command_contract.permission_mode == "bypassPermissions":
+        apply_semantics = "not_apply_capable"
+        blocker = "Claude CLI permission mode bypassPermissions is not apply-capable from the panel."
 
     warnings = [
         warning
@@ -1092,33 +1013,48 @@ def _claude_cli_contract(
         "label": "Claude CLI",
         "kind": "cli",
         "transport": "subprocess",
-        "command": command or CLAUDE_CLI_COMMAND,
+        "command": command_contract.command or CLAUDE_CLI_COMMAND,
         "command_status": command_status,
         "auth_status": auth_status,
         "version": version,
         "version_status": version_status,
-        "selected_model": selected_model,
-        "effective_model": effective_model,
-        "model_source": model_source,
-        "allowed_models": allowed_models,
-        "selected_effort": selected_effort,
-        "effective_effort": effective_effort,
-        "effort_source": effort_source,
+        "selected_model": command_contract.selected_model,
+        "effective_model": command_contract.effective_model,
+        "model_source": command_contract.model_source if command_found else "unknown",
+        "allowed_models": list(
+            dict.fromkeys(
+                model
+                for model in [*supported_models, command_contract.selected_model]
+                if model
+            )
+        ),
+        "selected_effort": command_contract.selected_effort,
+        "effective_effort": command_contract.effective_effort,
+        "effort_source": command_contract.effort_source,
         "allowed_effort_values": list(KNOWN_PROVIDER_EFFORT_LEVELS),
         "fast_supported": KNOWN_PROVIDER_SUPPORT_NO,
         "fast_supported_state": KNOWN_PROVIDER_SUPPORT_NO,
-        "permission_mode": permission_mode,
-        "allowed_tools": allowed_tools,
-        "disallowed_tools": disallowed_tools,
-        "mcp_config_status": mcp_config_status,
-        "strict_mcp_config": strict_mcp_config,
-        "output_format": output_format,
-        "input_format": input_format,
-        "streaming_supported": streaming_supported,
-        "partial_messages_supported": partial_messages_supported,
+        "permission_mode": command_contract.permission_mode,
+        "tools": command_contract.tools,
+        "allowed_tools": command_contract.allowed_tools,
+        "disallowed_tools": command_contract.disallowed_tools,
+        "mcp_config_path": command_contract.mcp_config_path,
+        "mcp_config_status": command_contract.mcp_config_status,
+        "strict_mcp_config": command_contract.strict_mcp_config,
+        "output_format": command_contract.output_format,
+        "input_format": command_contract.input_format,
+        "streaming_supported": command_contract.streaming_supported,
+        "partial_messages_supported": command_contract.partial_messages_supported,
         "hook_events_supported": KNOWN_PROVIDER_SUPPORT_UNKNOWN,
         "apply_semantics": apply_semantics,
-        "command_preview": _redacted_command_preview(preview_tokens),
+        "apply_capable": apply_semantics == "next_turn",
+        "apply_semantics_reason": blocker,
+        "apply_eligibility": {
+            "mode": apply_semantics,
+            "next_turn": apply_semantics == "next_turn",
+            "reason": blocker,
+        },
+        "command_preview": command_contract.command_preview,
         "blocker": blocker,
         "contract_warnings": warnings,
     }
@@ -1244,6 +1180,10 @@ def _provider_capabilities_for_adapter(
             available = False
             status = "missing"
             adapter_warning = str(claude_cli_contract.get("blocker") or "Claude CLI auth is missing.")
+        elif claude_cli_contract.get("auth_status") != "logged_in":
+            available = False
+            status = "unknown"
+            adapter_warning = str(claude_cli_contract.get("blocker") or "Claude CLI auth status is unknown.")
 
     return {
         "name": adapter_name,
@@ -4923,8 +4863,10 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
                     "effort_source",
                     "fast_supported_state",
                     "permission_mode",
+                    "tools",
                     "allowed_tools",
                     "disallowed_tools",
+                    "mcp_config_path",
                     "mcp_config_status",
                     "strict_mcp_config",
                     "output_format",
@@ -4932,6 +4874,9 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
                     "partial_messages_supported",
                     "hook_events_supported",
                     "apply_semantics",
+                    "apply_capable",
+                    "apply_semantics_reason",
+                    "apply_eligibility",
                     "command_preview",
                 )
                 if key in claude_contract
@@ -5593,6 +5538,15 @@ def _build_settings_preview(
             source="config",
             status="ok" if permission_mode in CLAUDE_CLI_PERMISSION_MODES else "unknown",
             allowed_values=list(CLAUDE_CLI_PERMISSION_MODES),
+            dependencies=["brain_provider.provider"],
+        ),
+        "tools": _preview_field(
+            section=section,
+            field_id="tools",
+            label="Tools",
+            current=current_provider.get("tools") or [],
+            source="config",
+            status="ok" if current_provider.get("tools") else "missing",
             dependencies=["brain_provider.provider"],
         ),
         "allowed_tools": _preview_field(

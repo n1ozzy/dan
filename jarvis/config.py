@@ -129,6 +129,15 @@ class BrainCliAdapterConfig:
     command: str = ""
     args: list[str] = field(default_factory=list)
     model: str = ""
+    effort: str = ""
+    permission_mode: str = ""
+    output_format: str = ""
+    input_format: str = ""
+    tools: list[str] = field(default_factory=list)
+    allowed_tools: list[str] = field(default_factory=list)
+    disallowed_tools: list[str] = field(default_factory=list)
+    mcp_config_path: str = ""
+    strict_mcp_config: bool | None = None
     timeout_seconds: int = 120
     # Streaming flags appended when a turn wants deltas (G4d). None = the
     # adapter's own defaults (claude: --output-format stream-json --verbose
@@ -564,6 +573,16 @@ def _build_brain_cli_config(
     args = selected.get("args")
     if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
         raise ConfigError(f"{section_name}.args must be a list of strings")
+    for list_key in ("tools", "allowed_tools", "disallowed_tools"):
+        values = selected.get(list_key)
+        if values is not None and (
+            not isinstance(values, list)
+            or not all(isinstance(item, str) for item in values)
+        ):
+            raise ConfigError(f"{section_name}.{list_key} must be a list of strings")
+    strict_mcp_config = selected.get("strict_mcp_config")
+    if strict_mcp_config is not None and not isinstance(strict_mcp_config, bool):
+        raise ConfigError(f"{section_name}.strict_mcp_config must be a boolean")
     stream_args = selected.get("stream_args")
     if stream_args is not None and (
         not isinstance(stream_args, list)
