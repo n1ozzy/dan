@@ -17,6 +17,7 @@ from jarvis.brain.groq_adapter import create_groq_adapter
 from jarvis.brain.mock_adapter import MockBrainAdapter
 from jarvis.brain.ollama_adapter import create_ollama_adapter
 from jarvis.brain.qwen_adapter import create_qwen_adapter
+from jarvis.brain.sync_adapter import wrap_async_adapter
 
 
 class BrainManagerError(Exception):
@@ -128,7 +129,7 @@ class BrainManager:
                 from types import SimpleNamespace
                 groq_config = SimpleNamespace(enabled=True, api_key="", model="")
             if _should_register_cli_adapter(groq_config, default_adapter, "groq"):
-                adapters.append(create_groq_adapter(config, generation_registry))
+                adapters.append(wrap_async_adapter(create_groq_adapter(config, generation_registry)))
 
         # Qwen / LiteLLM adapter
         qwen_config = getattr(brain_config, "qwen", None)
@@ -138,7 +139,7 @@ class BrainManager:
                 from types import SimpleNamespace
                 qwen_config = SimpleNamespace(enabled=True, base_url="", model="")
             if _should_register_cli_adapter(qwen_config, default_adapter, "qwen"):
-                adapters.append(create_qwen_adapter(config, generation_registry))
+                adapters.append(wrap_async_adapter(create_qwen_adapter(config, generation_registry)))
 
         # Ollama local adapter
         ollama_config = getattr(brain_config, "ollama", None)
@@ -148,7 +149,7 @@ class BrainManager:
                 from types import SimpleNamespace
                 ollama_config = SimpleNamespace(enabled=True, host="http://localhost:11434", model="")
             if _should_register_cli_adapter(ollama_config, default_adapter, "ollama"):
-                adapters.append(create_ollama_adapter(config, generation_registry))
+                adapters.append(wrap_async_adapter(create_ollama_adapter(config, generation_registry)))
 
         # Eco Brain adapter
         eco_config = getattr(brain_config, "eco_brain", None)
@@ -158,7 +159,7 @@ class BrainManager:
                 from types import SimpleNamespace
                 eco_config = SimpleNamespace(enabled=True, base_url="", model="")
             if _should_register_cli_adapter(eco_config, default_adapter, "eco_brain"):
-                adapters.append(create_eco_brain_adapter(config, generation_registry))
+                adapters.append(wrap_async_adapter(create_eco_brain_adapter(config, generation_registry)))
 
         # Chain adapter (Claude + Ollama) - only if both are available
         if (detected["claude_cli"].available or bool(getattr(getattr(brain_config, "claude_cli", None), "enabled", False))) and \

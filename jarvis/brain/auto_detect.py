@@ -6,7 +6,7 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,19 @@ class ProviderInfo:
     config_hint: str | None = None
 
 
+# Allow tests to inject a custom `which` function
+_which_fn: Callable[[str], str | None] | None = None
+
+
+def set_which_fn(fn: Callable[[str], str | None] | None) -> None:
+    """Set a custom `which` function for testing."""
+    global _which_fn
+    _which_fn = fn
+
+
 def _which(cmd: str) -> str | None:
+    if _which_fn is not None:
+        return _which_fn(cmd)
     return shutil.which(cmd)
 
 

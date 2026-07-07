@@ -3789,16 +3789,8 @@ def test_runtime_settings_shows_configured_provider_capabilities_for_claude_and_
 def test_runtime_settings_codex_model_next_turn_apply_updates_command_preview(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mock_codex_cli: None,
 ) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
-
-    monkeypatch.setattr(
-        routes_runtime.shutil,
-        "which",
-        lambda command: "/usr/bin/fake-codex" if command == "fake-codex" else None,
-    )
-    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("codex fake 1.0.0", "ok", None))
-    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("logged_in", None))
     config_path = write_config(
         tmp_path / "jarvis.toml",
         tmp_path / "home" / "jarvis.db",
@@ -3986,12 +3978,14 @@ def test_runtime_settings_codex_effort_is_rejected_without_pending_applyable_val
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import jarvis.api.routes_runtime as routes_runtime
+    import jarvis.brain.auto_detect as auto_detect
 
     monkeypatch.setattr(
         routes_runtime.shutil,
         "which",
         lambda command: "/usr/bin/fake-codex" if command == "fake-codex" else None,
     )
+    auto_detect.set_which_fn(lambda cmd: "/usr/bin/fake-codex" if cmd == "codex" else None)
     monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("codex fake 1.0.0", "ok", None))
     monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("logged_in", None))
     config_path = write_config(
@@ -4016,6 +4010,7 @@ def test_runtime_settings_codex_effort_is_rejected_without_pending_applyable_val
             _, refreshed = request_json("GET", f"{base_url}/runtime/settings")
     finally:
         app.close()
+        auto_detect.set_which_fn(None)
 
     assert status == 422
     assert "brain.effort" in payload["rejected_keys"]

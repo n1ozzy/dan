@@ -1,0 +1,45 @@
+"""Shared test fixtures for Jarvis."""
+
+from __future__ import annotations
+
+import pytest
+from collections.abc import Generator
+
+import jarvis.brain.auto_detect as auto_detect
+
+
+@pytest.fixture(autouse=True)
+def reset_auto_detect() -> Generator[None, None, None]:
+    """Reset auto-detection state after each test."""
+    yield
+    auto_detect.set_which_fn(None)
+
+
+@pytest.fixture
+def mock_codex_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mock codex CLI as available."""
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(
+        routes_runtime.shutil,
+        "which",
+        lambda command: "/usr/bin/fake-codex" if command == "fake-codex" else None,
+    )
+    auto_detect.set_which_fn(lambda cmd: "/usr/bin/fake-codex" if cmd == "codex" else None)
+    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("codex fake 1.0.0", "ok", None))
+    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("logged_in", None))
+
+
+@pytest.fixture
+def mock_claude_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mock Claude CLI as available."""
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(
+        routes_runtime.shutil,
+        "which",
+        lambda command: "/usr/bin/fake-claude" if command == "fake-claude" else None,
+    )
+    auto_detect.set_which_fn(lambda cmd: "/usr/bin/fake-claude" if cmd == "claude" else None)
+    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("claude fake 1.0.0", "ok", None))
+    monkeypatch.setattr(routes_runtime, "_safe_probe_claude_auth_status", lambda command: ("Logged in as test@test.com", None))
