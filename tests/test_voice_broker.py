@@ -51,7 +51,7 @@ def voice_config(**overrides) -> SimpleNamespace:
         "speak_responses": True,
         "broker_enabled": True,
         "default_tts": "mock",
-        "fillers": ["A spierdalaj...","Już sprawdzam.", "Chwila."],
+        "fillers": ["A spierdalaj cwelu", "Wiesz, że myślałem o Tobie jak szczałem przed sraniem?"],
         "filler_after_ms": 50,
         "min_sentence_chars": 12,
     }

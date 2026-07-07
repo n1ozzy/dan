@@ -57,7 +57,6 @@ queue_persisted = true
 # Fillers: Polish voice fillers played while brain is thinking.
 # Configured as array of strings - cycles through them.
 fillers = [
-  "Już sprawdzam...",
   "Sekundę, myślę...",
   "Daj chwilę, analizuję...",
   "Moment, sprawdzam...",

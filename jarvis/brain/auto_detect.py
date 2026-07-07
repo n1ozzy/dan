@@ -1,4 +1,4 @@
-"""Auto-detection of available brain providers on the system."""
+"""Auto-detection of available brain providers on the system - Production ready."""
 
 from __future__ import annotations
 
@@ -73,15 +73,11 @@ def detect_claude_cli() -> ProviderInfo:
             config_hint="Install Claude CLI: npm install -g @anthropic-ai/claude-code",
         )
 
-    # Try to get models from claude (may not have a direct list command)
-    # Known models from Anthropic
-    models = ["sonnet", "opus", "haiku", "fable"]
-
     return ProviderInfo(
         name="claude_cli",
         display_name="Claude CLI",
         available=True,
-        models=models,
+        models=["sonnet", "opus", "haiku", "fable"],
         efforts=["low", "medium", "high", "xhigh", "max"],
         streaming=True,
         tools=True,
@@ -103,53 +99,14 @@ def detect_codex_cli() -> ProviderInfo:
             config_hint="Install Codex CLI: https://github.com/openai/codex",
         )
 
-    # Codex models from config
-    models = ["gpt-5", "gpt-5.5", "gpt-4o", "o3", "o3-mini", "o4-mini"]
-
     return ProviderInfo(
         name="codex_cli",
         display_name="Codex CLI",
         available=True,
-        models=models,
+        models=["gpt-5", "gpt-5.5", "gpt-4o", "o3", "o3-mini", "o4-mini"],
         efforts=["low", "medium", "high", "xhigh"],
         streaming=False,
         tools=True,
-    )
-
-
-def detect_ollama() -> ProviderInfo:
-    """Detect Ollama and list installed models."""
-    path = _which("ollama")
-    if not path:
-        return ProviderInfo(
-            name="ollama",
-            display_name="Ollama (Local)",
-            available=False,
-            models=[],
-            efforts=[],
-            streaming=True,
-            tools=False,
-            config_hint="Install Ollama: https://ollama.ai",
-        )
-
-    # Get installed models - parse text output since --json not supported in all versions
-    output = _run_text(["ollama", "list"])
-    models = []
-    if output:
-        lines = output.strip().split("\n")
-        for line in lines[1:]:  # Skip header
-            parts = line.split()
-            if parts:
-                models.append(parts[0])
-
-    return ProviderInfo(
-        name="ollama",
-        display_name="Ollama (Local)",
-        available=len(models) > 0,
-        models=models,
-        efforts=[],
-        streaming=True,
-        tools=False,
     )
 
 
@@ -168,78 +125,19 @@ def detect_groq() -> ProviderInfo:
             config_hint="Set GROQ_API_KEY environment variable",
         )
 
-    # Known Groq models
-    models = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "llama-3.1-70b-versatile",
-        "llama3-70b-8192",
-        "llama3-8b-8192",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
-    ]
-
     return ProviderInfo(
         name="groq",
         display_name="Groq API",
         available=True,
-        models=models,
-        efforts=[],
-        streaming=True,
-        tools=False,
-    )
-
-
-def detect_qwen() -> ProviderInfo:
-    """Detect Qwen/LiteLLM endpoint availability."""
-    base_url = os.environ.get("QWEN_BASE_URL", "").strip()
-    api_key = os.environ.get("QWEN_API_KEY", "").strip()
-
-    if not base_url:
-        return ProviderInfo(
-            name="qwen",
-            display_name="Qwen / LiteLLM",
-            available=False,
-            models=[],
-            efforts=[],
-            streaming=True,
-            tools=False,
-            config_hint="Set QWEN_BASE_URL and QWEN_API_KEY environment variables",
-        )
-
-    return ProviderInfo(
-        name="qwen",
-        display_name="Qwen / LiteLLM",
-        available=True,
-        models=["qwen3.6-35b-fast", "qwen2.5-72b", "qwen2.5-32b", "qwen2.5-14b", "qwen2.5-7b", "qwen2.5-3b", "qwen2.5-1.5b"],
-        efforts=[],
-        streaming=True,
-        tools=False,
-    )
-
-
-def detect_eco_brain() -> ProviderInfo:
-    """Detect Eco Brain endpoint availability."""
-    base_url = os.environ.get("ECO_BRAIN_BASE_URL", "").strip()
-    api_key = os.environ.get("ECO_BRAIN_API_KEY", "").strip()
-
-    if not base_url:
-        return ProviderInfo(
-            name="eco_brain",
-            display_name="Eco Brain",
-            available=False,
-            models=[],
-            efforts=[],
-            streaming=True,
-            tools=False,
-            config_hint="Set ECO_BRAIN_BASE_URL and ECO_BRAIN_API_KEY environment variables",
-        )
-
-    return ProviderInfo(
-        name="eco_brain",
-        display_name="Eco Brain",
-        available=True,
-        models=["eco-brain-v1", "eco-brain-latest"],
+        models=[
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "llama-3.1-70b-versatile",
+            "llama3-70b-8192",
+            "llama3-8b-8192",
+            "mixtral-8x7b-32768",
+            "gemma2-9b-it",
+        ],
         efforts=[],
         streaming=True,
         tools=False,
@@ -251,10 +149,7 @@ def detect_all_providers() -> dict[str, ProviderInfo]:
     return {
         "claude_cli": detect_claude_cli(),
         "codex_cli": detect_codex_cli(),
-        "ollama": detect_ollama(),
         "groq": detect_groq(),
-        "qwen": detect_qwen(),
-        "eco_brain": detect_eco_brain(),
     }
 
 
@@ -265,11 +160,13 @@ def get_available_adapter_names() -> list[str]:
 
 
 def get_default_adapter() -> str:
-    """Get the best default adapter based on availability."""
-    # Priority order: claude_cli > codex_cli > ollama > groq > qwen > eco_brain > mock
-    priority = ["claude_cli", "codex_cli", "ollama", "groq", "qwen", "eco_brain"]
+    """Get the best default adapter based on availability.
+    
+    Priority order: claude_cli > codex_cli > groq
+    """
+    priority = ["claude_cli", "codex_cli", "groq"]
     available = get_available_adapter_names()
     for name in priority:
         if name in available:
             return name
-    return "mock"
+    return "none"

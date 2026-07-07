@@ -158,6 +158,9 @@ class BrainConfig:
     codex_cli: BrainCliAdapterConfig = field(
         default_factory=lambda: BrainCliAdapterConfig(command="codex", args=[])
     )
+    test: BrainCliAdapterConfig = field(
+        default_factory=lambda: BrainCliAdapterConfig(command="test", args=[], enabled=False)
+    )
 
 
 @dataclass(frozen=True)
@@ -604,6 +607,12 @@ def _build_brain_config(raw: dict[str, Any]) -> BrainConfig:
                 "brain.codex_cli",
                 raw.get("codex_cli"),
                 default_command="codex",
+                default_args=[],
+            ),
+            test=_build_brain_cli_config(
+                "brain.test",
+                raw.get("test"),
+                default_command="test",
                 default_args=[],
             ),
         )

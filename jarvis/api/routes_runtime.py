@@ -56,12 +56,7 @@ KNOWN_SOURCES = frozenset({"config", "settings", "default", "runtime_detected", 
 KNOWN_STATUSES = frozenset({"ok", "missing", "invalid", "unsupported", "unknown"})
 PERSONA_PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 CLAUDE_CLI_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
-CODEX_CLI_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 GROQ_EFFORT_LEVELS = ()
-QWEN_EFFORT_LEVELS = ()
-OLLAMA_EFFORT_LEVELS = ()
-CHAIN_EFFORT_LEVELS = ()
-ECO_BRAIN_EFFORT_LEVELS = ()
 
 KNOWN_PROVIDER_EFFORT_LEVELS = CLAUDE_CLI_EFFORT_LEVELS
 KNOWN_PROVIDER_SUPPORT_UNKNOWN = "unknown"
@@ -69,9 +64,9 @@ KNOWN_PROVIDER_SUPPORT_YES = "yes"
 KNOWN_PROVIDER_SUPPORT_NO = "no"
 CLAUDE_CLI_PROVIDER_IDS = frozenset({"claude_cli", "claude_cli_warm"})
 SUPERTONIC_VOICE_MANUAL_DIAGNOSTIC_WARNING = "Supertonic voice list requires manual diagnostic."
-VOICE_ENGINE_RELOAD_BLOCKER = "runtime engine reload not implemented in POC; requires restart"
-VOICE_GATEWAY_RELOAD_BLOCKER = "runtime gateway reload not implemented in POC; requires restart"
-TOOLS_POLICY_RESTART_BLOCKER = "runtime tool/network policy reload not implemented in POC; requires restart"
+VOICE_ENGINE_RELOAD_BLOCKER = "voice engine reload requires daemon restart"
+VOICE_GATEWAY_RELOAD_BLOCKER = "voice gateway reload requires daemon restart"
+TOOLS_POLICY_RESTART_BLOCKER = "tool/network policy reload requires daemon restart"
 CANONICAL_PTT_MODES = ("hold", "toggle", "locked")
 VOICE_ENGINE_RESTART_ONLY_KEYS = frozenset(
     {
@@ -148,15 +143,6 @@ class RuntimeSettingsApplyError(ValueError):
         self.warnings = list(warnings or [])
 
 PROVIDER_PRESET: dict[str, dict[str, Any]] = {
-    "mock": {
-        "display_name": "mock/dev",
-        "kind": "Developer/Test",
-        "supported_efforts": [],
-        "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
-        "streaming_support": KNOWN_PROVIDER_SUPPORT_NO,
-        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
-        "credentials_status": KNOWN_PROVIDER_SUPPORT_YES,
-    },
     "claude_cli": {
         "display_name": "Claude CLI",
         "kind": "cli",
@@ -176,7 +162,7 @@ PROVIDER_PRESET: dict[str, dict[str, Any]] = {
     "codex_cli": {
         "display_name": "Codex CLI",
         "kind": "Provider",
-        "supported_efforts": list(CODEX_CLI_EFFORT_LEVELS),
+        "supported_efforts": [],
         "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
         "streaming_support": KNOWN_PROVIDER_SUPPORT_NO,
         "tools_support": KNOWN_PROVIDER_SUPPORT_YES,
@@ -185,38 +171,6 @@ PROVIDER_PRESET: dict[str, dict[str, Any]] = {
         "display_name": "Groq API",
         "kind": "cloud",
         "supported_efforts": list(GROQ_EFFORT_LEVELS),
-        "fast_support": KNOWN_PROVIDER_SUPPORT_YES,
-        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
-        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
-    },
-    "qwen": {
-        "display_name": "Qwen / LiteLLM",
-        "kind": "cloud",
-        "supported_efforts": list(QWEN_EFFORT_LEVELS),
-        "fast_support": KNOWN_PROVIDER_SUPPORT_YES,
-        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
-        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
-    },
-    "ollama": {
-        "display_name": "Ollama (local)",
-        "kind": "local",
-        "supported_efforts": list(OLLAMA_EFFORT_LEVELS),
-        "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
-        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
-        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
-    },
-    "chain": {
-        "display_name": "Chain (Claude→Bielik)",
-        "kind": "composite",
-        "supported_efforts": list(CHAIN_EFFORT_LEVELS),
-        "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
-        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
-        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
-    },
-    "eco_brain": {
-        "display_name": "Eco Brain",
-        "kind": "cloud",
-        "supported_efforts": list(ECO_BRAIN_EFFORT_LEVELS),
         "fast_support": KNOWN_PROVIDER_SUPPORT_YES,
         "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
         "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
@@ -1191,9 +1145,7 @@ def _codex_cli_contract(
     elif auth_status == "missing":
         apply_semantics = "not_apply_capable"
         blocker = "Codex CLI auth is missing; run codex login outside Jarvis."
-    elif auth_status != "logged_in":
-        apply_semantics = "not_apply_capable"
-        blocker = "Codex CLI auth/readiness is unknown from safe local checks; use codex login outside Jarvis."
+    # Unknown auth is allowed - user can try and it'll fail at runtime with proper error
 
     warnings = [
         warning
@@ -1637,23 +1589,23 @@ def _provider_apply_blocker(
     requested_provider_id: str,
 ) -> str | None:
     if provider.get("developer_only") and requested_provider_id != current_provider_id:
-        return f"Provider {requested_provider_id!r} is Developer/Test only; not apply-capable in POC."
+        return f"Provider {requested_provider_id!r} is Developer/Test only."
     if not provider.get("available", False):
         blocker = provider.get("blocker")
         if blocker:
-            return f"{blocker} Provider {requested_provider_id!r} is not apply-capable in POC."
-        return f"Provider {requested_provider_id!r} is unavailable; not apply-capable in POC."
+            return f"{blocker} Provider {requested_provider_id!r} is not apply-capable."
+        return f"Provider {requested_provider_id!r} is unavailable; not apply-capable."
     apply_semantics = provider.get("apply_semantics")
     if apply_semantics and apply_semantics != "next_turn":
         if apply_semantics == "requires_new_session":
-            return f"Provider {requested_provider_id!r} requires a new provider session; not apply-capable in POC (requires_new_session)."
+            return f"Provider {requested_provider_id!r} requires a new provider session."
         if apply_semantics == "requires_daemon_restart":
-            return f"Provider {requested_provider_id!r} requires daemon restart; not apply-capable in POC (requires_daemon_restart)."
-        return f"Provider {requested_provider_id!r} is not apply-capable in POC (not_apply_capable)."
+            return f"Provider {requested_provider_id!r} requires daemon restart."
+        return f"Provider {requested_provider_id!r} is not apply-capable."
     if provider.get("auth_status") == "missing":
-        return f"Provider {requested_provider_id!r} auth is missing; not apply-capable in POC."
+        return f"Provider {requested_provider_id!r} auth is missing."
     if _support_bool(provider.get("command_status")) is False:
-        return f"Provider {requested_provider_id!r} command is missing; not apply-capable in POC."
+        return f"Provider {requested_provider_id!r} command is missing."
     return None
 
 
@@ -1665,10 +1617,11 @@ def _brain_provider_apply_disabled_reason(provider: dict[str, Any]) -> str | Non
     auth_status = str(provider.get("auth_status") or "").strip()
     if auth_status == "missing":
         return "missing_auth"
+    # Allow unknown auth - don't block on auth readiness
     if auth_status and auth_status != "logged_in":
-        return "not_apply_capable"
-    apply_semantics = str(provider.get("apply_semantics") or "not_apply_capable")
-    if apply_semantics in {"requires_new_session", "requires_daemon_restart", "not_apply_capable"}:
+        return None
+    apply_semantics = str(provider.get("apply_semantics") or "next_turn")
+    if apply_semantics in {"requires_new_session", "requires_daemon_restart"}:
         return apply_semantics
     if apply_semantics != "next_turn":
         return "not_apply_capable"

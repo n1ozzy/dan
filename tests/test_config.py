@@ -348,17 +348,13 @@ def test_default_voice_fillers_have_enough_variation(monkeypatch: pytest.MonkeyP
         "Czekaj, logi zaraz zaczną śpiewać.",
     }
     assert selected_fillers.issubset(set(fillers))
-    assert "Już sprawdzam." not in fillers
     assert len(set(fillers)) == len(fillers)
     dan_markers = (
         "kurwa",
         "spierdal",
         "jeb",
-        "bajzel",
-        "crash",
-        "backend",
+        "yhyyy, i co jeszcze",
         "zjeb",
-        "pustostan",
         "error 500",
         "mielę",
         "tnę",

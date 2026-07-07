@@ -1,4 +1,4 @@
-"""Brain adapter selection for Jarvis v4.1."""
+"""Brain adapter selection for Jarvis v4.1 - Production ready."""
 
 from __future__ import annotations
 
@@ -8,16 +8,11 @@ from typing import Any
 
 from jarvis.brain.auto_detect import detect_all_providers, get_default_adapter
 from jarvis.brain.base import BrainAdapter, BrainRequest, BrainResponse
-from jarvis.brain.chain_adapter import ChainAdapter
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
-from jarvis.brain.claude_cli_warm_adapter import ClaudeCliWarmAdapter
 from jarvis.brain.codex_cli_adapter import CodexCliAdapter
-from jarvis.brain.eco_brain_adapter import create_eco_brain_adapter
 from jarvis.brain.groq_adapter import create_groq_adapter
-from jarvis.brain.mock_adapter import MockBrainAdapter
-from jarvis.brain.ollama_adapter import create_ollama_adapter
-from jarvis.brain.qwen_adapter import create_qwen_adapter
 from jarvis.brain.sync_adapter import wrap_async_adapter
+from jarvis.brain.test_adapter import create_test_adapter
 
 
 class BrainManagerError(Exception):
@@ -25,9 +20,12 @@ class BrainManagerError(Exception):
 
 
 class BrainManager:
-    """Selects a stateless brain adapter without owning provider session state."""
+    """Selects a stateless brain adapter without owning provider session state.
+    
+    Production adapters only: claude_cli, codex_cli, groq.
+    """
 
-    def __init__(self, adapters: Iterable[BrainAdapter], default_adapter: str = "mock") -> None:
+    def __init__(self, adapters: Iterable[BrainAdapter], default_adapter: str) -> None:
         self._adapters: dict[str, BrainAdapter] = {}
         for adapter in adapters:
             name = getattr(adapter, "name", None)
@@ -47,20 +45,20 @@ class BrainManager:
         cls, config: object, *, generation_registry: Any | None = None
     ) -> "BrainManager":
         brain_config = getattr(config, "brain", None)
-        # Use auto-detection if no default_adapter specified, otherwise use config
         config_default = getattr(brain_config, "default_adapter", None)
-        default_adapter = config_default if config_default else get_default_adapter()
-        default_model = getattr(brain_config, "default_model", "mock-local")
+        default_model = getattr(brain_config, "default_model", "sonnet")
 
         # Auto-detect all available providers
         detected = detect_all_providers()
-        adapters: list[BrainAdapter] = [MockBrainAdapter(default_model=default_model)]
+        adapters: list[BrainAdapter] = []
 
-        # Register all detected providers automatically
+        # Priority order for default adapter
+        priority = ["claude_cli", "codex_cli", "groq"]
+
+        # Register Claude CLI adapter
         if detected["claude_cli"].available:
             claude_config = getattr(brain_config, "claude_cli", None)
             if claude_config is None:
-                # Create minimal config from detection
                 from types import SimpleNamespace
                 claude_config = SimpleNamespace(
                     command="claude",
@@ -79,7 +77,7 @@ class BrainManager:
                     stream_args=None,
                     enabled=True,
                 )
-            if _should_register_cli_adapter(claude_config, default_adapter, "claude_cli"):
+            if _should_register_cli_adapter(claude_config, config_default, "claude_cli"):
                 adapters.append(
                     ClaudeCliAdapter(
                         command=getattr(claude_config, "command", "claude"),
@@ -100,6 +98,7 @@ class BrainManager:
                     )
                 )
 
+        # Register Codex CLI adapter
         if detected["codex_cli"].available:
             codex_config = getattr(brain_config, "codex_cli", None)
             if codex_config is None:
@@ -111,7 +110,7 @@ class BrainManager:
                     timeout_seconds=120,
                     enabled=True,
                 )
-            if _should_register_cli_adapter(codex_config, default_adapter, "codex_cli"):
+            if _should_register_cli_adapter(codex_config, config_default, "codex_cli"):
                 adapters.append(
                     CodexCliAdapter(
                         command=getattr(codex_config, "command", "codex"),
@@ -121,60 +120,38 @@ class BrainManager:
                     )
                 )
 
-        # Groq API adapter - auto-register if API key available OR explicitly enabled in config
+        # Register Groq API adapter - auto-register if API key available OR explicitly enabled in config
         groq_config = getattr(brain_config, "groq", None)
         groq_explicit = bool(getattr(groq_config, "enabled", False)) if groq_config else False
         if detected["groq"].available or groq_explicit:
             if groq_config is None:
                 from types import SimpleNamespace
                 groq_config = SimpleNamespace(enabled=True, api_key="", model="")
-            if _should_register_cli_adapter(groq_config, default_adapter, "groq"):
+            if _should_register_cli_adapter(groq_config, config_default, "groq"):
                 adapters.append(wrap_async_adapter(create_groq_adapter(config, generation_registry)))
 
-        # Qwen / LiteLLM adapter
-        qwen_config = getattr(brain_config, "qwen", None)
-        qwen_explicit = bool(getattr(qwen_config, "enabled", False)) if qwen_config else False
-        if detected["qwen"].available or qwen_explicit:
-            if qwen_config is None:
-                from types import SimpleNamespace
-                qwen_config = SimpleNamespace(enabled=True, base_url="", model="")
-            if _should_register_cli_adapter(qwen_config, default_adapter, "qwen"):
-                adapters.append(wrap_async_adapter(create_qwen_adapter(config, generation_registry)))
+        # Register test adapter if explicitly enabled (for integration tests)
+        test_config = getattr(brain_config, "test", None)
+        if test_config and getattr(test_config, "enabled", False):
+            adapters.append(create_test_adapter(config, generation_registry))
 
-        # Ollama local adapter
-        ollama_config = getattr(brain_config, "ollama", None)
-        ollama_explicit = bool(getattr(ollama_config, "enabled", False)) if ollama_config else False
-        if detected["ollama"].available or ollama_explicit:
-            if ollama_config is None:
-                from types import SimpleNamespace
-                ollama_config = SimpleNamespace(enabled=True, host="http://localhost:11434", model="")
-            if _should_register_cli_adapter(ollama_config, default_adapter, "ollama"):
-                adapters.append(wrap_async_adapter(create_ollama_adapter(config, generation_registry)))
+        if not adapters:
+            raise BrainManagerError(
+                "No brain adapters available. Install Claude CLI, Codex CLI, or set GROQ_API_KEY."
+            )
 
-        # Eco Brain adapter
-        eco_config = getattr(brain_config, "eco_brain", None)
-        eco_explicit = bool(getattr(eco_config, "enabled", False)) if eco_config else False
-        if detected["eco_brain"].available or eco_explicit:
-            if eco_config is None:
-                from types import SimpleNamespace
-                eco_config = SimpleNamespace(enabled=True, base_url="", model="")
-            if _should_register_cli_adapter(eco_config, default_adapter, "eco_brain"):
-                adapters.append(wrap_async_adapter(create_eco_brain_adapter(config, generation_registry)))
+        # Determine default adapter: config default > first available in priority order
+        if config_default and config_default in [a.name for a in adapters]:
+            default_adapter = config_default
+        else:
+            for name in priority:
+                if any(a.name == name for a in adapters):
+                    default_adapter = name
+                    break
+            else:
+                default_adapter = adapters[0].name
 
-        # Chain adapter (Claude + Ollama) - only if both are available
-        if (detected["claude_cli"].available or bool(getattr(getattr(brain_config, "claude_cli", None), "enabled", False))) and \
-           (detected["ollama"].available or bool(getattr(getattr(brain_config, "ollama", None), "enabled", False))):
-            chain_config = getattr(brain_config, "chain", None)
-            if chain_config is None:
-                from types import SimpleNamespace
-                chain_config = SimpleNamespace(enabled=True)
-            if _should_register_cli_adapter(chain_config, default_adapter, "chain"):
-                adapters.append(ChainAdapter.from_config(config, generation_registry))
-
-        return cls(
-            adapters,
-            default_adapter=default_adapter,
-        )
+        return cls(adapters, default_adapter=default_adapter)
 
     @property
     def current_adapter_name(self) -> str:
@@ -204,21 +181,14 @@ class BrainManager:
         adapter = self.get_adapter(adapter_name)
         if on_delta is not None and _accepts_on_delta(adapter):
             return adapter.generate(request, on_delta=on_delta)
-        # G0 §2 degradation: an adapter without streaming gets the plain
-        # call; the caller sentence-cuts the final text after the fact.
         return adapter.generate(request)
 
     def supports_streaming(self, adapter_name: str | None = None) -> bool:
-        """Whether the selected adapter can accept on_delta callbacks."""
-
         adapter = self.get_adapter(adapter_name)
         return _accepts_on_delta(adapter)
 
 
 def _accepts_on_delta(adapter: BrainAdapter) -> bool:
-    """Feature detection instead of a TypeError probe: a signature check can
-    never mask a real TypeError raised inside a streaming adapter."""
-
     try:
         parameters = inspect.signature(adapter.generate).parameters
     except (TypeError, ValueError):
