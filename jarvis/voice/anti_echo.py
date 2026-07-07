@@ -31,6 +31,7 @@ from jarvis.voice.transcription import normalize_phrase
 
 DEFAULT_WINDOW_SECONDS = 30
 DEFAULT_OVERLAP_THRESHOLD = 0.75
+DEFAULT_MIN_ECHO_TOKENS = 8
 
 # Corpus membership is decided by spoken_at, not status (FIX-09): the broker
 # stamps spoken_at the moment a chunk reaches the speaker, so a NULL means the
@@ -61,27 +62,38 @@ class AntiEchoGate:
             getattr(config, "anti_echo_overlap_threshold", DEFAULT_OVERLAP_THRESHOLD)
             or DEFAULT_OVERLAP_THRESHOLD
         )
+        self._min_echo_tokens = int(
+            getattr(config, "anti_echo_min_echo_tokens", DEFAULT_MIN_ECHO_TOKENS)
+            or DEFAULT_MIN_ECHO_TOKENS
+        )
 
     def accepts_transcript(self, transcript: str) -> EchoDecision:
         tokens = set(normalize_phrase(transcript).split())
         if not tokens:
             return EchoDecision(accepted=True, reason="ok")
 
+        union: set[str] = set()
         best_row, best_overlap = None, 0.0
         for spoken in self._recently_spoken():
             spoken_tokens = set(normalize_phrase(spoken).split())
             if not spoken_tokens:
                 continue
+            union |= spoken_tokens
             row_overlap = len(tokens & spoken_tokens) / len(tokens)
             if row_overlap > best_overlap:
                 best_row, best_overlap = spoken, row_overlap
 
-        # Conversational follow-ups (short, referencing key terms) hit 1.0 overlap
-        # against the row that introduced the term. Echoes are typically longer.
-        # Require BOTH: high overlap AND minimum token count to reject.
-        min_echo_tokens = 6  # below this: treat as follow-up, not echo
-        if best_overlap >= self._threshold and len(tokens) >= min_echo_tokens:
-            return EchoDecision(accepted=False, reason="echo", matched_text=best_row)
+        # Union-based echo detection (G4c): a PTT capture spans several consecutive
+        # TTS sentences. Against any single row the overlap dilutes to ~1/n —
+        # measured live 2026-07-02: pure echo 0.52 per row vs 1.00 union, a real
+        # user interjection over playing TTS 0.31 union. Fail-closed for turn
+        # creation: dropping a user sentence that duplicates Jarvis's own words is
+        # acceptable; an echo that becomes a turn is a violation by construction.
+        # Require BOTH: high union overlap AND minimum token count to reject.
+        if union:
+            union_overlap = len(tokens & union) / len(tokens)
+            if union_overlap >= self._threshold and len(tokens) >= self._min_echo_tokens:
+                return EchoDecision(accepted=False, reason="echo", matched_text=best_row)
 
         return EchoDecision(accepted=True, reason="ok")
 
