@@ -77,12 +77,19 @@ class HotkeyEdgeDetector:
     `update(flags)` returns "down" the first poll where every required bit is
     present, "up" the first poll after any required bit drops, else None. A
     zero required-mask is disabled and never fires.
+
+    Includes a cooldown after "up" to prevent stacking when tapping one key
+    while holding another (e.g. hold cmd, tap shift repeatedly).
     """
 
     def __init__(self, required_mask: int) -> None:
         self._required = required_mask
         self._held = False
         self._last_down_time: float = 0.0
+        self._last_up_time: float = 0.0
+        # Minimum time between up and next down to avoid rapid re-trigger
+        # when tapping a modifier while holding another.
+        self._min_up_down_interval: float = 0.15  # 150ms
 
     def update(self, flags: int) -> str | None:
         if self._required == 0:
@@ -94,12 +101,17 @@ class HotkeyEdgeDetector:
             # Debounce: ignore duplicate down events within 150ms
             if now - self._last_down_time < 0.15:
                 return None
+            # Cooldown after up: prevent rapid down/up/down when tapping a key
+            # while another required key is held.
+            if now - self._last_up_time < self._min_up_down_interval:
+                return None
             self._held = True
             self._last_down_time = now
             return "down"
         if not active and self._held:
             # No debounce on up — release immediately when keys drop
             self._held = False
+            self._last_up_time = now
             return "up"
         return None
 
