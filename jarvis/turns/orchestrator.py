@@ -157,18 +157,18 @@ class TurnOrchestrator:
         except Exception:  # speech must never fail generation
             return None
 
-    def _finish_speech(self, session: Any, turn_id: str, text: str) -> None:
-        """Close the stream against the canonical text (best effort).
+    def _finish_speech(self, session: Any, turn_id: str, display_text: str, speech_text: str | None = None) -> None:
+        """Close the stream against the speech text (best effort).
 
         With a session, sentences already queued from deltas are NOT
         re-enqueued — finalize only flushes the tail (or chunks the whole
-        canonical text when no delta ever arrived)."""
+        speech text when no delta ever arrived)."""
 
         if session is None:
-            self._speak(turn_id, text)
+            self._speak(turn_id, speech_text or display_text)
             return
         try:
-            session.finalize(text)
+            session.finalize(speech_text or display_text)
         except Exception:  # speech must never fail a finished turn
             pass
 
@@ -310,12 +310,14 @@ class TurnOrchestrator:
             streaming_enabled = (
                 self._speech is not None
                 and self._brain_manager.supports_streaming()
-                and not is_live_voice
             )
-            # Live UX spike: filler is not isolated from the persisted speech
-            # queue, and text/API turns must never enqueue spoken filler. Keep
-            # streamed sentence speech, but do not arm the filler timer here.
-            filler_timer = None
+            # Voice turns get fillers + streaming; text/API turns get streaming
+            # only (no filler — text turns must never enqueue spoken filler).
+            filler_timer = (
+                self._speech.arm_filler(turn_id=turn.id)
+                if streaming_enabled and is_live_voice
+                else None
+            )
             speech_session = (
                 self._start_speech_stream(turn.id, filler_timer)
                 if streaming_enabled
@@ -462,7 +464,8 @@ class TurnOrchestrator:
             # and an awaiting_approval turn speaks only its safe prefix (G0 §4).
             # A streaming session already queued its sentences live; this
             # only flushes the tail (or chunks everything when no delta came).
-            self._finish_speech(speech_session, turn.id, response.text)
+            speech_text = getattr(response, "speech_text", None) or response.text
+            self._finish_speech(speech_session, turn.id, response.text, speech_text)
             self._settle_runtime_idle_after_completion(
                 pending_approval=bool(pending_approval_count),
                 correlation_id=correlation_id,
@@ -596,8 +599,11 @@ class TurnOrchestrator:
                 self._speech is not None
                 and self._brain_manager.supports_streaming()
             )
+            # Continuations of voice turns also stream (no filler needed).
             speech_session = (
-                self._start_speech_stream(turn.id, None) if streaming_enabled else None
+                self._start_speech_stream(turn.id, None)
+                if streaming_enabled and turn.source == TurnSource.VOICE.value
+                else None
             )
             response = self._brain_manager.generate(
                 request,
@@ -661,7 +667,8 @@ class TurnOrchestrator:
             brain_model=response_model,
             metadata={"tool_result_continuation": success_metadata},
         )
-        self._finish_speech(speech_session, turn.id, continuation_text)
+        speech_text = getattr(response, "speech_text", None) or continuation_text
+        self._finish_speech(speech_session, turn.id, continuation_text, speech_text)
         self._append_event(
             EventType.TURN_FINISHED,
             {

@@ -1398,7 +1398,7 @@ function runtimeSettingsUnknownCanApply(payload, key) {
 }
 
 function runtimeSettingsUnknownDisabledReason(payload, key) {
-  if (!runtimeSettingsEffectiveValueUnknown(payload, key) || runtimeSettingsUnknownCanApply(payload, key)) {
+  if (!runtimeSettingsEffectiveValueUnknown(payload, key)) {
     return "";
   }
   return "Effective value: Unknown. Reason: runtime does not report this setting. Apply disabled.";
@@ -1409,6 +1409,19 @@ function runtimeSettingsUnknownDisabledMessage(group, settings, payload) {
     const reason = runtimeSettingsUnknownDisabledReason(payload, key);
     if (reason) {
       return reason;
+    }
+  }
+  return "";
+}
+
+function runtimeSettingsBrainUnknownControlMessage(payload) {
+  for (const key of ["brain.model", "brain.effort", "brain.fast"]) {
+    const field = runtimeSettingsPreviewFieldForKey(payload, key);
+    if (field.editable_now === true) {
+      const reason = runtimeSettingsUnknownDisabledReason(payload, key);
+      if (reason) {
+        return reason;
+      }
     }
   }
   return "";
@@ -1744,7 +1757,7 @@ function renderBrainApplyControls(payload) {
   const currentProvider = String(brain.current_provider || "");
   const previewProvider = runtimeSettingsPreviewValue("brain", "brain.provider", currentProvider);
   const currentProviderObject = runtimeSettingsBrainProvider(payload, currentProvider);
-  const keepDeveloperProviderActive = Boolean(currentProviderObject && currentProviderObject.developer_only);
+  const keepDeveloperProviderActive = currentProvider === "mock" || Boolean(currentProviderObject && currentProviderObject.developer_only);
   const providerOptions = [
     ...normalProviders.map((provider) => ({
       value: provider.id,
@@ -1755,7 +1768,7 @@ function renderBrainApplyControls(payload) {
   if (keepDeveloperProviderActive) {
     providerOptions.unshift({
       value: "",
-      label: "Developer/Test provider active",
+      label: "No normal provider active",
       disabled: true,
     });
   }
@@ -1820,9 +1833,12 @@ function updateBrainControlOptions() {
   const currentProviderId = runtimeSettingsCurrentProvider(payload);
   const currentProvider = runtimeSettingsBrainProvider(payload, currentProviderId);
   const provider = selectedProvider || currentProvider;
-  const preserveDeveloperProvider = currentProvider && currentProvider.developer_only;
+  const preserveDeveloperProvider = currentProviderId === "mock" || Boolean(currentProvider && currentProvider.developer_only);
   const lockedToDeveloperProvider = preserveDeveloperProvider && !selectedProvider;
   const models = Array.isArray(safeObject(provider).models) ? provider.models : [];
+  const modelDisabledReason = runtimeSettingsFieldCannotApplyReason(payload, "brain.model");
+  const currentModelControlValue = el.activeBrainModelSelect ? String(el.activeBrainModelSelect.value || "") : "";
+  const modelIds = models.map((item) => String(item.id));
   const previewModel = runtimeSettingsPreviewValue(
     "brain",
     "brain.model",
@@ -1834,16 +1850,22 @@ function updateBrainControlOptions() {
       value: item.id,
       label: item.label || item.id,
     })),
-    previewModel,
+    modelIds.includes(currentModelControlValue) ? currentModelControlValue : previewModel,
   );
+  if (el.activeBrainModelSelect) {
+    el.activeBrainModelSelect.disabled = models.length === 0 || lockedToDeveloperProvider || Boolean(modelDisabledReason);
+    el.activeBrainModelSelect.title = modelDisabledReason || "";
+  }
   const efforts = Array.isArray(safeObject(provider).allowed_effort_values)
     ? provider.allowed_effort_values
     : [];
   const effortUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "brain.effort");
+  const currentEffortControlValue = el.activeBrainEffortSelect ? String(el.activeBrainEffortSelect.value || "") : "";
+  const previewEffort = runtimeSettingsPreviewValue("brain", "brain.effort", efforts[0] || "");
   setSelectOptions(
     el.activeBrainEffortSelect,
     efforts.map((value) => ({ value, label: value })),
-    effortUnknownReason ? "" : runtimeSettingsPreviewValue("brain", "brain.effort", efforts[0] || ""),
+    effortUnknownReason ? "" : efforts.includes(currentEffortControlValue) ? currentEffortControlValue : previewEffort,
   );
   if (el.activeBrainEffortSelect) {
     el.activeBrainEffortSelect.disabled = efforts.length === 0 || lockedToDeveloperProvider || Boolean(effortUnknownReason);
@@ -1859,7 +1881,7 @@ function updateBrainControlOptions() {
   const blocker = provider ? providerApplyBlocker(provider, runtimeSettingsCurrentProvider(payload)) : "provider unavailable";
   const draft = runtimeSettingsPayloadForGroup("brain", runtimeSettingsDraftForGroup("brain"));
   const pending = runtimeSettingsPendingMessage("brain", draft, payload);
-  const unknownMessage = effortUnknownReason || fastUnknownReason || runtimeSettingsUnknownDisabledMessage("brain", draft, payload);
+  const unknownMessage = runtimeSettingsBrainUnknownControlMessage(payload) || runtimeSettingsUnknownDisabledMessage("brain", draft, payload);
   const applyBlockedReason = runtimeSettingsGroupApplyBlockedReason("brain", draft, payload);
   const disabledMessage = blocker || unknownMessage || applyBlockedReason;
   const result = runtimeSettingsGroupResult("brain");
@@ -7278,13 +7300,13 @@ function approvalCard(approval, mode) {
   const actions = document.createElement("div");
   actions.className = "row-actions";
   if (mode === "pending") {
-    const approveButton = smallButton(isMemoryApproval(approval) ? "Zatwierdź i zapisz" : "Zatwierdź");
+    const approveButton = smallButton(isMemoryApproval(approval) ? "Zatwierdź i zapisz" : "Zatwierdź i wykonaj");
     approveButton.classList.add("strong");
     approveButton.addEventListener("click", () => {
       if (isMemoryApproval(approval)) {
         approveAndExecuteApproval(approval.id, approveButton);
       } else {
-        decideApproval(approval.id, "approve", approveButton);
+        approveAndExecuteApproval(approval.id, approveButton);
       }
     });
     const rejectButton = smallButton("Odrzuć");

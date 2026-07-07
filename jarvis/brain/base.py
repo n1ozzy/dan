@@ -76,6 +76,7 @@ class BrainUsage:
 @dataclass
 class BrainResponse:
     text: str
+    speech_text: str | None = None
     tool_calls: list[BrainToolCall] = field(default_factory=list)
     model: str = "unknown"
     usage: BrainUsage = field(default_factory=BrainUsage)

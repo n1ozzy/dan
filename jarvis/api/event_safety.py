@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from jarvis.events.models import Event
-from jarvis.security.redaction import redact_secrets
+from jarvis.security.redaction import REDACTION_PLACEHOLDER, redact_secrets
 
 
 _UNSAFE_CLIENT_PAYLOAD_KEYS = {
@@ -58,38 +58,44 @@ def safe_event_payload_for_client(event: Event) -> dict[str, Any]:
     EventStore keeps the durable payload for audit/debugging; client surfaces
     get a narrower projection so raw tool output, args, tokens, headers,
     cookies, env values, and similar high-risk fields do not cross the UI/API
-    boundary.
+    boundary. Unsafe keys are retained with redacted values so clients can see
+    the field existed without leaking secrets.
     """
 
-    payload, omitted = _strip_unsafe_client_fields(event.payload)
-    if "output" in omitted:
+    payload = _redact_unsafe_client_fields(event.payload)
+    if _has_output_key(event.payload):
         payload["output_omitted"] = True
     return redact_secrets(payload)
 
 
-def _strip_unsafe_client_fields(value: Any) -> tuple[Any, set[str]]:
+def _has_output_key(value: Any) -> bool:
     if isinstance(value, Mapping):
-        stripped: dict[str, Any] = {}
-        omitted: set[str] = set()
+        for key in value:
+            if _normalize_key(key) == "output":
+                return True
+            if _has_output_key(value[key]):
+                return True
+    elif _sequence(value):
+        for item in value:
+            if _has_output_key(item):
+                return True
+    return False
+
+
+def _redact_unsafe_client_fields(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        redacted: dict[str, Any] = {}
         for key, item in value.items():
             key_text = str(key)
             normalized_key = _normalize_key(key_text)
             if _unsafe_client_payload_key(normalized_key):
-                omitted.add(normalized_key)
-                continue
-            safe_item, child_omitted = _strip_unsafe_client_fields(item)
-            stripped[key_text] = safe_item
-            omitted.update(child_omitted)
-        return stripped, omitted
+                redacted[key_text] = REDACTION_PLACEHOLDER
+            else:
+                redacted[key_text] = _redact_unsafe_client_fields(item)
+        return redacted
     if _sequence(value):
-        stripped_items: list[Any] = []
-        omitted: set[str] = set()
-        for item in value:
-            safe_item, child_omitted = _strip_unsafe_client_fields(item)
-            stripped_items.append(safe_item)
-            omitted.update(child_omitted)
-        return stripped_items, omitted
-    return value, set()
+        return [_redact_unsafe_client_fields(item) for item in value]
+    return value
 
 
 def _unsafe_client_payload_key(normalized_key: str) -> bool:

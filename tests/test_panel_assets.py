@@ -1841,6 +1841,393 @@ def test_brain_apply_uses_backend_valid_next_turn_fields_only(tmp_path: Path) ->
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_codex_brain_apply_uses_backend_model_only_pending_rows(tmp_path: Path) -> None:
+    harness = tmp_path / "codex-brain-model-only-apply-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            function createNode(tag) {{
+              const children = [];
+              const classes = new Set();
+              return {{
+                tagName: tag,
+                children,
+                childNodes: children,
+                textContent: "",
+                className: "",
+                hidden: false,
+                disabled: false,
+                checked: false,
+                value: "",
+                title: "",
+                type: "",
+                dataset: {{}},
+                classList: {{
+                  toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+                  contains: (name) => classes.has(name),
+                }},
+                appendChild(child) {{ children.push(child); return child; }},
+                append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
+                removeChild(child) {{
+                  const index = children.indexOf(child);
+                  if (index >= 0) children.splice(index, 1);
+                  return child;
+                }},
+                get firstChild() {{ return children[0] || null; }},
+                addEventListener() {{}},
+              }};
+            }}
+
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41741" }},
+              localStorage: {{
+                getItem: () => "token",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              createNode,
+              document: {{
+                addEventListener: () => {{}},
+                createElement: createNode,
+              }},
+              window: {{}},
+              fetch: async () => {{ throw new Error("unexpected request"); }},
+            }};
+            context.window.localStorage = context.localStorage;
+            context.globalThis = context;
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{ filename: "app.js" }});
+
+            const payload = {{
+              brain: {{ current_adapter: {{ effective_value: "codex_cli" }} }},
+              capability_graph: {{
+                brain_capabilities: {{
+                  current_provider: "codex_cli",
+                  current_model: "codex-old",
+                  providers: [
+                    {{
+                      id: "codex_cli",
+                      provider_id: "codex_cli",
+                      label: "Codex CLI",
+                      kind: "cli",
+                      transport: "subprocess",
+                      available: true,
+                      models: [
+                        {{ id: "codex-old", label: "Codex Old", available: true }},
+                        {{ id: "codex-new", label: "Codex New", available: true }},
+                      ],
+                      current_model: "codex-old",
+                      selected_model: "codex-old",
+                      effective_model: "codex-old",
+                      model_source: "jarvis_explicit",
+                      allowed_effort_values: [],
+                      fast_supported: false,
+                      command_status: "found",
+                      auth_status: "logged_in",
+                      apply_semantics: "next_turn",
+                      apply_capable: true,
+                      apply_disabled_reason: null,
+                      command_preview: "fake-codex exec --model codex-old",
+                    }},
+                    {{
+                      id: "mock",
+                      label: "mock/dev",
+                      kind: "Developer/Test",
+                      developer_only: true,
+                      available: true,
+                      models: [{{ id: "mock-local", label: "mock-local", available: true }}],
+                      current_model: "mock-local",
+                      allowed_effort_values: [],
+                      command_status: "found",
+                      apply_semantics: "not_apply_capable",
+                    }},
+                  ],
+                }},
+              }},
+              settings_preview: {{
+                sections: {{
+                  brain_provider: {{
+                    label: "Brain / Provider",
+                    apply_semantics: "next_turn",
+                    apply_capable: true,
+                    apply_disabled_reason: null,
+                    pending_changes: [],
+                    valid_next_turn_changes: ["brain.model"],
+                    requires_new_session_changes: ["brain.provider"],
+                    requires_restart_changes: [],
+                    fields: {{
+                      provider: {{ id: "brain_provider.provider", label: "Provider", current: "codex_cli", effective: "codex_cli", status: "ok", editable_now: false, editable_later: true, allowed_values: ["codex_cli"], disabled_values: [{{ value: "mock", reason: "Developer/Test only." }}] }},
+                      model: {{ id: "brain_provider.model", label: "Model", current: "codex-old", effective: "codex-old", status: "ok", editable_now: true, allowed_values: ["codex-old", "codex-new"], apply_capable: true }},
+                      effort: {{ id: "brain_provider.effort", label: "Effort", current: null, effective: null, status: "unsupported", editable_now: false, allowed_values: [], apply_capable: false, apply_disabled_reason: "not_apply_capable" }},
+                      fast: {{ id: "brain_provider.fast", label: "Fast", current: false, effective: false, status: "unsupported", editable_now: false, apply_capable: false }},
+                      command_preview: {{ id: "brain_provider.command_preview", label: "Next-turn command preview", current: "fake-codex exec --model codex-old", effective: "fake-codex exec --model codex-old", status: "ok" }},
+                      apply_semantics: {{ id: "brain_provider.apply_semantics", label: "Apply semantics", current: "next_turn", effective: "next_turn", status: "ok" }},
+                    }},
+                  }},
+                }},
+              }},
+            }};
+            context.payload = payload;
+
+            vm.runInContext(`
+              el.activeBrainProviderSelect = createNode("select");
+              el.activeBrainModelSelect = createNode("select");
+              el.activeBrainEffortSelect = createNode("select");
+              el.activeBrainFastToggle = createNode("input");
+              el.brainSettingsSummaryList = createNode("div");
+              el.brainApplyStatus = createNode("p");
+              el.applyBrainSettingsButton = createNode("button");
+              cockpit.online = true;
+              cockpit.runtimeSettingsApply.payload = payload;
+              cockpit.settingsPreview.payload = payload;
+              renderBrainApplyControls(payload);
+              el.activeBrainModelSelect.value = "codex-new";
+              updateBrainControlOptions();
+              globalThis.__el = el;
+            `, context);
+
+            const providerValues = context.__el.activeBrainProviderSelect.childNodes.map((option) => option.value);
+            assert.deepStrictEqual(providerValues, ["codex_cli"]);
+            assert.strictEqual(context.__el.activeBrainEffortSelect.disabled, true);
+            const draft = context.runtimeSettingsPayloadForGroup("brain", context.runtimeSettingsDraftForGroup("brain"));
+            const filtered = context.runtimeSettingsApplyPayloadForGroup("brain", draft);
+            assert.deepStrictEqual(JSON.parse(JSON.stringify(filtered)), {{
+              "brain.model": "codex-new",
+            }});
+            assert.match(context.runtimeSettingsPendingMessage("brain", draft, payload), /model/i);
+            assert.doesNotMatch(context.runtimeSettingsPendingMessage("brain", draft, payload), /Effort|permission/i);
+            assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, false);
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_codex_brain_apply_disabled_for_missing_auth_and_unknown_model_values(
+    tmp_path: Path,
+) -> None:
+    harness = tmp_path / "codex-brain-disabled-auth-unknown-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            function createNode(tag) {{
+              const children = [];
+              const classes = new Set();
+              return {{
+                tagName: tag,
+                children,
+                childNodes: children,
+                textContent: "",
+                className: "",
+                hidden: false,
+                disabled: false,
+                checked: false,
+                value: "",
+                title: "",
+                type: "",
+                dataset: {{}},
+                classList: {{
+                  toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+                  contains: (name) => classes.has(name),
+                }},
+                appendChild(child) {{ children.push(child); return child; }},
+                append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
+                removeChild(child) {{
+                  const index = children.indexOf(child);
+                  if (index >= 0) children.splice(index, 1);
+                  return child;
+                }},
+                get firstChild() {{ return children[0] || null; }},
+                addEventListener() {{}},
+              }};
+            }}
+
+            const requests = [];
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41741" }},
+              localStorage: {{
+                getItem: () => "token",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              createNode,
+              document: {{
+                addEventListener: () => {{}},
+                createElement: createNode,
+              }},
+              window: {{}},
+              fetch: async (url, init = {{}}) => {{
+                const parsed = new URL(url);
+                requests.push({{ path: parsed.pathname, method: init.method || "GET" }});
+                return {{
+                  ok: true,
+                  status: 200,
+                  text: async () => JSON.stringify({{ ok: true, runtime_settings: {{}} }}),
+                }};
+              }},
+            }};
+            context.window.localStorage = context.localStorage;
+            context.globalThis = context;
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{ filename: "app.js" }});
+
+            function codexPayload(overrides = {{}}) {{
+              const section = overrides.section || {{
+                apply_semantics: "not_apply_capable",
+                apply_capable: false,
+                apply_disabled_reason: "missing_auth",
+                pending_changes: [],
+                valid_next_turn_changes: [],
+                requires_new_session_changes: [],
+                requires_restart_changes: [],
+              }};
+              return {{
+                brain: {{ current_adapter: {{ effective_value: "codex_cli" }} }},
+                capability_graph: {{
+                  brain_capabilities: {{
+                    current_provider: "codex_cli",
+                    current_model: overrides.currentModel || "codex-old",
+                    providers: [{{
+                      id: "codex_cli",
+                      provider_id: "codex_cli",
+                      label: "Codex CLI",
+                      kind: "cli",
+                      transport: "subprocess",
+                      available: overrides.available !== false,
+                      models: [{{ id: "codex-old", label: "Codex Old", available: true }}, {{ id: "codex-new", label: "Codex New", available: true }}],
+                      current_model: overrides.currentModel || "codex-old",
+                      selected_model: overrides.currentModel || "codex-old",
+                      effective_model: overrides.currentModel || "codex-old",
+                      model_source: "jarvis_explicit",
+                      allowed_effort_values: [],
+                      fast_supported: false,
+                      command_status: "found",
+                      auth_status: overrides.authStatus || "missing",
+                      apply_semantics: section.apply_semantics,
+                      apply_capable: section.apply_capable,
+                      apply_disabled_reason: section.apply_disabled_reason,
+                      apply_semantics_reason: overrides.reason || "Codex CLI auth is missing.",
+                      command_preview: "fake-codex exec --model codex-old",
+                    }}],
+                  }},
+                }},
+                settings_preview: {{
+                  sections: {{
+                    brain_provider: {{
+                      label: "Brain / Provider",
+                      ...section,
+                      fields: {{
+                        provider: {{ id: "brain_provider.provider", label: "Provider", current: "codex_cli", effective: "codex_cli", status: "ok", editable_now: false, editable_later: true, allowed_values: ["codex_cli"] }},
+                        model: {{ id: "brain_provider.model", label: "Model", current: overrides.fieldModel || "codex-old", effective: overrides.fieldModel || "codex-old", status: overrides.modelStatus || "ok", editable_now: Boolean(section.apply_capable), allowed_values: ["codex-old", "codex-new"], apply_capable: section.valid_next_turn_changes.includes("brain.model") }},
+                        effort: {{ id: "brain_provider.effort", label: "Effort", current: null, effective: null, status: "unsupported", editable_now: false, allowed_values: [], apply_capable: false, apply_disabled_reason: "not_apply_capable" }},
+                        fast: {{ id: "brain_provider.fast", label: "Fast", current: false, effective: false, status: "unsupported", editable_now: false, apply_capable: false }},
+                      }},
+                    }},
+                  }},
+                }},
+              }};
+            }}
+
+            vm.runInContext(`
+              el.activeBrainProviderSelect = createNode("select");
+              el.activeBrainModelSelect = createNode("select");
+              el.activeBrainEffortSelect = createNode("select");
+              el.activeBrainFastToggle = createNode("input");
+              el.brainSettingsSummaryList = createNode("div");
+              el.brainApplyStatus = createNode("p");
+              el.applyBrainSettingsButton = createNode("button");
+              cockpit.online = true;
+              globalThis.__el = el;
+            `, context);
+
+            const missingAuthPayload = codexPayload();
+            context.payload = missingAuthPayload;
+            vm.runInContext(`
+              cockpit.runtimeSettingsApply.payload = payload;
+              cockpit.settingsPreview.payload = payload;
+              renderBrainApplyControls(payload);
+              el.activeBrainModelSelect.value = "codex-new";
+              updateBrainControlOptions();
+            `, context);
+            assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
+            assert.match(context.__el.brainApplyStatus.textContent, /auth|not apply-capable/i);
+
+            (async () => {{
+              await context.applyRuntimeSettingsGroup("brain");
+              assert.strictEqual(requests.length, 0);
+            }})().catch((error) => {{
+              console.error(error);
+              process.exit(1);
+            }});
+
+            const unknownPayload = codexPayload({{
+              currentModel: "unknown",
+              fieldModel: "unknown",
+              modelStatus: "unknown",
+              authStatus: "logged_in",
+              reason: "",
+              section: {{
+                apply_semantics: "next_turn",
+                apply_capable: true,
+                apply_disabled_reason: null,
+                pending_changes: [],
+                valid_next_turn_changes: ["brain.model"],
+                requires_new_session_changes: [],
+                requires_restart_changes: [],
+              }},
+            }});
+            context.payload = unknownPayload;
+            vm.runInContext(`
+              cockpit.runtimeSettingsApply.payload = payload;
+              cockpit.settingsPreview.payload = payload;
+              renderBrainApplyControls(payload);
+              el.activeBrainModelSelect.value = "codex-new";
+              updateBrainControlOptions();
+            `, context);
+            const unknownDraft = context.runtimeSettingsPayloadForGroup("brain", context.runtimeSettingsDraftForGroup("brain"));
+            assert.deepStrictEqual(
+              JSON.parse(JSON.stringify(context.runtimeSettingsChangedKeys("brain", unknownDraft, unknownPayload))),
+              [],
+            );
+            assert.strictEqual(context.runtimeSettingsPendingMessage("brain", unknownDraft, unknownPayload), "");
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_brain_apply_disabled_for_reload_only_brain_field_changes(tmp_path: Path) -> None:
         harness = tmp_path / "brain-reload-only-disabled-harness.js"
         harness.write_text(
@@ -2076,16 +2463,6 @@ def test_developer_only_brain_provider_preserved_without_auto_switch_or_pending(
                       current_model: "mock-local",
                       providers: [
                         {{
-                          id: "mock",
-                          label: "Mock",
-                          available: true,
-                          developer_only: true,
-                          models: [{{ id: "mock-local", label: "mock-local", available: true }}],
-                          current_model: "mock-local",
-                          allowed_effort_values: [],
-                          fast_supported: false,
-                        }},
-                        {{
                           id: "claude_cli",
                           label: "Claude CLI",
                           available: true,
@@ -2102,10 +2479,10 @@ def test_developer_only_brain_provider_preserved_without_auto_switch_or_pending(
                     sections: {{
                       brain_provider: {{
                         fields: {{
-                          provider: {{ id: "brain_provider.provider", current: "mock", effective: "mock", status: "ok", editable_now: true, allowed_values: ["mock", "claude_cli"] }},
-                          model: {{ id: "brain_provider.model", current: "mock-local", effective: "mock-local", status: "ok", editable_now: true, allowed_values: ["mock-local", "claude-opus"] }},
-                          effort: {{ id: "brain_provider.effort", current: "normal", effective: "normal", status: "ok", editable_now: true }},
-                          fast: {{ id: "brain_provider.fast", current: false, effective: false, status: "ok", editable_now: true }},
+                          provider: {{ id: "brain_provider.provider", current: "mock", effective: "mock", status: "unknown", editable_now: false, allowed_values: ["claude_cli"] }},
+                          model: {{ id: "brain_provider.model", current: null, effective: null, status: "missing", editable_now: false, allowed_values: [] }},
+                          effort: {{ id: "brain_provider.effort", current: null, effective: null, status: "unsupported", editable_now: false, allowed_values: [] }},
+                          fast: {{ id: "brain_provider.fast", current: null, effective: null, status: "unsupported", editable_now: false, allowed_values: [] }},
                         }},
                       }},
                     }},
@@ -2138,7 +2515,8 @@ def test_developer_only_brain_provider_preserved_without_auto_switch_or_pending(
                     assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
                     assert.doesNotMatch(context.__el.brainApplyStatus.textContent, /Pending change/i);
                     if (context.__el.activeBrainProviderSelect.childNodes.length) {{
-                      assert.strictEqual(context.__el.activeBrainProviderSelect.childNodes[0].textContent, "Developer/Test provider active");
+                      assert.strictEqual(context.__el.activeBrainProviderSelect.childNodes[0].textContent, "No normal provider active");
+                      assert.doesNotMatch(context.__el.activeBrainProviderSelect.childNodes[0].textContent, /mock|Developer\\/Test/i);
                     }}
                 """
             ),

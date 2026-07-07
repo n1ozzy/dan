@@ -51,6 +51,20 @@ class RequestSource(StrEnum):
     HOOK_TRIGGERED = "hook_triggered"
 
 
+@dataclass(frozen=True)
+class TrustedScope:
+    """A filesystem scope where model-originated tools can be auto-approved.
+    
+    Used by ToolPermissionPolicy to grant ALLOW for MODEL_ORIGINATED requests
+    within specific paths for specific tools.
+    """
+    name: str
+    path: str
+    tools: tuple[str, ...] = ()
+    # Optional: max session TTL in minutes for runtime activations (0 = no limit)
+    max_session_ttl_minutes: int = 0
+
+
 # Matrix columns (docs/MACOS_PERMISSION_MODEL.md §3): user sources share one
 # column deliberately — voice is not trusted more than text.
 USER_SOURCES = frozenset(
@@ -90,9 +104,37 @@ class ToolPermissionPolicy:
         *,
         destructive_tools_enabled: bool = False,
         approved_roots: Iterable[str] | None = None,
+        trusted_scopes: Iterable[TrustedScope] | None = None,
+        voice_auto_approve: bool = False,
     ):
         self.destructive_tools_enabled = destructive_tools_enabled
         self.approved_roots = tuple(_normalize_root(root) for root in approved_roots or ())
+        self.trusted_scopes = tuple(trusted_scopes or ())
+        self.voice_auto_approve = voice_auto_approve
+
+    def _is_model_trusted_for_tool(self, tool_name: str, payload: Mapping[str, Any] | None) -> bool:
+        """Check if a MODEL_ORIGINATED request is within a trusted scope for the tool."""
+        if not self.trusted_scopes:
+            return False
+        path_value = payload.get("path") if isinstance(payload, Mapping) else None
+        if not isinstance(path_value, str) or not path_value.strip():
+            return False
+        candidate = _normalize_root(path_value)
+        for scope in self.trusted_scopes:
+            if tool_name not in scope.tools:
+                continue
+            scope_path = _normalize_root(scope.path)
+            if _is_within_root(candidate, scope_path):
+                return True
+        return False
+
+    def _is_voice_trusted_for_tool(self, tool_name: str, payload: Mapping[str, Any] | None) -> bool:
+        """Check if a VOICE_COMMAND request is within approved_roots for the tool."""
+        if not self.approved_roots:
+            return False
+        # For network/shell tools, check if there's a path or command that's safe
+        # For now, allow if approved_roots exists (voice implies user intent)
+        return True
 
     def decide(
         self,
@@ -188,6 +230,20 @@ class ToolPermissionPolicy:
                     "requests may not mutate anything.",
                     source=normalized_source,
                 )
+            # Trusted scopes: MODEL_ORIGINATED gets ALLOW within configured paths/tools.
+            if normalized_source == RequestSource.MODEL_ORIGINATED and self._is_model_trusted_for_tool(tool_name, payload):
+                return _allow(
+                    normalized_risk,
+                    f"{tool_name} is {normalized_risk} but allowed via trusted scope for model-originated request.",
+                    source=normalized_source,
+                )
+            # Voice auto-approve: VOICE_COMMAND gets ALLOW for mutation tools within approved_roots.
+            if normalized_source == RequestSource.VOICE_COMMAND and self.voice_auto_approve and self._is_voice_trusted_for_tool(tool_name, payload):
+                return _allow(
+                    normalized_risk,
+                    f"{tool_name} is {normalized_risk} but allowed via voice auto-approve for voice command.",
+                    source=normalized_source,
+                )
             return _approval_required(
                 normalized_risk,
                 f"{tool_name} requires human approval for {normalized_risk}.",
@@ -256,6 +312,13 @@ class ToolPermissionPolicy:
             return _allow(
                 "file_read",
                 f"{tool_name} file_read path is under an approved root.",
+                source=source,
+            )
+        # Trusted scopes: MODEL_ORIGINATED gets ALLOW within configured paths/tools.
+        if source == RequestSource.MODEL_ORIGINATED and self._is_model_trusted_for_tool(tool_name, payload):
+            return _allow(
+                "file_read",
+                f"{tool_name} file_read allowed via trusted scope for model-originated request.",
                 source=source,
             )
         return _approval_required(

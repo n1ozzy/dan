@@ -20,6 +20,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+from jarvis.security.redaction import REDACTION_PLACEHOLDER
 from jarvis.tools.permissions import RequestSource
 
 from tests.git_guards import assert_schema_and_migrations_unchanged
@@ -1575,9 +1576,8 @@ def test_get_events_omits_tool_finished_output_for_clients(app: DaemonApp) -> No
     assert event_payload["tool_name"] == "ui_read_window"
     assert event_payload["status"] == "finished"
     assert event_payload["output_omitted"] is True
-    assert "output" not in event_payload
+    assert event_payload["output"] == REDACTION_PLACEHOLDER
     assert raw_secret not in encoded
-    assert '"input"' not in encoded
     assert '"arguments"' not in encoded
     assert '"headers"' not in encoded
     assert "raw tool output" not in encoded
@@ -2244,6 +2244,14 @@ def _settings_preview_field(payload: dict[str, Any], section: str, field: str) -
     return sections[section]["fields"][field]
 
 
+def _brain_capability_provider(payload: dict[str, Any], provider_id: str) -> dict[str, Any]:
+    return next(
+        provider
+        for provider in payload["capability_graph"]["brain_capabilities"]["providers"]
+        if provider["id"] == provider_id
+    )
+
+
 def test_get_runtime_settings_returns_typed_projection_groups_and_fields(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/runtime/settings")
@@ -2455,7 +2463,7 @@ def test_get_runtime_settings_includes_settings_preview_payload_and_capability_g
     assert set(graph) == {"brain_capabilities", "voice_capabilities", "tools_capabilities", "local_capabilities"}
     brain_capabilities = graph["brain_capabilities"]
     assert isinstance(brain_capabilities["providers"], list)
-    assert "mock" in {provider["id"] for provider in brain_capabilities["providers"]}
+    assert "mock" not in {provider["id"] for provider in brain_capabilities["providers"]}
     assert brain_capabilities["current_provider"]
     voice_capabilities = graph["voice_capabilities"]
     assert "tts_providers" in voice_capabilities
@@ -2496,7 +2504,7 @@ def test_runtime_settings_structured_warnings_cover_invalid_preview_fixtures(
     assert status == 200
     warnings = payload["compatibility_warnings"]
     warning_ids = {warning["id"] for warning in warnings}
-    assert {"mock_provider_developer_only", "voice_enabled_tts_missing", "voice_enabled_stt_missing"}.issubset(
+    assert {"brain_provider_unavailable", "voice_enabled_tts_missing", "voice_enabled_stt_missing"}.issubset(
         warning_ids
     )
     for warning in warnings:
@@ -3155,8 +3163,8 @@ def test_runtime_settings_warnings_when_tools_are_shown_but_provider_does_not_su
         app.close()
 
     assert status == 200
-    warnings = _runtime_warning_messages(payload)
-    assert any("provider does not support tools" in message for message in warnings)
+    warning_ids = {warning["id"] for warning in payload["compatibility_warnings"]}
+    assert "tools_enabled_provider_unsupported" in warning_ids
 
 
 def test_runtime_settings_warns_invalid_persona_profile_falls_back(
@@ -3205,10 +3213,13 @@ def test_runtime_settings_warns_stale_brain_effort_and_fast_settings(
         app.close()
 
     assert status == 200
-    warnings = _runtime_warning_messages(payload)
-    assert any("Current model configuration is not supported" in message for message in warnings)
-    assert any("Configured effort value is unsupported" in message for message in warnings)
-    assert any("Fast mode is unsupported" in message for message in warnings)
+    warning_ids = {warning["id"] for warning in payload["compatibility_warnings"]}
+    assert {
+        "brain_provider_unavailable",
+        "brain_model_missing",
+        "brain_effort_unsupported",
+        "brain_fast_unsupported",
+    }.issubset(warning_ids)
 
 
 def test_runtime_settings_warns_when_network_policy_enabled_without_network_tool(
@@ -3239,22 +3250,16 @@ def test_get_runtime_settings_includes_brain_provider_capabilities(app: DaemonAp
     providers = payload["brain"]["providers"]["value"]
     assert isinstance(providers, list)
     provider_names = {provider["name"] for provider in providers}
-    assert "mock" in provider_names
+    assert "mock" not in provider_names
+    graph_provider_ids = {
+        provider["id"]
+        for provider in payload["capability_graph"]["brain_capabilities"]["providers"]
+    }
+    assert "mock" not in graph_provider_ids
 
-    mock_provider = next(
-        provider for provider in providers if provider["name"] == "mock"
-    )
-    assert mock_provider["kind"] == "Developer/Test"
-    assert mock_provider["configured"] is True
+    mock_provider = _settings_preview_field(payload, "developer_test", "mock_provider")
+    assert mock_provider["developer_only"] is True
     assert mock_provider["current"] is True
-    assert mock_provider["current_model"]["status"] in {"ok", "unknown", "missing"}
-    assert mock_provider["current_model"]["value"] == app.config.brain.default_model
-    assert mock_provider["allowed_effort_values"]["status"] in {"unknown", "ok"}
-    assert mock_provider["fast_supported"]["value"] in {"yes", "no", "unknown"}
-    assert mock_provider["streaming_support"]["value"] in {"yes", "no", "unknown"}
-    assert mock_provider["tools_support"]["value"] in {"yes", "no", "unknown"}
-    assert mock_provider["provider_command_status"]["value"] in {"yes", "no", "unknown"}
-    assert mock_provider["provider_credentials_status"]["value"] == "unknown"
 
 
 def test_post_runtime_settings_apply_rejects_unknown_setting(app: DaemonApp) -> None:
@@ -3355,7 +3360,7 @@ def test_post_runtime_settings_apply_rejects_unsupported_effort(app: DaemonApp) 
         )
 
     assert status == 422
-    assert "Effort" in payload["error"]
+    assert "Provider 'mock' is not present" in payload["error"]
 
 
 def test_runtime_settings_claude_model_next_turn_apply_updates_command_preview(
@@ -3503,7 +3508,7 @@ def test_post_runtime_settings_apply_rejects_mock_as_normal_brain_provider(
         assert status == 200
         provider_field = _settings_preview_field(runtime, "brain_provider", "provider")
         assert "mock" not in provider_field["allowed_values"]
-        assert any(item["value"] == "mock" for item in provider_field["disabled_values"])
+        assert not any(item["value"] == "mock" for item in provider_field["disabled_values"])
 
         status, payload = request_json(
             "POST",
@@ -3739,13 +3744,10 @@ def test_runtime_settings_marks_invalid_stale_effort_and_fast_state_for_current_
         status, payload = request_json("GET", f"{base_url}/runtime/settings")
 
     assert status == 200
-    providers = payload["brain"]["providers"]["value"]
-    mock_provider = next(
-        provider for provider in providers if provider["name"] == "mock"
-    )
-    assert mock_provider["current_model"]["status"] == "invalid"
-    assert mock_provider["effort"]["status"] == "invalid"
-    assert mock_provider["fast"]["status"] == "invalid"
+    brain_field = _settings_preview_field(payload, "brain_provider", "provider")
+    assert brain_field["current"] == "mock"
+    assert brain_field["status"] in {"missing", "unknown"}
+    assert brain_field["apply_capable"] is False
 
 
 def test_runtime_settings_shows_configured_provider_capabilities_for_claude_and_codex(
@@ -3766,7 +3768,8 @@ def test_runtime_settings_shows_configured_provider_capabilities_for_claude_and_
         assert status == 200
         providers = payload["brain"]["providers"]["value"]
         names = {provider["name"] for provider in providers}
-        assert {"mock", "claude_cli", "codex_cli"}.issubset(names)
+        assert "mock" not in names
+        assert {"claude_cli", "codex_cli"}.issubset(names)
 
         claude = next(
             provider for provider in providers if provider["name"] == "claude_cli"
@@ -3781,6 +3784,246 @@ def test_runtime_settings_shows_configured_provider_capabilities_for_claude_and_
         assert claude["tools_support"]["value"] in {"yes", "no", "unknown"}
     finally:
         daemon_app.close()
+
+
+def test_runtime_settings_codex_model_next_turn_apply_updates_command_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(
+        routes_runtime.shutil,
+        "which",
+        lambda command: "/usr/bin/fake-codex" if command == "fake-codex" else None,
+    )
+    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("codex fake 1.0.0", "ok", None))
+    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("logged_in", None))
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="codex_cli",
+        extra_toml=(
+            "\n[brain.codex_cli]\n"
+            "enabled = true\n"
+            "command = \"fake-codex\"\n"
+            "args = [\"exec\", \"--model\", \"stale-model\"]\n"
+            "model = \"codex-old\"\n"
+        ),
+    )
+    app = create_daemon_app(config_path)
+    try:
+        assert app.brain_manager is not None
+        adapter = app.brain_manager.get_adapter("codex_cli")
+        adapter.available_models = lambda: ["codex-old", "codex-new"]  # type: ignore[method-assign]
+        with running_server(app) as base_url:
+            status, before = request_json("GET", f"{base_url}/runtime/settings")
+            assert status == 200
+            provider = _brain_capability_provider(before, "codex_cli")
+            brain_section = before["settings_preview"]["sections"]["brain_provider"]
+            assert before["capability_graph"]["brain_capabilities"]["current_provider"] == "codex_cli"
+            assert provider["command_status"] == "found"
+            assert provider["auth_status"] == "logged_in"
+            assert provider["apply_semantics"] == "next_turn"
+            assert provider["apply_capable"] is True
+            assert brain_section["apply_capable"] is True
+            assert brain_section["apply_disabled_reason"] is None
+            assert brain_section["valid_next_turn_changes"] == ["brain.model"]
+            assert "brain.effort" not in brain_section["valid_next_turn_changes"]
+            assert brain_section["fields"]["model"]["apply_capable"] is True
+            assert brain_section["fields"]["effort"]["apply_capable"] is False
+
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"brain.model": "codex-new"}},
+            )
+    finally:
+        app.close()
+
+    assert status == 200, payload
+    assert payload["applied"] == ["brain.model"]
+    refreshed = payload["runtime_settings"]
+    command_preview = _settings_preview_field(refreshed, "brain_provider", "command_preview")
+    assert "fake-codex exec --model codex-new" in command_preview["current"]
+    assert "stale-model" not in command_preview["current"]
+
+
+def test_runtime_settings_codex_missing_command_disables_brain_apply_without_mock_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("logged_in", None))
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="codex_cli",
+        extra_toml=(
+            "\n[brain.codex_cli]\n"
+            "enabled = true\n"
+            "command = \"definitely-missing-codex\"\n"
+            "model = \"codex-old\"\n"
+        ),
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, runtime = request_json("GET", f"{base_url}/runtime/settings")
+            assert status == 200
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"brain.model": "codex-old"}},
+            )
+    finally:
+        app.close()
+
+    provider = _brain_capability_provider(runtime, "codex_cli")
+    brain_section = runtime["settings_preview"]["sections"]["brain_provider"]
+    assert runtime["capability_graph"]["brain_capabilities"]["current_provider"] == "codex_cli"
+    assert provider["available"] is False
+    assert provider["command_status"] == "missing"
+    assert provider["apply_semantics"] == "not_apply_capable"
+    assert brain_section["apply_capable"] is False
+    assert brain_section["apply_disabled_reason"] == "missing_command"
+    assert brain_section["valid_next_turn_changes"] == []
+    assert status == 422
+    assert "missing" in payload["error"].lower()
+    assert "mock" not in payload["error"].lower()
+
+
+def test_runtime_settings_codex_missing_auth_disables_brain_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(
+        routes_runtime.shutil,
+        "which",
+        lambda command: "/usr/bin/fake-codex" if command == "fake-codex" else None,
+    )
+    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("codex fake 1.0.0", "ok", None))
+    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("missing", None))
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="codex_cli",
+        extra_toml=(
+            "\n[brain.codex_cli]\n"
+            "enabled = true\n"
+            "command = \"fake-codex\"\n"
+            "model = \"codex-old\"\n"
+        ),
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, runtime = request_json("GET", f"{base_url}/runtime/settings")
+            assert status == 200
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"brain.model": "codex-old"}},
+            )
+    finally:
+        app.close()
+
+    provider = _brain_capability_provider(runtime, "codex_cli")
+    brain_section = runtime["settings_preview"]["sections"]["brain_provider"]
+    assert provider["auth_status"] == "missing"
+    assert provider["apply_semantics"] == "not_apply_capable"
+    assert brain_section["apply_capable"] is False
+    assert brain_section["apply_disabled_reason"] == "missing_auth"
+    assert status == 422
+    assert "auth" in payload["error"].lower()
+
+
+def test_runtime_settings_codex_unknown_auth_is_not_apply_capable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(
+        routes_runtime.shutil,
+        "which",
+        lambda command: "/usr/bin/fake-codex" if command == "fake-codex" else None,
+    )
+    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("codex fake 1.0.0", "ok", None))
+    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("unknown", "Codex auth readiness is unknown."))
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="codex_cli",
+        extra_toml=(
+            "\n[brain.codex_cli]\n"
+            "enabled = true\n"
+            "command = \"fake-codex\"\n"
+            "model = \"codex-old\"\n"
+        ),
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, runtime = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 200
+    provider = _brain_capability_provider(runtime, "codex_cli")
+    brain_section = runtime["settings_preview"]["sections"]["brain_provider"]
+    assert provider["auth_status"] == "unknown"
+    assert provider["apply_semantics"] == "not_apply_capable"
+    assert brain_section["apply_capable"] is False
+    assert brain_section["apply_disabled_reason"] == "not_apply_capable"
+
+
+def test_runtime_settings_codex_effort_is_rejected_without_pending_applyable_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jarvis.api.routes_runtime as routes_runtime
+
+    monkeypatch.setattr(
+        routes_runtime.shutil,
+        "which",
+        lambda command: "/usr/bin/fake-codex" if command == "fake-codex" else None,
+    )
+    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("codex fake 1.0.0", "ok", None))
+    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("logged_in", None))
+    config_path = write_config(
+        tmp_path / "jarvis.toml",
+        tmp_path / "home" / "jarvis.db",
+        brain_default_adapter="codex_cli",
+        extra_toml=(
+            "\n[brain.codex_cli]\n"
+            "enabled = true\n"
+            "command = \"fake-codex\"\n"
+            "model = \"codex-old\"\n"
+        ),
+    )
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"brain.effort": "high"}},
+            )
+            _, refreshed = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
+
+    assert status == 422
+    assert "brain.effort" in payload["rejected_keys"]
+    assert "not_apply_capable" in payload["error"]
+    brain_section = refreshed["settings_preview"]["sections"]["brain_provider"]
+    assert brain_section["valid_next_turn_changes"] == ["brain.model"]
+    assert brain_section["fields"]["effort"]["apply_capable"] is False
+    assert brain_section["fields"]["effort"]["validation"]["target_valid"] is False
 
 
 def _install_fake_claude_cli(

@@ -279,11 +279,27 @@ class SupertonicEngine:
 
 
 def _resolve_supertonic_binary(explicit: str) -> str:
-    """Explicit config path, else the venv bin next to python, else PATH."""
+    """Explicit config path, else the venv bin next to python, else PATH.
 
-    candidates = [explicit] if explicit else [
-        str(Path(sys.executable).parent / "supertonic"),
+    If explicit is a command name (no path separator), resolve via PATH first.
+    If explicit is a path (contains separator), it must exist as-is - no fallback.
+    """
+
+    if explicit:
+        if "/" not in explicit:
+            resolved = shutil.which(explicit)
+            if resolved:
+                return resolved
+        else:
+            if Path(explicit).is_file() and os.access(explicit, os.X_OK):
+                return explicit
+            raise TTSEngineError(
+                f"supertonic binary not found at explicit path: {explicit}"
+            )
+
+    candidates = [
         shutil.which("supertonic") or "",
+        str(Path(sys.executable).parent / "supertonic"),
     ]
     for candidate in candidates:
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):

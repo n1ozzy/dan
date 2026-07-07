@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import signal
 import subprocess
 import threading
@@ -37,6 +39,7 @@ from jarvis.brain.claude_cli_contract import (
     ClaudeCliCommandSettings,
     build_claude_cli_command,
 )
+from jarvis.brain.speech_text import generate_speech_text
 from jarvis.brain.tool_call_parser import parse_tool_call_blocks
 from jarvis.logging import get_logger, redact_secrets
 
@@ -356,8 +359,12 @@ def stream_cli_response(
     if parsed.parse_errors:
         raw_metadata["tool_call_parse_errors"] = list(parsed.parse_errors)
 
+    # Generate speech_text from result (stripped of tool calls, shorter)
+    speech_text = _generate_speech_text(parsed.text, parsed.tool_calls)
+
     return BrainResponse(
         text=parsed.text,
+        speech_text=speech_text,
         tool_calls=parsed.tool_calls,
         model=response_model,
         usage=_usage_from_stream(parser.result_usage),
@@ -481,8 +488,12 @@ def generate_cli_response(
     if parsed.parse_errors:
         raw_metadata["tool_call_parse_errors"] = list(parsed.parse_errors)
 
+    # Generate speech_text from result (stripped of tool calls, shorter)
+    speech_text = _generate_speech_text(parsed.text, parsed.tool_calls)
+
     return BrainResponse(
         text=parsed.text,
+        speech_text=speech_text,
         tool_calls=parsed.tool_calls,
         model=response_model,
         raw_metadata=raw_metadata,
@@ -739,6 +750,11 @@ _ALLOWED_CLI_FLAGS = frozenset(
         "--disallowed-tools",
         "--mcp-config",
         "--strict-mcp-config",
+        "--sandbox",
+        "--ask-for-approval",
+        "--profile",
+        "--cd",
+        "--search",
     }
 )
 
@@ -763,3 +779,35 @@ def _normalize_optional_cli_list(
     if preserve_single_empty and normalized == [""]:
         return [""]
     return [item for item in normalized if item]
+
+
+def _generate_speech_text(text: str, tool_calls: list) -> str:
+    """Generate a concise speech version from display text and tool calls."""
+    # If there are tool calls, just announce what we're doing
+    if tool_calls:
+        # Handle both dict and object tool calls
+        names = []
+        for tc in tool_calls:
+            if hasattr(tc, 'name'):
+                names.append(tc.name)
+            elif isinstance(tc, dict) and 'name' in tc:
+                names.append(tc['name'])
+        if len(names) == 1:
+            return f"Używam narzędzia {names[0]}."
+        return f"Uruchamiam narzędzia: {', '.join(names)}."
+    
+    # Strip markdown and keep it short
+    speech = text
+    # Remove code blocks
+    import re
+    speech = re.sub(r'```[\s\S]*?```', '[kod]', speech)
+    # Remove inline code
+    speech = re.sub(r'`[^`]+`', '', speech)
+    # Remove markdown formatting
+    speech = re.sub(r'[#*_~`]', '', speech)
+    # Collapse whitespace
+    speech = ' '.join(speech.split())
+    # Truncate
+    if len(speech) > 200:
+        speech = speech[:197] + '...'
+    return speech if speech else 'Gotowe.'

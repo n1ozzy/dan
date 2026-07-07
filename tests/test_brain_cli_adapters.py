@@ -21,6 +21,10 @@ from jarvis.brain.claude_cli_contract import (
     build_claude_cli_command,
 )
 from jarvis.brain.codex_cli_adapter import CodexCliAdapter
+from jarvis.brain.codex_cli_contract import (
+    CodexCliCommandSettings,
+    build_codex_cli_command,
+)
 from jarvis.brain.manager import BrainManager
 from jarvis.brain.tool_call_parser import parse_tool_call_blocks
 from jarvis.config import load_config
@@ -456,6 +460,31 @@ def test_codex_cli_adapter_uses_injected_fake_runner() -> None:
     assert "Kim jesteś?" in runner.calls[0]["input_text"]
 
 
+def test_codex_cli_adapter_receives_jarvis_memory_context() -> None:
+    runner = FakeRunner(stdout="codex says hi\n")
+    request = make_request()
+    request.context_messages.append(
+        BrainMessage(
+            role="user",
+            content="Compiled memory:\n- Codex should see compiled memory too.",
+            metadata={"kind": "compiled_memory", "untrusted": True},
+        )
+    )
+    adapter = CodexCliAdapter(command="fake-codex", args=["exec"], runner=runner)
+
+    adapter.generate(request)
+
+    prompt = runner.calls[0]["input_text"]
+    assert "System context:" in prompt
+    assert "Memory blocks:" in prompt
+    assert "Prefer short direct replies." in prompt
+    assert "Compiled memory:" in prompt
+    assert "Codex should see compiled memory too." in prompt
+    assert "Previous question" in prompt
+    assert "Available tools:" in prompt
+    assert "Provider sessions are not Jarvis memory" in prompt
+
+
 def test_successful_fake_runner_stdout_becomes_brain_response_text() -> None:
     response = ClaudeCliAdapter(runner=FakeRunner(stdout="final answer\n")).generate(make_request())
 
@@ -847,6 +876,113 @@ def test_claude_adapter_argv_uses_first_class_contract_fields(tmp_path: Path) ->
         "--input-format",
         "text",
     ]
+
+
+def test_codex_cli_command_builder_represents_model_change_as_exec_model() -> None:
+    contract = build_codex_cli_command(
+        CodexCliCommandSettings(command="codex"),
+        runtime_model="gpt-5-codex",
+    )
+
+    assert contract.argv == ["codex", "exec", "--model", "gpt-5-codex"]
+    assert contract.selected_model == "gpt-5-codex"
+    assert contract.effective_model == "gpt-5-codex"
+    assert contract.model_source == "jarvis_explicit"
+    assert contract.command_preview == "codex exec --model gpt-5-codex"
+
+
+def test_codex_cli_command_builder_strips_duplicate_managed_model_args() -> None:
+    contract = build_codex_cli_command(
+        CodexCliCommandSettings(
+            command="codex",
+            args=[
+                "exec",
+                "--model",
+                "stale-model",
+                "--model=older-model",
+                "--sandbox",
+                "read-only",
+            ],
+            model="configured-model",
+        ),
+        runtime_model="selected-model",
+    )
+
+    assert contract.argv == [
+        "codex",
+        "exec",
+        "--model",
+        "selected-model",
+        "--sandbox",
+        "read-only",
+    ]
+    assert "stale-model" not in contract.argv
+    assert "older-model" not in contract.argv
+    assert contract.argv.count("--model") == 1
+
+
+def test_codex_cli_command_builder_places_global_options_before_exec() -> None:
+    contract = build_codex_cli_command(
+        CodexCliCommandSettings(
+            command="codex",
+            args=[
+                "--sandbox",
+                "read-only",
+                "--ask-for-approval",
+                "never",
+                "--search",
+                "--cd",
+                "/tmp/jarvis",
+            ],
+            model="gpt-5.5",
+        )
+    )
+
+    assert contract.argv == [
+        "codex",
+        "--ask-for-approval",
+        "never",
+        "--search",
+        "exec",
+        "--model",
+        "gpt-5.5",
+        "--sandbox",
+        "read-only",
+        "--cd",
+        "/tmp/jarvis",
+    ]
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--full-auto",
+    ],
+)
+def test_codex_cli_command_builder_rejects_dangerous_flags(flag: str) -> None:
+    with pytest.raises(ValueError, match="dangerous Codex CLI flag"):
+        build_codex_cli_command(CodexCliCommandSettings(command="codex", args=[flag]))
+
+
+def test_codex_adapter_argv_uses_exec_contract_and_selected_model() -> None:
+    runner = FakeRunner(stdout="ok\n")
+    request = make_request()
+    request.settings["model"] = "gpt-5-codex"
+    request.settings["model_source"] = "settings"
+    adapter = CodexCliAdapter(
+        command="codex",
+        args=["--model", "stale-model"],
+        model="configured-model",
+        runner=runner,
+    )
+
+    response = adapter.generate(request)
+
+    assert response.text == "ok"
+    assert response.model == "gpt-5-codex"
+    assert runner.calls[0]["command"] == ["codex", "exec", "--model", "gpt-5-codex"]
 
 
 def test_brain_cli_config_parses_first_class_claude_contract_settings(tmp_path: Path) -> None:

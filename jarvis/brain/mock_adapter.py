@@ -35,6 +35,7 @@ class MockBrainAdapter:
 
         return BrainResponse(
             text=text,
+            speech_text=f"Mock: {normalized_input}" if normalized_input else "Mock response",
             model=self.default_model,
             usage=usage,
             raw_metadata={"adapter": self.name, "stateless": True},

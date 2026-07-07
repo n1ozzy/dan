@@ -40,6 +40,7 @@ from jarvis.api.websocket import (
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import build_server
 from jarvis.events.models import Event
+from jarvis.security.redaction import REDACTION_PLACEHOLDER
 from jarvis.security.transport import API_TOKEN_HEADER
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import config_text
@@ -197,7 +198,7 @@ def test_stream_event_dict_omits_bulk_output() -> None:
     streamed = stream_event_dict(event)
     assert streamed["id"] == 7
     assert streamed["type"] == "tool.finished"
-    assert "output" not in streamed["payload"]
+    assert streamed["payload"]["output"] == REDACTION_PLACEHOLDER
     assert streamed["payload"]["output_omitted"] is True
     assert streamed["payload"]["tool_name"] == "ui_read_window"
 
@@ -511,7 +512,7 @@ def test_stream_omits_tool_output_payloads(app: DaemonApp, stream_client) -> Non
 
     frame = client.recv_json()
     payload = frame["event"]["payload"]
-    assert "output" not in payload
+    assert payload["output"] == REDACTION_PLACEHOLDER
     assert payload["output_omitted"] is True
     assert "screen text" not in json.dumps(frame)
 

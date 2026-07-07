@@ -1538,6 +1538,8 @@ def create_daemon_app_from_config(
     tool_permission_policy = ToolPermissionPolicy(
         destructive_tools_enabled=config.security.destructive_tools_enabled,
         approved_roots=approved_roots,
+        trusted_scopes=config.security.trusted_scopes,
+        voice_auto_approve=config.security.voice_auto_approve_tools,
     )
 
     if not initialize:

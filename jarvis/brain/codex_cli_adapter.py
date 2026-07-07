@@ -10,6 +10,12 @@ from jarvis.brain.claude_cli_adapter import (
     default_subprocess_runner,
     generate_cli_response,
 )
+from jarvis.brain.codex_cli_contract import (
+    CODEX_CLI_COMMAND,
+    INTERNAL_MODEL_SENTINELS,
+    CodexCliCommandSettings,
+    build_codex_cli_command,
+)
 
 
 class CodexCliAdapter:
@@ -18,7 +24,7 @@ class CodexCliAdapter:
     def __init__(
         self,
         *,
-        command: str = "codex",
+        command: str = CODEX_CLI_COMMAND,
         args: Sequence[str] | None = None,
         model: str = "",
         timeout_seconds: float = 120,
@@ -33,16 +39,29 @@ class CodexCliAdapter:
         self._runner = runner or default_subprocess_runner
 
     def available_models(self) -> list[str]:
+        if self.default_model in INTERNAL_MODEL_SENTINELS:
+            return []
         return [self.default_model]
+
+    def command_settings(self) -> CodexCliCommandSettings:
+        return CodexCliCommandSettings(
+            command=self.command,
+            args=list(self.args),
+            model="" if self.default_model in INTERNAL_MODEL_SENTINELS else self.default_model,
+        )
 
     def generate(self, request: BrainRequest, *, on_delta=None) -> BrainResponse:
         # Codex CLI has no wired streaming mode yet: on_delta is accepted and
         # ignored (G0 §2 degradation — the final text is chunked after the fact).
+        command_contract = build_codex_cli_command(
+            self.command_settings(),
+            request_settings=request.settings,
+        )
         return generate_cli_response(
             adapter_name=self.name,
             command_name=self.command,
-            args=self.args,
-            default_model=self.default_model,
+            args=command_contract.argv[1:],
+            default_model=command_contract.effective_model or self.default_model,
             timeout_seconds=self.timeout_seconds,
             runner=self._runner,
             request=request,

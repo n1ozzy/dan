@@ -18,6 +18,7 @@ not.
 from __future__ import annotations
 
 import json
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -81,15 +82,23 @@ class HotkeyEdgeDetector:
     def __init__(self, required_mask: int) -> None:
         self._required = required_mask
         self._held = False
+        self._last_down_time: float = 0.0
 
     def update(self, flags: int) -> str | None:
         if self._required == 0:
             return None
+        import time
+        now = time.monotonic()
         active = (flags & self._required) == self._required
         if active and not self._held:
+            # Debounce: ignore duplicate down events within 150ms
+            if now - self._last_down_time < 0.15:
+                return None
             self._held = True
+            self._last_down_time = now
             return "down"
         if not active and self._held:
+            # No debounce on up — release immediately when keys drop
             self._held = False
             return "up"
         return None
@@ -150,19 +159,28 @@ class PttHotkeyClient:
             lambda: _urllib_health_checker(self._base)
         )
         self._last_backend_available: bool | None = None
+        self._pending: bool = False
+        self._lock = threading.Lock()
 
     def _post(self, path: str) -> None:
-        if not self._backend_available():
+        # Client-side lock: ignore new requests while one is in flight
+        if not self._lock.acquire(blocking=False):
+            logger.debug("PTT request dropped: previous request still in flight")
             return
-        headers = {"Content-Type": "application/json"}
-        if self._token:
-            headers["X-Jarvis-Token"] = self._token
-        data = json.dumps({"source": PTT_SOURCE}).encode("utf-8")
         try:
-            self._poster(f"{self._base}{path}", data=data, headers=headers)
-        except Exception as exc:  # noqa: BLE001 - a transport hiccup must not kill the panel
-            logger.warning("PTT hotkey request skipped after %s failed: %s", path, exc)
-            self._last_backend_available = False
+            if not self._backend_available():
+                return
+            headers = {"Content-Type": "application/json"}
+            if self._token:
+                headers["X-Jarvis-Token"] = self._token
+            data = json.dumps({"source": PTT_SOURCE}).encode("utf-8")
+            try:
+                self._poster(f"{self._base}{path}", data=data, headers=headers)
+            except Exception as exc:  # noqa: BLE001 - a transport hiccup must not kill the panel
+                logger.warning("PTT hotkey request skipped after %s failed: %s", path, exc)
+                self._last_backend_available = False
+        finally:
+            self._lock.release()
 
     def _backend_available(self) -> bool:
         ok = bool(self._health_checker())

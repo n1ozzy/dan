@@ -299,6 +299,21 @@ class PanelConfig:
 
 
 @dataclass(frozen=True)
+class TrustedScope:
+    """A filesystem scope where model-originated tools can be auto-approved.
+
+    Configured in [security.trusted_scopes] as an array of tables. Each scope
+    grants auto-approval for specific tools within a path prefix. Sessions can
+    activate scopes temporarily via API; config scopes are always active.
+    """
+    name: str
+    path: str
+    tools: tuple[str, ...] = ()
+    # Optional: max session TTL in minutes for runtime activations (0 = no limit)
+    max_session_ttl_minutes: int = 0
+
+
+@dataclass(frozen=True)
 class SecurityConfig:
     localhost_only: bool = True
     api_token_required: bool = True
@@ -329,6 +344,13 @@ class SecurityConfig:
     # "fake" (deterministic fixture for tests/smoke). Unknown names fail
     # the daemon at startup.
     terminal_backend: str = "osascript"
+    # Trusted scopes: model-originated tools auto-approved within these paths.
+    # Configured in [security.trusted_scopes] array of tables.
+    trusted_scopes: tuple[TrustedScope, ...] = ()
+    # Voice auto-approval: if true, VOICE_COMMAND gets ALLOW for mutation tools
+    # (file_write, shell_read, network, etc.) within approved_roots.
+    # This makes voice fully seamless for trusted paths.
+    voice_auto_approve_tools: bool = False
 
 
 @dataclass(frozen=True)
@@ -406,7 +428,7 @@ def load_config(path: str | Path | None = None) -> JarvisConfig:
         voice=_build_section(VoiceConfig, raw["voice"]),
         audio=_build_section(AudioConfig, raw["audio"]),
         panel=_build_section(PanelConfig, raw["panel"]),
-        security=_build_section(SecurityConfig, raw["security"]),
+        security=_build_security_config(raw["security"]),
         runtime=_build_section(RuntimeConfig, raw["runtime"]),
         launchd=_build_section(LaunchdConfig, raw["launchd"]),
     )
@@ -482,6 +504,32 @@ def _build_section(section_type: type[T], raw: dict[str, Any]) -> T:
         return section_type(**selected)
     except TypeError as exc:
         raise ConfigError(f"Invalid config section {section_type.__name__}: {exc}") from exc
+
+
+def _build_security_config(raw: dict[str, Any]) -> SecurityConfig:
+    allowed = {field.name for field in fields(SecurityConfig)}
+    selected = {key: value for key, value in raw.items() if key in allowed and key != "trusted_scopes"}
+    
+    # Parse trusted_scopes from array of tables
+    trusted_scopes = ()
+    if "trusted_scopes" in raw and isinstance(raw["trusted_scopes"], list):
+        scopes = []
+        for scope_data in raw["trusted_scopes"]:
+            if isinstance(scope_data, dict):
+                name = str(scope_data.get("name", ""))
+                path = str(scope_data.get("path", ""))
+                tools = tuple(str(t) for t in scope_data.get("tools", []) if isinstance(t, str))
+                ttl_minutes = int(scope_data.get("ttl_minutes", 60))
+                if name and path:
+                    scopes.append(TrustedScope(name=name, path=path, tools=tools, max_session_ttl_minutes=ttl_minutes))
+        trusted_scopes = tuple(scopes)
+    
+    selected["trusted_scopes"] = trusted_scopes
+    
+    try:
+        return SecurityConfig(**selected)
+    except TypeError as exc:
+        raise ConfigError(f"Invalid config section SecurityConfig: {exc}") from exc
 
 
 def _build_memory_config(raw: dict[str, Any]) -> MemoryConfig:

@@ -60,7 +60,7 @@ class Harness:
         self._starter_error = starter_error
         self.turn_started = threading.Event()
 
-    def cancel_active_speech(self, *, reason: str) -> dict[str, Any]:
+    def cancel_active_speech(self, *, reason: str, source: str | None = None) -> dict[str, Any]:
         self.log.append(("cancel", reason))
         return {"queue_cancelled": 1, "generation_cancelled": 0, "playback_stopped": True}
 

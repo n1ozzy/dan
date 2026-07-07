@@ -30,6 +30,11 @@ from jarvis.brain.claude_cli_contract import (
     ClaudeCliCommandSettings,
     build_claude_cli_command,
 )
+from jarvis.brain.codex_cli_contract import (
+    CODEX_CLI_COMMAND,
+    CodexCliCommandSettings,
+    build_codex_cli_command,
+)
 from jarvis.brain.manager import BrainManagerError
 from jarvis.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp
 from jarvis.runtime.models import RuntimeProcessObservation, RuntimeRisk
@@ -487,6 +492,26 @@ def _safe_probe_claude_auth_status(command: str) -> tuple[str, str | None]:
     if returncode != 0:
         return "unknown", "auth status probe returned a non-zero exit code"
     return "unknown", "auth status probe output was not recognized"
+
+
+def _safe_probe_codex_auth_status() -> tuple[str, str | None]:
+    env_keys = ("OPENAI_API_KEY", "CODEX_API_KEY")
+    if any(os.environ.get(key) for key in env_keys):
+        return "logged_in", None
+
+    candidates = (
+        Path("~/.codex/auth.json").expanduser(),
+        Path("~/.codex/config.toml").expanduser(),
+        Path("~/.config/codex/auth.json").expanduser(),
+    )
+    try:
+        for path in candidates:
+            if path.is_file():
+                return "logged_in", None
+    except OSError as exc:
+        return "unknown", redact_secrets(str(exc))
+
+    return "missing", "Codex CLI auth config was not found."
 
 
 def _safe_probe_supertonic_binary(explicit: str) -> tuple[str, str | None, str | None]:
@@ -1067,6 +1092,118 @@ def _claude_cli_contract(
     }
 
 
+def _codex_cli_command_settings(*, adapter: Any, config: Any) -> CodexCliCommandSettings:
+    adapter_settings = getattr(adapter, "command_settings", None)
+    if callable(adapter_settings):
+        return adapter_settings()
+    return CodexCliCommandSettings(
+        command=str(
+            getattr(adapter, "command", None)
+            or getattr(config, "command", None)
+            or CODEX_CLI_COMMAND
+        ),
+        args=list(getattr(adapter, "args", None) or getattr(config, "args", None) or []),
+        model=str(getattr(adapter, "default_model", None) or getattr(config, "model", None) or ""),
+    )
+
+
+def _codex_cli_contract(
+    *,
+    app: DaemonApp,
+    adapter: Any,
+    current: bool,
+    supported_models: list[str],
+    requested_model: Any,
+    requested_model_status: str,
+    command_projection: dict[str, Any],
+) -> dict[str, Any]:
+    config = getattr(getattr(app.config, "brain", None), "codex_cli", None)
+    command_settings = _codex_cli_command_settings(adapter=adapter, config=config)
+    requested_model_text = str(requested_model).strip() if isinstance(requested_model, str) else ""
+    command_contract = build_codex_cli_command(
+        command_settings,
+        runtime_model=requested_model_text if current and requested_model_status == "ok" else None,
+    )
+    command_found = _support_bool(command_projection) is True
+    command_status = "found" if command_found else "missing"
+    version = None
+    version_status = "unknown"
+    version_warning = None
+    auth_status = "unknown"
+    auth_warning = None
+    if command_found:
+        version, version_status, version_warning = _safe_probe_cli_version(command_contract.command)
+        auth_status, auth_warning = _safe_probe_codex_auth_status()
+
+    apply_semantics = "next_turn"
+    blocker = None
+    if not command_found:
+        apply_semantics = "not_apply_capable"
+        blocker = f"Codex CLI command is missing: {command_settings.command!r}."
+    elif auth_status == "missing":
+        apply_semantics = "not_apply_capable"
+        blocker = "Codex CLI auth is missing; run codex login outside Jarvis."
+    elif auth_status != "logged_in":
+        apply_semantics = "not_apply_capable"
+        blocker = "Codex CLI auth/readiness is unknown from safe local checks; use codex login outside Jarvis."
+
+    warnings = [
+        warning
+        for warning in (version_warning, auth_warning)
+        if warning
+    ]
+    return {
+        "provider_id": "codex_cli",
+        "label": "Codex CLI",
+        "kind": "cli",
+        "transport": "subprocess",
+        "command": command_contract.command or CODEX_CLI_COMMAND,
+        "command_status": command_status,
+        "auth_status": auth_status,
+        "version": version,
+        "version_status": version_status,
+        "selected_model": command_contract.selected_model,
+        "effective_model": command_contract.effective_model,
+        "model_source": command_contract.model_source if command_found else "unknown",
+        "allowed_models": list(
+            dict.fromkeys(
+                model
+                for model in [*supported_models, command_contract.selected_model]
+                if model
+            )
+        ),
+        "selected_effort": None,
+        "effective_effort": None,
+        "effort_source": "unsupported",
+        "allowed_effort_values": [],
+        "fast_supported": KNOWN_PROVIDER_SUPPORT_NO,
+        "fast_supported_state": KNOWN_PROVIDER_SUPPORT_NO,
+        "permission_mode": "unsupported",
+        "tools": [],
+        "allowed_tools": [],
+        "disallowed_tools": [],
+        "mcp_config_path": None,
+        "mcp_config_status": "unsupported",
+        "strict_mcp_config": "unsupported",
+        "output_format": "text",
+        "input_format": "text",
+        "streaming_supported": KNOWN_PROVIDER_SUPPORT_NO,
+        "partial_messages_supported": KNOWN_PROVIDER_SUPPORT_NO,
+        "hook_events_supported": KNOWN_PROVIDER_SUPPORT_UNKNOWN,
+        "apply_semantics": apply_semantics,
+        "apply_capable": apply_semantics == "next_turn",
+        "apply_semantics_reason": blocker,
+        "apply_eligibility": {
+            "mode": apply_semantics,
+            "next_turn": apply_semantics == "next_turn",
+            "reason": blocker,
+        },
+        "command_preview": command_contract.command_preview,
+        "blocker": blocker,
+        "contract_warnings": warnings,
+    }
+
+
 def _provider_capabilities_for_adapter(
     app: DaemonApp,
     adapter_name: str,
@@ -1166,6 +1303,7 @@ def _provider_capabilities_for_adapter(
     )
     credentials_projection = _provider_credentials_projection(provider_name=adapter_name)
     claude_cli_contract: dict[str, Any] = {}
+    codex_cli_contract: dict[str, Any] = {}
     if adapter_name in CLAUDE_CLI_PROVIDER_IDS:
         claude_cli_contract = _claude_cli_contract(
             app=app,
@@ -1191,6 +1329,28 @@ def _provider_capabilities_for_adapter(
             available = False
             status = "unknown"
             adapter_warning = str(claude_cli_contract.get("blocker") or "Claude CLI auth status is unknown.")
+    elif adapter_name == "codex_cli":
+        codex_cli_contract = _codex_cli_contract(
+            app=app,
+            adapter=adapter,
+            current=current,
+            supported_models=supported_models,
+            requested_model=requested_model,
+            requested_model_status=requested_model_status,
+            command_projection=command_projection,
+        )
+        if codex_cli_contract.get("command_status") == "missing":
+            available = False
+            status = "missing"
+            adapter_warning = str(codex_cli_contract.get("blocker") or "Codex CLI command is missing.")
+        elif codex_cli_contract.get("auth_status") == "missing":
+            available = False
+            status = "missing"
+            adapter_warning = str(codex_cli_contract.get("blocker") or "Codex CLI auth is missing.")
+        elif codex_cli_contract.get("auth_status") != "logged_in":
+            available = False
+            status = "unknown"
+            adapter_warning = str(codex_cli_contract.get("blocker") or "Codex CLI auth/readiness is unknown.")
 
     return {
         "name": adapter_name,
@@ -1289,6 +1449,7 @@ def _provider_capabilities_for_adapter(
             warning=None if latest_error_status == "ok" else "Could not determine latest provider error.",
         ),
         "claude_cli_contract": claude_cli_contract or None,
+        "codex_cli_contract": codex_cli_contract or None,
         "warning": adapter_warning,
         "status": status,
     }
@@ -1318,7 +1479,9 @@ def _build_provider_capabilities(
             requested_fast=requested_fast,
             requested_fast_status=requested_fast_status,
         )
-        for adapter_name in sorted(set(adapter_names + ["mock"]))
+        for adapter_name in sorted(
+            {adapter_name for adapter_name in adapter_names if adapter_name != "mock"}
+        )
     ]
 
 
@@ -1452,8 +1615,10 @@ def _brain_provider_apply_disabled_reason(provider: dict[str, Any]) -> str | Non
     if _support_bool(provider.get("command_status")) is False:
         return "missing_command"
     auth_status = str(provider.get("auth_status") or "").strip()
-    if auth_status == "missing" or (auth_status and auth_status != "logged_in"):
+    if auth_status == "missing":
         return "missing_auth"
+    if auth_status and auth_status != "logged_in":
+        return "not_apply_capable"
     apply_semantics = str(provider.get("apply_semantics") or "not_apply_capable")
     if apply_semantics in {"requires_new_session", "requires_daemon_restart", "not_apply_capable"}:
         return apply_semantics
@@ -1475,8 +1640,6 @@ def _brain_apply_plan(provider: dict[str, Any]) -> dict[str, Any]:
             valid_next_turn.append("brain.model")
         if provider.get("allowed_effort_values"):
             valid_next_turn.append("brain.effort")
-        else:
-            disabled_reason = "unknown_effort_support"
     elif disabled_reason == "requires_new_session":
         requires_new_session.extend(sorted(BRAIN_REQUIRES_NEW_SESSION_KEYS))
     elif disabled_reason == "requires_daemon_restart":
@@ -2170,6 +2333,8 @@ def _brain_projection(app: DaemonApp, settings: dict[str, dict[str, Any]]) -> di
     adapters_payload = []
     adapter_projection_warning = None
     for name in adapter_names:
+        if name == "mock":
+            continue
         adapter = None
         try:
             adapter = manager.get_adapter(name)
@@ -4911,7 +5076,20 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
     claude_contract = raw.get("claude_cli_contract")
     if not isinstance(claude_contract, dict):
         claude_contract = {}
-    supported_models = [str(model) for model in raw.get("supported_models", []) if str(model)]
+    codex_contract = raw.get("codex_cli_contract")
+    if not isinstance(codex_contract, dict):
+        codex_contract = {}
+    provider_contract = claude_contract or codex_contract
+    contract_models = provider_contract.get("allowed_models")
+    if not isinstance(contract_models, list):
+        contract_models = []
+    supported_models = list(
+        dict.fromkeys(
+            str(model)
+            for model in [*raw.get("supported_models", []), *contract_models]
+            if str(model)
+        )
+    )
     current_model_projection = raw.get("current_model")
     allowed_efforts = _runtime_projection_value(raw.get("allowed_effort_values")) or []
     if not isinstance(allowed_efforts, list):
@@ -4930,11 +5108,11 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
             _projection_warning(raw.get("fast")),
             _projection_warning(raw.get("latest_error")),
             _projection_warning(command),
-            *(claude_contract.get("contract_warnings") or []),
+            *(provider_contract.get("contract_warnings") or []),
         )
         if warning
     ]
-    blocker = raw.get("warning") or claude_contract.get("blocker")
+    blocker = raw.get("warning") or provider_contract.get("blocker")
     if not available and configured:
         status = "missing"
         warnings.append(str(blocker or "Provider is configured but not available from safe runtime probes."))
@@ -4963,9 +5141,9 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
         },
         "tools_supported": _support_bool(raw.get("tools_support")) is True,
         "streaming_supported": _support_bool(raw.get("streaming_support")) is True,
-        "streaming_supported_state": claude_contract.get("streaming_supported"),
+        "streaming_supported_state": provider_contract.get("streaming_supported"),
         "provider_command_status": command_value,
-        "command_status": claude_contract.get("command_status") or command_value,
+        "command_status": provider_contract.get("command_status") or command_value,
         "latest_provider_error": _runtime_projection_value(raw.get("latest_error")),
         "status": status,
         "warnings": list(dict.fromkeys(str(item) for item in warnings if item)),
@@ -4974,7 +5152,7 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
         "raw": raw,
         **(
             {
-                key: claude_contract.get(key)
+                key: provider_contract.get(key)
                 for key in (
                     "provider_id",
                     "transport",
@@ -5007,9 +5185,9 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
                     "apply_eligibility",
                     "command_preview",
                 )
-                if key in claude_contract
+                if key in provider_contract
             }
-            if claude_contract
+            if provider_contract
             else {}
         ),
     }
@@ -5383,6 +5561,11 @@ def _voice_provider_by_id(providers: list[dict[str, Any]], provider_id: Any) -> 
 def _credentials_or_command_status_value(provider: dict[str, Any]) -> str:
     command_status = provider.get("command_status")
     if _support_bool(command_status) is True:
+        auth_status = str(provider.get("auth_status") or "").strip()
+        if auth_status == "missing":
+            return "missing"
+        if auth_status and auth_status != "logged_in":
+            return "unknown"
         return "ok"
     if _support_bool(command_status) is False:
         return "missing"
@@ -5544,7 +5727,7 @@ def _build_settings_preview(
             field_id="model_source",
             label="Model source",
             current=current_provider.get("model_source") or "unknown",
-            status="ok" if current_provider.get("model_source") in {"jarvis_explicit", "claude_default"} else "unknown",
+            status="ok" if current_provider.get("model_source") in {"jarvis_explicit", "claude_default", "codex_default"} else "unknown",
             source="runtime_detected",
             dependencies=["brain_provider.provider"],
         ),
@@ -5661,7 +5844,7 @@ def _build_settings_preview(
             current=auth_status,
             source="runtime_detected",
             status=auth_field_status,
-            blocker="Claude CLI auth is missing." if auth_status == "missing" else None,
+            blocker="Provider auth is missing." if auth_status == "missing" else None,
             dependencies=["brain_provider.provider"],
         ),
         "version": _preview_field(
