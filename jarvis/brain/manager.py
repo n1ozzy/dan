@@ -6,11 +6,17 @@ import inspect
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from jarvis.brain.auto_detect import detect_all_providers, get_default_adapter
 from jarvis.brain.base import BrainAdapter, BrainRequest, BrainResponse
+from jarvis.brain.chain_adapter import ChainAdapter
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
 from jarvis.brain.claude_cli_warm_adapter import ClaudeCliWarmAdapter
 from jarvis.brain.codex_cli_adapter import CodexCliAdapter
+from jarvis.brain.eco_brain_adapter import create_eco_brain_adapter
+from jarvis.brain.groq_adapter import create_groq_adapter
 from jarvis.brain.mock_adapter import MockBrainAdapter
+from jarvis.brain.ollama_adapter import create_ollama_adapter
+from jarvis.brain.qwen_adapter import create_qwen_adapter
 
 
 class BrainManagerError(Exception):
@@ -40,56 +46,129 @@ class BrainManager:
         cls, config: object, *, generation_registry: Any | None = None
     ) -> "BrainManager":
         brain_config = getattr(config, "brain", None)
-        default_adapter = getattr(brain_config, "default_adapter", "mock")
+        # Use auto-detection if no default_adapter specified, otherwise use config
+        config_default = getattr(brain_config, "default_adapter", None)
+        default_adapter = config_default if config_default else get_default_adapter()
         default_model = getattr(brain_config, "default_model", "mock-local")
+
+        # Auto-detect all available providers
+        detected = detect_all_providers()
         adapters: list[BrainAdapter] = [MockBrainAdapter(default_model=default_model)]
 
-        claude_config = getattr(brain_config, "claude_cli", None)
-        if _should_register_cli_adapter(claude_config, default_adapter, "claude_cli"):
-            adapters.append(
-                ClaudeCliAdapter(
-                    command=getattr(claude_config, "command", "claude"),
-                    args=getattr(claude_config, "args", ["-p"]),
-                    model=getattr(claude_config, "model", ""),
-                    effort=getattr(claude_config, "effort", ""),
-                    permission_mode=getattr(claude_config, "permission_mode", ""),
-                    output_format=getattr(claude_config, "output_format", ""),
-                    input_format=getattr(claude_config, "input_format", ""),
-                    tools=getattr(claude_config, "tools", []),
-                    allowed_tools=getattr(claude_config, "allowed_tools", []),
-                    disallowed_tools=getattr(claude_config, "disallowed_tools", []),
-                    mcp_config_path=getattr(claude_config, "mcp_config_path", ""),
-                    strict_mcp_config=getattr(claude_config, "strict_mcp_config", None),
-                    timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
-                    stream_args=getattr(claude_config, "stream_args", None),
-                    generation_registry=generation_registry,
+        # Register all detected providers automatically
+        if detected["claude_cli"].available:
+            claude_config = getattr(brain_config, "claude_cli", None)
+            if claude_config is None:
+                # Create minimal config from detection
+                from types import SimpleNamespace
+                claude_config = SimpleNamespace(
+                    command="claude",
+                    args=["-p"],
+                    model="",
+                    effort="",
+                    permission_mode="",
+                    output_format="",
+                    input_format="",
+                    tools=[],
+                    allowed_tools=[],
+                    disallowed_tools=[],
+                    mcp_config_path="",
+                    strict_mcp_config=None,
+                    timeout_seconds=120,
+                    stream_args=None,
+                    enabled=True,
                 )
-            )
+            if _should_register_cli_adapter(claude_config, default_adapter, "claude_cli"):
+                adapters.append(
+                    ClaudeCliAdapter(
+                        command=getattr(claude_config, "command", "claude"),
+                        args=getattr(claude_config, "args", ["-p"]),
+                        model=getattr(claude_config, "model", ""),
+                        effort=getattr(claude_config, "effort", ""),
+                        permission_mode=getattr(claude_config, "permission_mode", ""),
+                        output_format=getattr(claude_config, "output_format", ""),
+                        input_format=getattr(claude_config, "input_format", ""),
+                        tools=getattr(claude_config, "tools", []),
+                        allowed_tools=getattr(claude_config, "allowed_tools", []),
+                        disallowed_tools=getattr(claude_config, "disallowed_tools", []),
+                        mcp_config_path=getattr(claude_config, "mcp_config_path", ""),
+                        strict_mcp_config=getattr(claude_config, "strict_mcp_config", None),
+                        timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
+                        stream_args=getattr(claude_config, "stream_args", None),
+                        generation_registry=generation_registry,
+                    )
+                )
 
-        # Ciepły wariant (PROTOTYP): dzieli config [brain.claude_cli], dokłada
-        # tryb strumienia i trzyma proces ciepły. Rejestrowany tylko gdy jawnie
-        # wybrany (default_adapter = "claude_cli_warm").
-        if default_adapter == "claude_cli_warm" and claude_config is not None:
-            adapters.append(
-                ClaudeCliWarmAdapter(
-                    command=getattr(claude_config, "command", "claude"),
-                    args=getattr(claude_config, "args", ["-p"]),
-                    model=getattr(claude_config, "model", ""),
-                    timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
-                    generation_registry=generation_registry,
+        if detected["codex_cli"].available:
+            codex_config = getattr(brain_config, "codex_cli", None)
+            if codex_config is None:
+                from types import SimpleNamespace
+                codex_config = SimpleNamespace(
+                    command="codex",
+                    args=[],
+                    model="",
+                    timeout_seconds=120,
+                    enabled=True,
                 )
-            )
+            if _should_register_cli_adapter(codex_config, default_adapter, "codex_cli"):
+                adapters.append(
+                    CodexCliAdapter(
+                        command=getattr(codex_config, "command", "codex"),
+                        args=getattr(codex_config, "args", []),
+                        model=getattr(codex_config, "model", ""),
+                        timeout_seconds=getattr(codex_config, "timeout_seconds", 120),
+                    )
+                )
 
-        codex_config = getattr(brain_config, "codex_cli", None)
-        if _should_register_cli_adapter(codex_config, default_adapter, "codex_cli"):
-            adapters.append(
-                CodexCliAdapter(
-                    command=getattr(codex_config, "command", "codex"),
-                    args=getattr(codex_config, "args", []),
-                    model=getattr(codex_config, "model", ""),
-                    timeout_seconds=getattr(codex_config, "timeout_seconds", 120),
-                )
-            )
+        # Groq API adapter - auto-register if API key available OR explicitly enabled in config
+        groq_config = getattr(brain_config, "groq", None)
+        groq_explicit = bool(getattr(groq_config, "enabled", False)) if groq_config else False
+        if detected["groq"].available or groq_explicit:
+            if groq_config is None:
+                from types import SimpleNamespace
+                groq_config = SimpleNamespace(enabled=True, api_key="", model="")
+            if _should_register_cli_adapter(groq_config, default_adapter, "groq"):
+                adapters.append(create_groq_adapter(config, generation_registry))
+
+        # Qwen / LiteLLM adapter
+        qwen_config = getattr(brain_config, "qwen", None)
+        qwen_explicit = bool(getattr(qwen_config, "enabled", False)) if qwen_config else False
+        if detected["qwen"].available or qwen_explicit:
+            if qwen_config is None:
+                from types import SimpleNamespace
+                qwen_config = SimpleNamespace(enabled=True, base_url="", model="")
+            if _should_register_cli_adapter(qwen_config, default_adapter, "qwen"):
+                adapters.append(create_qwen_adapter(config, generation_registry))
+
+        # Ollama local adapter
+        ollama_config = getattr(brain_config, "ollama", None)
+        ollama_explicit = bool(getattr(ollama_config, "enabled", False)) if ollama_config else False
+        if detected["ollama"].available or ollama_explicit:
+            if ollama_config is None:
+                from types import SimpleNamespace
+                ollama_config = SimpleNamespace(enabled=True, host="http://localhost:11434", model="")
+            if _should_register_cli_adapter(ollama_config, default_adapter, "ollama"):
+                adapters.append(create_ollama_adapter(config, generation_registry))
+
+        # Eco Brain adapter
+        eco_config = getattr(brain_config, "eco_brain", None)
+        eco_explicit = bool(getattr(eco_config, "enabled", False)) if eco_config else False
+        if detected["eco_brain"].available or eco_explicit:
+            if eco_config is None:
+                from types import SimpleNamespace
+                eco_config = SimpleNamespace(enabled=True, base_url="", model="")
+            if _should_register_cli_adapter(eco_config, default_adapter, "eco_brain"):
+                adapters.append(create_eco_brain_adapter(config, generation_registry))
+
+        # Chain adapter (Claude + Ollama) - only if both are available
+        if (detected["claude_cli"].available or bool(getattr(getattr(brain_config, "claude_cli", None), "enabled", False))) and \
+           (detected["ollama"].available or bool(getattr(getattr(brain_config, "ollama", None), "enabled", False))):
+            chain_config = getattr(brain_config, "chain", None)
+            if chain_config is None:
+                from types import SimpleNamespace
+                chain_config = SimpleNamespace(enabled=True)
+            if _should_register_cli_adapter(chain_config, default_adapter, "chain"):
+                adapters.append(ChainAdapter.from_config(config, generation_registry))
 
         return cls(
             adapters,

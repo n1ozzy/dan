@@ -611,6 +611,18 @@ body.offline .state-pill {
   color: var(--accent);
 }
 
+.mode-button.ptt-hold {
+  background: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 0 12px var(--accent);
+  animation: ptt-pulse 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes ptt-pulse {
+  from { box-shadow: 0 0 8px var(--accent); }
+  to { box-shadow: 0 0 20px var(--accent), 0 0 30px var(--accent); }
+}
+
 /* Fala głosu przy statusie: słupki ożywają tylko, gdy mikrofon zbiera. */
 .hud-item .wave {
   display: inline-flex;

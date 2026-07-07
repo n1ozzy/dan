@@ -55,7 +55,15 @@ LEGACY_GUIDANCE = [
 KNOWN_SOURCES = frozenset({"config", "settings", "default", "runtime_detected", "unknown"})
 KNOWN_STATUSES = frozenset({"ok", "missing", "invalid", "unsupported", "unknown"})
 PERSONA_PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-KNOWN_PROVIDER_EFFORT_LEVELS = tuple(CLAUDE_CLI_EFFORTS)
+CLAUDE_CLI_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+CODEX_CLI_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
+GROQ_EFFORT_LEVELS = ()
+QWEN_EFFORT_LEVELS = ()
+OLLAMA_EFFORT_LEVELS = ()
+CHAIN_EFFORT_LEVELS = ()
+ECO_BRAIN_EFFORT_LEVELS = ()
+
+KNOWN_PROVIDER_EFFORT_LEVELS = CLAUDE_CLI_EFFORT_LEVELS
 KNOWN_PROVIDER_SUPPORT_UNKNOWN = "unknown"
 KNOWN_PROVIDER_SUPPORT_YES = "yes"
 KNOWN_PROVIDER_SUPPORT_NO = "no"
@@ -152,15 +160,15 @@ PROVIDER_PRESET: dict[str, dict[str, Any]] = {
     "claude_cli": {
         "display_name": "Claude CLI",
         "kind": "cli",
-        "supported_efforts": list(KNOWN_PROVIDER_EFFORT_LEVELS),
+        "supported_efforts": list(CLAUDE_CLI_EFFORT_LEVELS),
         "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
         "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
         "tools_support": KNOWN_PROVIDER_SUPPORT_YES,
     },
     "claude_cli_warm": {
-        "display_name": "Claude CLI",
+        "display_name": "Claude CLI (warm)",
         "kind": "cli",
-        "supported_efforts": list(KNOWN_PROVIDER_EFFORT_LEVELS),
+        "supported_efforts": list(CLAUDE_CLI_EFFORT_LEVELS),
         "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
         "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
         "tools_support": KNOWN_PROVIDER_SUPPORT_YES,
@@ -168,10 +176,50 @@ PROVIDER_PRESET: dict[str, dict[str, Any]] = {
     "codex_cli": {
         "display_name": "Codex CLI",
         "kind": "Provider",
-        "supported_efforts": [],
+        "supported_efforts": list(CODEX_CLI_EFFORT_LEVELS),
         "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
         "streaming_support": KNOWN_PROVIDER_SUPPORT_NO,
         "tools_support": KNOWN_PROVIDER_SUPPORT_YES,
+    },
+    "groq": {
+        "display_name": "Groq API",
+        "kind": "cloud",
+        "supported_efforts": list(GROQ_EFFORT_LEVELS),
+        "fast_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
+    },
+    "qwen": {
+        "display_name": "Qwen / LiteLLM",
+        "kind": "cloud",
+        "supported_efforts": list(QWEN_EFFORT_LEVELS),
+        "fast_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
+    },
+    "ollama": {
+        "display_name": "Ollama (local)",
+        "kind": "local",
+        "supported_efforts": list(OLLAMA_EFFORT_LEVELS),
+        "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
+        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
+    },
+    "chain": {
+        "display_name": "Chain (Claude→Bielik)",
+        "kind": "composite",
+        "supported_efforts": list(CHAIN_EFFORT_LEVELS),
+        "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
+        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
+    },
+    "eco_brain": {
+        "display_name": "Eco Brain",
+        "kind": "cloud",
+        "supported_efforts": list(ECO_BRAIN_EFFORT_LEVELS),
+        "fast_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
     },
 }
 

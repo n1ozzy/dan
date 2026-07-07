@@ -1540,6 +1540,7 @@ def create_daemon_app_from_config(
         approved_roots=approved_roots,
         trusted_scopes=config.security.trusted_scopes,
         voice_auto_approve=config.security.voice_auto_approve_tools,
+        auto_approve_mode=config.security.auto_approve_mode,
     )
 
     if not initialize:

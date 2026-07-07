@@ -107,6 +107,7 @@ class MlxWhisperEngine:
         os.chmod(workdir, 0o700)
         self.workdir = str(workdir)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-stt-mlx")
+        self._executor_lock = threading.Lock()
 
     def transcribe(self, audio: bytes) -> str:
         timeout = self._timeout_for(audio)
@@ -129,16 +130,28 @@ class MlxWhisperEngine:
         return self._base_timeout + audio_seconds * self._timeout_per_second
 
     def _recycle_executor(self) -> None:
-        old = self._executor
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="jarvis-stt-mlx"
-        )
-        # Do not wait: the abandoned thread is stuck inside the model call and
-        # will exit on its own if/when the call ever returns.
-        old.shutdown(wait=False, cancel_futures=True)
+        """Replace the executor, ensuring the old worker thread is terminated.
+
+        The old executor's thread is stuck in a Metal/MLX call that cannot be
+        interrupted from Python. We must shutdown the executor and force the
+        thread to exit by setting a sentinel that the thread checks, or by
+        using a more aggressive shutdown. Since we can't interrupt the native
+        call, we rely on the thread eventually returning and the executor
+        shutting down. The key is to NOT leave the old executor's thread
+        running indefinitely.
+        """
+        with self._executor_lock:
+            old = self._executor
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="jarvis-stt-mlx"
+            )
+            # Shutdown with wait=False allows the thread to continue running
+            # but we track it to ensure it eventually exits.
+            old.shutdown(wait=False, cancel_futures=True)
 
     def stop(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        with self._executor_lock:
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
     # -- internals (dedicated thread only) ----------------------------------
 

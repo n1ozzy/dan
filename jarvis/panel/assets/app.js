@@ -87,7 +87,7 @@ const RUNTIME_OVERVIEW_READINESS = Object.freeze({
   UNSUPPORTED: "unsupported",
   UNKNOWN: "unknown",
 });
-const POC_NO_PERSISTENCE_GUARD = true;
+// Production mode - no POC guards
 const MISSION_CONTROL_ENDPOINTS = Object.freeze([
   { key: "health", path: "/health", method: "GET" },
   { key: "state", path: "/state", method: "GET" },
@@ -813,6 +813,64 @@ async function setVoiceMode(mode) {
     setBusy(el.listenToggle, false);
   }
   await refreshVoice();
+}
+
+// PTT button hold (web panel) — press and hold the PTT button to talk
+// This works alongside the macOS global hotkey for PTT
+function setupPttButtonHold() {
+  const btn = el.pttModeButton;
+  if (!btn) return;
+
+  const sendPtt = async (path) => {
+    if (!cockpit.online || !cockpit.voice.enabled || POC_NO_PERSISTENCE_GUARD) return;
+    try {
+      await requestJson(path, { method: "POST", body: { source: "ptt" } });
+      await refreshVoice();
+    } catch (error) {
+      renderError(el.voiceError, error);
+    }
+  };
+
+  let holdTimer = null;
+  const startHold = () => {
+    if (POC_NO_PERSISTENCE_GUARD) return;
+    btn.classList.add("ptt-hold");
+    sendPtt("/voice/ptt/down");
+  };
+  const endHold = () => {
+    btn.classList.remove("ptt-hold");
+    sendPtt("/voice/ptt/up");
+  };
+
+  // Mouse events
+  btn.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return; // left click only
+    e.preventDefault();
+    startHold();
+  });
+  btn.addEventListener("mouseup", (e) => {
+    if (e.button !== 0) return;
+    endHold();
+  });
+  btn.addEventListener("mouseleave", endHold);
+
+  // Touch events (mobile)
+  btn.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    startHold();
+  }, { passive: false });
+  btn.addEventListener("touchend", (e) => {
+    e.preventDefault();
+    endHold();
+  }, { passive: false });
+  btn.addEventListener("touchcancel", endHold, { passive: false });
+}
+
+// Initialize PTT button hold on load
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", setupPttButtonHold);
+} else {
+  setupPttButtonHold();
 }
 
 async function refreshHealthAndState() {

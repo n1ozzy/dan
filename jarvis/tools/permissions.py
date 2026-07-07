@@ -106,11 +106,13 @@ class ToolPermissionPolicy:
         approved_roots: Iterable[str] | None = None,
         trusted_scopes: Iterable[TrustedScope] | None = None,
         voice_auto_approve: bool = False,
+        auto_approve_mode: str = "off",
     ):
         self.destructive_tools_enabled = destructive_tools_enabled
         self.approved_roots = tuple(_normalize_root(root) for root in approved_roots or ())
         self.trusted_scopes = tuple(trusted_scopes or ())
         self.voice_auto_approve = voice_auto_approve
+        self.auto_approve_mode = auto_approve_mode  # "off", "model", "voice", "all"
 
     def _is_model_trusted_for_tool(self, tool_name: str, payload: Mapping[str, Any] | None) -> bool:
         """Check if a MODEL_ORIGINATED request is within a trusted scope for the tool."""
@@ -132,9 +134,24 @@ class ToolPermissionPolicy:
         """Check if a VOICE_COMMAND request is within approved_roots for the tool."""
         if not self.approved_roots:
             return False
-        # For network/shell tools, check if there's a path or command that's safe
-        # For now, allow if approved_roots exists (voice implies user intent)
-        return True
+        if payload is None:
+            return False
+        # Check path-based tools
+        path_value = payload.get("path")
+        if isinstance(path_value, str) and path_value.strip():
+            candidate = _normalize_root(path_value)
+            return any(
+                _is_within_root(candidate, approved_root) for approved_root in self.approved_roots
+            )
+        # For shell_read, check cwd
+        cwd_value = payload.get("cwd")
+        if isinstance(cwd_value, str) and cwd_value.strip():
+            candidate = _normalize_root(cwd_value)
+            return any(
+                _is_within_root(candidate, approved_root) for approved_root in self.approved_roots
+            )
+        # For network, no path to check — conservative: require explicit config
+        return False
 
     def decide(
         self,
@@ -230,6 +247,20 @@ class ToolPermissionPolicy:
                     "requests may not mutate anything.",
                     source=normalized_source,
                 )
+            # Auto-approve mode: auto-approve model-originated tools based on config.
+            if normalized_source == RequestSource.MODEL_ORIGINATED:
+                if self.auto_approve_mode == "all":
+                    return _allow(
+                        normalized_risk,
+                        f"{tool_name} is {normalized_risk} but allowed via auto-approve mode 'all'.",
+                        source=normalized_source,
+                    )
+                if self.auto_approve_mode == "model" and self._is_model_trusted_for_tool(tool_name, payload):
+                    return _allow(
+                        normalized_risk,
+                        f"{tool_name} is {normalized_risk} but allowed via auto-approve mode 'model' (trusted scope).",
+                        source=normalized_source,
+                    )
             # Trusted scopes: MODEL_ORIGINATED gets ALLOW within configured paths/tools.
             if normalized_source == RequestSource.MODEL_ORIGINATED and self._is_model_trusted_for_tool(tool_name, payload):
                 return _allow(

@@ -31,7 +31,7 @@ from jarvis.voice.transcription import normalize_phrase
 
 DEFAULT_WINDOW_SECONDS = 30
 DEFAULT_OVERLAP_THRESHOLD = 0.75
-DEFAULT_MIN_ECHO_TOKENS = 8
+DEFAULT_MIN_ECHO_TOKENS = 5
 
 # Corpus membership is decided by spoken_at, not status (FIX-09): the broker
 # stamps spoken_at the moment a chunk reaches the speaker, so a NULL means the

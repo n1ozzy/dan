@@ -238,6 +238,11 @@ class VoiceConfig:
     # calibrated at the G4 live gate together with the stt_min_* values.
     anti_echo_window_seconds: int = 30
     anti_echo_overlap_threshold: float = 0.75
+    # Minimum token count before rejecting as echo (G4c): conversational
+    # follow-ups referencing key terms ("tak, ten plik" = 3 tokens) hit 1.0
+    # overlap against the introducing sentence but are short; echoes are
+    # typically full sentences (>5 tokens in Polish). Set 0 to disable the token guard.
+    anti_echo_min_echo_tokens: int = 5
     # How long a voice turn retries a busy pipeline (e.g. a barged-in turn
     # still winding down) before the transcript is dropped with a log.
     transcript_turn_retry_seconds: float = 10.0
@@ -255,12 +260,13 @@ class VoiceConfig:
     supertonic_voice: str = "M1"
     supertonic_lang: str = "pl"
     supertonic_steps: int = 14
+    # G4 live-gate measurement (2026-07-02, N=5 per point): sentences of
+    # >=24 chars are clean at 1.35. Above ~1.15 speed supertonic clips the
+    # final phoneme of SHORT sentences and above ~1.25 sometimes emits a
+    # near-silent file. Short sentences (<= short_sentence_chars) are
+    # synthesized at short_sentence_speed (only ever slower, never faster).
+    # 0 = disabled.
     supertonic_speed: float = 1.35
-    # G4 live-gate measurement (2026-07-02, N=5 per point): above ~1.15
-    # speed supertonic clips the final phoneme of short sentences and above
-    # ~1.25 sometimes emits a near-silent file; sentences of >=24 chars are
-    # clean at 1.35. Sentences up to short_sentence_chars are synthesized at
-    # short_sentence_speed (only ever slower, never faster). 0 = disabled.
     supertonic_short_sentence_chars: int = 24
     supertonic_short_sentence_speed: float = 1.0
     # sox's player: sox is part of the decreed stack (§7.4) and its legacy
@@ -351,6 +357,11 @@ class SecurityConfig:
     # (file_write, shell_read, network, etc.) within approved_roots.
     # This makes voice fully seamless for trusted paths.
     voice_auto_approve_tools: bool = False
+    # Auto-approve mode for model-originated tools (like Codex/Claude CLI).
+    # Options: "off" (default), "model" (auto-approve model-originated tools in trusted scopes),
+    # "voice" (same as voice_auto_approve_tools), "all" (auto-approve all non-destructive tools).
+    # When enabled, tools are approved AND executed automatically in one turn.
+    auto_approve_mode: str = "off"
 
 
 @dataclass(frozen=True)

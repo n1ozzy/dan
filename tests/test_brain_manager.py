@@ -203,7 +203,9 @@ def test_brain_manager_from_config_uses_brain_defaults() -> None:
     manager = BrainManager.from_config(config)
     response = manager.generate(make_request("configured model"))
 
-    assert manager.adapter_names() == ["mock"]
+    # Auto-detection registers available providers; mock is always present
+    names = manager.adapter_names()
+    assert "mock" in names
     assert manager.current_adapter_name == "mock"
     assert response.model == "mock-configured"
 

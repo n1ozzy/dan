@@ -106,6 +106,14 @@ class TestMenuBarAppGuard:
 
 class TestProbe:
     def test_probe_ok_when_pyobjc_and_assets_present(self, tmp_path: Path) -> None:
+        # This test requires PyObjC; skip if not available (e.g. in CI)
+        try:
+            import AppKit  # type: ignore
+            import WebKit  # type: ignore
+            import objc  # type: ignore
+        except ImportError:
+            pytest.skip("PyObjC not installed")
+
         assert menubar_app.probe(resolve_shell_settings(_config(tmp_path))) == 0
 
     def test_probe_2_when_pyobjc_missing(

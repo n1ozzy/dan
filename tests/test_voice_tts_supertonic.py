@@ -340,6 +340,7 @@ def test_short_sentence_synthesized_at_short_speed(tmp_path: Path) -> None:
 def test_long_sentence_keeps_configured_speed(tmp_path: Path) -> None:
     engine, args_file, _ = build_engine(
         tmp_path,
+        supertonic_speed=1.35,
         supertonic_short_sentence_chars=24,
         supertonic_short_sentence_speed=1.0,
     )

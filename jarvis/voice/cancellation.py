@@ -42,9 +42,15 @@ class GenerationRegistry:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._handles: dict[str, Callable[[], None]] = {}
+        self._cancelling = False
 
     def register(self, turn_id: str, cancel: Callable[[], None]) -> None:
         with self._lock:
+            if self._cancelling:
+                # Cancellation in progress: immediately invoke cancel to prevent
+                # any new generation from starting (FIX-09: tombstone race).
+                cancel()
+                return
             self._handles[str(turn_id)] = cancel
 
     def unregister(self, turn_id: str) -> None:
@@ -60,8 +66,8 @@ class GenerationRegistry:
 
         The coordinator tombstones exactly these turn ids, so a generation with
         no queue rows yet is still blocked from enqueuing a late delta (FIX-09)."""
-
         with self._lock:
+            self._cancelling = True
             handles = list(self._handles.items())
             self._handles.clear()
         cancelled: list[str] = []
@@ -71,6 +77,8 @@ class GenerationRegistry:
             except Exception:  # noqa: BLE001 — a dead process must not stop the sweep
                 _LOGGER.exception("generation cancel handle for turn %s raised.", turn_id)
             cancelled.append(turn_id)
+        with self._lock:
+            self._cancelling = False
         return cancelled
 
 
