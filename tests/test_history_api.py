@@ -127,9 +127,9 @@ def test_get_turns_returns_persisted_turns_for_conversation(app: DaemonApp) -> N
     assert turn["source"] == "api"
     assert turn["status"] == "finished"
     assert turn["input_text"] == "Persisted turn"
-    assert turn["final_text"] == "Jarvis mock response: Persisted turn"
-    assert turn["brain_adapter"] == "mock"
-    assert turn["brain_model"] == "mock-local"
+    assert turn["final_text"] == "Test response: Persisted turn"
+    assert turn["brain_adapter"] == "test"
+    assert turn["brain_model"] == "test-model"
     assert isinstance(turn["context_snapshot"], dict)
     assert turn["error"] is None
     assert turn["metadata"] == {}

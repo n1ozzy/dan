@@ -8,6 +8,7 @@ from typing import Any
 from jarvis.brain.auto_detect import detect_all_providers, get_default_adapter
 from jarvis.brain.base import BrainAdapter, BrainRequest, BrainResponse
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
+from jarvis.brain.claude_cli_warm_adapter import ClaudeCliWarmAdapter
 from jarvis.brain.codex_cli_adapter import CodexCliAdapter
 from jarvis.brain.groq_adapter import create_groq_adapter
 from jarvis.brain.sync_adapter import wrap_async_adapter
@@ -52,7 +53,7 @@ class BrainManager:
         adapters: list[BrainAdapter] = []
 
         # Priority order for default adapter
-        priority = ["claude_cli", "codex_cli", "groq"]
+        priority = ["claude_cli", "codex_cli", "groq", "claude_cli_warm"]
 
         # Register Claude CLI adapter
         if detected["claude_cli"].available:
@@ -93,6 +94,40 @@ class BrainManager:
                         strict_mcp_config=getattr(claude_config, "strict_mcp_config", None),
                         timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
                         stream_args=getattr(claude_config, "stream_args", None),
+                        generation_registry=generation_registry,
+                    )
+                )
+
+# Register Claude CLI Warm adapter (explicit config only)
+        warm_config = getattr(brain_config, "claude_cli_warm", None)
+        warm_explicit = bool(getattr(warm_config, "enabled", False)) if warm_config else False
+        if warm_explicit:
+            if warm_config is None:
+                from types import SimpleNamespace
+                warm_config = SimpleNamespace(
+                    command="claude",
+                    args=["-p"],
+                    model="",
+                    effort="",
+                    permission_mode="",
+                    output_format="",
+                    input_format="",
+                    tools=[],
+                    allowed_tools=[],
+                    disallowed_tools=[],
+                    mcp_config_path="",
+                    strict_mcp_config=None,
+                    timeout_seconds=120,
+                    stream_args=None,
+                    enabled=True,
+                )
+            if _should_register_cli_adapter(warm_config, config_default, "claude_cli_warm"):
+                adapters.append(
+                    ClaudeCliWarmAdapter(
+                        command=getattr(warm_config, "command", "claude"),
+                        args=getattr(warm_config, "args", ["-p"]),
+                        model=getattr(warm_config, "model", ""),
+                        timeout_seconds=getattr(warm_config, "timeout_seconds", 120),
                         generation_registry=generation_registry,
                     )
                 )

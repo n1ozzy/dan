@@ -161,6 +161,9 @@ class BrainConfig:
     test: BrainCliAdapterConfig = field(
         default_factory=lambda: BrainCliAdapterConfig(command="test", args=[], enabled=False)
     )
+    claude_cli_warm: BrainCliAdapterConfig = field(
+        default_factory=lambda: BrainCliAdapterConfig(command="claude", args=["-p"], enabled=False)
+    )
 
 
 @dataclass(frozen=True)
@@ -612,6 +615,12 @@ def _build_brain_config(raw: dict[str, Any]) -> BrainConfig:
                 raw.get("test"),
                 default_command="test",
                 default_args=[],
+            ),
+            claude_cli_warm=_build_brain_cli_config(
+                "brain.claude_cli_warm",
+                raw.get("claude_cli_warm"),
+                default_command="claude",
+                default_args=["-p"],
             ),
         )
     except TypeError as exc:

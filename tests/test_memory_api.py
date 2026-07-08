@@ -297,7 +297,7 @@ def test_created_active_memory_reaches_context_builder_and_disabled_memory_is_ex
     assert status == 200
     snapshot = response["turn"]["context_snapshot"]
     assert snapshot["memory_block_count"] == 1
-    assert response["turn"]["final_text"] == "Jarvis mock response: use memory"
+    assert response["turn"]["final_text"] == "Test response: use memory"
     assert event_types(app).count("memory.updated") == 3
 
     assert app.context_builder is not None

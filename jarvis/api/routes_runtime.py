@@ -995,7 +995,8 @@ def _claude_cli_contract(
     requested_effort_status: str,
     command_projection: dict[str, Any],
 ) -> dict[str, Any]:
-    config = getattr(getattr(app.config, "brain", None), "claude_cli", None)
+    config_attr = "claude_cli_warm" if adapter_name == "claude_cli_warm" else "claude_cli"
+    config = getattr(getattr(app.config, "brain", None), config_attr, None)
     command_settings = _claude_cli_command_settings(adapter=adapter, config=config)
     requested_model_text = str(requested_model).strip() if isinstance(requested_model, str) else ""
     requested_effort_text = str(requested_effort).strip() if isinstance(requested_effort, str) else ""

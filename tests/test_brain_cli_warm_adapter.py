@@ -375,6 +375,9 @@ def test_from_config_passes_generation_registry_to_warm_adapter() -> None:
             claude_cli=SimpleNamespace(
                 command="claude", args=["-p"], model="", timeout_seconds=120
             ),
+            claude_cli_warm=SimpleNamespace(
+                command="claude", args=["-p"], model="", timeout_seconds=120, enabled=True
+            ),
         )
     )
 

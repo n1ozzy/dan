@@ -180,14 +180,13 @@ class TestBrainManagerRegistration:
         )
         # No explicit claude_cli, codex_cli configs - let auto-detection work
 
-        # Auto-detection should find claude_cli, codex_cli, ollama, chain
+        # Auto-detection should find claude_cli, codex_cli
         manager = BrainManager.from_config(config)
         names = manager.adapter_names()
 
         # These should always be detected if binaries exist
         assert "claude_cli" in names
         assert "codex_cli" in names
-        assert "mock" in names
 
     def test_manager_uses_config_when_provided(self):
         """Test that explicit config overrides auto-detection for default adapter."""
@@ -195,8 +194,9 @@ class TestBrainManagerRegistration:
 
         config = SimpleNamespace(
             brain=SimpleNamespace(
-                default_adapter="mock", 
-                default_model="mock-local",
+                default_adapter="test", 
+                default_model="test-model",
+                test=SimpleNamespace(enabled=True, model="test-model"),
                 groq=SimpleNamespace(enabled=True, api_key="test-key", model="llama-3.3-70b-versatile")
             )
         )
@@ -217,8 +217,9 @@ class TestBrainManagerRegistration:
             manager = BrainManager.from_config(config)
             names = manager.adapter_names()
             assert "groq" in names
-            # But default is still mock since we set it explicitly
-            assert manager.current_adapter_name == "mock"
+            assert "test" in names
+            # But default is still test since we set it explicitly
+            assert manager.current_adapter_name == "test"
 
 
 if __name__ == "__main__":

@@ -93,12 +93,12 @@ def test_get_brain_adapters_lists_registered_adapters(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/brain/adapters")
     assert status == 200
-    assert payload["current"] == "mock"
-    assert payload["default"] == "mock"
+    assert payload["current"] == "test"
+    assert payload["default"] == "test"
     adapters = payload["adapters"]
-    assert [adapter["name"] for adapter in adapters] == ["mock"]
+    assert [adapter["name"] for adapter in adapters] == ["test"]
     assert adapters[0]["current"] is True
-    assert adapters[0]["models"] == ["mock-local"]
+    assert adapters[0]["models"] == ["test-model"]
 
 
 def test_get_brain_adapters_includes_enabled_cli_adapter(cli_app: DaemonApp) -> None:
@@ -106,15 +106,15 @@ def test_get_brain_adapters_includes_enabled_cli_adapter(cli_app: DaemonApp) -> 
         status, payload = request_json("GET", f"{base_url}/brain/adapters")
     assert status == 200
     names = [adapter["name"] for adapter in payload["adapters"]]
-    assert names == ["claude_cli", "mock"]
-    assert payload["current"] == "mock"
+    assert names == ["claude_cli", "test"]
+    assert payload["current"] == "test"
 
 
 def test_get_brain_current_returns_current_adapter(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/brain/current")
     assert status == 200
-    assert payload == {"adapter": "mock", "default": "mock"}
+    assert payload == {"adapter": "test", "default": "test"}
 
 
 def test_post_brain_switch_switches_persists_and_emits_event(cli_app: DaemonApp) -> None:
@@ -124,7 +124,7 @@ def test_post_brain_switch_switches_persists_and_emits_event(cli_app: DaemonApp)
         )
         assert status == 200
         assert payload["ok"] is True
-        assert payload["previous"] == "mock"
+        assert payload["previous"] == "test"
         assert payload["adapter"] == "claude_cli"
         assert payload["changed"] is True
 
@@ -142,7 +142,7 @@ def test_post_brain_switch_switches_persists_and_emits_event(cli_app: DaemonApp)
         "SELECT payload_json FROM events WHERE type = 'brain.switched'"
     ).fetchone()
     event_payload = json.loads(row[0])
-    assert event_payload["from"] == "mock"
+    assert event_payload["from"] == "test"
     assert event_payload["to"] == "claude_cli"
 
 
@@ -155,7 +155,7 @@ def test_post_brain_switch_unknown_adapter_is_404_and_keeps_state(app: DaemonApp
         assert "nope" in str(payload["error"])
 
         status, current = request_json("GET", f"{base_url}/brain/current")
-        assert current["adapter"] == "mock"
+        assert current["adapter"] == "test"
 
     assert _settings_row(app, BRAIN_ADAPTER_SETTING_KEY) is None
     assert "brain.switched" not in _event_types(app)
@@ -175,12 +175,12 @@ def test_post_brain_switch_rejects_invalid_payload(app: DaemonApp, body: object)
 def test_post_brain_switch_same_adapter_is_idempotent(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json(
-            "POST", f"{base_url}/brain/switch", {"adapter": "mock"}
+            "POST", f"{base_url}/brain/switch", {"adapter": "test"}
         )
     assert status == 200
     assert payload["changed"] is False
-    assert payload["adapter"] == "mock"
-    assert _settings_row(app, BRAIN_ADAPTER_SETTING_KEY) == "mock"
+    assert payload["adapter"] == "test"
+    assert _settings_row(app, BRAIN_ADAPTER_SETTING_KEY) == "test"
     # A no-op switch must not spam the audit trail.
     assert "brain.switched" not in _event_types(app)
 
@@ -232,7 +232,7 @@ def test_stale_persisted_adapter_falls_back_to_config_default(tmp_path: Path) ->
     try:
         second.start()
         assert second.brain_manager is not None
-        assert second.brain_manager.current_adapter_name == "mock"
+        assert second.brain_manager.current_adapter_name == "test"
     finally:
         second.close()
 
@@ -241,7 +241,7 @@ def test_conversation_history_survives_brain_switch(cli_app: DaemonApp) -> None:
     marker = "HISTORY_MARKER_E1_SWITCH"
     first = cli_app.handle_text_input(text=f"Remember this marker: {marker}")
     conversation_id = first.conversation_id
-    assert first.brain_adapter == "mock"
+    assert first.brain_adapter == "test"
 
     cli_app.switch_brain("claude_cli")
 
@@ -258,7 +258,7 @@ def test_conversation_history_survives_brain_switch(cli_app: DaemonApp) -> None:
 
     turns = cli_app.list_turns(conversation_id)
     assert len(turns) == 2
-    assert [turn.brain_adapter for turn in turns] == ["mock", "claude_cli"]
+    assert [turn.brain_adapter for turn in turns] == ["test", "claude_cli"]
 
 
 def test_brain_switch_requires_transport_token(tmp_path: Path) -> None:

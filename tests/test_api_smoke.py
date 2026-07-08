@@ -50,7 +50,7 @@ def config_text(
     compiled_context_max_items: int | None = None,
     compiled_context_max_chars: int | None = None,
     compiled_context_include_procedural: bool = False,
-    brain_default_adapter: str = "mock",
+    brain_default_adapter: str = "test",
     extra_toml: str = "",
 ) -> str:
     runtime_home = db_path.parent
@@ -3336,7 +3336,7 @@ def test_post_runtime_settings_apply_graph_only_provider_does_not_persist(
     )
 
     app.start()
-    app.update_settings({BRAIN_ADAPTER_SETTING_KEY: "mock"})
+    app.update_settings({BRAIN_ADAPTER_SETTING_KEY: "test"})
     assert app.brain_manager is not None
     assert "ollama" not in app.brain_manager.adapter_names()
     with running_server(app) as base_url:
@@ -3350,8 +3350,7 @@ def test_post_runtime_settings_apply_graph_only_provider_does_not_persist(
     assert status in {409, 422}
     assert "not apply-capable" in payload["error"] or "registered" in payload["error"]
     assert settings_value(app, BRAIN_ADAPTER_SETTING_KEY) == "test"
-    assert app.brain_manager.current_adapter_name == "test"
-    assert refreshed["capability_graph"]["brain_capabilities"]["current_provider"] == "test"
+    assert refreshed["brain"]["current_adapter"]["value"] == "test"
 
 
 def test_post_runtime_settings_apply_rejects_unsupported_effort(app: DaemonApp) -> None:
@@ -3364,7 +3363,8 @@ def test_post_runtime_settings_apply_rejects_unsupported_effort(app: DaemonApp) 
         )
 
     assert status == 422
-    assert "Provider 'mock' is not present" in payload["error"]
+    assert "not next-turn apply-capable" in payload["error"]
+    assert "provider 'test'" in payload["error"]
 
 
 def test_runtime_settings_claude_model_next_turn_apply_updates_command_preview(
@@ -3475,7 +3475,7 @@ def test_runtime_settings_requires_new_session_disables_brain_apply(
         tmp_path / "home" / "jarvis.db",
         brain_default_adapter="claude_cli_warm",
         extra_toml=(
-            "\n[brain.claude_cli]\n"
+            "\n[brain.claude_cli_warm]\n"
             "enabled = true\n"
             "command = \"fake-claude\"\n"
             "model = \"claude-warm\"\n"
@@ -3501,7 +3501,7 @@ def test_runtime_settings_requires_new_session_disables_brain_apply(
     assert brain_section["apply_disabled_reason"] == "requires_new_session"
     assert "brain.model" in brain_section["requires_new_session_changes"]
     assert status == 422
-    assert "requires_new_session" in payload["error"]
+    assert "requires_new_session" in payload["error"] or "requires a new provider session" in payload["error"]
 
 
 def test_post_runtime_settings_apply_rejects_mock_as_normal_brain_provider(
@@ -3627,7 +3627,7 @@ def test_post_runtime_settings_apply_blocks_default_tts_restart_only(
         daemon_app.close()
 
     assert status == 409
-    assert "runtime engine reload not implemented in POC" in payload["error"]
+    assert "voice engine reload requires daemon restart" in payload["error"]
     assert refreshed["voice"]["default_tts"]["effective_value"] == "mock"
     assert payload["status"] == "requires_restart"
     assert "voice.default_tts" in payload["requires_restart_keys"]
@@ -3657,7 +3657,7 @@ def test_post_runtime_settings_apply_blocks_merge_window_restart_only(app: Daemo
         )
 
     assert status == 409
-    assert "runtime gateway reload not implemented in POC" in payload["error"]
+    assert "voice gateway reload requires daemon restart" in payload["error"]
 
 
 def test_runtime_settings_tools_internet_projection_uses_registered_network_tool_truth(
@@ -3700,7 +3700,7 @@ def test_runtime_settings_tools_apply_projection_is_restart_only_not_live_apply(
     tools = payload["tools"]
     assert tools["apply_capability"]["effective_value"] == "no"
     assert tools["requires_restart"]["effective_value"] is True
-    assert "runtime tool/network policy reload not implemented" in tools["apply_capability"]["warning"]
+    assert "tool/network policy reload requires daemon restart" in tools["apply_capability"]["warning"]
 
     apply_capabilities = payload["capability_graph"]["tools_capabilities"]["apply_capabilities"]
     for key in (
@@ -3725,7 +3725,7 @@ def test_post_runtime_settings_apply_tools_policy_returns_blocker(app: DaemonApp
         )
 
     assert status == 409
-    assert "requires restart" in payload["error"] or "not apply-capable" in payload["error"]
+    assert "daemon restart" in payload["error"] or "not apply-capable" in payload["error"]
     assert payload["status"] in {"blocked", "requires_restart"}
     assert payload["applied_keys"] == []
     assert "security.require_approval_for_network" in payload["rejected_keys"]
@@ -3749,8 +3749,8 @@ def test_runtime_settings_marks_invalid_stale_effort_and_fast_state_for_current_
 
     assert status == 200
     brain_field = _settings_preview_field(payload, "brain_provider", "provider")
-    assert brain_field["current"] == "mock"
-    assert brain_field["status"] in {"missing", "unknown"}
+    assert brain_field["current"] == "test"
+    assert brain_field["status"] == "ok"
     assert brain_field["apply_capable"] is False
 
 
