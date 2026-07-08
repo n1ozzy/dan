@@ -64,10 +64,12 @@ not start, stop, supervise, or clean up any process.
   no decorative frames or ambient animation.
 - Voice: the composer has a PTT | Nasłuch segmented MODE switch (lock =
   `POST /voice/listen/lock`, back to PTT = `POST /voice/listen/unlock`).
-  Holding PTT itself lives on the global hotkey in `menubar_app`, not in the
-  web view, so the cockpit no longer calls `/voice/ptt/down|up`. The mic
-  status next to the switch shows a small waveform that animates only while
-  the daemon is actually listening (driven by `listening.*` stream events).
+  Normal hold-to-talk lives on the global hotkey in `menubar_app`, not in the
+  web view. Any development-only PTT test action that exercises
+  `/voice/ptt/down|up` must use a backend-allowed listening source: `ptt`,
+  `global_hotkey`, or `lock`. The mic status next to the switch shows a small
+  waveform that animates only while the daemon is actually listening (driven by
+  `listening.*` stream events).
 - Approvals signals: a pulsing count on the Approvals tab plus an amber
   nudge bar inside the chat view ("N zgód czeka — pokaż") that switches to
   the Approvals view; both come from `renderApprovals` and from
@@ -163,3 +165,6 @@ needs proper transport protection and request authorization.
 - Wrong API base URL: edit the Base field and click Refresh.
 - Empty sections: check whether the daemon has been started and whether the
   corresponding API route requires `app.started`.
+- PTT test fails with an unknown listening source: use one of the backend-owned
+  sources (`ptt`, `global_hotkey`, `lock`). The daemon rejects ad-hoc source
+  labels before creating a lease.

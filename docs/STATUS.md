@@ -4,20 +4,21 @@ Classification: current.
 
 ## Git Snapshot
 
-- Branch: `rescue/audt-gpt5.5pro-limit-cdn`
-- HEAD: `58cca12 docs: finalize Memory OS rollout handoff`
-- Current final handoff scope: full docs-only Memory OS rollout handoff across
-  current state, status, roadmap, architecture, guardrails, and docs package
-  metadata. No runtime, code, config, schema, API, panel, provider, voice, or
-  env behavior changes.
+- Branch: `spike/jarvis-local-runtime-check`
+- HEAD before this docs refresh: `80dcbb5 Stabilize runtime settings panel and PTT contracts`
+- Current scope: docs-only review status refresh for the runtime settings panel
+  and PTT contracts. No runtime, code, config, schema, API, panel, provider,
+  voice, or env behavior changes.
 
 ## Current Status
 
-- core tests green
-- tools/approvals green
-- daemon/security/db green
-- voice unit/mock tests green
-- real live voice still requires manual validation
+- Historical baseline labels from the earlier rescue checkpoint were: core
+  tests green, tools/approvals green, daemon/security/db green, and voice
+  unit/mock tests green. They are not fresh evidence for this branch state.
+- Real live voice still requires manual validation.
+- Runtime settings/PTT review is not clean at this checkpoint. The current code
+  still needs a follow-up implementation/test pass before the runtime settings
+  and panel PTT path can be treated as merge-ready.
 - `MEMORY-CONTEXT-ROLLOUT-READINESS-01` completed as a read-only audit:
   focused validation: 176 passed; memory/context regression: 426 passed; no
   files changed; no commit made.
@@ -50,7 +51,7 @@ Classification: current.
 - Context build remains read-only.
 - Policy docs are protected by contract tests.
 
-These are status labels for the current rescue checkpoint. Fresh test evidence
+These are status labels for the current branch checkpoint. Fresh test evidence
 must come from commands in the current task, not from this file alone.
 
 ## Latest Known Rescue Fix
@@ -60,6 +61,29 @@ must come from commands in the current task, not from this file alone.
 This checkout contains a regression-test name for that behavior. The historical
 `docs/JARVIS_FIX_TASKS_HANDOFF.md` still describes the older opposite behavior,
 so treat that handoff as historical evidence only.
+
+## Runtime Settings / PTT Review Blockers
+
+The 2026-07-08 review of `80dcbb5` found these unresolved contract mismatches:
+
+- PTT-down no longer cancels active speech by contract, but
+  `test_get_runtime_settings_turn_trace_records_ptt_down_barge_in` still
+  expects a `cancellation` response payload, a `voice.speak.cancelled` event,
+  and interrupted-turn trace fields. Either the smoke test must be updated to
+  the non-cancelling contract, or the route must intentionally restore the
+  cancellation signal.
+- A missing stored `brain.model` must still surface the structured
+  `brain_model_missing` warning when the settings preview is invalid. Showing a
+  config/default effective model must not hide the blocker unless that warning
+  and test contract are deliberately changed together.
+- Panel PTT test calls must use an allowed listening source. The backend accepts
+  only `ptt`, `global_hotkey`, and `lock`; a source such as `panel_test` is
+  rejected before a hold lease is created.
+- Panel PTT hotkey validation must match `jarvis.panel.hotkey.parse_hotkey`.
+  Backend tokens are side-specific modifiers such as `left_cmd`,
+  `right_shift`, `left_option`, and their supported aliases; generic tokens
+  such as `cmd`, `shift`, `space`, or arbitrary single-character keys must not
+  be shown as applyable unless backend support is added.
 
 ## Guardrail Baseline
 
