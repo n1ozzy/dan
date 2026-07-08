@@ -308,6 +308,15 @@ class VoiceConfig:
     # plays the raw chunk, so mastering never causes silence.
     mastering_profile: str = ""
     mastering_binary: str = "ffmpeg"
+    # Per-persona voice + mastering binding (2026-07-08): map persona.profile
+    # (the panel's "Profil persony") -> supertonic voice / mastering profile,
+    # so switching persona live changes how Jarvis SOUNDS, not just his text
+    # tone. Empty maps = every profile uses the global supertonic_voice /
+    # mastering_profile (pre-binding behavior, unchanged). Fail-safe: an
+    # unmapped profile falls back to the global default, so a new persona can
+    # never cause silence or the wrong voice.
+    persona_voices: dict[str, str] = field(default_factory=dict)
+    persona_mastering: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -84,6 +84,22 @@ supertonic_serve_max_chunk_length = 400
 mastering_profile = ""               # e.g. "bastard"
 mastering_binary = "ffmpeg"
 
+# Per-persona voice + mastering binding: switching persona.profile (the panel's
+# "Profil persony": jarvis, gangus-1/2/3, mentor) also changes how Jarvis SOUNDS,
+# not just his text tone. Unmapped profiles fall back to supertonic_voice /
+# mastering_profile above. Live switch takes effect on the next chunk; editing
+# these maps needs a daemon restart (the engine reads them once at build).
+# Voice codes: M1..M5 / F1..F5 (decree: M1 is Jarvis's voice — differentiate
+# only if you want a profile to sound like a different person).
+[voice.persona_voices]
+# "gangus-3" = "M4"
+
+[voice.persona_mastering]
+"gangus-1" = "bastard"               # cięty — the ziomek timbre
+"gangus-2" = "gritty"                # bezczelny — rougher
+"gangus-3" = "gritty"                # pełny skurwiel — hardest edge
+"mentor"   = "clean"                 # spokojny — least processed
+
 # Anglicisms spoken Polish-phonetically before synthesis (data, not code;
 # longest key wins, case-insensitive, keeps PL inflections). Ported from DAN's
 # _PL_PHONETIC. The panel/logs keep the original spelling — only speech changes.

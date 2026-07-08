@@ -36,7 +36,7 @@ def voice_config(**overrides) -> SimpleNamespace:
         "enabled": True,
         "recorder": "mock",
         "ptt_mode": "hold",
-        "ptt_hold_ttl_seconds": 30,
+        "ptt_hold_ttl_seconds": 40,
         "listen_lock_ttl_seconds": 600,
     }
     values.update(overrides)

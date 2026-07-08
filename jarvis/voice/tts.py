@@ -185,8 +185,13 @@ class SupertonicEngine:
 
     name = "supertonic"
 
-    def __init__(self, *, config: Any) -> None:
+    def __init__(self, *, config: Any, persona_provider: Any = None) -> None:
         voice_cfg = config.voice
+        # Persona binding (2026-07-08): resolve the current persona.profile per
+        # chunk so a live persona switch (panel dropdown) changes voice +
+        # mastering on the next spoken chunk, no daemon restart. None -> the
+        # global voice/mastering, exactly as before.
+        self._persona_provider = persona_provider if callable(persona_provider) else None
         self._binary = _resolve_supertonic_binary(str(voice_cfg.supertonic_binary or ""))
         player = str(voice_cfg.playback_binary or "")
         if player and "/" not in player:
@@ -224,12 +229,27 @@ class SupertonicEngine:
         self._mastering_profile = str(getattr(voice_cfg, "mastering_profile", "") or "")
         self._mastering_filter = mastering_filter(self._mastering_profile)
         self._mastering_binary = str(getattr(voice_cfg, "mastering_binary", "ffmpeg") or "ffmpeg")
-        if self._mastering_filter and not shutil.which(self._mastering_binary):
+        # Per-persona voice + mastering maps (2026-07-08). Filter selection is a
+        # pure lookup (compiled once here); whether ffmpeg actually runs is a
+        # separate gate below, so an unmapped profile deterministically falls
+        # back to the global filter regardless of ffmpeg availability.
+        self._persona_voices = {
+            str(key): str(value)
+            for key, value in dict(getattr(voice_cfg, "persona_voices", {}) or {}).items()
+            if str(value).strip()
+        }
+        self._persona_mastering_filters = {
+            str(profile): mastering_filter(name)
+            for profile, name in dict(getattr(voice_cfg, "persona_mastering", {}) or {}).items()
+        }
+        self._mastering_enabled = bool(shutil.which(self._mastering_binary))
+        if not self._mastering_enabled and (
+            self._mastering_filter or self._persona_mastering_filters
+        ):
             _LOGGER.warning(
-                "mastering profile %r set but %r not found on PATH; playing raw audio.",
-                self._mastering_profile, self._mastering_binary,
+                "mastering configured but %r not found on PATH; playing raw audio.",
+                self._mastering_binary,
             )
-            self._mastering_filter = ""
         # Warm serve (ported from DAN): reuse an existing server, optionally
         # autostart one, else stay None -> CLI-only. The model reloads per CLI
         # chunk (~0.64s); serve loads it once. Fallback to CLI on any failure.
@@ -281,12 +301,12 @@ class SupertonicEngine:
         except Exception:
             _LOGGER.exception("supertonic serve failed to start; using CLI.")
 
-    def _synth_serve(self, clean: str, speed: float) -> bytes:
+    def _synth_serve(self, clean: str, speed: float, voice: str) -> bytes:
         """POST to the warm server -> WAV bytes. Field is `lang` NOT `language`
         (the server's pydantic model silently ignores unknown fields)."""
         body = json.dumps({
             "text": clean,
-            "voice": self._voice,
+            "voice": voice,
             "lang": self._lang,
             "speed": float(speed),
             "steps": self._steps,
@@ -303,9 +323,31 @@ class SupertonicEngine:
             raise TTSEngineError("supertonic serve returned no usable audio.")
         return audio
 
-    def _apply_mastering(self, audio: bytes) -> bytes:
+    # -- persona binding -----------------------------------------------------
+
+    def _current_persona(self) -> str:
+        """Currently selected persona.profile, or "" — fail-safe to silence-free.
+
+        The engine must never let a provider error (settings DB hiccup) turn
+        into no audio, so any failure resolves to the global voice/mastering.
+        """
+        if self._persona_provider is None:
+            return ""
+        try:
+            return str(self._persona_provider() or "").strip()
+        except Exception:
+            _LOGGER.debug("persona provider raised; using global voice/mastering.", exc_info=True)
+            return ""
+
+    def _voice_for(self, profile: str) -> str:
+        return self._persona_voices.get(profile) or self._voice
+
+    def _mastering_filter_for(self, profile: str) -> str:
+        return self._persona_mastering_filters.get(profile, self._mastering_filter)
+
+    def _apply_mastering(self, audio: bytes, filter_chain: str) -> bytes:
         """Run the ffmpeg persona chain; fail-safe returns the raw audio."""
-        if not self._mastering_filter:
+        if not (self._mastering_enabled and filter_chain):
             return audio
         src = Path(self.workdir) / f"master-in-{uuid.uuid4().hex}.wav"
         dst = Path(self.workdir) / f"master-out-{uuid.uuid4().hex}.wav"
@@ -313,7 +355,7 @@ class SupertonicEngine:
             src.write_bytes(audio)
             proc = subprocess.run(
                 [self._mastering_binary, "-y", "-i", str(src),
-                 "-af", self._mastering_filter, str(dst)],
+                 "-af", filter_chain, str(dst)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=20, check=False,
             )
@@ -327,11 +369,11 @@ class SupertonicEngine:
             dst.unlink(missing_ok=True)
         return audio
 
-    def _synth_cli(self, clean: str, speed: float) -> bytes:
+    def _synth_cli(self, clean: str, speed: float, voice: str) -> bytes:
         out = Path(self.workdir) / f"tts-{uuid.uuid4().hex}.wav"
         cmd = [
             self._binary, "tts", clean, "-o", str(out),
-            "--voice", self._voice, "--lang", self._lang,
+            "--voice", voice, "--lang", self._lang,
             "--steps", str(self._steps), "--speed", f"{speed:.2f}",
         ]
         try:
@@ -363,19 +405,25 @@ class SupertonicEngine:
         speed = self._speed
         if 0 < len(clean) <= self._short_chars:
             speed = min(speed, self._short_speed)
+        # Resolve the persona once per chunk so a live switch takes effect on the
+        # next chunk (voice + mastering both key off the same profile).
+        profile = self._current_persona()
+        voice = self._voice_for(profile)
         # Warm serve first (no per-chunk model reload); any failure falls back
         # to the CLI so warm-serve never regresses to silence.
         audio: bytes | None = None
         if self._serve:
             try:
-                audio = self._synth_serve(clean, speed)
+                audio = self._synth_serve(clean, speed, voice)
             except Exception:
                 _LOGGER.warning("supertonic serve synth failed; CLI fallback.", exc_info=True)
                 if not self._serve_alive():
                     self._serve = None  # server died -> stop trying, go CLI
         if audio is None:
-            audio = self._synth_cli(clean, speed)
-        return SynthesizedChunk(text=text, audio=self._apply_mastering(audio))
+            audio = self._synth_cli(clean, speed, voice)
+        return SynthesizedChunk(
+            text=text, audio=self._apply_mastering(audio, self._mastering_filter_for(profile))
+        )
 
     def play(self, chunk: SynthesizedChunk, should_play: Any = None) -> None:
         path = Path(self.workdir) / f"play-{uuid.uuid4().hex}.wav"
@@ -485,7 +533,9 @@ def _resolve_supertonic_binary(explicit: str) -> str:
     )
 
 
-def build_tts_engine(name: str, *, config: Any | None = None) -> Any:
+def build_tts_engine(
+    name: str, *, config: Any | None = None, persona_provider: Any = None
+) -> Any:
     normalized = str(name or "").strip().lower()
     if normalized in BANNED_ENGINES:
         raise BannedEngineError(
@@ -504,7 +554,7 @@ def build_tts_engine(name: str, *, config: Any | None = None) -> Any:
                 "TTS engine 'supertonic' needs the daemon config "
                 "(voice.supertonic_* and runtime.runtime_dir)."
             )
-        return SupertonicEngine(config=config)
+        return SupertonicEngine(config=config, persona_provider=persona_provider)
     raise TTSEngineError(f"Unknown TTS engine {name!r}.")
 
 

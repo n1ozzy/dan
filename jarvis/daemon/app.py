@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from jarvis.brain.base import BrainResponse
-from jarvis.brain.context_builder import ContextBuilder
+from jarvis.brain.context_builder import ContextBuilder, PERSONA_PROFILE_SETTING_KEY
 from jarvis.brain.manager import BrainManager, BrainManagerError
 from jarvis.config import JarvisConfig, compiled_memory_operator_env_controls, load_config
 from jarvis.events.bus import EventBus
@@ -224,7 +224,21 @@ class DaemonApp:
                     # Engine construction validates the name: a banned or unknown
                     # TTS engine kills the daemon at startup (decree §7.3), and so
                     # does a real engine whose binary/player cannot be found.
-                    tts_engine = build_tts_engine(self.config.voice.default_tts, config=self.config)
+                    # persona_provider reads the SAME persona.profile setting the
+                    # panel writes and context_builder reads, so a live persona
+                    # switch changes voice + mastering with no restart. Fail-safe:
+                    # any read error resolves to the global voice/mastering.
+                    def _current_persona_profile() -> str:
+                        try:
+                            return str(self.get_settings().get(PERSONA_PROFILE_SETTING_KEY, "") or "")
+                        except Exception:  # never let a DB hiccup silence Jarvis
+                            return ""
+
+                    tts_engine = build_tts_engine(
+                        self.config.voice.default_tts,
+                        config=self.config,
+                        persona_provider=_current_persona_profile,
+                    )
 
                     # The registry itself is daemon-lifetime (streaming adapters hold
                     # a reference from create_daemon_app); voice only wires the
