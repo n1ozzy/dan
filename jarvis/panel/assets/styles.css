@@ -1110,6 +1110,27 @@ details.card.collapsible[open] summary::after {
   text-transform: uppercase;
 }
 
+.restart-required-banner {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid rgba(255, 191, 92, 0.42);
+  border-radius: 7px;
+  background: rgba(45, 29, 8, 0.94);
+  color: #ffd48a;
+  font-size: 12px;
+}
+
+.restart-required-banner[hidden] {
+  display: none;
+}
+
 .sys-section > summary {
   display: flex;
   align-items: center;
@@ -1646,11 +1667,29 @@ details.card.collapsible[open] summary::after {
   padding: 5px 7px;
 }
 
+#view-system .inline-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+#view-system .field-help {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.3;
+  text-transform: none;
+}
+
 #view-system .voice-mode {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
   margin-top: 1px;
+}
+
+#view-system .ptt-operator-controls {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 #view-system .voice-mode .mode-button {

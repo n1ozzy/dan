@@ -3005,7 +3005,78 @@ def test_runtime_settings_warnings_include_tts_unavailable_when_voice_enabled(
     )
 
 
-def test_runtime_settings_supertonic_readiness_does_not_list_voices(
+def test_runtime_settings_closed_value_sets_are_backed_by_str_enums() -> None:
+    from enum import StrEnum
+
+    from jarvis.api.routes_runtime import (
+        CANONICAL_PTT_MODES,
+        KNOWN_PROVIDER_SUPPORT_NO,
+        KNOWN_PROVIDER_SUPPORT_UNKNOWN,
+        KNOWN_PROVIDER_SUPPORT_YES,
+        KNOWN_SOURCES,
+        KNOWN_STATUSES,
+        SUPERTONIC_BUILTIN_VOICE_IDS,
+        ProviderSupportState,
+        RuntimeProjectionSource,
+        RuntimeProjectionStatus,
+        SupertonicVoiceId,
+        VoicePttMode,
+    )
+    from jarvis.brain.claude_cli_contract import (
+        CLAUDE_CLI_EFFORTS,
+        CLAUDE_CLI_INPUT_FORMATS,
+        CLAUDE_CLI_OUTPUT_FORMATS,
+        CLAUDE_CLI_PERMISSION_MODES,
+        ClaudeCliEffortLevel,
+        ClaudeCliInputFormat,
+        ClaudeCliOutputFormat,
+        ClaudeCliPermissionMode,
+    )
+
+    enum_classes = (
+        RuntimeProjectionSource,
+        RuntimeProjectionStatus,
+        ClaudeCliEffortLevel,
+        ClaudeCliPermissionMode,
+        ClaudeCliOutputFormat,
+        ClaudeCliInputFormat,
+        ProviderSupportState,
+        VoicePttMode,
+        SupertonicVoiceId,
+    )
+    for enum_class in enum_classes:
+        assert issubclass(enum_class, StrEnum)
+
+    assert KNOWN_SOURCES == frozenset(RuntimeProjectionSource)
+    assert all(isinstance(source, RuntimeProjectionSource) for source in KNOWN_SOURCES)
+    assert KNOWN_STATUSES == frozenset(RuntimeProjectionStatus)
+    assert all(isinstance(status, RuntimeProjectionStatus) for status in KNOWN_STATUSES)
+    assert CLAUDE_CLI_EFFORTS == tuple(ClaudeCliEffortLevel)
+    assert CLAUDE_CLI_PERMISSION_MODES == tuple(ClaudeCliPermissionMode)
+    assert CLAUDE_CLI_OUTPUT_FORMATS == tuple(ClaudeCliOutputFormat)
+    assert CLAUDE_CLI_INPUT_FORMATS == tuple(ClaudeCliInputFormat)
+    assert (
+        KNOWN_PROVIDER_SUPPORT_UNKNOWN,
+        KNOWN_PROVIDER_SUPPORT_YES,
+        KNOWN_PROVIDER_SUPPORT_NO,
+    ) == tuple(ProviderSupportState)
+    assert CANONICAL_PTT_MODES == tuple(VoicePttMode)
+    assert SUPERTONIC_BUILTIN_VOICE_IDS == tuple(SupertonicVoiceId)
+    assert [voice.value for voice in SupertonicVoiceId] == [
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "F5",
+        "M1",
+        "M2",
+        "M3",
+        "M4",
+        "M5",
+    ]
+
+
+def test_runtime_settings_supertonic_readiness_uses_static_builtin_voices_without_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3043,6 +3114,8 @@ def test_runtime_settings_supertonic_readiness_does_not_list_voices(
 
     assert status == 200
     assert called is False
+    voice_ids = _settings_preview_field(payload, "voice_tts", "voice_id")["allowed_values"]
+    assert {"F1", "F5", "M1", "M5"}.issubset(set(voice_ids))
     tts_dependencies = payload["voice_tts_voice_model"]["dependency_status"]["value"]
     assert tts_dependencies["supertonic_voice"] == "unknown"
     warnings = _runtime_warning_messages(payload)
@@ -4163,6 +4236,10 @@ def test_runtime_settings_claude_cli_contract_command_preview_and_probes(
     assert provider["selected_model"] == "claude-sonnet-4"
     assert provider["effective_model"] == "claude-sonnet-4"
     assert provider["model_source"] == "jarvis_explicit"
+    assert provider["allowed_models"] == ["claude-configured"]
+    assert not {"sonnet", "opus", "haiku", "fable", "claude-sonnet-4"} & set(
+        provider["allowed_models"]
+    )
     assert provider["selected_effort"] == "xhigh"
     assert provider["effective_effort"] == "xhigh"
     assert provider["effort_source"] == "jarvis_explicit"
@@ -4231,7 +4308,7 @@ def test_runtime_settings_claude_cli_missing_auth_is_redacted_and_blocks_apply(
     assert "sk-auth-secret" not in encoded
 
 
-def test_runtime_settings_claude_cli_unknown_auth_blocks_next_turn_apply(
+def test_runtime_settings_claude_cli_unknown_auth_warns_without_blocking_next_turn_apply(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4261,9 +4338,11 @@ def test_runtime_settings_claude_cli_unknown_auth_blocks_next_turn_apply(
         if item["id"] == "claude_cli"
     )
     assert provider["auth_status"] == "unknown"
-    assert provider["apply_semantics"] == "not_apply_capable"
-    assert provider["apply_capable"] is False
-    assert "auth status is unknown" in provider["apply_semantics_reason"]
+    assert provider["available"] is True
+    assert provider["apply_semantics"] == "next_turn"
+    assert provider["apply_capable"] is True
+    assert provider["apply_semantics_reason"] is None
+    assert any("auth" in warning.lower() for warning in provider["warnings"])
 
 
 def test_runtime_settings_claude_cli_auto_permission_mode_blocks_next_turn_apply(

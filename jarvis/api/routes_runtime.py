@@ -10,6 +10,7 @@ import shutil
 import subprocess
 from collections.abc import Mapping
 from dataclasses import replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 from datetime import datetime
@@ -53,22 +54,66 @@ LEGACY_GUIDANCE = [
     "Stop legacy components manually only after explicit human approval.",
 ]
 
-KNOWN_SOURCES = frozenset({"config", "settings", "default", "runtime_detected", "unknown"})
-KNOWN_STATUSES = frozenset({"ok", "missing", "invalid", "unsupported", "unknown"})
 PERSONA_PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
-CLAUDE_CLI_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
-GROQ_EFFORT_LEVELS = ()
+
+
+class RuntimeProjectionSource(StrEnum):
+    CONFIG = "config"
+    SETTINGS = "settings"
+    DEFAULT = "default"
+    RUNTIME_DETECTED = "runtime_detected"
+    UNKNOWN = "unknown"
+
+
+class RuntimeProjectionStatus(StrEnum):
+    OK = "ok"
+    MISSING = "missing"
+    INVALID = "invalid"
+    UNSUPPORTED = "unsupported"
+    UNKNOWN = "unknown"
+
+
+class ProviderSupportState(StrEnum):
+    UNKNOWN = "unknown"
+    YES = "yes"
+    NO = "no"
+
+
+class VoicePttMode(StrEnum):
+    HOLD = "hold"
+    TOGGLE = "toggle"
+    LOCKED = "locked"
+
+
+class SupertonicVoiceId(StrEnum):
+    F1 = "F1"
+    F2 = "F2"
+    F3 = "F3"
+    F4 = "F4"
+    F5 = "F5"
+    M1 = "M1"
+    M2 = "M2"
+    M3 = "M3"
+    M4 = "M4"
+    M5 = "M5"
+
+
+KNOWN_SOURCES = frozenset(RuntimeProjectionSource)
+KNOWN_STATUSES = frozenset(RuntimeProjectionStatus)
+CLAUDE_CLI_EFFORT_LEVELS = CLAUDE_CLI_EFFORTS
+GROQ_EFFORT_LEVELS: tuple[str, ...] = ()
 
 KNOWN_PROVIDER_EFFORT_LEVELS = CLAUDE_CLI_EFFORT_LEVELS
-KNOWN_PROVIDER_SUPPORT_UNKNOWN = "unknown"
-KNOWN_PROVIDER_SUPPORT_YES = "yes"
-KNOWN_PROVIDER_SUPPORT_NO = "no"
+KNOWN_PROVIDER_SUPPORT_UNKNOWN = ProviderSupportState.UNKNOWN
+KNOWN_PROVIDER_SUPPORT_YES = ProviderSupportState.YES
+KNOWN_PROVIDER_SUPPORT_NO = ProviderSupportState.NO
 CLAUDE_CLI_PROVIDER_IDS = frozenset({"claude_cli", "claude_cli_warm"})
 SUPERTONIC_VOICE_MANUAL_DIAGNOSTIC_WARNING = "Supertonic voice list requires manual diagnostic."
 VOICE_ENGINE_RELOAD_BLOCKER = "voice engine reload requires daemon restart"
 VOICE_GATEWAY_RELOAD_BLOCKER = "voice gateway reload requires daemon restart"
 TOOLS_POLICY_RESTART_BLOCKER = "tool/network policy reload requires daemon restart"
-CANONICAL_PTT_MODES = ("hold", "toggle", "locked")
+CANONICAL_PTT_MODES = tuple(VoicePttMode)
+SUPERTONIC_BUILTIN_VOICE_IDS = tuple(SupertonicVoiceId)
 VOICE_ENGINE_RESTART_ONLY_KEYS = frozenset(
     {
         "voice.default_tts",
@@ -148,38 +193,49 @@ class RuntimeSettingsApplyError(ValueError):
         self.blockers = list(blockers or [message])
         self.warnings = list(warnings or [])
 
+
+def _enum_value(value: Any) -> str:
+    if isinstance(value, StrEnum):
+        return value.value
+    return str(value)
+
+
+def _enum_values(values: Any) -> list[str]:
+    return [_enum_value(value) for value in values]
+
+
 PROVIDER_PRESET: dict[str, dict[str, Any]] = {
     "claude_cli": {
         "display_name": "Claude CLI",
         "kind": "cli",
-        "supported_efforts": list(CLAUDE_CLI_EFFORT_LEVELS),
-        "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
-        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
-        "tools_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "supported_efforts": _enum_values(CLAUDE_CLI_EFFORT_LEVELS),
+        "fast_support": _enum_value(KNOWN_PROVIDER_SUPPORT_NO),
+        "streaming_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
+        "tools_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
     },
     "claude_cli_warm": {
         "display_name": "Claude CLI (warm)",
         "kind": "cli",
-        "supported_efforts": list(CLAUDE_CLI_EFFORT_LEVELS),
-        "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
-        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
-        "tools_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "supported_efforts": _enum_values(CLAUDE_CLI_EFFORT_LEVELS),
+        "fast_support": _enum_value(KNOWN_PROVIDER_SUPPORT_NO),
+        "streaming_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
+        "tools_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
     },
     "codex_cli": {
         "display_name": "Codex CLI",
         "kind": "Provider",
         "supported_efforts": [],
-        "fast_support": KNOWN_PROVIDER_SUPPORT_NO,
-        "streaming_support": KNOWN_PROVIDER_SUPPORT_NO,
-        "tools_support": KNOWN_PROVIDER_SUPPORT_YES,
+        "fast_support": _enum_value(KNOWN_PROVIDER_SUPPORT_NO),
+        "streaming_support": _enum_value(KNOWN_PROVIDER_SUPPORT_NO),
+        "tools_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
     },
     "groq": {
         "display_name": "Groq API",
         "kind": "cloud",
         "supported_efforts": list(GROQ_EFFORT_LEVELS),
-        "fast_support": KNOWN_PROVIDER_SUPPORT_YES,
-        "streaming_support": KNOWN_PROVIDER_SUPPORT_YES,
-        "tools_support": KNOWN_PROVIDER_SUPPORT_NO,
+        "fast_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
+        "streaming_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
+        "tools_support": _enum_value(KNOWN_PROVIDER_SUPPORT_NO),
     },
 }
 
@@ -229,13 +285,23 @@ LOCAL_RUNTIME_PROBES: tuple[dict[str, Any], ...] = (
 
 
 def _normalize_source(value: str | None) -> str:
-    source = str(value).strip() if value is not None else "unknown"
-    return source if source in KNOWN_SOURCES else "unknown"
+    source = str(value).strip() if value is not None else RuntimeProjectionSource.UNKNOWN.value
+    try:
+        return RuntimeProjectionSource(source).value
+    except ValueError:
+        return RuntimeProjectionSource.UNKNOWN.value
 
 
 def _normalize_status(status: str | None) -> str:
-    normalized = str(status).strip().lower() if status is not None else "unknown"
-    return normalized if normalized in KNOWN_STATUSES else "unknown"
+    normalized = (
+        str(status).strip().lower()
+        if status is not None
+        else RuntimeProjectionStatus.UNKNOWN.value
+    )
+    try:
+        return RuntimeProjectionStatus(normalized).value
+    except ValueError:
+        return RuntimeProjectionStatus.UNKNOWN.value
 
 
 def _projection(
@@ -752,10 +818,14 @@ def _evaluate_model_setting(
         return requested, "unknown", "Model is evaluated only for current adapter."
 
     if requested_status == "missing":
+        if default_model:
+            return default_model, "ok", None
         return default_model, "missing", "No model setting stored for current adapter."
     if requested_status != "ok":
         return default_model, requested_status, "Stored model value is invalid."
     if requested is None:
+        if default_model:
+            return default_model, "ok", None
         return default_model, "missing", "No model setting stored for current adapter."
     if not isinstance(requested, str) or not requested.strip():
         return default_model, "invalid", "Model must be a non-empty string."
@@ -1035,8 +1105,7 @@ def _claude_cli_contract(
         apply_semantics = "not_apply_capable"
         blocker = "Claude CLI auth is missing; run claude auth login outside Jarvis."
     elif auth_status != "logged_in":
-        apply_semantics = "not_apply_capable"
-        blocker = "Claude CLI auth status is unknown; run claude auth status outside Jarvis."
+        blocker = "Claude CLI auth status is unknown; runtime will validate on next turn."
     elif command_contract.permission_mode == "auto":
         apply_semantics = "not_apply_capable"
         blocker = "Claude CLI permission mode auto is not apply-capable until Jarvis can prove Claude Code auto-mode eligibility."
@@ -1062,13 +1131,7 @@ def _claude_cli_contract(
         "selected_model": command_contract.selected_model,
         "effective_model": command_contract.effective_model,
         "model_source": command_contract.model_source if command_found else "unknown",
-        "allowed_models": list(
-            dict.fromkeys(
-                model
-                for model in [*supported_models, command_contract.selected_model]
-                if model
-            )
-        ),
+        "allowed_models": list(dict.fromkeys(model for model in supported_models if model)),
         "selected_effort": command_contract.selected_effort,
         "effective_effort": command_contract.effective_effort,
         "effort_source": command_contract.effort_source,
@@ -1089,14 +1152,14 @@ def _claude_cli_contract(
         "hook_events_supported": KNOWN_PROVIDER_SUPPORT_UNKNOWN,
         "apply_semantics": apply_semantics,
         "apply_capable": apply_semantics == "next_turn",
-        "apply_semantics_reason": blocker,
+        "apply_semantics_reason": blocker if apply_semantics != "next_turn" else None,
         "apply_eligibility": {
             "mode": apply_semantics,
             "next_turn": apply_semantics == "next_turn",
-            "reason": blocker,
+            "reason": blocker if apply_semantics != "next_turn" else None,
         },
         "command_preview": command_contract.command_preview,
-        "blocker": blocker,
+        "blocker": blocker if apply_semantics != "next_turn" else None,
         "contract_warnings": warnings,
     }
 
@@ -1172,13 +1235,7 @@ def _codex_cli_contract(
         "selected_model": command_contract.selected_model,
         "effective_model": command_contract.effective_model,
         "model_source": command_contract.model_source if command_found else "unknown",
-        "allowed_models": list(
-            dict.fromkeys(
-                model
-                for model in [*supported_models, command_contract.selected_model]
-                if model
-            )
-        ),
+        "allowed_models": list(dict.fromkeys(model for model in supported_models if model)),
         "selected_effort": None,
         "effective_effort": None,
         "effort_source": "unsupported",
@@ -1333,9 +1390,8 @@ def _provider_capabilities_for_adapter(
             status = "missing"
             adapter_warning = str(claude_cli_contract.get("blocker") or "Claude CLI auth is missing.")
         elif claude_cli_contract.get("auth_status") != "logged_in":
-            available = False
             status = "unknown"
-            adapter_warning = str(claude_cli_contract.get("blocker") or "Claude CLI auth status is unknown.")
+            adapter_warning = "Claude CLI auth status is unknown; runtime will validate on next turn."
     elif adapter_name == "codex_cli":
         codex_cli_contract = _codex_cli_contract(
             app=app,
@@ -1355,9 +1411,8 @@ def _provider_capabilities_for_adapter(
             status = "missing"
             adapter_warning = str(codex_cli_contract.get("blocker") or "Codex CLI auth is missing.")
         elif codex_cli_contract.get("auth_status") != "logged_in":
-            available = False
             status = "unknown"
-            adapter_warning = str(codex_cli_contract.get("blocker") or "Codex CLI auth/readiness is unknown.")
+            adapter_warning = "Codex CLI auth/readiness is unknown; runtime will validate on next turn."
 
     return {
         "name": adapter_name,
@@ -1952,7 +2007,7 @@ def _apply_voice_and_ptt_settings(
         ptt_mode = _required_apply_text(settings["voice.ptt_mode"], "voice.ptt_mode")
         if ptt_mode not in CANONICAL_PTT_MODES:
             raise _apply_error(
-                f"voice.ptt_mode must be one of {', '.join(CANONICAL_PTT_MODES)}."
+                f"voice.ptt_mode must be one of {', '.join(_enum_values(CANONICAL_PTT_MODES))}."
             )
         updates["ptt_mode"] = ptt_mode
 
@@ -5344,7 +5399,16 @@ def _build_voice_capabilities(
             "configured": configured_tts == "supertonic",
             "available": tts_binary_status == "ok",
             "models": [{"id": "supertonic", "label": "supertonic", "available": tts_binary_status == "ok"}],
-            "voice_ids": [app.config.voice.supertonic_voice] if app.config.voice.supertonic_voice else [],
+            "voice_ids": list(
+                dict.fromkeys(
+                    voice_id
+                    for voice_id in [
+                        app.config.voice.supertonic_voice,
+                        *_enum_values(SUPERTONIC_BUILTIN_VOICE_IDS),
+                    ]
+                    if voice_id
+                )
+            ),
             "voice_profiles": [app.config.voice.supertonic_lang] if app.config.voice.supertonic_lang else [],
             "controls": {
                 "speed": True,
@@ -5897,7 +5961,7 @@ def _build_settings_preview(
             current=permission_mode,
             source="config",
             status="ok" if permission_mode in CLAUDE_CLI_PERMISSION_MODES else "unknown",
-            allowed_values=list(CLAUDE_CLI_PERMISSION_MODES),
+            allowed_values=_enum_values(CLAUDE_CLI_PERMISSION_MODES),
             dependencies=["brain_provider.provider"],
         ),
         "tools": _preview_field(
@@ -5952,7 +6016,7 @@ def _build_settings_preview(
             current=current_provider.get("output_format") or "unknown",
             source="config",
             status="ok" if current_provider.get("output_format") in CLAUDE_CLI_OUTPUT_FORMATS else "unknown",
-            allowed_values=list(CLAUDE_CLI_OUTPUT_FORMATS),
+            allowed_values=_enum_values(CLAUDE_CLI_OUTPUT_FORMATS),
             dependencies=["brain_provider.provider"],
         ),
         "input_format": _preview_field(
@@ -5962,7 +6026,7 @@ def _build_settings_preview(
             current=current_provider.get("input_format") or "unknown",
             source="config",
             status="ok" if current_provider.get("input_format") in CLAUDE_CLI_INPUT_FORMATS else "unknown",
-            allowed_values=list(CLAUDE_CLI_INPUT_FORMATS),
+            allowed_values=_enum_values(CLAUDE_CLI_INPUT_FORMATS),
             dependencies=["brain_provider.provider"],
         ),
         "partial_messages_supported": _preview_field(
@@ -6194,7 +6258,7 @@ def _build_settings_preview(
 
     endpoint_section = "endpointing_ptt"
     endpoint_fields = {
-        "ptt_mode": _preview_field(section=endpoint_section, field_id="ptt_mode", label="PTT mode", current=app.config.voice.ptt_mode, status="ok" if app.config.voice.ptt_mode in CANONICAL_PTT_MODES else "invalid", source="config", allowed_values=list(CANONICAL_PTT_MODES), editable_now=True, editable_later=True, apply_capable=True),
+        "ptt_mode": _preview_field(section=endpoint_section, field_id="ptt_mode", label="PTT mode", current=app.config.voice.ptt_mode, status="ok" if app.config.voice.ptt_mode in CANONICAL_PTT_MODES else "invalid", source="config", allowed_values=_enum_values(CANONICAL_PTT_MODES), editable_now=True, editable_later=True, apply_capable=True),
         "ptt_hotkey": _preview_field(section=endpoint_section, field_id="ptt_hotkey", label="PTT hotkey", current=app.config.voice.ptt_hotkey, status="ok" if app.config.voice.ptt_hotkey else "missing", source="settings" if "voice.ptt_hotkey" in runtime_settings else "config", warning="PTT hotkey is missing." if app.config.voice.ptt_mode in CANONICAL_PTT_MODES and not app.config.voice.ptt_hotkey else None, editable_now=True, editable_later=True, apply_capable=True),
         "merge_window": _preview_field(section=endpoint_section, field_id="merge_window", label="Merge window", current=app.config.voice.transcript_turn_retry_seconds, status="ok", source="config", blocker=VOICE_GATEWAY_RELOAD_BLOCKER, requires_restart=True, editable_now=False, editable_later=True),
         "silence_threshold": _preview_field(section=endpoint_section, field_id="silence_threshold", label="Silence threshold", current=app.config.voice.stt_min_rms, status="ok", source="config", requires_restart=True, editable_later=True),

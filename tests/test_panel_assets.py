@@ -273,7 +273,7 @@ def test_runtime_overview_is_read_only_inventory_from_existing_safe_routes() -> 
         "Turn State",
         "Readiness / Blockers",
         "Brain/Provider",
-        "Latest turn trace",
+        "Ostatni trace tury",
         "Debug timeline",
         "Voice Settings: Capture/Input",
         "Voice Settings: STT/Transcription",
@@ -281,7 +281,7 @@ def test_runtime_overview_is_read_only_inventory_from_existing_safe_routes() -> 
         "Voice Settings: TTS/Voice Model",
         "Voice Settings: Playback",
         "Voice Settings: Queue/Barge-in",
-        "Tools/Internet",
+        "Narzędzia/Internet",
         "Logs/Trace",
         "Runtime Checks",
     ):
@@ -305,7 +305,7 @@ def test_runtime_overview_sections_are_ordered_and_source_aware() -> None:
         'title: "Turn State"',
         'title: "Readiness / Blockers"',
         'title: "Brain/Provider"',
-        'title: "Latest turn trace"',
+        'title: "Ostatni trace tury"',
         'title: "Debug timeline"',
         'title: "Voice Settings: Capture/Input"',
         'title: "Voice Settings: STT/Transcription"',
@@ -313,7 +313,7 @@ def test_runtime_overview_sections_are_ordered_and_source_aware() -> None:
         'title: "Voice Settings: TTS/Voice Model"',
         'title: "Voice Settings: Playback"',
         'title: "Voice Settings: Queue/Barge-in"',
-        'title: "Tools/Internet"',
+        'title: "Narzędzia/Internet"',
         'title: "Logs/Trace"',
         'title: "Runtime Checks"',
     )
@@ -373,7 +373,7 @@ def test_runtime_overview_pins_real_diagnostic_fields() -> None:
         "recorder/playback command",
         "network/tools capability",
         "readinessSummary",
-        "Latest turn trace",
+        "Ostatni trace tury",
         "Debug timeline",
         "turn_id",
         "conversation_id",
@@ -423,15 +423,15 @@ def test_mission_control_operator_shell_is_present_and_read_only() -> None:
 
     for marker in (
         "missionControlHeading",
-        "Refresh",
+        "Odśwież",
         "missionControlSummary",
         "missionControlModules",
         "missionControlChecklist",
         "voiceDoctorList",
         "providerDoctorList",
         "missionControlRefreshStatus",
-        "Runtime status, blockers, and next action.",
-        "production",
+        "Backend, mózg, głos, narzędzia i jedna następna akcja.",
+        "produkcja",
     ):
         assert marker in markup
 
@@ -454,10 +454,10 @@ def test_mission_control_operator_shell_is_present_and_read_only() -> None:
         "operationalChecklistItems",
         "refreshMissionControl",
         "MISSION_CONTROL_ENDPOINTS",
-        "Production mode",
-        "backend-owned state",
-        "explicit approval gates",
-        "no raw secret rendering",
+        "Tryb produkcyjny",
+        "stan należy do backendu",
+        "jawne bramki zgód",
+        "bez renderowania sekretów",
     ):
         assert marker in script
 
@@ -627,8 +627,8 @@ def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) 
 
             const ready = context.operatorSummaryFromSnapshot(baseSnapshot);
             assert.strictEqual(ready.status, "ready");
-            assert.match(ready.statusLine, /Ready enough/i);
-            assert.match(ready.nextAction, /send text turn/i);
+            assert.match(ready.statusLine, /Gotowe/i);
+            assert.match(ready.nextAction, /wyślij turę tekstową/i);
 
             const blockedSnapshot = JSON.parse(JSON.stringify(baseSnapshot));
             blockedSnapshot.runtimeSettings.runtime_readiness.top_blockers = projection(
@@ -638,7 +638,7 @@ def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) 
             blockedSnapshot.runtimeSettings.runtime_readiness.tts_provider = projection("", "missing");
             const blocked = context.operatorSummaryFromSnapshot(blockedSnapshot);
             assert.strictEqual(blocked.status, "blocked");
-            assert.match(blocked.statusLine, /Blocked/i);
+            assert.match(blocked.statusLine, /Zablokowane/i);
             assert.deepStrictEqual([...blocked.blockers.slice(0, 2)], [
               "Voice enabled but TTS provider is missing.",
               "PTT source invalid warning.",
@@ -649,7 +649,7 @@ def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) 
               failures: ["/health"],
             }});
             assert.strictEqual(offline.status, "offline");
-            assert.match(offline.statusLine, /backend offline/i);
+            assert.match(offline.statusLine, /backend niedostępny/i);
             assert.match(offline.nextAction, /daemon/i);
             """
         ),
@@ -731,18 +731,18 @@ def test_operational_checklist_voice_and_provider_doctors_pin_required_diagnosti
     script = APP_JS.read_text(encoding="utf-8")
 
     for item in (
-        "Daemon alive",
-        "Panel connected",
-        "Text turn path available",
-        "Voice queue observable",
-        "PTT available",
-        "Brain provider known",
-        "Voice TTS status known",
-        "Voice STT status known",
-        "Tools/Internet status known",
-        "Memory visible",
-        "Approval visible",
-        "Latest turn trace visible",
+        "Daemon działa",
+        "Panel połączony",
+        "Ścieżka tekstowa dostępna",
+        "Kolejka głosu widoczna",
+        "PTT dostępne",
+        "Dostawca mózgu znany",
+        "Status TTS znany",
+        "Status STT znany",
+        "Status narzędzi/internetu znany",
+        "Pamięć widoczna",
+        "Zgody widoczne",
+        "Ostatni trace tury widoczny",
     ):
         assert item in script
 
@@ -834,11 +834,11 @@ def test_settings_preview_cockpit_shell_is_present() -> None:
 def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_path: Path) -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
     for label in (
-        "Tools",
-        "Internet access",
-        "Require approval for network",
-        "Require approval for file writes",
-        "Require approval for shell",
+        "Narzędzia",
+        "Dostęp do internetu",
+        "Wymagaj zgody na sieć",
+        "Wymagaj zgody na zapis plików",
+        "Wymagaj zgody na powłokę",
     ):
         assert label in markup
     for misleading_label in (
@@ -1068,18 +1068,18 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
             assert.strictEqual(context.__el.activeToolsSettingsSection.classList.contains("compact-only"), false);
             assert.strictEqual(context.__el.toolsControlGrid.hidden, false);
             assert.strictEqual(context.__el.toolsSummaryDetails.hidden, false);
-            assert.match(context.__el.toolsInternetSummary.textContent, /Missing|Unavailable/i);
-            assert.match(context.__el.toolsApplyStatus.textContent, /No Tools \\/ Internet changes/i);
+            assert.match(context.__el.toolsInternetSummary.textContent, /Blokada setupu/i);
+            assert.match(context.__el.toolsApplyStatus.textContent, /Brak zmian/i);
             assert.doesNotMatch(context.__el.toolsApplyStatus.textContent, /runtime tool\\/network policy reload|not runtime-apply-capable|tools\\.enabled/i);
 
             const statusText = textOf(context.__el.toolsInternetStatusList);
-            assert.match(statusText, /Tools \\/ Internet/i);
-            assert.match(statusText, /Tools\\s+On/i);
-            assert.match(statusText, /Internet access\\s+Missing/i);
-            assert.match(statusText, /Reason\\s+No network\\/search tool registered/i);
-            assert.match(statusText, /Action\\s+Install\\/register a network search tool/i);
-            assert.match(statusText, /Policy\\s+Approval required/i);
-            assert.match(statusText, /Apply\\s+(disabled|requires restart|available)/i);
+            assert.match(statusText, /Narzędzia \\/ Internet/i);
+            assert.match(statusText, /Narzędzia\\s+Włączone/i);
+            assert.match(statusText, /Dostęp do internetu\\s+Blokada setupu/i);
+            assert.match(statusText, /Powód\\s+Brak zarejestrowanego narzędzia sieci\\/szukania/i);
+            assert.match(statusText, /Akcja\\s+Zainstaluj albo zarejestruj narzędzie sieci\\/szukania/i);
+            assert.match(statusText, /Polityka\\s+Wymagana zgoda/i);
+            assert.match(statusText, /Zastosowanie\\s+(wyłączone|wymaga restartu|dostępne)/i);
             assert.doesNotMatch(statusText, /What this means|What can I do\\?|tools\\.enabled|security\\.require_approval|approval_required|runtime tool\\/network policy reload|tool registry enable\\/disable|not runtime-apply-capable/i);
 
             payload.capability_graph.tools_capabilities.apply_capabilities["tools.enabled"] = {{
@@ -1098,19 +1098,15 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
             assert.strictEqual(context.__el.toolsEnabledToggle.disabled, false);
             assert.strictEqual(context.__el.toolsNetworkApprovalToggle.disabled, false);
             assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, true);
-            assert.match(context.__el.toolsApplyStatus.textContent, /No Tools \\/ Internet changes/i);
+            assert.match(context.__el.toolsApplyStatus.textContent, /Brak zmian/i);
 
             (async () => {{
               context.__el.toolsNetworkApprovalToggle.checked = false;
               context.updateToolsControlOptions();
-              assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, false);
-              assert.match(context.__el.toolsApplyStatus.textContent, /Pending change/i);
-              await context.applyRuntimeSettingsGroup("tools");
+              assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, true);
+            assert.match(context.__el.toolsApplyStatus.textContent, /Zablokowane|narzędzia sieci\\/szukania/i);
               const applyRequests = requests.filter((request) => new URL(request.url).pathname === "/runtime/settings/apply");
-              assert.strictEqual(applyRequests.length, 1);
-              assert.deepStrictEqual(JSON.parse(applyRequests[0].init.body).settings, {{
-                "security.require_approval_for_network": false,
-              }});
+              assert.strictEqual(applyRequests.length, 0);
             }})().catch((error) => {{
               console.error(error);
               process.exit(1);
@@ -1295,20 +1291,20 @@ def test_system_unknown_runtime_values_disable_apply_and_do_not_create_pending_c
 
             context.renderBrainApplyControls(payload);
             assert.doesNotMatch(context.__el.brainApplyStatus.textContent, /Unknown -> low/i);
-            assert.match(context.__el.brainApplyStatus.textContent, /Effective value: Unknown/i);
-            assert.match(context.__el.brainApplyStatus.textContent, /Reason: runtime does not report this setting/i);
-            assert.match(context.__el.brainApplyStatus.textContent, /Apply disabled/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Wartość efektywna: nieznana/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Powód: runtime nie raportuje tego ustawienia/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Zastosowanie wyłączone/i);
             assert.strictEqual(context.__el.activeBrainEffortSelect.disabled, true);
             assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
 
             context.renderPttApplyControls(payload);
             assert.doesNotMatch(context.__el.pttApplyStatus.textContent, /Unknown -> hold/i);
-            assert.match(context.__el.pttApplyStatus.textContent, /Effective value: Unknown/i);
-            assert.match(context.__el.pttApplyStatus.textContent, /Reason: runtime does not report this setting/i);
+            assert.match(context.__el.pttApplyStatus.textContent, /Wartość efektywna: nieznana/i);
+            assert.match(context.__el.pttApplyStatus.textContent, /Powód: runtime nie raportuje tego ustawienia/i);
             assert.strictEqual(context.__el.pttModeSelect.disabled, true);
             assert.strictEqual(context.__el.applyPttSettingsButton.disabled, true);
-            assert.match(context.__el.pttListeningSummary.textContent, /Effective value: Unknown/i);
-            assert.match(context.__el.pttListeningSummary.textContent, /runtime does not report this setting/i);
+            assert.match(context.__el.pttListeningSummary.textContent, /Wartość efektywna: nieznana/i);
+            assert.match(context.__el.pttListeningSummary.textContent, /runtime nie raportuje tego ustawienia/i);
             """
         ),
         encoding="utf-8",
@@ -1445,7 +1441,7 @@ def test_ptt_hotkey_missing_value_remains_apply_capable(tmp_path: Path) -> None:
             assert.deepStrictEqual(JSON.parse(JSON.stringify(filtered)), {{
               "voice.ptt_hotkey": "right_cmd+right_shift",
             }});
-            assert.match(context.__el.pttApplyStatus.textContent, /PTT hotkey/i);
+            assert.match(context.__el.pttApplyStatus.textContent, /Skrót PTT/i);
             assert.strictEqual(context.__el.applyPttSettingsButton.disabled, false);
             """
         ),
@@ -1633,7 +1629,7 @@ def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
               renderBrainApplyControls(nextTurnPayload);
             `, context);
             const summary = collectText(context.__el.brainSettingsSummaryList);
-            assert.match(summary, /Claude CLI provider contract/);
+            assert.match(summary, /Kontrakt dostawcy Claude CLI/);
             assert.match(summary, /claude-sonnet/);
             assert.match(summary, /xhigh/);
             assert.match(summary, /acceptEdits/);
@@ -1649,14 +1645,14 @@ def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
               renderBrainApplyControls(newSessionPayload);
             `, context);
             assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
-            assert.match(context.__el.brainApplyStatus.textContent, /no brain/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Brak zmian w sekcji Mózg \\/ Dostawca/i);
             vm.runInContext(`
               el.activeBrainEffortSelect.value = "low";
               updateBrainControlOptions();
             `, context);
             assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, false);
-            assert.match(context.__el.brainApplyStatus.textContent, /backend will validate/i);
-            assert.match(context.__el.brainApplyStatus.textContent, /new provider session/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Backend zweryfikuje/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /sesji dostawcy/i);
             assert.strictEqual(
               context.providerApplyBlocker(newSessionPayload.capability_graph.brain_capabilities.providers[0], "claude_cli"),
               "Backend says Claude must start a new provider session.",
@@ -1817,8 +1813,8 @@ def test_settings_apply_feedback_preserves_pending_preview_and_reset_is_explicit
             assert.strictEqual(context.__el.voiceSpeakResponsesToggle.checked, false);
             context.__el.voiceSpeakResponsesToggle.checked = true;
             context.updateTtsControlOptions();
-            assert.match(context.__el.ttsApplyStatus.textContent, /Pending/i);
-            assert.match(context.__el.ttsApplyStatus.textContent, /OFF -> ON|false -> true/i);
+            assert.match(context.__el.ttsApplyStatus.textContent, /Oczekująca/i);
+            assert.match(context.__el.ttsApplyStatus.textContent, /Wyłączone -> Włączone|false -> true/i);
             assert.strictEqual(context.__el.applyTtsSettingsButton.disabled, false);
             assert.strictEqual(requests.length, 0);
 
@@ -1828,11 +1824,11 @@ def test_settings_apply_feedback_preserves_pending_preview_and_reset_is_explicit
               renderTtsApplyControls(payload);
             `, context);
             assert.strictEqual(context.__el.voiceSpeakResponsesToggle.checked, true);
-            assert.match(context.__el.ttsApplyStatus.textContent, /pending preview preserved|Pending/i);
+            assert.match(context.__el.ttsApplyStatus.textContent, /oczekujący podgląd zachowany|Oczekująca/i);
 
             context.resetSettingsPreview();
             assert.strictEqual(context.__el.voiceSpeakResponsesToggle.checked, false);
-            assert.match(context.__el.ttsApplyStatus.textContent, /Preview reset|No live TTS changes/i);
+            assert.match(context.__el.ttsApplyStatus.textContent, /Podgląd zresetowany|Brak zmian/i);
             """
         ),
         encoding="utf-8",
@@ -2027,9 +2023,9 @@ def test_brain_apply_sends_changed_fields_for_backend_validation(tmp_path: Path)
               "brain.effort": "high",
             }});
             assert.match(context.runtimeSettingsPendingMessage("brain", draft, payload), /model/i);
-            assert.doesNotMatch(context.runtimeSettingsPendingMessage("brain", draft, payload), /Effort/);
-            assert.match(context.runtimeSettingsAttemptPendingMessage("brain", draft, payload), /Effort/);
-            assert.match(context.runtimeSettingsGroupApplyBlockedReason("brain", draft, payload), /Not apply-capable|Requires/);
+            assert.doesNotMatch(context.runtimeSettingsPendingMessage("brain", draft, payload), /Poziom wysiłku/);
+            assert.match(context.runtimeSettingsAttemptPendingMessage("brain", draft, payload), /Poziom wysiłku/);
+            assert.match(context.runtimeSettingsGroupApplyBlockedReason("brain", draft, payload), /Nie można|Wymag/);
             """
         ),
         encoding="utf-8",
@@ -2377,8 +2373,8 @@ def test_codex_brain_apply_sends_missing_auth_attempt_but_blocks_unknown_model_v
               updateBrainControlOptions();
             `, context);
             assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, false);
-            assert.match(context.__el.brainApplyStatus.textContent, /backend will validate/i);
-            assert.match(context.__el.brainApplyStatus.textContent, /auth|not apply-capable/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Backend zweryfikuje/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Uwierzytelnij|Nie można/i);
 
             (async () => {{
               await context.applyRuntimeSettingsGroup("brain");
@@ -2569,8 +2565,8 @@ def test_brain_apply_disabled_for_reload_only_brain_field_changes(tmp_path: Path
                       JSON.parse(JSON.stringify(context.runtimeSettingsChangedKeys("brain", changed, context.payload))),
                   ["brain.effort"],
                 );
-                assert.match(context.__el.brainApplyStatus.textContent, /Pending change/);
-                assert.match(context.__el.brainApplyStatus.textContent, /backend will validate/i);
+                assert.match(context.__el.brainApplyStatus.textContent, /Oczekująca zmiana/);
+                assert.match(context.__el.brainApplyStatus.textContent, /Backend zweryfikuje/i);
                 assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, false);
 
                 (async () => {{
@@ -2725,9 +2721,9 @@ def test_developer_only_brain_provider_preserved_without_auto_switch_or_pending(
                     assert.strictEqual(context.__el.activeBrainProviderSelect.value, "");
                     assert.strictEqual(context.__el.activeBrainProviderSelect.disabled, false);
                     assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
-                    assert.doesNotMatch(context.__el.brainApplyStatus.textContent, /Pending change/i);
+                    assert.doesNotMatch(context.__el.brainApplyStatus.textContent, /Oczekująca zmiana/i);
                     if (context.__el.activeBrainProviderSelect.childNodes.length) {{
-                      assert.strictEqual(context.__el.activeBrainProviderSelect.childNodes[0].textContent, "No normal provider active");
+                      assert.strictEqual(context.__el.activeBrainProviderSelect.childNodes[0].textContent, "Brak aktywnego normalnego dostawcy");
                       assert.doesNotMatch(context.__el.activeBrainProviderSelect.childNodes[0].textContent, /mock|Developer\\/Test/i);
                     }}
                 """
@@ -2845,7 +2841,7 @@ def test_personality_apply_posts_when_persona_requires_restart(tmp_path: Path) -
                   updatePersonaControlOptions();
                 `, context);
 
-                assert.match(context.__el.personaApplyStatus.textContent, /Pending change/);
+                assert.match(context.__el.personaApplyStatus.textContent, /Oczekująca zmiana/);
                 assert.strictEqual(context.__el.applyPersonaSettingsButton.disabled, false);
                 (async () => {{
                   await context.applyRuntimeSettingsGroup("persona");
@@ -2996,8 +2992,8 @@ def test_tts_speak_responses_posts_even_when_backend_must_validate_group(tmp_pat
                 assert.strictEqual(context.__el.voiceSpeakResponsesToggle.disabled, false);
                 context.__el.voiceSpeakResponsesToggle.checked = true;
                 context.updateTtsControlOptions();
-                assert.match(context.__el.ttsApplyStatus.textContent, /Pending change/);
-                assert.match(context.__el.ttsApplyStatus.textContent, /backend will validate/i);
+                assert.match(context.__el.ttsApplyStatus.textContent, /Oczekująca zmiana/);
+                assert.match(context.__el.ttsApplyStatus.textContent, /Backend zweryfikuje/i);
                 assert.strictEqual(context.__el.applyTtsSettingsButton.disabled, false);
                 (async () => {{
                   await context.applyRuntimeSettingsGroup("tts");
@@ -3224,13 +3220,14 @@ def test_system_tab_has_active_settings_apply_sections_before_diagnostics() -> N
     system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
 
     ordered_ids = [
-        "missionControlHeading",
         "activeBrainSettingsHeading",
         "voiceTtsSettingsHeading",
         "voiceSttSettingsHeading",
         "activePttSettingsHeading",
         "activeToolsSettingsHeading",
         "activePersonalitySettingsHeading",
+        "systemDiagnosticsHeading",
+        "missionControlHeading",
     ]
     positions = [system_view.index(item) for item in ordered_ids]
     assert positions == sorted(positions)
@@ -3264,6 +3261,7 @@ def test_system_tab_has_active_settings_apply_sections_before_diagnostics() -> N
         assert diagnostic_id not in system_view
         assert diagnostic_id in logs_view
 
+    assert system_view.index("activePersonalitySettingsHeading") < system_view.index("missionControlHeading")
     assert "activeVoiceSettingsHeading" not in markup
     assert "Voice controls" not in markup
     assert "eventList" not in system_view
@@ -3275,8 +3273,8 @@ def test_system_tab_is_actionable_first_and_logs_own_diagnostics() -> None:
     logs_view = markup[markup.index('id="view-logs"') : markup.index('id="view-system"')]
     system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
 
-    assert system_view.index("missionControlHeading") < system_view.index("activeBrainSettingsHeading")
     assert system_view.index("activeBrainSettingsHeading") < system_view.index("activeToolsSettingsHeading")
+    assert system_view.index("activePersonalitySettingsHeading") < system_view.index("missionControlHeading")
     assert "connectionHeading" not in system_view
     assert "settingsHeading" not in system_view
     assert "Połączenie" not in system_view
@@ -3296,7 +3294,7 @@ def test_system_tab_is_actionable_first_and_logs_own_diagnostics() -> None:
         "Tools / Internet diagnostics",
         "Raw technical details",
         "Runtime summary",
-        "Voice queue",
+            "Kolejka głosu",
         "Memory / Approvals",
         "Runtime Checks",
         "Latest Turn Trace",
@@ -3316,26 +3314,26 @@ def test_system_tab_uses_human_operator_labels_not_backend_keys() -> None:
     system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
 
     for human_label in (
-        ">Tools enabled<",
-        ">Internet access<",
-        ">Require approval for network<",
-        ">Require approval for shell<",
-        ">Require approval for file writes<",
-        ">Speak responses<",
-        ">Fast mode<",
-        ">Voice broker<",
-        ">Text-to-speech engine<",
-        ">Speech model<",
+        ">Narzędzia włączone<",
+        ">Dostęp do internetu<",
+        ">Wymagaj zgody na sieć<",
+        ">Wymagaj zgody na powłokę<",
+        ">Wymagaj zgody na zapis plików<",
+        ">Mów odpowiedzi<",
+        ">Tryb szybki<",
+        ">Broker głosu<",
+        ">Silnik mowy<",
+        ">Model mowy<",
     ):
         assert human_label in system_view
 
     for control_id, label in (
-        ("toolsEnabledToggle", "Tools enabled"),
-        ("toolsNetworkApprovalToggle", "Require approval for network"),
-        ("toolsShellApprovalToggle", "Require approval for shell"),
-        ("toolsFileWriteApprovalToggle", "Require approval for file writes"),
-        ("voiceSpeakResponsesToggle", "Speak responses"),
-        ("activeBrainFastToggle", "Fast mode"),
+        ("toolsEnabledToggle", "Narzędzia włączone"),
+        ("toolsNetworkApprovalToggle", "Wymagaj zgody na sieć"),
+        ("toolsShellApprovalToggle", "Wymagaj zgody na powłokę"),
+        ("toolsFileWriteApprovalToggle", "Wymagaj zgody na zapis plików"),
+        ("voiceSpeakResponsesToggle", "Mów odpowiedzi"),
+        ("activeBrainFastToggle", "Tryb szybki"),
     ):
         assert re.search(
             rf'<input id="{control_id}"[^>]*>\s*<span>{re.escape(label)}</span>',
@@ -3344,12 +3342,12 @@ def test_system_tab_uses_human_operator_labels_not_backend_keys() -> None:
         ), control_id
 
     assert re.search(
-        r'<div class="inline-toggle read-only-setting">\s*<span>Internet access</span>\s*<span id="toolsNetworkEnabledToggle" class="status-badge" role="status">unknown</span>',
+        r'<div class="inline-toggle read-only-setting">\s*<span>Dostęp do internetu</span>\s*<span id="toolsNetworkEnabledToggle" class="status-badge" role="status">unknown</span>',
         system_view,
         re.S,
     )
     assert re.search(
-        r'<div class="inline-toggle read-only-setting">\s*<span>Voice broker</span>\s*<span id="voiceBrokerEnabledToggle" class="status-badge" role="status">unknown</span>',
+        r'<div class="inline-toggle read-only-setting">\s*<span>Broker głosu</span>\s*<span id="voiceBrokerEnabledToggle" class="status-badge" role="status">unknown</span>',
         system_view,
         re.S,
     )
@@ -3373,13 +3371,13 @@ def test_system_tab_has_requested_cockpit_section_headings() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
     system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
     expected_headings = [
-        "Mission Control",
-        "Brain / Provider",
-        "Voice / TTS",
-        "Voice / STT",
-        "Endpointing / PTT",
-        "Tools / Internet",
-        "Personality",
+        "Kontrola misji",
+        "Mózg / Dostawca",
+        "Głos / TTS",
+        "Głos / STT",
+        "PTT / Detekcja końca",
+        "Narzędzia / Internet",
+        "Osobowość",
     ]
     for heading in expected_headings:
         assert heading in system_view
@@ -3467,7 +3465,7 @@ def test_runtime_settings_apply_payload_is_allowlisted_and_posts(tmp_path: Path)
             }};
             assert.strictEqual(
               context.runtimeSettingsErrorMessage(backendError),
-              "Blocked. No action available right now.",
+              "Zablokowane. Brak dostępnej akcji w tej chwili.",
             );
             const toolsFiltered = context.runtimeSettingsPayloadForGroup("tools", {{
               "security.require_approval_for_network": false,
@@ -4974,7 +4972,7 @@ def test_system_view_is_human_readable() -> None:
 
     # Surowa diagnostyka jest w LOGI, nie dominuje Systemu.
     assert "Raw technical details" in logs_view
-    assert system_view.index("missionControlHeading") < system_view.index("activeBrainSettingsHeading")
+    assert system_view.index("activePersonalitySettingsHeading") < system_view.index("missionControlHeading")
 
 
 def test_composer_sends_beside_the_field() -> None:

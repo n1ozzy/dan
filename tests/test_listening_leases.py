@@ -366,7 +366,7 @@ def test_ptt_lifecycle_through_the_api(tmp_path: Path) -> None:
         daemon_app.close()
 
 
-def test_ptt_down_acquires_hold_lease_and_cancels_active_speech(tmp_path: Path) -> None:
+def test_ptt_down_acquires_hold_lease_without_cancelling_active_speech(tmp_path: Path) -> None:
     from jarvis.voice.queue import VoiceQueue
     from tests.test_api_smoke import request_json, running_server
 
@@ -390,30 +390,23 @@ def test_ptt_down_acquires_hold_lease_and_cancels_active_speech(tmp_path: Path) 
         assert status == 200, payload
         assert payload["lease"]["mode"] == "hold"
         assert payload["lease"]["source"] == "ptt"
-        assert payload["cancellation"]["reason"] == "ptt_down"
-        assert payload["cancellation"]["interruption_reason"] == "ptt_down"
-        assert payload["cancellation"]["cancellation_reason"] == "ptt_down"
-        assert payload["cancellation"]["interrupted_previous_response"] is True
-        assert payload["cancellation"]["previous_turn_id"] == "turn-before-ptt"
-        assert payload["cancellation"]["cancelled_speech_id"] == request.id
-        assert payload["cancellation"]["new_turn_source"] == "PTT"
-        assert payload["cancellation"]["queue_cancelled"] == 1
+        assert "cancellation" not in payload
         status_row = daemon_app.conn.execute(
             "SELECT status FROM voice_queue WHERE id = ?",
             (request.id,),
         ).fetchone()
-        assert status_row == ("cancelled",)
+        assert status_row == ("queued",)
         cancelled_events = daemon_app.conn.execute(
             "SELECT COUNT(*) FROM events WHERE type = 'voice.speak.cancelled'"
         ).fetchone()[0]
-        assert cancelled_events == 1
+        assert cancelled_events == 0
         event_types = [
             str(row[0])
             for row in daemon_app.conn.execute(
                 "SELECT type FROM events ORDER BY id"
             ).fetchall()
         ]
-        assert "voice.speak.cancelled" in event_types
+        assert "voice.speak.cancelled" not in event_types
         assert "listening.lease.created" in event_types
     finally:
         daemon_app.close()

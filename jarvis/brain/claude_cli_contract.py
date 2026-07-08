@@ -7,6 +7,7 @@ import re
 import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -14,21 +15,45 @@ from jarvis.security.redaction import redact_secrets
 
 
 CLAUDE_CLI_COMMAND = "claude"
-CLAUDE_CLI_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-CLAUDE_CLI_PERMISSION_MODES = (
-    "default",
-    "manual",
-    "acceptEdits",
-    "plan",
-    "auto",
-    "dontAsk",
-    "bypassPermissions",
-)
-CLAUDE_CLI_OUTPUT_FORMATS = ("text", "json", "stream-json")
-CLAUDE_CLI_INPUT_FORMATS = ("text", "stream-json")
+
+
+class ClaudeCliEffortLevel(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
+
+
+class ClaudeCliPermissionMode(StrEnum):
+    DEFAULT = "default"
+    MANUAL = "manual"
+    ACCEPT_EDITS = "acceptEdits"
+    PLAN = "plan"
+    AUTO = "auto"
+    DONT_ASK = "dontAsk"
+    BYPASS_PERMISSIONS = "bypassPermissions"
+
+
+class ClaudeCliOutputFormat(StrEnum):
+    TEXT = "text"
+    JSON = "json"
+    STREAM_JSON = "stream-json"
+
+
+class ClaudeCliInputFormat(StrEnum):
+    TEXT = "text"
+    STREAM_JSON = "stream-json"
+
+
+CLAUDE_CLI_EFFORTS = tuple(ClaudeCliEffortLevel)
+CLAUDE_CLI_PERMISSION_MODES = tuple(ClaudeCliPermissionMode)
+CLAUDE_CLI_OUTPUT_FORMATS = tuple(ClaudeCliOutputFormat)
+CLAUDE_CLI_INPUT_FORMATS = tuple(ClaudeCliInputFormat)
+UNKNOWN_CLAUDE_CLI_VALUE = "unknown"
 DEFAULT_STREAM_ARGS = (
     "--output-format",
-    "stream-json",
+    ClaudeCliOutputFormat.STREAM_JSON.value,
     "--verbose",
     "--include-partial-messages",
 )
@@ -130,8 +155,8 @@ def build_claude_cli_command(
     configured_effort = _optional_text(settings.effort)
     requested_effort = _optional_text(runtime_effort)
     selected_effort = requested_effort or configured_effort or args_effort
-    effort_valid = selected_effort in CLAUDE_CLI_EFFORTS if selected_effort else False
-    effective_effort = selected_effort if effort_valid else None
+    effective_effort_enum = _parse_claude_effort(selected_effort)
+    effective_effort = effective_effort_enum.value if effective_effort_enum is not None else None
     effort_source = (
         "jarvis_explicit"
         if effective_effort
@@ -155,12 +180,12 @@ def build_claude_cli_command(
 
     args_output_format = _cli_arg_value(args, "--output-format")
     if streaming:
-        output_format = "stream-json"
+        output_format = ClaudeCliOutputFormat.STREAM_JSON.value
     else:
         output_format = normalize_claude_output_format(
             _optional_text(settings.output_format)
             or args_output_format
-            or "text"
+            or ClaudeCliOutputFormat.TEXT.value
         )
     args_input_format = _cli_arg_value(args, "--input-format")
     stream_input_format = _cli_arg_value(stream_args, "--input-format")
@@ -168,7 +193,7 @@ def build_claude_cli_command(
         _optional_text(settings.input_format)
         or (stream_input_format if streaming else None)
         or args_input_format
-        or "text"
+        or ClaudeCliInputFormat.TEXT.value
     )
 
     argv = [command, *_strip_managed_options(args)]
@@ -177,7 +202,10 @@ def build_claude_cli_command(
     _append_value(
         argv,
         "--permission-mode",
-        permission_mode if permission_mode not in {"default", "unknown"} else None,
+        permission_mode
+        if permission_mode
+        not in {ClaudeCliPermissionMode.DEFAULT.value, UNKNOWN_CLAUDE_CLI_VALUE}
+        else None,
     )
     _append_value(argv, "--tools", _join_tools_value(tools), allow_empty=True)
     _append_value(argv, "--allowedTools", ",".join(allowed_tools) if allowed_tools else None)
@@ -203,7 +231,7 @@ def build_claude_cli_command(
         )
 
     partial_messages_supported = "yes" if _cli_arg_present(argv, "--include-partial-messages") else "no"
-    streaming_supported = "yes" if output_format == "stream-json" else "no"
+    streaming_supported = "yes" if output_format == ClaudeCliOutputFormat.STREAM_JSON.value else "no"
     return ClaudeCliCommandContract(
         argv=argv,
         command_preview=_redacted_command_preview(argv),
@@ -257,27 +285,46 @@ def build_claude_cli_command(
 def normalize_claude_permission_mode(value: str | None) -> str:
     raw = str(value or "").strip()
     if not raw:
-        return "default"
+        return ClaudeCliPermissionMode.DEFAULT.value
     aliases = {
-        "accept-edits": "acceptEdits",
-        "acceptedits": "acceptEdits",
-        "dont-ask": "dontAsk",
-        "dontask": "dontAsk",
-        "bypass-permissions": "bypassPermissions",
-        "bypasspermissions": "bypassPermissions",
+        "accept-edits": ClaudeCliPermissionMode.ACCEPT_EDITS.value,
+        "acceptedits": ClaudeCliPermissionMode.ACCEPT_EDITS.value,
+        "dont-ask": ClaudeCliPermissionMode.DONT_ASK.value,
+        "dontask": ClaudeCliPermissionMode.DONT_ASK.value,
+        "bypass-permissions": ClaudeCliPermissionMode.BYPASS_PERMISSIONS.value,
+        "bypasspermissions": ClaudeCliPermissionMode.BYPASS_PERMISSIONS.value,
     }
     normalized = aliases.get(raw, aliases.get(raw.lower(), raw))
-    return normalized if normalized in CLAUDE_CLI_PERMISSION_MODES else "unknown"
+    try:
+        return ClaudeCliPermissionMode(normalized).value
+    except ValueError:
+        return UNKNOWN_CLAUDE_CLI_VALUE
 
 
 def normalize_claude_output_format(value: str | None) -> str:
     raw = str(value or "").strip()
-    return raw if raw in CLAUDE_CLI_OUTPUT_FORMATS else "text"
+    try:
+        return ClaudeCliOutputFormat(raw).value
+    except ValueError:
+        return ClaudeCliOutputFormat.TEXT.value
 
 
 def normalize_claude_input_format(value: str | None) -> str:
     raw = str(value or "").strip()
-    return raw if raw in CLAUDE_CLI_INPUT_FORMATS else "text"
+    try:
+        return ClaudeCliInputFormat(raw).value
+    except ValueError:
+        return ClaudeCliInputFormat.TEXT.value
+
+
+def _parse_claude_effort(value: str | None) -> ClaudeCliEffortLevel | None:
+    raw = _optional_text(value)
+    if raw is None:
+        return None
+    try:
+        return ClaudeCliEffortLevel(raw)
+    except ValueError:
+        return None
 
 
 def _required_command(value: str) -> str:

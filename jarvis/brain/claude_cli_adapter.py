@@ -34,8 +34,8 @@ from jarvis.brain.base import (
     BrainUsage,
 )
 from jarvis.brain.claude_cli_contract import (
-    CLAUDE_CLI_EFFORTS,
     DEFAULT_STREAM_ARGS as CONTRACT_DEFAULT_STREAM_ARGS,
+    ClaudeCliEffortLevel,
     ClaudeCliCommandSettings,
     build_claude_cli_command,
 )
@@ -53,7 +53,6 @@ DEFAULT_STDERR_PREVIEW_CHARS = 800
 # stream-json requires --verbose in -p mode; --include-partial-messages is
 # what turns whole-message events into token-level text deltas.
 DEFAULT_STREAM_ARGS = tuple(CONTRACT_DEFAULT_STREAM_ARGS)
-SUPPORTED_CLAUDE_EFFORTS = frozenset(CLAUDE_CLI_EFFORTS)
 
 
 def format_cli_prompt(request: BrainRequest) -> str:
@@ -513,7 +512,10 @@ def _request_effort(settings: Mapping[str, Any]) -> str | None:
     if not isinstance(value, str):
         return None
     effort = value.strip()
-    return effort if effort in SUPPORTED_CLAUDE_EFFORTS else None
+    try:
+        return ClaudeCliEffortLevel(effort).value
+    except ValueError:
+        return None
 
 
 def _runtime_command(

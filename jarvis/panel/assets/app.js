@@ -51,6 +51,8 @@ const cockpit = {
     lastRefreshAt: null,
     refreshing: false,
   },
+  pttShortcutRecording: false,
+  pttShortcutKeys: new Set(),
   stream: {
     socket: null,
     base: null,
@@ -113,22 +115,22 @@ const MISSION_CONTROL_ENDPOINTS = Object.freeze([
   { key: "events", path: "/events?latest=true&limit=50", method: "GET" },
 ]);
 const RUNTIME_OVERVIEW_FIELD_SOURCES = Object.freeze({
-  health: "Health",
-  state: "State",
-  settings: "Settings",
-  runtimeSettings: "Runtime settings",
-  runtimeProcesses: "Runtime processes",
-  brain: "Brain adapters",
-  audio: "Audio devices",
-  voice: "Voice listening",
-  voiceRuntime: "Voice runtime",
-  voiceQueue: "Voice queue",
-  tools: "Tools registry",
-  approvals: "Approvals",
-  memory: "Memory",
+  health: "Zdrowie",
+  state: "Stan",
+  settings: "Ustawienia",
+  runtimeSettings: "Ustawienia runtime",
+  runtimeProcesses: "Procesy runtime",
+  brain: "Adaptery mózgu",
+  audio: "Urządzenia audio",
+  voice: "Nasłuch głosu",
+  voiceRuntime: "Runtime głosu",
+  voiceQueue: "Kolejka głosu",
+  tools: "Rejestr narzędzi",
+  approvals: "Zgody",
+  memory: "Pamięć",
   memoryItems: "Memory OS",
-  events: "Events",
-  contract: "Jarvis contract",
+  events: "Zdarzenia",
+  contract: "Kontrakt Jarvisa",
 });
 
 // Ludzkie nazwy narzędzi (rejestr daemona) — używane w kartach zgód i w
@@ -417,6 +419,9 @@ function bindElements() {
     "refreshActiveSettingsButton",
     "activeSettingsList",
     "activeSettingsStatus",
+    "restartRequiredBanner",
+    "restartRequiredMessage",
+    "restartJarvisButton",
     "resetBrainPreviewButton",
     "activeBrainProviderSelect",
     "activeBrainModelSelect",
@@ -446,6 +451,8 @@ function bindElements() {
     "sttApplyStatus",
     "pttModeSelect",
     "pttHotkeyInput",
+    "pttRecordShortcutButton",
+    "pttShortcutValidation",
     "pttMergeWindowInput",
     "pttListeningSummary",
     "pttBargeInSummary",
@@ -453,6 +460,8 @@ function bindElements() {
     "pttVadSummary",
     "applyPttSettingsButton",
     "pttApplyStatus",
+    "testPttButton",
+    "pttTestStatusList",
     "refreshQueueButton",
     "cancelCurrentSpeechButton",
     "queueBargeInList",
@@ -482,6 +491,7 @@ function bindElements() {
     "latestTurnTraceList",
     "refreshRuntimeLogsSummaryButton",
     "runtimeLogsSummaryList",
+    "systemDiagnosticsSummaryList",
     "refreshSettingsPreviewButton",
     "resetSettingsPreviewButton",
     "settingsPreviewList",
@@ -539,7 +549,11 @@ function bindEvents() {
   bindIf(el.voiceSttLanguageSelect, "change", updateSttControlOptions);
   bindIf(el.pttModeSelect, "change", updatePttControlOptions);
   bindIf(el.pttHotkeyInput, "input", updatePttControlOptions);
+  bindIf(el.pttHotkeyInput, "keydown", capturePttShortcutKeydown);
+  bindIf(el.pttHotkeyInput, "keyup", capturePttShortcutKeyup);
   bindIf(el.pttMergeWindowInput, "input", updatePttControlOptions);
+  bindIf(el.pttRecordShortcutButton, "click", recordPttShortcut);
+  bindIf(el.testPttButton, "click", testPttPath);
   bindIf(el.toolsEnabledToggle, "change", updateToolsControlOptions);
   bindIf(el.toolsNetworkEnabledToggle, "change", updateToolsControlOptions);
   bindIf(el.toolsNetworkApprovalToggle, "change", updateToolsControlOptions);
@@ -552,6 +566,9 @@ function bindEvents() {
   bindIf(el.applyPttSettingsButton, "click", () => applyRuntimeSettingsGroup("ptt"));
   bindIf(el.applyToolsSettingsButton, "click", () => applyRuntimeSettingsGroup("tools"));
   bindIf(el.applyPersonaSettingsButton, "click", () => applyRuntimeSettingsGroup("persona"));
+  bindIf(el.restartJarvisButton, "click", () => {
+    setText(el.activeSettingsStatus, "Zrestartuj Jarvisa z terminala: scripts/jarvis restart");
+  });
   bindIf(el.refreshQueueButton, "click", refreshVoiceQueue);
   bindIf(el.cancelCurrentSpeechButton, "click", cancelCurrentSpeech);
   bindIf(el.refreshMemoryApprovalsButton, "click", async () => {
@@ -757,10 +774,16 @@ function renderVoice() {
   const usable = cockpit.online && cockpit.voice.enabled;
   el.pttModeButton.disabled = !usable;
   el.listenToggle.disabled = !usable;
+  if (el.testPttButton) {
+    el.testPttButton.disabled = !usable;
+  }
 
   const locked = cockpit.voice.leases.some((lease) => lease.mode === "locked");
   el.pttModeButton.classList.toggle("active", usable && !locked);
   el.listenToggle.classList.toggle("active", usable && locked);
+  if (el.testPttButton) {
+    el.testPttButton.classList.toggle("active", false);
+  }
 
   let status = "cisza — przytrzymaj hotkey PTT";
   if (!cockpit.online) {
@@ -781,6 +804,7 @@ function renderVoice() {
   el.voiceStatus.hidden = !cockpit.voice.listening;
   // Zbierający mikrofon to też „praca” — ramka ma wtedy obiegać.
   applyStateFrame();
+  renderPttTestStatusList();
 }
 
 // Panel ustawia TRYB słuchania (PTT vs ciągły nasłuch); samo trzymanie PTT
@@ -831,10 +855,12 @@ function setupPttButtonHold() {
 
   let holdTimer = null;
   const startHold = () => {
+    if (btn.disabled) return;
     btn.classList.add("ptt-hold");
     sendPtt("/voice/ptt/down");
   };
   const endHold = () => {
+    if (btn.disabled) return;
     btn.classList.remove("ptt-hold");
     sendPtt("/voice/ptt/up");
   };
@@ -1086,34 +1112,34 @@ const RUNTIME_SETTINGS_GROUP_FIELDS = Object.freeze({
 });
 
 const RUNTIME_SETTINGS_GROUP_LABELS = Object.freeze({
-  brain: "Brain / Provider",
-  tts: "Voice / TTS",
-  stt: "Voice / STT",
-  ptt: "Endpointing / PTT",
-  tools: "Tools / Internet",
-  persona: "Personality",
+  brain: "Mózg / Dostawca",
+  tts: "Głos / TTS",
+  stt: "Głos / STT",
+  ptt: "PTT / Detekcja końca",
+  tools: "Narzędzia / Internet",
+  persona: "Osobowość",
 });
 
 const RUNTIME_SETTING_LABELS = Object.freeze({
-  "brain.provider": "Brain provider",
-  "brain.model": "Brain model",
-  "brain.effort": "Effort",
-  "brain.fast": "Fast mode",
-  "voice.speak_responses": "Speak responses",
-  "voice.default_tts": "Text-to-speech engine",
-  "voice.default_stt": "Speech-to-text engine",
-  "voice.stt_model": "Speech-to-text model",
-  "voice.stt_language": "Speech-to-text language",
-  "voice.ptt_mode": "PTT mode",
-  "voice.ptt_hotkey": "PTT hotkey",
-  "voice.merge_window": "Merge window",
-  "tools.enabled": "Tools enabled",
-  "tools.network_enabled": "Internet access",
-  "security.network_enabled": "Network policy",
-  "security.require_approval_for_network": "Require approval for network",
-  "security.require_approval_for_shell": "Require approval for shell",
-  "security.require_approval_for_file_write": "Require approval for file writes",
-  "persona.profile": "Persona profile",
+  "brain.provider": "Dostawca mózgu",
+  "brain.model": "Model mózgu",
+  "brain.effort": "Poziom wysiłku",
+  "brain.fast": "Tryb szybki",
+  "voice.speak_responses": "Mów odpowiedzi",
+  "voice.default_tts": "Silnik mowy",
+  "voice.default_stt": "Silnik transkrypcji",
+  "voice.stt_model": "Model STT",
+  "voice.stt_language": "Język STT",
+  "voice.ptt_mode": "Tryb PTT",
+  "voice.ptt_hotkey": "Skrót PTT",
+  "voice.merge_window": "Okno scalania",
+  "tools.enabled": "Narzędzia włączone",
+  "tools.network_enabled": "Dostęp do internetu",
+  "security.network_enabled": "Polityka sieci",
+  "security.require_approval_for_network": "Wymagaj zgody na sieć",
+  "security.require_approval_for_shell": "Wymagaj zgody na powłokę",
+  "security.require_approval_for_file_write": "Wymagaj zgody na zapis plików",
+  "persona.profile": "Profil persony",
 });
 
 const RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY = Object.freeze({
@@ -1144,29 +1170,29 @@ const RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY = Object.freeze({
 
 const HUMAN_SETTING_LABELS = Object.freeze({
   ...RUNTIME_SETTING_LABELS,
-  active_persona: "Persona profile",
-  broker_enabled: "Voice broker",
-  command_status: "Command status",
-  credentials_or_command_status: "Credentials status",
-  default_stt: "Speech-to-text engine",
-  default_tts: "Text-to-speech engine",
-  endpointing_support: "Endpointing support",
-  fast: "Fast mode",
-  language: "Language",
-  merge_window: "Merge window",
+  active_persona: "Profil persony",
+  broker_enabled: "Broker głosu",
+  command_status: "Status komendy",
+  credentials_or_command_status: "Status uprawnień",
+  default_stt: "Silnik transkrypcji",
+  default_tts: "Silnik mowy",
+  endpointing_support: "Wsparcie endpointingu",
+  fast: "Tryb szybki",
+  language: "Język",
+  merge_window: "Okno scalania",
   model: "Model",
-  provider: "Brain provider",
-  ptt_hotkey: "PTT hotkey",
-  ptt_mode: "PTT mode",
-  silence_duration: "Silence duration",
-  silence_threshold: "Silence threshold",
-  speak_responses: "Speak responses",
-  speed_or_rate: "Speed",
-  stt_model: "Speech-to-text model",
-  stt_provider: "Speech-to-text engine",
-  tools_support: "Tools",
-  tts_model: "Speech model",
-  tts_provider: "Text-to-speech engine",
+  provider: "Dostawca mózgu",
+  ptt_hotkey: "Skrót PTT",
+  ptt_mode: "Tryb PTT",
+  silence_duration: "Czas ciszy",
+  silence_threshold: "Próg ciszy",
+  speak_responses: "Mów odpowiedzi",
+  speed_or_rate: "Szybkość",
+  stt_model: "Model STT",
+  stt_provider: "Silnik transkrypcji",
+  tools_support: "Narzędzia",
+  tts_model: "Model mowy",
+  tts_provider: "Silnik mowy",
   voice_id: "Voice id",
   voice_profile: "Voice profile",
 });
@@ -1219,7 +1245,7 @@ function runtimeSettingsSetPreview(group, draft) {
   cockpit.runtimeSettingsApply.groupResults[group] = "";
 }
 
-function runtimeSettingsClearPreview(group = null, message = "Preview reset to effective value.") {
+function runtimeSettingsClearPreview(group = null, message = "Podgląd zresetowany do wartości efektywnej.") {
   if (group) {
     delete cockpit.runtimeSettingsApply.preview[group];
     cockpit.runtimeSettingsApply.groupResults[group] = message;
@@ -1233,7 +1259,7 @@ function runtimeSettingsClearPreview(group = null, message = "Preview reset to e
 
 function runtimeSettingsFormatValue(value) {
   if (typeof value === "boolean") {
-    return value ? "On" : "Off";
+    return value ? "Włączone" : "Wyłączone";
   }
   return humanDisplayValue(value);
 }
@@ -1241,7 +1267,7 @@ function runtimeSettingsFormatValue(value) {
 function humanSettingLabel(value) {
   const raw = String(value || "").trim();
   if (!raw) {
-    return "Setting";
+    return "Ustawienie";
   }
   if (HUMAN_SETTING_LABELS[raw]) {
     return HUMAN_SETTING_LABELS[raw];
@@ -1257,45 +1283,45 @@ function humanSettingLabel(value) {
 
 function humanDisplayValue(value) {
   if (value === undefined || value === null || value === "") {
-    return "Unknown";
+    return "Nieznane";
   }
   if (typeof value === "boolean") {
-    return value ? "On" : "Off";
+    return value ? "Włączone" : "Wyłączone";
   }
   if (Array.isArray(value)) {
-    return value.length > 0 ? value.map(humanDisplayValue).join(", ") : "None";
+    return value.length > 0 ? value.map(humanDisplayValue).join(", ") : "Brak";
   }
   const text = settingsPreviewValue(value);
-  if (text === "yes") return "On";
-  if (text === "no") return "Off";
-  if (text === "unknown") return "Unknown";
-  if (text === "missing") return "Missing";
-  if (text === "found") return "Found";
-  if (text === "logged_in") return "Logged in";
-  if (text === "next_turn") return "Next turn";
-  if (text === "requires_new_session") return "Requires new session";
-  if (text === "requires_daemon_restart") return "Requires daemon restart";
-  if (text === "not_apply_capable") return "Not apply-capable";
-  if (text === "available") return "Available";
-  if (text === "unavailable") return "Missing";
-  if (text === "approval_required") return "Approval required";
-  if (text === "disabled") return "Off";
-  if (text === "enabled") return "On";
+  if (text === "yes") return "Włączone";
+  if (text === "no") return "Wyłączone";
+  if (text === "unknown") return "Nieznane";
+  if (text === "missing") return "Brak";
+  if (text === "found") return "Znalezione";
+  if (text === "logged_in") return "Zalogowane";
+  if (text === "next_turn") return "Następna tura";
+  if (text === "requires_new_session") return "Wymaga nowej sesji";
+  if (text === "requires_daemon_restart") return "Wymaga restartu daemonu";
+  if (text === "not_apply_capable") return "Nie można zastosować";
+  if (text === "available") return "Dostępne";
+  if (text === "unavailable") return "Brak";
+  if (text === "approval_required") return "Wymagana zgoda";
+  if (text === "disabled") return "Wyłączone";
+  if (text === "enabled") return "Włączone";
   return text;
 }
 
 function humanStatusLabel(status, options = {}) {
-  if (options.requiresRestart) return "Requires restart";
-  if (options.blocked) return "Blocked";
+  if (options.requiresRestart) return "Wymaga restartu";
+  if (options.blocked) return "Zablokowane";
   const raw = String(status || "").toLowerCase();
-  if (["ok", "ready", "available", "registered"].includes(raw)) return "Available";
-  if (["enabled", "on", "true", "yes"].includes(raw)) return "On";
-  if (["disabled", "off", "false", "no"].includes(raw)) return "Off";
-  if (["missing", "unavailable", "not_found"].includes(raw)) return "Missing";
-  if (["blocked", "invalid", "error"].includes(raw)) return "Blocked";
-  if (["unsupported", "not_supported"].includes(raw)) return "Not supported";
-  if (raw === "read_only" || raw === "readonly") return "Read-only";
-  return "Unknown";
+  if (["ok", "ready", "available", "registered"].includes(raw)) return "Dostępne";
+  if (["enabled", "on", "true", "yes"].includes(raw)) return "Włączone";
+  if (["disabled", "off", "false", "no"].includes(raw)) return "Wyłączone";
+  if (["missing", "unavailable", "not_found"].includes(raw)) return "Brak";
+  if (["blocked", "invalid", "error"].includes(raw)) return "Zablokowane";
+  if (["unsupported", "not_supported"].includes(raw)) return "Nieobsługiwane";
+  if (raw === "read_only" || raw === "readonly") return "Tylko odczyt";
+  return "Nieznane";
 }
 
 function humanShortReason(value) {
@@ -1305,59 +1331,62 @@ function humanShortReason(value) {
   }
   const lower = text.toLowerCase();
   if (lower.includes("no network/search tool")) {
-    return "No network/search tool registered";
+    return "Brak zarejestrowanego narzędzia sieci/szukania";
   }
   if (lower.includes("runtime tool/network policy reload")) {
-    return "Runtime policy changes require restart";
+    return "Zmiana polityki runtime wymaga restartu";
   }
   if (lower.includes("new provider session") || lower.includes("requires new session")) {
-    return "New provider session required";
+    return "Wymagana nowa sesja dostawcy";
   }
   if (lower.includes("requires daemon restart") || lower.includes("requires restart")) {
-    return "Restart required";
+    return "Wymagany restart";
   }
   if (lower.includes("registry-backed")) {
-    return "No live network toggle is available";
+    return "Brak przełącznika sieci działającego na żywo";
   }
   if (lower.includes("not apply-capable")) {
-    return "Not apply-capable";
+    return "Nie można zastosować";
+  }
+  if (lower.includes("backend offline")) {
+    return "backend niedostępny";
   }
   if (lower.includes("missing")) {
     return text.length > 90 ? `${text.slice(0, 87)}...` : text;
   }
-  const withoutKeys = text.replace(/\b[a-z]+(?:[._-][a-z0-9]+)+\b/gi, "setting");
+  const withoutKeys = text.replace(/\b[a-z]+(?:[._-][a-z0-9]+)+\b/gi, "ustawienie");
   return withoutKeys.length > 90 ? `${withoutKeys.slice(0, 87)}...` : withoutKeys;
 }
 
-function humanActionForReason(reason, fallback = "No action available right now.") {
+function humanActionForReason(reason, fallback = "Brak dostępnej akcji w tej chwili.") {
   const lower = String(reason || "").toLowerCase();
-  if (lower.includes("network/search tool")) {
-    return "Install/register a network search tool.";
+  if (lower.includes("network/search tool") || lower.includes("narzędzia sieci/szukania")) {
+    return "Zainstaluj albo zarejestruj narzędzie sieci/szukania.";
   }
   if (lower.includes("restart")) {
-    return "Restart Jarvis to change this.";
+    return "Zrestartuj Jarvisa, żeby to zmienić.";
   }
-  if (lower.includes("new provider session") || lower.includes("requires new session")) {
-    return "Jarvis will apply this when it starts a new provider session.";
+  if (lower.includes("new provider session") || lower.includes("requires new session") || lower.includes("nowa sesja dostawcy")) {
+    return "Jarvis zastosuje to przy starcie nowej sesji dostawcy.";
   }
   if (lower.includes("auth")) {
-    return "Authenticate the provider CLI if Jarvis rejects this.";
+    return "Uwierzytelnij CLI dostawcy, jeśli Jarvis to odrzuci.";
   }
   if (lower.includes("voice id")) {
-    return "Set a voice id before using this voice.";
+    return "Ustaw ID głosu przed użyciem tego głosu.";
   }
   if (lower.includes("local model")) {
-    return "Configure a local model before enabling this provider.";
+    return "Skonfiguruj lokalny model przed włączeniem tego dostawcy.";
   }
   return fallback;
 }
 
 function networkPolicyLabel(value) {
   const raw = String(value || "").toLowerCase();
-  if (raw === "approval_required") return "Approval required";
-  if (raw === "allowed") return "Allowed";
-  if (raw === "disabled") return "Off";
-  return raw ? humanDisplayValue(raw) : "Unknown";
+  if (raw === "approval_required") return "Wymagana zgoda";
+  if (raw === "allowed") return "Dozwolone";
+  if (raw === "disabled") return "Wyłączone";
+  return raw ? humanDisplayValue(raw) : "Nieznane";
 }
 
 function runtimeSettingsPreviewFieldForKey(payload, key) {
@@ -1469,10 +1498,10 @@ function runtimeSettingsUnknownDisabledReason(payload, key) {
   if (!runtimeSettingsEffectiveValueUnknown(payload, key)) {
     return "";
   }
-  if (key === "voice.ptt_hotkey" && runtimeSettingsUnknownCanApply(payload, key)) {
+  if ((key === "voice.ptt_hotkey" || key === "brain.effort") && runtimeSettingsUnknownCanApply(payload, key)) {
     return "";
   }
-  return "Effective value: Unknown. Reason: runtime does not report this setting. Apply disabled.";
+  return "Wartość efektywna: nieznana. Powód: runtime nie raportuje tego ustawienia. Zastosowanie wyłączone.";
 }
 
 function runtimeSettingsUnknownDisabledMessage(group, settings, payload) {
@@ -1525,12 +1554,12 @@ function runtimeSettingsFieldCannotApplyReason(payload, key) {
     const field = runtimeSettingsPreviewFieldForKey(payload, key);
     const reason = humanShortReason(field.blocker || field.warning);
     if (field.requires_restart || field.requires_reload) {
-      return "Requires restart. Restart Jarvis to change this.";
+      return "Wymaga restartu. Zrestartuj Jarvisa, żeby to zmienić.";
     }
     if (reason) {
-      return `Blocked. ${humanActionForReason(reason)}`;
+      return `Zablokowane. ${humanActionForReason(reason)}`;
     }
-    return `${humanSettingLabel(key)} is not apply-capable now.`;
+    return `${humanSettingLabel(key)} nie może być teraz zastosowane.`;
   }
   return "";
 }
@@ -1543,12 +1572,12 @@ function runtimeSettingsGroupApplyBlockedReason(group, settings, payload) {
   for (const key of changedKeys) {
     const field = runtimeSettingsPreviewFieldForKey(payload, key);
     if (field.requires_restart || field.requires_reload) {
-      return "Requires restart";
+      return "Wymaga restartu";
     }
   }
   for (const key of changedKeys) {
     if (!runtimeSettingsFieldCanApplyNow(payload, key)) {
-      return "Not apply-capable";
+      return "Nie można zastosować";
     }
   }
   return "";
@@ -1556,7 +1585,7 @@ function runtimeSettingsGroupApplyBlockedReason(group, settings, payload) {
 
 function runtimeSettingsCompactUnknownStatus(value) {
   if (runtimeSettingsValueIsUnknown(value)) {
-    return "Effective value: Unknown. Reason: runtime does not report this setting.";
+    return "Wartość efektywna: nieznana. Powód: runtime nie raportuje tego ustawienia.";
   }
   return settingsPreviewValue(value);
 }
@@ -1572,7 +1601,7 @@ function runtimeSettingsPendingMessage(group, settings, payload) {
     const effective = runtimeSettingsCurrentValueForKey(payload, key);
     return `${label}: ${runtimeSettingsFormatValue(effective)} -> ${runtimeSettingsFormatValue(settings[key])}`;
   });
-  return `Pending change: ${pieces.join("; ")}`;
+  return `Oczekująca zmiana: ${pieces.join("; ")}`;
 }
 
 function runtimeSettingsAttemptPendingMessage(group, settings, payload) {
@@ -1585,7 +1614,7 @@ function runtimeSettingsAttemptPendingMessage(group, settings, payload) {
     const effective = runtimeSettingsCurrentValueForKey(payload, key);
     return `${label}: ${runtimeSettingsFormatValue(effective)} -> ${runtimeSettingsFormatValue(settings[key])}`;
   });
-  return `Pending change: ${pieces.join("; ")}`;
+  return `Oczekująca zmiana: ${pieces.join("; ")}`;
 }
 
 function runtimeSettingsPendingBackendMessage(pending, validationMessage = "") {
@@ -1594,8 +1623,8 @@ function runtimeSettingsPendingBackendMessage(pending, validationMessage = "") {
   }
   const reason = humanShortReason(validationMessage);
   return reason
-    ? `${pending}. Backend will validate: ${humanActionForReason(reason)}`
-    : `${pending}. Backend will validate.`;
+    ? `${pending}. Backend zweryfikuje: ${humanActionForReason(reason)}`
+    : `${pending}. Backend zweryfikuje.`;
 }
 
 function runtimeSettingsGroupResult(group) {
@@ -1604,7 +1633,7 @@ function runtimeSettingsGroupResult(group) {
 
 function runtimeSettingsGroupNoChangesMessage(group) {
   const label = RUNTIME_SETTINGS_GROUP_LABELS[group] || group;
-  return `No ${label} changes.`;
+  return `Brak zmian w sekcji ${label}.`;
 }
 
 function runtimeSettingValuesEquivalent(left, right) {
@@ -1718,10 +1747,10 @@ async function refreshSettingsPreview() {
     if (hadPendingPreview) {
       for (const group of Object.keys(safeObject(cockpit.runtimeSettingsApply.preview))) {
         if (runtimeSettingsHasPendingPreview(group)) {
-          cockpit.runtimeSettingsApply.groupResults[group] = "Effective state refreshed; pending preview preserved.";
+          cockpit.runtimeSettingsApply.groupResults[group] = "Stan efektywny odświeżony; oczekujący podgląd zachowany.";
         }
       }
-      setText(el.activeSettingsStatus, "Effective state refreshed; pending preview preserved.");
+      setText(el.activeSettingsStatus, "Stan efektywny odświeżony; oczekujący podgląd zachowany.");
     }
     cockpit.settingsPreview.model = settingsPreviewModelFromPayload(
       payload,
@@ -1738,11 +1767,11 @@ async function refreshSettingsPreview() {
 
 function resetSettingsPreview() {
   cockpit.settingsPreview.overrides = {};
-  runtimeSettingsClearPreview(null, "Preview reset to effective value.");
+  runtimeSettingsClearPreview(null, "Podgląd zresetowany do wartości efektywnej.");
   cockpit.settingsPreview.model = settingsPreviewModelFromPayload(cockpit.settingsPreview.payload || {});
   renderRuntimeSettingsControls(cockpit.settingsPreview.payload || cockpit.runtimeSettingsApply.payload || {});
   renderSettingsPreview(cockpit.settingsPreview.model);
-  setText(el.activeSettingsStatus, "Preview reset.");
+  setText(el.activeSettingsStatus, "Podgląd zresetowany.");
 }
 
 function renderRuntimeSettingsControls(payload) {
@@ -1755,6 +1784,8 @@ function renderRuntimeSettingsControls(payload) {
     renderToolsApplyControls(payload);
     renderPersonaApplyControls(payload);
     renderAuxiliaryCockpitSectionsFromPayload(payload);
+    renderSystemDiagnosticsSummary(payload);
+    updateRestartRequiredBanner();
   } finally {
     cockpit.runtimeSettingsApply.renderingControls = false;
   }
@@ -1780,6 +1811,8 @@ function clearRuntimeSettingsControls() {
   ]) {
     clearNode(node);
   }
+  updateRestartRequiredBanner();
+  renderSystemDiagnosticsSummary({});
 }
 
 function renderActiveSettingsSummary(payload) {
@@ -1809,6 +1842,70 @@ function renderActiveSettingsSummary(payload) {
   }
 }
 
+function runtimeSettingsPendingRestartKeys(payload) {
+  const runtimePayload = payload || cockpit.runtimeSettingsApply.payload || {};
+  const groups = ["tts", "stt", "ptt", "tools", "persona"];
+  const keys = [];
+  for (const group of groups) {
+    const draft = runtimeSettingsPayloadForGroup(group, runtimeSettingsDraftForGroup(group));
+    for (const key of runtimeSettingsChangedKeys(group, draft, runtimePayload)) {
+      const field = runtimeSettingsPreviewFieldForKey(runtimePayload, key);
+      if (field.requires_restart || field.requires_reload) {
+        keys.push(key);
+      }
+    }
+  }
+  return Array.from(new Set(keys));
+}
+
+function updateRestartRequiredBanner() {
+  if (!el.restartRequiredBanner) {
+    return;
+  }
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  const keys = runtimeSettingsPendingRestartKeys(payload);
+  const hasPendingRestart = keys.length > 0;
+  el.restartRequiredBanner.hidden = !hasPendingRestart;
+  if (!hasPendingRestart) {
+    setText(el.restartRequiredMessage, "");
+    return;
+  }
+  const labels = keys.slice(0, 3).map((key) => RUNTIME_SETTING_LABELS[key] || key);
+  const suffix = keys.length > 3 ? ` +${keys.length - 3}` : "";
+  setText(
+    el.restartRequiredMessage,
+    `Wymagany restart: ${labels.join(", ")}${suffix}. Zapisz zmiany, potem zrestartuj Jarvisa.`,
+  );
+}
+
+function renderSystemDiagnosticsSummary(payload) {
+  clearNode(el.systemDiagnosticsSummaryList);
+  if (!el.systemDiagnosticsSummaryList) {
+    return;
+  }
+  const warnings = Array.isArray(safeObject(payload).compatibility_warnings)
+    ? payload.compatibility_warnings
+    : [];
+  const graph = safeObject(safeObject(payload).capability_graph);
+  const brain = safeObject(graph.brain_capabilities);
+  const voice = safeObject(graph.voice_capabilities);
+  const tools = safeObject(graph.tools_capabilities);
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, "Diagnostyka systemu", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["Ostrzeżenia", warnings.length],
+    ["Dostawcy mózgu", Array.isArray(brain.providers) ? brain.providers.length : "nieznane"],
+    ["Dostawcy TTS", Array.isArray(voice.tts_providers) ? voice.tts_providers.length : "nieznane"],
+    ["Dostawcy STT", Array.isArray(voice.stt_providers) ? voice.stt_providers.length : "nieznane"],
+    ["Narzędzie sieci/szukania", tools.network_search_tool || "nieznane"],
+  ]);
+  row.appendChild(values);
+  el.systemDiagnosticsSummaryList.appendChild(row);
+}
+
 function renderSettingsSectionSummary(node, payload, sectionId, limit = 12) {
   clearNode(node);
   if (!node) {
@@ -1834,18 +1931,18 @@ function renderSettingsSectionSummary(node, payload, sectionId, limit = 12) {
     const action = reason
       ? humanActionForReason(reason)
       : field.editable_now
-        ? "Apply in System."
+        ? "Zastosuj w Systemie."
         : field.requires_restart
-          ? "Restart Jarvis to change this."
-          : "None";
+          ? "Zrestartuj Jarvisa, żeby to zmienić."
+          : "Brak";
     const value = humanDisplayValue(field.effective !== undefined ? field.effective : field.current);
     const pieces = [
       value,
       status,
       reason || null,
-      action && action !== "None" ? action : null,
+      action && action !== "Brak" ? action : null,
     ].filter(Boolean);
-    return [humanSettingLabel(field.label || field.id), pieces.join(" · ") || "Unknown"];
+    return [humanSettingLabel(field.label || field.id), pieces.join(" · ") || "Nieznane"];
   });
   renderKeyValues(values, rows);
   row.appendChild(values);
@@ -1865,13 +1962,14 @@ function renderBrainApplyControls(payload) {
     ...normalProviders.map((provider) => ({
       value: provider.id,
       label: providerApplyLabel(provider, currentProvider),
-      disabled: false,
+      disabled: Boolean(providerApplyBlocker(provider, currentProvider)) && String(provider.id) !== String(currentProvider),
+      title: providerApplyBlocker(provider, currentProvider),
     })),
   ];
   if (keepDeveloperProviderActive) {
     providerOptions.unshift({
       value: "",
-      label: "No normal provider active",
+      label: "Brak aktywnego normalnego dostawcy",
       disabled: true,
     });
   }
@@ -1888,7 +1986,7 @@ function renderBrainApplyControls(payload) {
   );
   if (el.activeBrainProviderSelect) {
     el.activeBrainProviderSelect.title = keepDeveloperProviderActive
-      ? "Developer/Test provider active"
+      ? "Aktywny dostawca developerski/testowy"
       : "";
     el.activeBrainProviderSelect.disabled = keepDeveloperProviderActive && providerOptions.length === 1;
   }
@@ -1908,19 +2006,19 @@ function renderBrainProviderContractSummary(node, payload) {
   clearNode(node);
   const row = document.createElement("article");
   row.className = "list-row cockpit-summary-card";
-  appendLine(row, "Claude CLI provider contract", "input-line");
+  appendLine(row, "Kontrakt dostawcy Claude CLI", "input-line");
   const values = document.createElement("dl");
   values.className = "kv-list";
   renderKeyValues(values, [
-    ["Available", provider.available ? "Available" : "Missing"],
+    ["Dostępność", provider.available ? "Dostępne" : "Brak"],
     ["Auth", humanDisplayValue(provider.auth_status)],
     ["Model", `${humanDisplayValue(provider.effective_model || provider.selected_model)} (${humanDisplayValue(provider.model_source)})`],
-    ["Effort", `${humanDisplayValue(provider.effective_effort || provider.selected_effort)} (${humanDisplayValue(provider.effort_source)})`],
-    ["Permission", humanDisplayValue(provider.permission_mode)],
-    ["Tools", `available: ${humanDisplayValue(provider.tools)}; allowed: ${humanDisplayValue(provider.allowed_tools)}; disallowed: ${humanDisplayValue(provider.disallowed_tools)}`],
+    ["Poziom wysiłku", `${humanDisplayValue(provider.effective_effort || provider.selected_effort)} (${humanDisplayValue(provider.effort_source)})`],
+    ["Uprawnienia", humanDisplayValue(provider.permission_mode)],
+    ["Narzędzia", `dostępne: ${humanDisplayValue(provider.tools)}; dozwolone: ${humanDisplayValue(provider.allowed_tools)}; zablokowane: ${humanDisplayValue(provider.disallowed_tools)}`],
     ["MCP", `${humanDisplayValue(provider.mcp_config_status)}; strict: ${humanDisplayValue(provider.strict_mcp_config)}`],
     ["Streaming", `${humanDisplayValue(provider.streaming_supported_state)}; output: ${humanDisplayValue(provider.output_format)}; partials: ${humanDisplayValue(provider.partial_messages_supported)}`],
-    ["Apply", humanDisplayValue(provider.apply_semantics)],
+    ["Zastosowanie", humanDisplayValue(provider.apply_semantics)],
   ]);
   row.appendChild(values);
   if (provider.command_preview) {
@@ -1949,9 +2047,11 @@ function updateBrainControlOptions() {
   );
   setSelectOptions(
     el.activeBrainModelSelect,
-    models.filter((item) => item.available !== false).map((item) => ({
+    models.map((item) => ({
       value: item.id,
       label: item.label || item.id,
+      disabled: item.available === false,
+      title: item.available === false ? "Backend raportuje model jako niedostępny." : "",
     })),
     modelIds.includes(currentModelControlValue) ? currentModelControlValue : previewModel,
   );
@@ -1966,10 +2066,15 @@ function updateBrainControlOptions() {
   const currentEffortControlValue = el.activeBrainEffortSelect ? String(el.activeBrainEffortSelect.value || "") : "";
   const effectiveEffort = runtimeSettingsCurrentValueForKey(payload, "brain.effort");
   const previewEffort = runtimeSettingsPreviewValue("brain", "brain.effort", effectiveEffort || efforts[0] || "");
+  const selectedEffort = efforts.includes(currentEffortControlValue)
+    ? currentEffortControlValue
+    : efforts.includes(String(previewEffort))
+      ? previewEffort
+      : efforts[0] || "";
   setSelectOptions(
     el.activeBrainEffortSelect,
     efforts.map((value) => ({ value, label: value })),
-    effortUnknownReason ? "" : efforts.includes(currentEffortControlValue) ? currentEffortControlValue : previewEffort,
+    effortUnknownReason ? "" : selectedEffort,
   );
   if (el.activeBrainEffortSelect) {
     el.activeBrainEffortSelect.disabled = efforts.length === 0 || lockedToDeveloperProvider || Boolean(effortUnknownReason);
@@ -1982,6 +2087,7 @@ function updateBrainControlOptions() {
     el.activeBrainFastToggle.title = fastUnknownReason || "";
   }
   runtimeSettingsSetPreview("brain", runtimeSettingsDraftForGroup("brain"));
+  updateRestartRequiredBanner();
   const blocker = provider ? providerApplyBlocker(provider, runtimeSettingsCurrentProvider(payload)) : "provider unavailable";
   const draft = runtimeSettingsPayloadForGroup("brain", runtimeSettingsDraftForGroup("brain"));
   const pending = runtimeSettingsAttemptPendingMessage("brain", draft, payload);
@@ -2031,14 +2137,15 @@ function renderTtsApplyControls(payload) {
     el.voiceTtsSelect,
     ttsProviders.map((provider) => ({
       value: provider.id,
-      label: provider.available ? `${provider.label || provider.id} (requires restart)` : `${provider.label || provider.id} (missing)`,
-      disabled: false,
+      label: provider.label || provider.id,
+      disabled: provider.available === false,
+      title: provider.available === false ? "Dostawca TTS jest niedostępny." : "Zapisz do restartu.",
     })),
     currentTts,
   );
   setSelectOptions(
     el.voiceTtsModelSelect,
-    (Array.isArray(ttsModelField.allowed_values) ? ttsModelField.allowed_values : []).map((value) => ({
+    settingsFieldAllowedValuesWithCurrent(ttsModelField).map((value) => ({
       value,
       label: value,
       disabled: false,
@@ -2047,7 +2154,7 @@ function renderTtsApplyControls(payload) {
   );
   setSelectOptions(
     el.voiceVoiceIdSelect,
-    (Array.isArray(voiceIdField.allowed_values) ? voiceIdField.allowed_values : []).map((value) => ({
+    settingsFieldAllowedValuesWithCurrent(voiceIdField).map((value) => ({
       value,
       label: value,
       disabled: false,
@@ -2056,7 +2163,7 @@ function renderTtsApplyControls(payload) {
   );
   setSelectOptions(
     el.voiceProfileSelect,
-    (Array.isArray(voiceProfileField.allowed_values) ? voiceProfileField.allowed_values : []).map((value) => ({
+    settingsFieldAllowedValuesWithCurrent(voiceProfileField).map((value) => ({
       value,
       label: value,
       disabled: false,
@@ -2064,9 +2171,9 @@ function renderTtsApplyControls(payload) {
     voiceProfileField.effective || voiceProfileField.current || "",
   );
   if (el.voiceTtsSelect) el.voiceTtsSelect.disabled = ttsProviders.length === 0;
-  if (el.voiceTtsModelSelect) el.voiceTtsModelSelect.disabled = false;
-  if (el.voiceVoiceIdSelect) el.voiceVoiceIdSelect.disabled = false;
-  if (el.voiceProfileSelect) el.voiceProfileSelect.disabled = false;
+  if (el.voiceTtsModelSelect) el.voiceTtsModelSelect.disabled = settingsFieldAllowedValuesWithCurrent(ttsModelField).length === 0;
+  if (el.voiceVoiceIdSelect) el.voiceVoiceIdSelect.disabled = settingsFieldAllowedValuesWithCurrent(voiceIdField).length === 0;
+  if (el.voiceProfileSelect) el.voiceProfileSelect.disabled = settingsFieldAllowedValuesWithCurrent(voiceProfileField).length === 0;
   if (el.voiceSpeedInput) {
     el.voiceSpeedInput.disabled = false;
     const currentSpeed = settingsPreviewFieldValue(payload, "voice_tts", "speed_or_rate");
@@ -2075,8 +2182,9 @@ function renderTtsApplyControls(payload) {
   renderSettingsSectionSummary(el.voiceTtsStatusList, payload, "voice_tts");
   updateTtsControlOptions();
   if (ttsField.requires_restart || ttsModelField.requires_restart || voiceIdField.requires_restart) {
-    setText(el.voiceApplyStatus, "Requires restart. Restart Jarvis to change this.");
+    setText(el.voiceApplyStatus, "Wymaga restartu. Zrestartuj Jarvisa, żeby to zmienić.");
   }
+  updateRestartRequiredBanner();
 }
 
 function renderSttApplyControls(payload) {
@@ -2090,14 +2198,15 @@ function renderSttApplyControls(payload) {
     el.voiceSttSelect,
     sttProviders.map((provider) => ({
       value: provider.id,
-      label: provider.available ? `${provider.label || provider.id} (requires restart)` : `${provider.label || provider.id} (missing)`,
-      disabled: false,
+      label: provider.label || provider.id,
+      disabled: provider.available === false,
+      title: provider.available === false ? "Dostawca albo runtime STT jest niedostępny." : "Zapisz do restartu.",
     })),
     projectionValue(voice.default_stt),
   );
   setSelectOptions(
     el.voiceSttModelSelect,
-    (Array.isArray(sttModelField.allowed_values) ? sttModelField.allowed_values : []).map((value) => ({
+    settingsFieldAllowedValuesWithCurrent(sttModelField).map((value) => ({
       value,
       label: value,
       disabled: false,
@@ -2106,7 +2215,7 @@ function renderSttApplyControls(payload) {
   );
   setSelectOptions(
     el.voiceSttLanguageSelect,
-    [languageField.effective || languageField.current || ""].filter(Boolean).map((value) => ({
+    settingsFieldAllowedValuesWithCurrent(languageField).filter(Boolean).map((value) => ({
       value,
       label: value,
       disabled: false,
@@ -2114,13 +2223,14 @@ function renderSttApplyControls(payload) {
     languageField.effective || languageField.current || "",
   );
   if (el.voiceSttSelect) el.voiceSttSelect.disabled = sttProviders.length === 0;
-  if (el.voiceSttModelSelect) el.voiceSttModelSelect.disabled = false;
-  if (el.voiceSttLanguageSelect) el.voiceSttLanguageSelect.disabled = false;
+  if (el.voiceSttModelSelect) el.voiceSttModelSelect.disabled = settingsFieldAllowedValuesWithCurrent(sttModelField).length === 0;
+  if (el.voiceSttLanguageSelect) el.voiceSttLanguageSelect.disabled = settingsFieldAllowedValuesWithCurrent(languageField).length === 0;
   renderSettingsSectionSummary(el.voiceSttStatusList, payload, "voice_stt");
   updateSttControlOptions();
   if (sttField.requires_restart || sttModelField.requires_restart || languageField.requires_restart) {
-    setText(el.sttApplyStatus, "Requires restart. Restart Jarvis to change this.");
+    setText(el.sttApplyStatus, "Wymaga restartu. Zrestartuj Jarvisa, żeby to zmienić.");
   }
+  updateRestartRequiredBanner();
 }
 
 function updateTtsControlOptions() {
@@ -2130,7 +2240,7 @@ function updateTtsControlOptions() {
   const ttsCanApply = runtimeSettingsFieldCanApplyNow(payload, "voice.default_tts");
   const speakCanApply = runtimeSettingsFieldCanApplyNow(payload, "voice.speak_responses");
   const blockers = [];
-  if (!tts || tts.available === false) blockers.push("TTS provider missing");
+  if (!tts || tts.available === false) blockers.push("Brak dostawcy TTS");
   const ttsField = settingsPreviewField(payload, "voice_tts", "tts_provider");
   const voiceIdField = settingsPreviewField(payload, "voice_tts", "voice_id");
   if (ttsField.blocker && !String(ttsField.blocker).includes("requires restart")) blockers.push(ttsField.blocker);
@@ -2144,7 +2254,7 @@ function updateTtsControlOptions() {
   if (el.voiceSpeakResponsesToggle) {
     el.voiceSpeakResponsesToggle.disabled = unknownMessage !== "";
     el.voiceSpeakResponsesToggle.title = unknownMessage || (ttsGroupBlocked && !speakCanApply
-      ? runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts") || "Backend will validate."
+      ? runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts") || "Backend zweryfikuje zmianę."
       : "");
   }
   const ttsApplyBlocked = ttsGroupBlocked || Boolean(applyBlockedReason);
@@ -2156,7 +2266,7 @@ function updateTtsControlOptions() {
       validationMessage = blockers[0];
     } else {
       validationMessage = runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts")
-        || `Blocked. ${humanActionForReason("not apply-capable")}`;
+        || `Zablokowane. ${humanActionForReason("not apply-capable")}`;
     }
   }
   setText(
@@ -2165,12 +2275,13 @@ function updateTtsControlOptions() {
       ? unknownMessage
       : pending
         ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
-        : result || validationMessage || "Requires restart. Restart Jarvis to change engine, model, voice, or speed.",
+        : result || validationMessage || "Wymaga restartu. Zrestartuj Jarvisa, żeby zmienić silnik, model, głos albo szybkość.",
   );
   setButtonEnabled(
     el.applyTtsSettingsButton,
     !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
   );
+  updateRestartRequiredBanner();
 }
 
 function updateSttControlOptions() {
@@ -2178,7 +2289,7 @@ function updateSttControlOptions() {
   runtimeSettingsSetPreview("stt", runtimeSettingsDraftForGroup("stt"));
   const stt = runtimeSettingsVoiceProvider(payload, el.voiceSttSelect ? el.voiceSttSelect.value : "", "stt");
   const blockers = [];
-  if (!stt || stt.available === false) blockers.push("STT provider/runtime missing");
+  if (!stt || stt.available === false) blockers.push("Brak dostawcy albo runtime STT");
   const draft = runtimeSettingsPayloadForGroup("stt", runtimeSettingsDraftForGroup("stt"));
   const pending = runtimeSettingsAttemptPendingMessage("stt", draft, payload);
   const unknownMessage = runtimeSettingsUnknownDisabledMessage("stt", draft, payload);
@@ -2190,12 +2301,13 @@ function updateSttControlOptions() {
       ? unknownMessage
       : pending
         ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
-        : result || validationMessage || "Requires restart. Restart Jarvis to change transcription settings.",
+        : result || validationMessage || "Wymaga restartu. Zrestartuj Jarvisa, żeby zmienić ustawienia transkrypcji.",
   );
   setButtonEnabled(
     el.applySttSettingsButton,
     !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
   );
+  updateRestartRequiredBanner();
 }
 
 function renderPttApplyControls(payload) {
@@ -2223,6 +2335,7 @@ function renderPttApplyControls(payload) {
       settingsPreviewFieldValue(payload, "endpointing_ptt", "ptt_hotkey") || "",
     );
     el.pttHotkeyInput.disabled = false;
+    renderPttShortcutValidation(el.pttHotkeyInput.value);
   }
   if (el.pttMergeWindowInput) {
     el.pttMergeWindowInput.value = settingsPreviewFieldValue(payload, "endpointing_ptt", "merge_window") || "";
@@ -2232,6 +2345,7 @@ function renderPttApplyControls(payload) {
   setText(el.pttBargeInSummary, runtimeSettingsCompactUnknownStatus(settingsPreviewFieldValue(payload, "endpointing_ptt", "interrupt_policy")));
   setText(el.pttHotkeySummary, runtimeSettingsCompactUnknownStatus(settingsPreviewFieldValue(payload, "endpointing_ptt", "ptt_hotkey")));
   setText(el.pttVadSummary, pttVadModeSummary(payload));
+  renderPttTestStatusList();
   updatePttControlOptions();
 }
 
@@ -2243,21 +2357,166 @@ function updatePttControlOptions() {
   const draft = runtimeSettingsPayloadForGroup("ptt", runtimeSettingsDraftForGroup("ptt"));
   const pending = runtimeSettingsAttemptPendingMessage("ptt", draft, payload);
   const pttUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "voice.ptt_mode");
+  const shortcutMessage = validatePttShortcut(el.pttHotkeyInput ? el.pttHotkeyInput.value : "");
   const unknownMessage = runtimeSettingsUnknownDisabledMessage("ptt", draft, payload)
     || (!pending && pttUnknownReason ? pttUnknownReason : "");
   const result = runtimeSettingsGroupResult("ptt");
+  renderPttShortcutValidation(el.pttHotkeyInput ? el.pttHotkeyInput.value : "");
   setText(
     el.pttApplyStatus,
     unknownMessage
       ? unknownMessage
+      : shortcutMessage
+      ? shortcutMessage
       : pending
         ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, blocker)}`
-        : result || blocker || "Requires restart. Restart Jarvis to change merge window.",
+        : result || blocker || "Wymaga restartu. Zrestartuj Jarvisa, żeby zmienić okno scalania.",
   );
   setButtonEnabled(
     el.applyPttSettingsButton,
-    !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+    !shortcutMessage && !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
   );
+  updateRestartRequiredBanner();
+}
+
+function validatePttShortcut(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) {
+    return "Skrót PTT jest wymagany.";
+  }
+  const tokens = raw.split("+").map((item) => item.trim()).filter(Boolean);
+  if (tokens.length < 2) {
+    return "Skrót PTT musi łączyć co najmniej dwa klawisze.";
+  }
+  const known = new Set([
+    "cmd",
+    "command",
+    "left_cmd",
+    "right_cmd",
+    "shift",
+    "left_shift",
+    "right_shift",
+    "ctrl",
+    "control",
+    "left_ctrl",
+    "right_ctrl",
+    "alt",
+    "option",
+    "left_alt",
+    "right_alt",
+    "space",
+  ]);
+  const invalid = tokens.find((token) => !known.has(token) && !/^[a-z0-9]$/.test(token));
+  return invalid ? `Nieobsługiwany klawisz skrótu: ${invalid}` : "";
+}
+
+function renderPttShortcutValidation(value) {
+  if (!el.pttShortcutValidation) {
+    return;
+  }
+  const message = cockpit.pttShortcutRecording
+    ? "Nagrywanie skrótu..."
+    : validatePttShortcut(value) || "Skrót wygląda poprawnie.";
+  setText(el.pttShortcutValidation, message);
+}
+
+function pttShortcutTokenFromEvent(event) {
+  const code = String(event.code || "");
+  const key = String(event.key || "").toLowerCase();
+  if (code === "MetaRight") return "right_cmd";
+  if (code === "MetaLeft") return "left_cmd";
+  if (code === "ShiftRight") return "right_shift";
+  if (code === "ShiftLeft") return "left_shift";
+  if (code === "ControlRight") return "right_ctrl";
+  if (code === "ControlLeft") return "left_ctrl";
+  if (code === "AltRight") return "right_alt";
+  if (code === "AltLeft") return "left_alt";
+  if (code === "Space") return "space";
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  return key.length === 1 ? key : "";
+}
+
+function capturePttShortcutKeydown(event) {
+  if (!cockpit.pttShortcutRecording) {
+    return;
+  }
+  event.preventDefault();
+  const token = pttShortcutTokenFromEvent(event);
+  if (token) {
+    cockpit.pttShortcutKeys.add(token);
+  }
+  const value = Array.from(cockpit.pttShortcutKeys).join("+");
+  if (el.pttHotkeyInput) {
+    el.pttHotkeyInput.value = value;
+  }
+  renderPttShortcutValidation(value);
+}
+
+function capturePttShortcutKeyup(event) {
+  if (!cockpit.pttShortcutRecording) {
+    return;
+  }
+  if (cockpit.pttShortcutKeys.size >= 2) {
+    cockpit.pttShortcutRecording = false;
+    updatePttControlOptions();
+    return;
+  }
+  event.preventDefault();
+}
+
+function recordPttShortcut() {
+  cockpit.pttShortcutRecording = true;
+  cockpit.pttShortcutKeys = new Set();
+  if (el.pttHotkeyInput) {
+    el.pttHotkeyInput.value = "";
+    el.pttHotkeyInput.focus();
+  }
+  renderPttShortcutValidation("");
+}
+
+async function testPttPath() {
+  if (!cockpit.online || !cockpit.voice.enabled) {
+    renderPttTestStatusList("Backend albo głos są wyłączone.");
+    return;
+  }
+  renderPttTestStatusList("Test PTT...");
+  setBusy(el.testPttButton, true);
+  try {
+    await requestJson("/voice/ptt/down", { method: "POST", body: { source: "panel_test" } });
+    await requestJson("/voice/ptt/up", { method: "POST", body: { source: "panel_test" } });
+    await Promise.allSettled([refreshVoice(), refreshEvents(), refreshSettingsPreview()]);
+    renderPttTestStatusList("Impuls lease PTT zakończony.");
+  } catch (error) {
+    renderPttTestStatusList(error && error.message ? error.message : "Test PTT nie powiódł się.");
+    renderError(el.voiceError, error);
+  } finally {
+    setBusy(el.testPttButton, false);
+  }
+}
+
+function renderPttTestStatusList(message = "") {
+  clearNode(el.pttTestStatusList);
+  if (!el.pttTestStatusList) {
+    return;
+  }
+  const leases = Array.isArray(cockpit.voice.leases) ? cockpit.voice.leases : [];
+  const hold = leases.some((lease) => lease.mode === "hold");
+  const locked = leases.some((lease) => lease.mode === "locked");
+  const row = document.createElement("article");
+  row.className = "list-row compact-status-row";
+  appendLine(row, "Stan testu PTT", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["Skrót", el.pttHotkeyInput ? validatePttShortcut(el.pttHotkeyInput.value) || "poprawny" : "nieznany"],
+    ["Lease", hold ? "hold aktywny" : locked ? "zablokowany" : "bezczynny"],
+    ["Recorder", cockpit.voice.listening ? "nagrywa/nasłuchuje" : "bezczynny"],
+    ["STT", pttVadModeSummary(cockpit.runtimeSettingsApply.payload || {})],
+    ["Test", message || "Gotowy"],
+  ]);
+  row.appendChild(values);
+  el.pttTestStatusList.appendChild(row);
 }
 
 function pttVadModeSummary(payload) {
@@ -2267,12 +2526,12 @@ function pttVadModeSummary(payload) {
   }
   const endpointing = settingsPreviewFieldValue(payload, "voice_stt", "endpointing_support");
   if (endpointing === true) {
-    return "server_vad/semantic_vad support reported";
+    return "zgłoszone wsparcie server_vad/semantic_vad";
   }
   if (endpointing === false) {
-    return "disabled";
+    return "wyłączone";
   }
-  return "unknown";
+  return "nieznane";
 }
 
 function renderToolsApplyControls(payload) {
@@ -2285,7 +2544,7 @@ function renderToolsApplyControls(payload) {
     : [];
   const hasLiveApplyControl = runtimeSettingsToolsHasLiveApplyControl(applyCapabilities);
   const operator = toolsInternetOperatorState(tools, applyCapabilities);
-  const missingInternetReason = operator.internetStatus === "Missing" ? operator.reason : "";
+  const missingInternetReason = operator.applyStatus === "Blocked" ? operator.reason : "";
   setToolsToggleState(
     el.toolsEnabledToggle,
     projectionValue(tools.tools_master_flag) === "enabled" || Boolean(projectionValue(tools.tools_enabled)),
@@ -2324,7 +2583,7 @@ function renderToolsApplyControls(payload) {
   setText(el.toolsInternetSummary, toolsInternetSummaryText(payload, tools));
   setText(el.toolsNetworkPolicySummary, settingsPreviewValue(projectionValue(tools.network_policy)));
   setText(el.toolsRegistrySummary, settingsPreviewValue(projectionValue(tools.tool_registry_status)));
-  const compactBlocked = operator.applyStatus !== "Available" || !hasLiveApplyControl;
+  const compactBlocked = operator.applyStatus !== "Dostępne" || !hasLiveApplyControl;
   setToolsSectionCompactMode(compactBlocked);
   if (!compactBlocked) {
     renderToolsInternetStatusList(payload, tools, applyCapabilities);
@@ -2344,14 +2603,17 @@ function updateToolsControlOptions() {
   const pending = runtimeSettingsAttemptPendingMessage("tools", draft, payload);
   setText(
     el.toolsApplyStatus,
-    pending
+    disabledReason
+      ? disabledReason
+      : pending
       ? runtimeSettingsPendingBackendMessage(pending, disabledReason)
-      : disabledReason || runtimeSettingsGroupNoChangesMessage("tools"),
+      : runtimeSettingsGroupNoChangesMessage("tools"),
   );
   setButtonEnabled(
     el.applyToolsSettingsButton,
-    Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+    !disabledReason && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
   );
+  updateRestartRequiredBanner();
 }
 
 function setToolsToggleState(toggle, checked, key, applyCapabilities, forceDisabledReason = "") {
@@ -2364,7 +2626,8 @@ function setToolsToggleState(toggle, checked, key, applyCapabilities, forceDisab
     : runtimeSettingsToolControlDisabledReason(key, capability);
   toggle.title = disabledReason || "";
   if (String(toggle.tagName || "").toLowerCase() !== "input") {
-    setText(toggle, checked ? "Available" : "Missing");
+    const blockedSetup = key === "tools.network_enabled" && forceDisabledReason;
+    setText(toggle, checked ? "Dostępne" : blockedSetup ? "Blokada setupu" : "Brak");
     toggle.disabled = true;
     return;
   }
@@ -2377,15 +2640,15 @@ function setReadOnlyBooleanStatus(node, value) {
     return;
   }
   const known = value === true || value === false;
-  const text = known ? (value ? "On" : "Off") : "Unknown";
+  const text = known ? (value ? "Włączone" : "Wyłączone") : "Nieznane";
   if (String(node.tagName || "").toLowerCase() === "input") {
     node.checked = Boolean(value);
     node.disabled = true;
-    node.title = "Read-only runtime status.";
+    node.title = "Status runtime tylko do odczytu.";
     return;
   }
   setText(node, text);
-  node.title = known ? "Read-only runtime status." : "Reason: runtime does not report this setting.";
+  node.title = known ? "Status runtime tylko do odczytu." : "Powód: runtime nie raportuje tego ustawienia.";
   if (node.classList && typeof node.classList.toggle === "function") {
     node.classList.toggle("status-on", value === true);
     node.classList.toggle("status-off", value === false);
@@ -2396,13 +2659,13 @@ function setReadOnlyBooleanStatus(node, value) {
 function runtimeSettingsToolControlDisabledReason(key, capability) {
   const label = humanSettingLabel(key);
   if (capability.requires_restart) {
-    return `${label}: Requires restart`;
+    return `${label}: wymaga restartu`;
   }
   if (capability.apply_capable !== true) {
-    return `${label}: Read-only`;
+    return `${label}: tylko odczyt`;
   }
   if (capability.blocker) {
-    return `${label}: ${humanShortReason(capability.blocker) || "Blocked"}`;
+    return `${label}: ${humanShortReason(capability.blocker) || "zablokowane"}`;
   }
   return "";
 }
@@ -2422,18 +2685,18 @@ function runtimeSettingsChangedKeys(group, settings, payload) {
 
 function runtimeSettingsToolsApplyDisabledReason(payload, settings, applyCapabilities, tools) {
   if (!cockpit.online) {
-    return "Failed: backend offline";
+    return "Błąd: backend offline";
   }
   if (cockpit.runtimeSettingsApply.applyingGroup) {
-    return "Pending: another apply request is running";
+    return "Oczekuje: inne zastosowanie ustawień jest w toku";
   }
   const operator = toolsInternetOperatorState(tools, applyCapabilities);
   const changedKeys = runtimeSettingsChangedKeys("tools", settings, payload);
   if (changedKeys.length === 0) {
     return "";
   }
-  if (operator.applyStatus === "Blocked" || operator.applyStatus === "Requires restart") {
-    return `${operator.applyStatus}. Apply disabled. ${operator.action}`;
+  if (operator.applyStatus === "Zablokowane" || operator.applyStatus === "Wymaga restartu") {
+    return `${operator.applyStatus}. Zastosowanie wyłączone. ${operator.action}`;
   }
   for (const key of changedKeys) {
     const reason = runtimeSettingsToolControlDisabledReason(key, safeObject(safeObject(applyCapabilities)[key]));
@@ -2454,7 +2717,7 @@ function toolsInternetSummaryText(payload, tools = null) {
   }
   const warning = projectionWarning(source.internet_capability);
   if (state === "unavailable") {
-    return `Missing${warning ? `: ${humanShortReason(warning)}` : ""}`;
+    return `Blokada setupu${warning ? `: ${humanShortReason(warning)}` : ""}`;
   }
   return warning || toolsInternetStateLabel(state);
 }
@@ -2495,10 +2758,10 @@ function runtimeSettingsToolsNoLiveApplyReason(applyCapabilities, tools = null) 
     }
   }
   if (restartCount > 0) {
-    return "Requires restart";
+    return "Wymaga restartu";
   }
   if (notCapableCount > 0) {
-    return "Read-only";
+    return "Tylko odczyt";
   }
   return "";
 }
@@ -2518,27 +2781,27 @@ function setToolsSectionCompactMode(compact) {
   if (el.resetToolsPreviewButton) {
     el.resetToolsPreviewButton.disabled = false;
     el.resetToolsPreviewButton.hidden = false;
-    el.resetToolsPreviewButton.title = compact ? "Backend will validate Tools / Internet changes." : "";
+    el.resetToolsPreviewButton.title = compact ? "Backend zweryfikuje zmiany Narzędzia / Internet." : "";
   }
 }
 
 function toolsInternetStateLabel(state) {
   if (state === "available") {
-    return "Available";
+    return "Dostępne";
   }
   if (state === "unavailable") {
-    return "Missing";
+    return "Blokada setupu";
   }
   if (state === "missing") {
-    return "Missing";
+    return "Brak";
   }
   if (state === "enabled") {
-    return "On";
+    return "Włączone";
   }
   if (state === "disabled") {
-    return "Off";
+    return "Wyłączone";
   }
-  return state ? humanDisplayValue(state) : "Unknown";
+  return state ? humanDisplayValue(state) : "Nieznane";
 }
 
 function toolsInternetOperatorState(tools, applyCapabilities) {
@@ -2554,33 +2817,33 @@ function toolsInternetOperatorState(tools, applyCapabilities) {
   const restartOnly = !runtimeSettingsToolsHasLiveApplyControl(applyCapabilities)
     && Object.values(safeObject(applyCapabilities)).some((item) => safeObject(item).requires_restart);
   const blockerReason = humanShortReason(warning || runtimeSettingsToolBlockers(applyCapabilities, tools)[0]);
-  const reason = internetMissing ? "No network/search tool registered" : blockerReason;
+  const reason = internetMissing ? "Brak zarejestrowanego narzędzia sieci/szukania" : blockerReason;
   const action = reason
     ? humanActionForReason(reason)
     : restartOnly
-      ? "Restart Jarvis to change this."
-      : "None";
+      ? "Zrestartuj Jarvisa, żeby to zmienić."
+      : "Brak";
   const applyStatus = internetMissing || blockerReason
-    ? "Blocked"
+    ? "Zablokowane"
     : restartOnly
-      ? "Requires restart"
-      : "Available";
+      ? "Wymaga restartu"
+      : "Dostępne";
   return {
-    toolsStatus: toolsOn ? "On" : "Off",
-    internetStatus: internetMissing ? "Missing" : toolsInternetStateLabel(rawInternetState),
-    searchToolStatus: networkToolMissing ? "Missing" : (networkTool ? "Available" : "Unknown"),
+    toolsStatus: toolsOn ? "Włączone" : "Wyłączone",
+    internetStatus: internetMissing ? "Blokada setupu" : toolsInternetStateLabel(rawInternetState),
+    searchToolStatus: networkToolMissing ? "Brak" : (networkTool ? "Dostępne" : "Nieznane"),
     networkPolicy: networkPolicyLabel(projectionValue(tools.network_policy)),
-    reason: reason || "None",
+    reason: reason || "Brak",
     action,
     applyStatus,
-    applyLabel: applyStatus === "Available" ? "available" : "disabled",
+    applyLabel: applyStatus === "Dostępne" ? "dostępne" : "wyłączone",
     whatThisMeans: internetMissing && toolsOn
-      ? "Tools are enabled, but internet is unavailable because no network/search tool is registered."
+      ? "Narzędzia są włączone, ale internet jest niedostępny, bo nie ma zarejestrowanego narzędzia sieci/szukania."
       : internetMissing
-        ? "Internet is unavailable because no network/search tool is registered."
+        ? "Internet jest niedostępny, bo nie ma zarejestrowanego narzędzia sieci/szukania."
         : restartOnly
-          ? "Tools settings are configured, but changing them requires restarting Jarvis."
-          : "Tools settings can be reviewed here before applying.",
+          ? "Ustawienia narzędzi są skonfigurowane, ale ich zmiana wymaga restartu Jarvisa."
+          : "Ustawienia narzędzi można tu przejrzeć przed zastosowaniem.",
   };
 }
 
@@ -2589,17 +2852,17 @@ function renderToolsInternetCompactStatusList(payload, tools, applyCapabilities)
   if (!el.toolsInternetStatusList) return;
   const row = document.createElement("article");
   row.className = "list-row compact-status-row";
-  appendLine(row, "Tools / Internet", "input-line");
+  appendLine(row, "Narzędzia / Internet", "input-line");
   const values = document.createElement("dl");
   values.className = "kv-list";
   const operator = toolsInternetOperatorState(tools, applyCapabilities);
   renderKeyValues(values, [
-    ["Tools", operator.toolsStatus],
-    ["Internet access", operator.internetStatus],
-    ["Reason", operator.reason],
-    ["Action", operator.action],
-    ["Policy", operator.networkPolicy],
-    ["Apply", operator.applyLabel],
+    ["Narzędzia", operator.toolsStatus],
+    ["Dostęp do internetu", operator.internetStatus],
+    ["Powód", operator.reason],
+    ["Akcja", operator.action],
+    ["Polityka", operator.networkPolicy],
+    ["Zastosowanie", operator.applyLabel],
   ]);
   row.appendChild(values);
   el.toolsInternetStatusList.appendChild(row);
@@ -2610,7 +2873,7 @@ function renderToolsInternetStatusList(payload, tools, applyCapabilities) {
   if (!el.toolsInternetStatusList) return;
   const row = document.createElement("article");
   row.className = "list-row";
-  appendLine(row, "Tools / Internet effective state", "input-line");
+  appendLine(row, "Efektywny stan Narzędzia / Internet", "input-line");
   const values = document.createElement("dl");
   values.className = "kv-list";
   const internet = safeObject(projectionValue(tools.internet_capability));
@@ -2621,24 +2884,24 @@ function renderToolsInternetStatusList(payload, tools, applyCapabilities) {
     : Object.values(safeObject(applyCapabilities)).some((item) => safeObject(item).requires_restart);
   const blocker = projectionValue(tools.blocker)
     || runtimeSettingsToolBlockers(applyCapabilities, tools)[0]
-    || "none";
-  const internetWarning = projectionWarning(tools.internet_capability) || "none";
+    || "brak";
+  const internetWarning = projectionWarning(tools.internet_capability) || "brak";
   const networkApprovalCapability = safeObject(applyCapabilities["security.require_approval_for_network"]);
   const approvalCanApply = networkApprovalCapability.apply_capable === true && !networkApprovalCapability.requires_restart
-    ? "Available"
-    : "Requires restart";
+    ? "Dostępne"
+    : "Wymaga restartu";
   const operator = toolsInternetOperatorState(tools, applyCapabilities);
   renderKeyValues(values, [
-    ["Tools", operator.toolsStatus],
-    ["Internet access", toolsInternetStateLabel(internet.state || projectionStatus(tools.internet_capability))],
-    ["Reason", humanShortReason(internetWarning) || "None"],
-    ["Action", operator.action],
-    ["Search tool", operator.searchToolStatus],
-    ["Network policy", operator.networkPolicy],
-    ["Approval changes", approvalCanApply],
-    ["Apply", applyCapability === "yes" ? "Available" : operator.applyStatus],
-    ["Restart needed", requiresRestart ? "Requires restart" : "Off"],
-    ["Blocker", humanShortReason(blocker) || "None"],
+    ["Narzędzia", operator.toolsStatus],
+    ["Dostęp do internetu", toolsInternetStateLabel(internet.state || projectionStatus(tools.internet_capability))],
+    ["Powód", humanShortReason(internetWarning) || "Brak"],
+    ["Akcja", operator.action],
+    ["Narzędzie szukania", operator.searchToolStatus],
+    ["Polityka sieci", operator.networkPolicy],
+    ["Zmiany zgód", approvalCanApply],
+    ["Zastosowanie", applyCapability === "yes" ? "Dostępne" : operator.applyStatus],
+    ["Restart wymagany", requiresRestart ? "Wymaga restartu" : "Wyłączone"],
+    ["Blokada", humanShortReason(blocker) || "Brak"],
   ]);
   row.appendChild(values);
   el.toolsInternetStatusList.appendChild(row);
@@ -2686,6 +2949,7 @@ function updatePersonaControlOptions() {
     el.applyPersonaSettingsButton,
     profiles.length > 0 && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
   );
+  updateRestartRequiredBanner();
 }
 
 function renderPersonalityStatusList(payload, selectedProfile = null) {
@@ -3087,23 +3351,23 @@ function runtimeSettingsErrorMessage(error) {
   const payload = safeObject(detail.payload);
   const blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
   const status = payload.status || "";
-  const reason = humanShortReason(blockers[0] || (error && error.message ? error.message : "Apply failed"));
+  const reason = humanShortReason(blockers[0] || (error && error.message ? error.message : "Zastosowanie nie powiodło się"));
   if (status === "requires_restart") {
-    return `Requires restart. ${humanActionForReason(reason)}`;
+    return `Wymaga restartu. ${humanActionForReason(reason)}`;
   }
   if (status === "blocked") {
-    return `Blocked. ${humanActionForReason(reason)}`;
+    return `Zablokowane. ${humanActionForReason(reason)}`;
   }
   if (blockers.length > 0) {
-    return `Blocked. ${humanActionForReason(reason)}`;
+    return `Zablokowane. ${humanActionForReason(reason)}`;
   }
   if (detail.status === 400) {
-    return `Validation error: ${error.message}`;
+    return `Błąd walidacji: ${error.message}`;
   }
   if (detail.status === 409 || detail.status === 422) {
-    return `Blocked. ${humanActionForReason(reason)}`;
+    return `Zablokowane. ${humanActionForReason(reason)}`;
   }
-  return error && error.message ? error.message : "Apply failed";
+  return error && error.message ? error.message : "Zastosowanie nie powiodło się";
 }
 
 function runtimeSettingsApplyResultMessage(payload, group, settings, runtimeSettings) {
@@ -3114,19 +3378,19 @@ function runtimeSettingsApplyResultMessage(payload, group, settings, runtimeSett
   const blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
   const requiresRestart = Array.isArray(payload.requires_restart_keys) ? payload.requires_restart_keys : [];
   if (status === "requires_restart" || requiresRestart.length > 0) {
-    const reason = humanShortReason(blockers[0] || "Restart required");
-    return `Requires restart. ${humanActionForReason(reason)}`;
+    const reason = humanShortReason(blockers[0] || "Wymagany restart");
+    return `Wymaga restartu. ${humanActionForReason(reason)}`;
   }
   if (status === "blocked" || blockers.length > 0) {
-    const reason = humanShortReason(blockers[0] || "Blocked");
-    return `Blocked. ${humanActionForReason(reason)}`;
+    const reason = humanShortReason(blockers[0] || "Zablokowane");
+    return `Zablokowane. ${humanActionForReason(reason)}`;
   }
   if (status === "applied" || applied.length > 0) {
     const count = applied.length || Object.keys(safeObject(settings)).length;
     if (runtimeSettingsRequestedValuesApplied(settings, runtimeSettings)) {
-      return `Applied ${count} setting${count === 1 ? "" : "s"}. Effective state refreshed.`;
+      return `Zastosowano ${count} ustawienie${count === 1 ? "" : "ń"}. Stan efektywny odświeżony.`;
     }
-    return "Unchanged: effective state did not change after refresh.";
+    return "Bez zmian: stan efektywny nie zmienił się po odświeżeniu.";
   }
   return runtimeSettingsGroupNoChangesMessage(group);
 }
@@ -3168,6 +3432,16 @@ function settingsPreviewField(payload, section, field) {
 function settingsPreviewFieldValue(payload, section, field) {
   const item = settingsPreviewField(payload, section, field);
   return item.effective !== undefined ? item.effective : item.current;
+}
+
+function settingsFieldAllowedValuesWithCurrent(field) {
+  const values = Array.isArray(field.allowed_values) ? [...field.allowed_values] : [];
+  for (const value of [field.effective, field.current]) {
+    if (value !== undefined && value !== null && value !== "" && !values.includes(value)) {
+      values.unshift(value);
+    }
+  }
+  return values;
 }
 
 function providerApplyLabel(provider, currentProviderId) {
@@ -3218,6 +3492,9 @@ function setSelectOptions(select, options, selectedValue) {
     option.value = item.value === undefined || item.value === null ? "" : String(item.value);
     setText(option, item.label === undefined ? option.value : item.label);
     option.disabled = Boolean(item.disabled);
+    if (item.title) {
+      option.title = String(item.title);
+    }
     select.appendChild(option);
   }
   if (selectedValue !== undefined && selectedValue !== null) {
@@ -4290,88 +4567,88 @@ function operationalChecklistItems(snapshot) {
   const turnId = traceValue(context, "turn_id");
   return [
     checklistItem(
-      "Daemon alive",
+      "Daemon działa",
       backend ? "pass" : "fail",
-      backend ? "daemon health/state loaded" : "backend offline or health missing",
+      backend ? "health/state daemona wczytane" : "backend offline albo brak health",
       "/health + /state",
-      "Run scripts/jarvis status if this fails.",
+      "Uruchom scripts/jarvis status, jeśli to nie przechodzi.",
     ),
     checklistItem(
-      "Panel connected",
+      "Panel połączony",
       backend ? "pass" : "fail",
-      backend ? "panel can reach daemon endpoints" : "backend unreachable",
+      backend ? "panel widzi endpointy daemona" : "backend nieosiągalny",
       "/health",
-      "Refresh Mission Control after starting the daemon.",
+      "Odśwież Kontrolę misji po starcie daemona.",
     ),
     checklistItem(
-      "Text turn path available",
+      "Ścieżka tekstowa dostępna",
       backend && runtimeLoaded ? "pass" : backend ? "manual" : "fail",
-      backend ? "panel can send POST /input/text outside Mission Control" : "backend offline",
+      backend ? "panel może wysłać POST /input/text poza Kontrolą misji" : "backend offline",
       "panel composer + runtime projection",
-      "Send one short text turn from Chat.",
+      "Wyślij jedną krótką turę tekstową z Czatu.",
     ),
     checklistItem(
-      "Voice queue observable",
+      "Kolejka głosu widoczna",
       queueVisible ? "pass" : "unknown",
-      queueVisible ? "queue projection loaded" : "voice queue source missing",
+      queueVisible ? "projekcja kolejki wczytana" : "brakuje źródła kolejki głosu",
       "/voice/queue?limit=12",
-      "Speak once and verify queued/final/error rows appear.",
+      "Powiedz raz i sprawdź, czy pojawiły się wiersze queued/final/error.",
     ),
     checklistItem(
-      "PTT available",
+      "PTT dostępne",
       pttChecklistStatus(context),
       pttChecklistWhy(context),
       "/voice/runtime endpointing_vad_ptt",
-      "Hold the native hotkey; Mission Control must not activate the mic.",
+      "Przytrzymaj natywny skrót; Kontrola misji nie może sama aktywować mikrofonu.",
     ),
     checklistItem(
-      "Brain provider known",
+      "Dostawca mózgu znany",
       providerKnown ? "pass" : "unknown",
-      providerKnown ? `provider ${overviewValue(providerKnown)} visible` : "active provider missing",
+      providerKnown ? `dostawca ${overviewValue(providerKnown)} widoczny` : "brakuje aktywnego dostawcy",
       "/runtime/settings brain.providers",
-      "Send a turn and verify provider/model in latest trace.",
+      "Wyślij turę i sprawdź provider/model w ostatnim trace.",
     ),
     checklistItem(
-      "Voice TTS status known",
+      "Status TTS znany",
       ttsKnown ? "pass" : "unknown",
-      ttsKnown ? `TTS ${settingsPreviewValue(ttsKnown)}` : "TTS status missing",
+      ttsKnown ? `TTS ${settingsPreviewValue(ttsKnown)}` : "brakuje statusu TTS",
       "/runtime/settings voice_tts",
-      "Run a manual speech check outside the panel.",
+      "Uruchom ręczny test mowy poza panelem.",
     ),
     checklistItem(
-      "Voice STT status known",
+      "Status STT znany",
       sttKnown ? "pass" : "unknown",
-      sttKnown ? `STT ${settingsPreviewValue(sttKnown)}` : "STT status missing",
+      sttKnown ? `STT ${settingsPreviewValue(sttKnown)}` : "brakuje statusu STT",
       "/runtime/settings voice_stt",
-      "Run a manual transcription check outside the panel.",
+      "Uruchom ręczny test transkrypcji poza panelem.",
     ),
     checklistItem(
-      "Tools/Internet status known",
+      "Status narzędzi/internetu znany",
       toolsKnown ? "pass" : "unknown",
-      toolsKnown ? toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)) : "tools/internet projection missing",
+      toolsKnown ? toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)) : "brakuje projekcji narzędzi/internetu",
       "/runtime/settings tools_internet",
-      "Do not run tools here; verify policy only.",
+      "Nie uruchamiaj tu narzędzi; sprawdź tylko politykę.",
     ),
     checklistItem(
-      "Memory visible",
+      "Pamięć widoczna",
       memoryVisible ? "pass" : "unknown",
-      memoryVisible ? "memory summaries/items loaded" : "memory source missing",
+      memoryVisible ? "podsumowania/elementy pamięci wczytane" : "brakuje źródła pamięci",
       "/memory + /memory/items",
-      "Create or approve memory, then refresh.",
+      "Utwórz albo zatwierdź pamięć, potem odśwież.",
     ),
     checklistItem(
-      "Approval visible",
+      "Zgody widoczne",
       approvalsVisible ? "manual" : "unknown",
-      approvalsVisible ? "approval list source loaded" : "approvals source missing",
+      approvalsVisible ? "źródło listy zgód wczytane" : "brakuje źródła zgód",
       "/approvals?limit=25",
-      "Create memory approval to verify decision cards.",
+      "Utwórz zgodę pamięci, żeby sprawdzić karty decyzji.",
     ),
     checklistItem(
-      "Latest turn trace visible",
+      "Ostatni trace tury widoczny",
       turnId ? "pass" : "unknown",
-      turnId ? `latest turn ${shortId(turnId)} visible` : "no latest turn trace yet",
+      turnId ? `ostatnia tura ${shortId(turnId)} widoczna` : "brak ostatniego trace tury",
       "/runtime/settings latest_turn_trace",
-      "Run one text or voice turn.",
+      "Uruchom jedną turę tekstową albo głosową.",
     ),
   ];
 }
@@ -4383,20 +4660,20 @@ function checklistItem(label, status, why, source, hint) {
 function renderVoiceDoctor(snapshot) {
   clearNode(el.voiceDoctorList);
   const context = runtimeOverviewContext(snapshot || {});
-  el.voiceDoctorList.appendChild(doctorKvCard("Voice Doctor", voiceDoctorRows(context)));
-  el.voiceDoctorList.appendChild(doctorKvCard("Diagnosis", [
-    ["rules", voiceDoctorDiagnoses(context).join("; ") || "none"],
-    ["what this means", voiceDoctorMeaning(context)],
+  el.voiceDoctorList.appendChild(doctorKvCard("Diagnostyka głosu", voiceDoctorRows(context)));
+  el.voiceDoctorList.appendChild(doctorKvCard("Diagnoza", [
+    ["reguły", voiceDoctorDiagnoses(context).join("; ") || "brak"],
+    ["znaczenie", voiceDoctorMeaning(context)],
   ]));
 }
 
 function renderProviderDoctor(snapshot) {
   clearNode(el.providerDoctorList);
   const context = runtimeOverviewContext(snapshot || {});
-  el.providerDoctorList.appendChild(doctorKvCard("Provider Doctor", providerDoctorRows(context)));
-  el.providerDoctorList.appendChild(doctorKvCard("Diagnosis", [
-    ["rules", providerDoctorDiagnoses(context).join("; ") || "none"],
-    ["what this means", providerDoctorMeaning(context)],
+  el.providerDoctorList.appendChild(doctorKvCard("Diagnostyka dostawcy", providerDoctorRows(context)));
+  el.providerDoctorList.appendChild(doctorKvCard("Diagnoza", [
+    ["reguły", providerDoctorDiagnoses(context).join("; ") || "brak"],
+    ["znaczenie", providerDoctorMeaning(context)],
   ]));
 }
 
@@ -4571,20 +4848,20 @@ function operatorSummaryFromSnapshot(snapshot) {
     warnings: warnings.slice(0, 3),
     nextAction: operatorNextAction(status, blockers, warnings),
     backendConnected,
-    daemonStatus: firstPresent(context.state.state, context.health.state, context.health.service, "unknown"),
-    panelStatus: backendConnected ? "connected to backend" : "backend unreachable",
-    activeProvider: firstPresent(projectionValue(context.brainRuntime.current_adapter), context.activeAdapter, "unknown"),
+    daemonStatus: firstPresent(context.state.state, context.health.state, context.health.service, "nieznane"),
+    panelStatus: backendConnected ? "połączony z backendem" : "backend nieosiągalny",
+    activeProvider: firstPresent(projectionValue(context.brainRuntime.current_adapter), context.activeAdapter, "nieznane"),
     voiceStatus: missionVoiceStatus(context),
     toolsInternetStatus: firstPresent(toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)), networkToolSummary(context.tools), "unknown"),
     memoryApprovalStatus: `${memoryEnabledSummary(context)} · ${pendingApprovalSummary(context)}`,
-    latestCriticalBlocker: blockers[0] || "none",
-    latestSafeError: traceLatestSafeError(context) || "none",
+    latestCriticalBlocker: blockers[0] || "brak",
+    latestSafeError: traceLatestSafeError(context) || "brak",
     lastRefreshTime: cockpit.missionControl.lastRefreshAt
       ? formatFullDate(cockpit.missionControl.lastRefreshAt)
-      : "unknown",
+      : "nieznane",
     lastImportantEvent: lastImportantEventSummary(context),
     safetyGuarantee:
-      "Production mode; backend-owned state; redacted diagnostics; explicit approval gates; no raw secret rendering",
+      "Tryb produkcyjny; stan należy do backendu; diagnostyka redagowana; jawne bramki zgód; bez renderowania sekretów",
   };
 }
 
@@ -4689,18 +4966,18 @@ function operatorDegradingWarnings(context) {
 
 function operatorStatusLine(status, blockers, warnings, context) {
   if (status === "offline") {
-    return `Offline: ${blockers[0] || "backend offline"}`;
+    return `Offline: ${humanShortReason(blockers[0] || "backend offline")}`;
   }
   if (status === "unknown") {
-    return "Unknown: runtime projection missing";
+    return "Nieznane: brakuje projekcji runtime";
   }
   if (status === "blocked") {
-    return `Blocked: ${blockers.slice(0, 2).join(", ")}`;
+    return `Zablokowane: ${blockers.slice(0, 2).join(", ")}`;
   }
   if (status === "degraded") {
-    return `Degraded: ${warnings.slice(0, 2).join(", ") || "warnings remain"}`;
+    return `Ograniczone: ${warnings.slice(0, 2).join(", ") || "pozostały ostrzeżenia"}`;
   }
-  return `Ready enough: ${operatorReadySignals(context).slice(0, 3).join(", ")}${warnings.length > 0 ? ", warnings remain" : ""}`;
+  return `Gotowe: ${operatorReadySignals(context).slice(0, 3).join(", ")}${warnings.length > 0 ? ", pozostały ostrzeżenia" : ""}`;
 }
 
 function operatorReadySignals(context) {
@@ -4715,18 +4992,18 @@ function operatorReadySignals(context) {
 
 function operatorNextAction(status, blockers, warnings) {
   if (status === "offline") {
-    return "Start or inspect the daemon with scripts/jarvis status, then refresh.";
+    return "Uruchom albo sprawdź daemona przez scripts/jarvis status, potem odśwież.";
   }
   if (status === "unknown") {
-    return "Refresh Mission Control after /runtime/settings is available.";
+    return "Odśwież Kontrolę misji, gdy /runtime/settings będzie dostępne.";
   }
   if (status === "blocked") {
-    return `Fix first blocker: ${blockers[0] || "runtime blocker"}.`;
+    return `Napraw pierwszy blocker: ${blockers[0] || "blocker runtime"}.`;
   }
   if (status === "degraded") {
-    return `Test next safe path, then inspect warning: ${warnings[0] || "latest warning"}.`;
+    return `Przetestuj następną bezpieczną ścieżkę, potem sprawdź ostrzeżenie: ${warnings[0] || "ostatnie ostrzeżenie"}.`;
   }
-  return "Test next: send text turn, hold PTT manually, approve memory, verify latest trace.";
+  return "Następny test: wyślij turę tekstową, przytrzymaj PTT ręcznie, zatwierdź pamięć, sprawdź ostatni trace.";
 }
 
 function lastImportantEventSummary(context) {
@@ -5128,7 +5405,7 @@ const RUNTIME_OVERVIEW_SECTIONS = [
     ],
   },
   {
-    title: "Latest turn trace",
+    title: "Ostatni trace tury",
     fields: [
       field("turn_id", "runtimeSettings", (ctx) => traceValue(ctx, "turn_id"), {
         readiness: (ctx) => traceReadiness(ctx, "turn_id"),
@@ -5472,7 +5749,7 @@ const RUNTIME_OVERVIEW_SECTIONS = [
           RUNTIME_OVERVIEW_UNKNOWN,
         ),
       ),
-      field("voice queue", "voiceQueue", (ctx) => voiceQueueSummary(ctx.queueRows, ctx.voiceQueue), {
+      field("kolejka głosu", "voiceQueue", (ctx) => voiceQueueSummary(ctx.queueRows, ctx.voiceQueue), {
         readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "queue_barge_in"),
         dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "queue_barge_in"),
         warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "queue_barge_in"),
@@ -5480,12 +5757,12 @@ const RUNTIME_OVERVIEW_SECTIONS = [
     ],
   },
   {
-    title: "Tools/Internet",
+    title: "Narzędzia/Internet",
     fields: [
-      field("registered tools", "tools", (ctx) =>
-        ctx.tools.length > 0 ? `${ctx.tools.length} registered` : "none registered",
+      field("zarejestrowane narzędzia", "tools", (ctx) =>
+        ctx.tools.length > 0 ? `${ctx.tools.length} zarejestrowane` : "brak zarejestrowanych",
       ),
-      field("visible risk classes", "tools", (ctx) => toolRiskSummary(ctx.tools)),
+      field("widoczne klasy ryzyka", "tools", (ctx) => toolRiskSummary(ctx.tools)),
       field("approval-required tools", "tools", () => "policy not exposed; risk classes visible"),
       field("internet/network capability", "tools", (ctx) => networkToolSummary(ctx.tools), {
         readiness: (ctx) =>
@@ -7087,7 +7364,7 @@ function renderMemory(blocks) {
     priorityChip.className = "mem-chip";
     setText(
       priorityChip,
-      block.panel_source === "memory_os_item" ? "Memory OS" : `priorytet ${block.priority ?? 0}`,
+      block.panel_source === "memory_os_item" ? "Memory OS" : `Priorytet ${block.priority ?? 0}`,
     );
     chips.append(kindChip, priorityChip);
     if (block.status) {
@@ -7118,8 +7395,8 @@ function renderMemory(blocks) {
     priorityInput.type = "number";
     priorityInput.className = "priority-input";
     priorityInput.value = String(block.priority ?? 0);
-    priorityInput.setAttribute("aria-label", "Nowy priorytet bloku");
-    const priorityButton = smallButton("Zapisz priorytet");
+    priorityInput.setAttribute("aria-label", "Nowy");
+    const priorityButton = smallButton("Zapisz ");
     priorityButton.addEventListener("click", async () => {
       const priority = Number.parseInt(priorityInput.value, 10);
       if (!Number.isFinite(priority)) {
