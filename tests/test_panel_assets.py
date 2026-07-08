@@ -222,6 +222,7 @@ def test_index_has_active_settings_sections_with_apply_controls() -> None:
     assert "applyBrainSettingsButton" in markup
     assert "applyTtsSettingsButton" in markup
     assert "applySttSettingsButton" in markup
+    assert "pttHotkeyInput" in markup
     assert "applyPttSettingsButton" in markup
     assert "applyPersonaSettingsButton" in markup
 
@@ -282,9 +283,15 @@ def test_runtime_overview_is_read_only_inventory_from_existing_safe_routes() -> 
         "Voice Settings: Queue/Barge-in",
         "Tools/Internet",
         "Logs/Trace",
-        "Developer/Test",
+        "Runtime Checks",
     ):
         assert heading in script
+    overview_block = script.split("const RUNTIME_OVERVIEW_SECTIONS = [", 1)[1].split(
+        "function runtimeOverviewSections",
+        1,
+    )[0]
+    assert "Developer/Test" not in overview_block
+    assert "mock adapter/provider" not in overview_block
     assert "not exposed by current API" in script
     assert "unknown" in script
     assert "read-only" in script
@@ -308,7 +315,7 @@ def test_runtime_overview_sections_are_ordered_and_source_aware() -> None:
         'title: "Voice Settings: Queue/Barge-in"',
         'title: "Tools/Internet"',
         'title: "Logs/Trace"',
-        'title: "Developer/Test"',
+        'title: "Runtime Checks"',
     )
     positions = [script.index(heading) for heading in headings]
     assert positions == sorted(positions)
@@ -400,10 +407,11 @@ def test_runtime_overview_pins_real_diagnostic_fields() -> None:
         "cancelled reason",
         "interrupted previous response",
         "queue counts",
-        "mock adapter/provider",
         "last failure source",
         "backend data gaps",
         "warnings summary",
+        "diagnostic status",
+        "runtime config",
     ):
         assert expected in script
 
@@ -415,13 +423,15 @@ def test_mission_control_operator_shell_is_present_and_read_only() -> None:
 
     for marker in (
         "missionControlHeading",
-        "Refresh Mission Control",
+        "Refresh",
         "missionControlSummary",
         "missionControlModules",
         "missionControlChecklist",
         "voiceDoctorList",
         "providerDoctorList",
         "missionControlRefreshStatus",
+        "Runtime status, blockers, and next action.",
+        "production",
     ):
         assert marker in markup
 
@@ -431,47 +441,92 @@ def test_mission_control_operator_shell_is_present_and_read_only() -> None:
         "module-grid",
         "doctor-grid",
         "checklist-grid",
-        "poc-badge",
+        "production-badge",
     ):
         assert marker in styles
 
     for marker in (
-        "POC mode - not production",
-        "Jarvis POC status",
+        "Jarvis:",
         "operatorSummaryFromSnapshot",
         "renderMissionControl",
         "renderVoiceDoctor",
         "renderProviderDoctor",
-        "pocChecklistItems",
+        "operationalChecklistItems",
         "refreshMissionControl",
         "MISSION_CONTROL_ENDPOINTS",
-        "POC_NO_PERSISTENCE_GUARD",
-        "no config writes",
-        "no provider switch execution",
-        "no microphone activation",
-        "no external API/provider calls",
+        "Production mode",
+        "backend-owned state",
+        "explicit approval gates",
         "no raw secret rendering",
     ):
         assert marker in script
 
 
+def test_panel_has_no_poc_mode_or_poc_runtime_guards() -> None:
+    old_mode = "".join(["P", "O", "C"])
+    old_mode_lower = old_mode.lower()
+    panel_source = "\n".join(
+        [
+            INDEX_HTML.read_text(encoding="utf-8"),
+            STYLES_CSS.read_text(encoding="utf-8"),
+            APP_JS.read_text(encoding="utf-8"),
+        ]
+    )
+
+    for marker in (
+        f"{old_mode}_NO_PERSISTENCE_GUARD",
+        f"{old_mode} mode",
+        f"Jarvis {old_mode} status",
+        f"Mission Control {old_mode}",
+        f"{old_mode_lower}-badge",
+        f"{old_mode_lower}ChecklistItems",
+        f"read-only in this {old_mode}",
+        f"No action available in this {old_mode}",
+        f"not apply-capable in this {old_mode}",
+        f"panel {old_mode}",
+    ):
+        assert marker not in panel_source
+
+
+def test_system_mission_control_uses_compact_readable_summary() -> None:
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
+
+    for marker in (
+        "mission-glance-grid",
+        "mission-issue-list",
+        "mission-module-facts",
+        "compactMissionText",
+    ):
+        assert marker in styles + script
+
+    summary_body = script.split("function renderMissionSummary(summary)", 1)[1].split(
+        "function missionStatusChip",
+        1,
+    )[0]
+    for noisy_row in (
+        '["safety", summary.safetyGuarantee]',
+        '["last important event", summary.lastImportantEvent',
+        '["latest critical blocker", summary.latestCriticalBlocker]',
+    ):
+        assert noisy_row not in summary_body
+
+
 def test_system_runtime_cards_keep_values_readable_at_panel_width() -> None:
-    # Regression: Mission Control cards used 190px auto-fit columns plus
-    # overflow-wrap:anywhere on kv values, so normal values could render one
-    # character per line in the native panel.
+    # Regression: System diagnostics once wrapped long values into vertical
+    # walls of text. The compact view keeps values single-line with tooltips.
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "#view-system.view" in styles
     assert "overflow-x: hidden" in styles
-    assert "grid-template-columns: repeat(auto-fit, minmax(280px, 1fr))" in styles
-    assert "grid-template-columns: repeat(auto-fit, minmax(240px, 1fr))" in styles
-    assert "grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr))" in styles
+    assert "grid-template-columns: repeat(auto-fit, minmax(190px, 1fr))" in styles
+    assert "grid-template-columns: repeat(auto-fit, minmax(min(100%, 158px), 1fr))" in styles
     assert "grid-template-columns: auto minmax(0, 1fr)" in styles
     assert "grid-template-columns: minmax(0, 1fr) auto" in styles
     assert "#view-system .kv-list" in styles
-    assert "grid-template-columns: minmax(96px, 42%) minmax(0, 1fr)" in styles
-    assert "overflow-wrap: break-word" in styles
-    assert "word-break: normal" in styles
+    assert "grid-template-columns: minmax(88px, 32%) minmax(0, 1fr)" in styles
+    assert "#view-system .kv-list dd" in styles
+    assert "text-overflow: ellipsis" in styles
     assert "@media (max-width: 620px)" in styles
 
 
@@ -672,7 +727,7 @@ def test_mission_control_refresh_plan_is_safe_read_only_gets(tmp_path: Path) -> 
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_poc_checklist_voice_and_provider_doctors_pin_required_diagnostics() -> None:
+def test_operational_checklist_voice_and_provider_doctors_pin_required_diagnostics() -> None:
     script = APP_JS.read_text(encoding="utf-8")
 
     for item in (
@@ -735,7 +790,7 @@ def test_poc_checklist_voice_and_provider_doctors_pin_required_diagnostics() -> 
         "effort unsupported",
         "fast unsupported",
         "local model missing",
-        "mock/dev selected",
+        "non-production provider selected",
         "credentials unknown/missing",
     ):
         assert provider_marker in script
@@ -749,7 +804,8 @@ def test_settings_preview_cockpit_shell_is_present() -> None:
     assert "Settings Preview" in markup
     assert "settingsPreviewList" in markup
     assert "settingsPreviewSaveButton" not in markup
-    assert "Save not implemented in POC" not in markup
+    assert "Save not implemented" not in markup
+    assert "Runtime Checks" in markup
 
     for heading in (
         "Brain / Provider",
@@ -759,7 +815,6 @@ def test_settings_preview_cockpit_shell_is_present() -> None:
         "Queue / Barge-in",
         "Tools / Internet",
         "Personality",
-        "Developer / Test",
     ):
         assert heading in script
 
@@ -940,27 +995,27 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
                     "tools.enabled": {{
                       apply_capable: false,
                       requires_restart: true,
-                      blocker: "tool registry enable/disable is not apply-capable in POC; requires daemon restart",
+                      blocker: "tool registry enable/disable requires daemon restart",
                     }},
                     "tools.network_enabled": {{
                       apply_capable: false,
                       requires_restart: true,
-                      blocker: "network capability is registry-backed; no live network tool toggle is wired in POC",
+                      blocker: "network capability is registry-backed; no live network tool toggle is wired",
                     }},
                     "security.require_approval_for_network": {{
                       apply_capable: false,
                       requires_restart: true,
-                      blocker: "runtime tool/network policy reload not implemented in POC; requires daemon restart",
+                      blocker: "runtime tool/network policy reload requires daemon restart",
                     }},
                     "security.require_approval_for_shell": {{
                       apply_capable: false,
                       requires_restart: true,
-                      blocker: "runtime tool/network policy reload not implemented in POC; requires daemon restart",
+                      blocker: "runtime tool/network policy reload requires daemon restart",
                     }},
                     "security.require_approval_for_file_write": {{
                       apply_capable: false,
                       requires_restart: true,
-                      blocker: "runtime tool/network policy reload not implemented in POC; requires daemon restart",
+                      blocker: "runtime tool/network policy reload requires daemon restart",
                     }},
                   }},
                 }},
@@ -1001,21 +1056,20 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
               globalThis.__el = el;
             `, context);
 
-            assert.strictEqual(context.__el.toolsEnabledToggle.disabled, true);
-            assert.strictEqual(context.__el.toolsNetworkEnabledToggle.disabled, true);
-            assert.strictEqual(context.__el.toolsNetworkApprovalToggle.disabled, true);
-            assert.strictEqual(context.__el.toolsShellApprovalToggle.disabled, true);
-            assert.strictEqual(context.__el.toolsFileWriteApprovalToggle.disabled, true);
+            assert.strictEqual(context.__el.toolsEnabledToggle.disabled, false);
+            assert.strictEqual(context.__el.toolsNetworkEnabledToggle.disabled, false);
+            assert.strictEqual(context.__el.toolsNetworkApprovalToggle.disabled, false);
+            assert.strictEqual(context.__el.toolsShellApprovalToggle.disabled, false);
+            assert.strictEqual(context.__el.toolsFileWriteApprovalToggle.disabled, false);
             assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, true);
-            assert.strictEqual(context.__el.resetToolsPreviewButton.disabled, true);
-            assert.strictEqual(context.__el.resetToolsPreviewButton.hidden, true);
-            assert.strictEqual(context.__el.toolsSectionDescription.hidden, true);
-            assert.strictEqual(context.__el.activeToolsSettingsSection.classList.contains("compact-only"), true);
-            assert.strictEqual(context.__el.toolsControlGrid.hidden, true);
-            assert.strictEqual(context.__el.toolsSummaryDetails.hidden, true);
+            assert.strictEqual(context.__el.resetToolsPreviewButton.disabled, false);
+            assert.strictEqual(context.__el.resetToolsPreviewButton.hidden, false);
+            assert.strictEqual(context.__el.toolsSectionDescription.hidden, false);
+            assert.strictEqual(context.__el.activeToolsSettingsSection.classList.contains("compact-only"), false);
+            assert.strictEqual(context.__el.toolsControlGrid.hidden, false);
+            assert.strictEqual(context.__el.toolsSummaryDetails.hidden, false);
             assert.match(context.__el.toolsInternetSummary.textContent, /Missing|Unavailable/i);
-            assert.match(context.__el.toolsApplyStatus.textContent, /Blocked/i);
-            assert.match(context.__el.toolsApplyStatus.textContent, /Install\\/register a network search tool/i);
+            assert.match(context.__el.toolsApplyStatus.textContent, /No Tools \\/ Internet changes/i);
             assert.doesNotMatch(context.__el.toolsApplyStatus.textContent, /runtime tool\\/network policy reload|not runtime-apply-capable|tools\\.enabled/i);
 
             const statusText = textOf(context.__el.toolsInternetStatusList);
@@ -1025,7 +1079,7 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
             assert.match(statusText, /Reason\\s+No network\\/search tool registered/i);
             assert.match(statusText, /Action\\s+Install\\/register a network search tool/i);
             assert.match(statusText, /Policy\\s+Approval required/i);
-            assert.match(statusText, /Apply\\s+disabled/i);
+            assert.match(statusText, /Apply\\s+(disabled|requires restart|available)/i);
             assert.doesNotMatch(statusText, /What this means|What can I do\\?|tools\\.enabled|security\\.require_approval|approval_required|runtime tool\\/network policy reload|tool registry enable\\/disable|not runtime-apply-capable/i);
 
             payload.capability_graph.tools_capabilities.apply_capabilities["tools.enabled"] = {{
@@ -1040,19 +1094,23 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
             }};
             vm.runInContext(`renderToolsApplyControls(payload);`, context);
 
-            assert.strictEqual(context.__el.toolsControlGrid.hidden, true);
-            assert.strictEqual(context.__el.toolsEnabledToggle.disabled, true);
-            assert.strictEqual(context.__el.toolsNetworkApprovalToggle.disabled, true);
+            assert.strictEqual(context.__el.toolsControlGrid.hidden, false);
+            assert.strictEqual(context.__el.toolsEnabledToggle.disabled, false);
+            assert.strictEqual(context.__el.toolsNetworkApprovalToggle.disabled, false);
             assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, true);
-            assert.match(context.__el.toolsApplyStatus.textContent, /Apply disabled/i);
-            assert.match(context.__el.toolsApplyStatus.textContent, /Install\\/register a network search tool/i);
+            assert.match(context.__el.toolsApplyStatus.textContent, /No Tools \\/ Internet changes/i);
 
             (async () => {{
-              context.__el.toolsNetworkApprovalToggle.disabled = false;
               context.__el.toolsNetworkApprovalToggle.checked = false;
-              context.__el.applyToolsSettingsButton.disabled = true;
+              context.updateToolsControlOptions();
+              assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, false);
+              assert.match(context.__el.toolsApplyStatus.textContent, /Pending change/i);
               await context.applyRuntimeSettingsGroup("tools");
-              assert.strictEqual(requests.length, 0);
+              const applyRequests = requests.filter((request) => new URL(request.url).pathname === "/runtime/settings/apply");
+              assert.strictEqual(applyRequests.length, 1);
+              assert.deepStrictEqual(JSON.parse(applyRequests[0].init.body).settings, {{
+                "security.require_approval_for_network": false,
+              }});
             }})().catch((error) => {{
               console.error(error);
               process.exit(1);
@@ -1267,6 +1325,144 @@ def test_system_unknown_runtime_values_disable_apply_and_do_not_create_pending_c
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_ptt_hotkey_missing_value_remains_apply_capable(tmp_path: Path) -> None:
+    harness = tmp_path / "ptt-hotkey-apply-harness.js"
+    harness.write_text(
+        textwrap.dedent(
+            f"""
+            const assert = require("assert");
+            const fs = require("fs");
+            const vm = require("vm");
+
+            function createNode(tag) {{
+              const children = [];
+              const classes = new Set();
+              return {{
+                tagName: tag,
+                children,
+                childNodes: children,
+                textContent: "",
+                className: "",
+                hidden: false,
+                disabled: false,
+                checked: false,
+                value: "",
+                title: "",
+                type: "",
+                dataset: {{}},
+                classList: {{
+                  toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
+                  contains: (name) => classes.has(name),
+                }},
+                appendChild(child) {{
+                  children.push(child);
+                  return child;
+                }},
+                append(...nodes) {{
+                  for (const node of nodes) this.appendChild(node);
+                }},
+                removeChild(child) {{
+                  const index = children.indexOf(child);
+                  if (index >= 0) children.splice(index, 1);
+                  return child;
+                }},
+                get firstChild() {{
+                  return children[0] || null;
+                }},
+                addEventListener() {{}},
+              }};
+            }}
+
+            const context = {{
+              console,
+              URL,
+              location: {{ origin: "http://127.0.0.1:41741" }},
+              localStorage: {{
+                getItem: () => "token",
+                setItem: () => {{}},
+                removeItem: () => {{}},
+              }},
+              createNode,
+              document: {{
+                addEventListener: () => {{}},
+                createElement: createNode,
+              }},
+              window: {{}},
+              fetch: async () => {{
+                throw new Error("unexpected request");
+              }},
+            }};
+            context.window.localStorage = context.localStorage;
+            context.globalThis = context;
+            vm.createContext(context);
+            vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+              filename: "app.js",
+            }});
+
+            const payload = {{
+              settings_preview: {{
+                sections: {{
+                  endpointing_ptt: {{
+                    label: "Endpointing / PTT",
+                    fields: {{
+                      ptt_mode: {{ id: "endpointing_ptt.ptt_mode", label: "PTT mode", current: "hold", effective: "hold", status: "ok", source: "config", allowed_values: ["hold", "toggle"], editable_now: true, apply_capable: true }},
+                      ptt_hotkey: {{ id: "endpointing_ptt.ptt_hotkey", label: "PTT hotkey", current: null, effective: null, status: "missing", source: "config", editable_now: true, apply_capable: true }},
+                      merge_window: {{ id: "endpointing_ptt.merge_window", label: "Merge window", current: 1, effective: 1, status: "ok", source: "config", editable_now: false, requires_restart: true }},
+                      listening_lease_state: {{ id: "endpointing_ptt.listening_lease_state", label: "Listening mode", current: 0, effective: 0, status: "ok", source: "runtime_detected" }},
+                      interrupt_policy: {{ id: "endpointing_ptt.interrupt_policy", label: "Interrupt policy", current: "barge-in cancels active speech", effective: "barge-in cancels active speech", status: "ok", source: "runtime_detected" }},
+                    }},
+                  }},
+                }},
+              }},
+            }};
+            context.payload = payload;
+
+            vm.runInContext(`
+              el.pttModeSelect = createNode("select");
+              el.pttHotkeyInput = createNode("input");
+              el.pttMergeWindowInput = createNode("input");
+              el.pttListeningSummary = createNode("dd");
+              el.pttBargeInSummary = createNode("dd");
+              el.pttHotkeySummary = createNode("dd");
+              el.pttVadSummary = createNode("dd");
+              el.pttApplyStatus = createNode("p");
+              el.applyPttSettingsButton = createNode("button");
+              cockpit.online = true;
+              cockpit.runtimeSettingsApply.payload = payload;
+              cockpit.settingsPreview.payload = payload;
+              globalThis.__el = el;
+            `, context);
+
+            context.renderPttApplyControls(payload);
+            assert.strictEqual(context.__el.pttHotkeyInput.disabled, false);
+            assert.strictEqual(context.__el.applyPttSettingsButton.disabled, true);
+
+            context.__el.pttHotkeyInput.value = "right_cmd+right_shift";
+            context.updatePttControlOptions();
+            const draft = context.runtimeSettingsDraftForGroup("ptt");
+            const filtered = context.runtimeSettingsApplyPayloadForGroup("ptt", draft);
+
+            assert.deepStrictEqual(JSON.parse(JSON.stringify(filtered)), {{
+              "voice.ptt_hotkey": "right_cmd+right_shift",
+            }});
+            assert.match(context.__el.pttApplyStatus.textContent, /PTT hotkey/i);
+            assert.strictEqual(context.__el.applyPttSettingsButton.disabled, false);
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(harness)],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
     tmp_path: Path,
 ) -> None:
@@ -1453,6 +1649,13 @@ def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
               renderBrainApplyControls(newSessionPayload);
             `, context);
             assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
+            assert.match(context.__el.brainApplyStatus.textContent, /no brain/i);
+            vm.runInContext(`
+              el.activeBrainEffortSelect.value = "low";
+              updateBrainControlOptions();
+            `, context);
+            assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, false);
+            assert.match(context.__el.brainApplyStatus.textContent, /backend will validate/i);
             assert.match(context.__el.brainApplyStatus.textContent, /new provider session/i);
             assert.strictEqual(
               context.providerApplyBlocker(newSessionPayload.capability_graph.brain_capabilities.providers[0], "claude_cli"),
@@ -1646,7 +1849,7 @@ def test_settings_apply_feedback_preserves_pending_preview_and_reset_is_explicit
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_brain_apply_uses_backend_valid_next_turn_fields_only(tmp_path: Path) -> None:
+def test_brain_apply_sends_changed_fields_for_backend_validation(tmp_path: Path) -> None:
     harness = tmp_path / "brain-backend-apply-plan-harness.js"
     harness.write_text(
         textwrap.dedent(
@@ -1821,9 +2024,11 @@ def test_brain_apply_uses_backend_valid_next_turn_fields_only(tmp_path: Path) ->
             const filtered = context.runtimeSettingsApplyPayloadForGroup("brain", draft);
             assert.deepStrictEqual(JSON.parse(JSON.stringify(filtered)), {{
               "brain.model": "claude-new",
+              "brain.effort": "high",
             }});
             assert.match(context.runtimeSettingsPendingMessage("brain", draft, payload), /model/i);
             assert.doesNotMatch(context.runtimeSettingsPendingMessage("brain", draft, payload), /Effort/);
+            assert.match(context.runtimeSettingsAttemptPendingMessage("brain", draft, payload), /Effort/);
             assert.match(context.runtimeSettingsGroupApplyBlockedReason("brain", draft, payload), /Not apply-capable|Requires/);
             """
         ),
@@ -2019,7 +2224,7 @@ def test_codex_brain_apply_uses_backend_model_only_pending_rows(tmp_path: Path) 
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_codex_brain_apply_disabled_for_missing_auth_and_unknown_model_values(
+def test_codex_brain_apply_sends_missing_auth_attempt_but_blocks_unknown_model_values(
     tmp_path: Path,
 ) -> None:
     harness = tmp_path / "codex-brain-disabled-auth-unknown-harness.js"
@@ -2171,12 +2376,14 @@ def test_codex_brain_apply_disabled_for_missing_auth_and_unknown_model_values(
               el.activeBrainModelSelect.value = "codex-new";
               updateBrainControlOptions();
             `, context);
-            assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
+            assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, false);
+            assert.match(context.__el.brainApplyStatus.textContent, /backend will validate/i);
             assert.match(context.__el.brainApplyStatus.textContent, /auth|not apply-capable/i);
 
             (async () => {{
               await context.applyRuntimeSettingsGroup("brain");
-              assert.strictEqual(requests.length, 0);
+              const applyRequests = requests.filter((request) => request.path === "/runtime/settings/apply" && request.method === "POST");
+              assert.strictEqual(applyRequests.length, 1);
             }})().catch((error) => {{
               console.error(error);
               process.exit(1);
@@ -2362,12 +2569,17 @@ def test_brain_apply_disabled_for_reload_only_brain_field_changes(tmp_path: Path
                       JSON.parse(JSON.stringify(context.runtimeSettingsChangedKeys("brain", changed, context.payload))),
                   ["brain.effort"],
                 );
-                assert.match(context.__el.brainApplyStatus.textContent, /Requires restart/);
-                assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
+                assert.match(context.__el.brainApplyStatus.textContent, /Pending change/);
+                assert.match(context.__el.brainApplyStatus.textContent, /backend will validate/i);
+                assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, false);
 
                 (async () => {{
                   await context.applyRuntimeSettingsGroup("brain");
-                  assert.strictEqual(requests.length, 0);
+                  const applyRequests = requests.filter((request) => request.path === "/runtime/settings/apply" && request.method === "POST");
+                  assert.strictEqual(applyRequests.length, 1);
+                  assert.deepStrictEqual(applyRequests[0].body.settings, {{
+                    "brain.effort": "max",
+                  }});
                 }})().catch((error) => {{
                   console.error(error);
                   process.exit(1);
@@ -2534,7 +2746,7 @@ def test_developer_only_brain_provider_preserved_without_auto_switch_or_pending(
         assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_personality_apply_disabled_when_persona_requires_restart(tmp_path: Path) -> None:
+def test_personality_apply_posts_when_persona_requires_restart(tmp_path: Path) -> None:
         harness = tmp_path / "personality-requires-restart-harness.js"
         harness.write_text(
             textwrap.dedent(
@@ -2633,11 +2845,15 @@ def test_personality_apply_disabled_when_persona_requires_restart(tmp_path: Path
                   updatePersonaControlOptions();
                 `, context);
 
-                assert.match(context.__el.personaApplyStatus.textContent, /Requires restart/);
-                assert.strictEqual(context.__el.applyPersonaSettingsButton.disabled, true);
+                assert.match(context.__el.personaApplyStatus.textContent, /Pending change/);
+                assert.strictEqual(context.__el.applyPersonaSettingsButton.disabled, false);
                 (async () => {{
                   await context.applyRuntimeSettingsGroup("persona");
-                  assert.strictEqual(requests.length, 0);
+                  const applyRequests = requests.filter((request) => request.path === "/runtime/settings/apply");
+                  assert.strictEqual(applyRequests.length, 1);
+                  assert.deepStrictEqual(applyRequests[0].body.settings, {{
+                    "persona.profile": "friend",
+                  }});
                 }})().catch((error) => {{
                   console.error(error);
                   process.exit(1);
@@ -2658,7 +2874,7 @@ def test_personality_apply_disabled_when_persona_requires_restart(tmp_path: Path
         assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_tts_speak_responses_disabled_when_tts_group_blocked_and_disabled_without_independent_apply(tmp_path: Path) -> None:
+def test_tts_speak_responses_posts_even_when_backend_must_validate_group(tmp_path: Path) -> None:
         harness = tmp_path / "tts-speak-responses-blocked-harness.js"
         harness.write_text(
             textwrap.dedent(
@@ -2737,7 +2953,7 @@ def test_tts_speak_responses_disabled_when_tts_group_blocked_and_disabled_withou
                       }},
                     }},
                     voice_capabilities: {{
-                      tts_providers: [{{ id: "mock", label: "Mock", available: false }}],
+                      tts_providers: [{{ id: "supertonic", label: "Supertonic", available: false }}],
                       stt_providers: [],
                     }},
                   }},
@@ -2745,7 +2961,7 @@ def test_tts_speak_responses_disabled_when_tts_group_blocked_and_disabled_withou
                     sections: {{
                       voice_tts: {{
                         fields: {{
-                          tts_provider: {{ current: "", effective: "", status: "missing", editable_now: false, blocker: "tts provider unavailable" }},
+                          tts_provider: {{ current: "supertonic", effective: "supertonic", status: "missing", editable_now: false, blocker: "tts provider unavailable" }},
                           tts_model: {{ current: "", effective: "", allowed_values: [], editable_now: false }},
                           voice_id: {{ current: "", effective: "", allowed_values: [], editable_now: false }},
                         }},
@@ -2754,7 +2970,7 @@ def test_tts_speak_responses_disabled_when_tts_group_blocked_and_disabled_withou
                   }},
                   voice: {{
                     speak_responses: {{ effective_value: false }},
-                    default_tts: {{ effective_value: "" }},
+                    default_tts: {{ effective_value: "supertonic" }},
                   }},
                 }};
                 context.payload = blockedPayload;
@@ -2777,37 +2993,211 @@ def test_tts_speak_responses_disabled_when_tts_group_blocked_and_disabled_withou
                   renderTtsApplyControls(payload);
                 `, context);
 
-                assert.strictEqual(context.__el.voiceSpeakResponsesToggle.disabled, true);
+                assert.strictEqual(context.__el.voiceSpeakResponsesToggle.disabled, false);
                 context.__el.voiceSpeakResponsesToggle.checked = true;
                 context.updateTtsControlOptions();
-                assert.match(context.__el.ttsApplyStatus.textContent, /Blocked/);
-                assert.doesNotMatch(context.__el.ttsApplyStatus.textContent, /OFF -> ON|false -> true/i);
-
-                const independentPayload = JSON.parse(JSON.stringify(blockedPayload));
-                independentPayload.settings_preview.sections.voice_tts.fields.tts_provider.status = "missing";
-                independentPayload.settings_preview.sections.voice_tts.fields.tts_provider.apply_capable = true;
-                independentPayload.settings_preview.sections.voice_tts.fields.tts_provider.blocker = null;
-                independentPayload.settings_preview.sections.voice_tts.fields.tts_provider.editable_now = true;
-                independentPayload.capability_graph.tools_capabilities.apply_capabilities["voice.speak_responses"].apply_capable = true;
-                independentPayload.voice = {{
-                  speak_responses: {{ effective_value: false }},
-                  default_tts: {{ effective_value: "" }},
-                }};
-                context.independentPayload = independentPayload;
-
-                vm.runInContext(`
-                  const payload = independentPayload;
-                  cockpit.runtimeSettingsApply.payload = payload;
-                  cockpit.settingsPreview.payload = independentPayload;
-                  renderTtsApplyControls(independentPayload);
-                `, context);
-                assert.strictEqual(context.__el.voiceSpeakResponsesToggle.disabled, false);
-                assert.match(context.__el.ttsApplyStatus.textContent, /Blocked/);
-                assert.match(context.__el.ttsApplyStatus.textContent, /Requires restart|restart|Blocked/);
-                assert.strictEqual(context.__el.applyTtsSettingsButton.disabled, true);
+                assert.match(context.__el.ttsApplyStatus.textContent, /Pending change/);
+                assert.match(context.__el.ttsApplyStatus.textContent, /backend will validate/i);
+                assert.strictEqual(context.__el.applyTtsSettingsButton.disabled, false);
                 (async () => {{
                   await context.applyRuntimeSettingsGroup("tts");
-                  assert.strictEqual(requests.length, 0);
+                  const applyRequests = requests.filter((request) => request.path === "/runtime/settings/apply");
+                  assert.strictEqual(applyRequests.length, 1);
+                  assert.deepStrictEqual(applyRequests[0].body.settings, {{
+                    "voice.speak_responses": true,
+                  }});
+                }})().catch((error) => {{
+                  console.error(error);
+                  process.exit(1);
+                }});
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["node", str(harness)],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_system_tts_and_stt_provider_selects_post_real_provider_changes(tmp_path: Path) -> None:
+        harness = tmp_path / "tts-stt-provider-apply-harness.js"
+        harness.write_text(
+            textwrap.dedent(
+                f"""
+                const assert = require("assert");
+                const fs = require("fs");
+                const vm = require("vm");
+
+                function createNode(tag) {{
+                  const children = [];
+                  return {{
+                    tagName: tag,
+                    children,
+                    childNodes: children,
+                    textContent: "",
+                    className: "",
+                    hidden: false,
+                    disabled: false,
+                    checked: false,
+                    value: "",
+                    title: "",
+                    classList: {{
+                      add: () => {{}},
+                      remove: () => {{}},
+                      toggle: () => {{}},
+                      contains: () => false,
+                    }},
+                    appendChild(child) {{ children.push(child); return child; }},
+                    append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
+                    removeChild(child) {{
+                      const index = children.indexOf(child);
+                      if (index >= 0) children.splice(index, 1);
+                      return child;
+                    }},
+                    get firstChild() {{ return children[0] || null; }},
+                    addEventListener() {{}},
+                  }};
+                }}
+
+                const requests = [];
+                const context = {{
+                  console,
+                  URL,
+                  location: {{ origin: "http://127.0.0.1:41741" }},
+                  localStorage: {{
+                    getItem: () => "token",
+                    setItem: () => {{}},
+                    removeItem: () => {{}},
+                  }},
+                  createNode,
+                  window: {{}},
+                  document: {{
+                    addEventListener: () => {{}},
+                    createElement: createNode,
+                  }},
+                  fetch: async (url, init = {{}}) => {{
+                    const parsed = new URL(url);
+                    requests.push({{ path: parsed.pathname, method: init.method || "GET", body: init.body ? JSON.parse(init.body) : null }});
+                    return {{
+                      ok: true,
+                      status: 200,
+                      text: async () => JSON.stringify({{ ok: true, runtime_settings: payload }}),
+                    }};
+                  }},
+                }};
+                context.window.localStorage = context.localStorage;
+                context.globalThis = context;
+                vm.createContext(context);
+                vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
+                  filename: "app.js",
+                }});
+
+                const payload = {{
+                  voice: {{
+                    speak_responses: {{ effective_value: false }},
+                    broker_enabled: {{ effective_value: false }},
+                    default_tts: {{ effective_value: "mock" }},
+                    default_stt: {{ effective_value: "mock" }},
+                  }},
+                  capability_graph: {{
+                    voice_capabilities: {{
+                      tts_providers: [
+                        {{ id: "mock", label: "Mock TTS", available: true }},
+                        {{ id: "supertonic", label: "Supertonic", available: true }},
+                      ],
+                      stt_providers: [
+                        {{ id: "mock", label: "Mock STT", available: true }},
+                        {{ id: "mlx_whisper", label: "MLX Whisper", available: true }},
+                      ],
+                    }},
+                  }},
+                  settings_preview: {{
+                    sections: {{
+                      voice_tts: {{
+                        fields: {{
+                          tts_provider: {{ current: "mock", effective: "mock", allowed_values: ["mock", "supertonic"], status: "ok", requires_restart: true, editable_later: true }},
+                          tts_model: {{ current: "mock", effective: "mock", allowed_values: ["mock", "supertonic"], status: "ok", requires_restart: true, editable_later: true }},
+                          voice_id: {{ current: "", effective: "", allowed_values: ["M1"], status: "ok", requires_restart: true, editable_later: true }},
+                          voice_profile: {{ current: "", effective: "", allowed_values: ["pl"], status: "ok", requires_restart: true, editable_later: true }},
+                          speed_or_rate: {{ current: 1.0, effective: 1.0, allowed_values: [1.0, 1.35], status: "ok", requires_restart: true, editable_later: true }},
+                        }},
+                      }},
+                      voice_stt: {{
+                        fields: {{
+                          stt_provider: {{ current: "mock", effective: "mock", allowed_values: ["mock", "mlx_whisper"], status: "ok", requires_restart: true, editable_later: true }},
+                          stt_model: {{ current: "mlx-community/whisper-large-v3-turbo", effective: "mlx-community/whisper-large-v3-turbo", allowed_values: ["mlx-community/whisper-large-v3-turbo"], status: "ok", requires_restart: true, editable_later: true }},
+                          language: {{ current: "pl", effective: "pl", status: "ok", requires_restart: true, editable_later: true }},
+                        }},
+                      }},
+                    }},
+                  }},
+                }};
+                context.payload = payload;
+
+                vm.runInContext(`
+                  el.voiceSpeakResponsesToggle = createNode("input");
+                  el.voiceBrokerEnabledToggle = createNode("input");
+                  el.voiceTtsSelect = createNode("select");
+                  el.voiceTtsModelSelect = createNode("select");
+                  el.voiceVoiceIdSelect = createNode("select");
+                  el.voiceProfileSelect = createNode("select");
+                  el.voiceSpeedInput = createNode("input");
+                  el.voiceTtsStatusList = createNode("div");
+                  el.ttsApplyStatus = createNode("p");
+                  el.applyTtsSettingsButton = createNode("button");
+                  el.voiceSttSelect = createNode("select");
+                  el.voiceSttModelSelect = createNode("select");
+                  el.voiceSttLanguageSelect = createNode("select");
+                  el.voiceSttStatusList = createNode("div");
+                  el.sttApplyStatus = createNode("p");
+                  el.applySttSettingsButton = createNode("button");
+                  el.activeSettingsStatus = createNode("p");
+                  globalThis.__el = el;
+                  cockpit.online = true;
+                  cockpit.runtimeSettingsApply.payload = payload;
+                  cockpit.settingsPreview.payload = payload;
+                  renderTtsApplyControls(payload);
+                  renderSttApplyControls(payload);
+                `, context);
+
+                assert.strictEqual(context.__el.voiceTtsSelect.disabled, false);
+                assert.strictEqual(context.__el.voiceSttSelect.disabled, false);
+
+                (async () => {{
+                  context.__el.voiceTtsSelect.value = "supertonic";
+                  context.updateTtsControlOptions();
+                  assert.strictEqual(context.__el.applyTtsSettingsButton.disabled, false);
+                  await context.applyRuntimeSettingsGroup("tts");
+                  let applyRequests = requests.filter((request) => request.path === "/runtime/settings/apply");
+                  assert.strictEqual(applyRequests.length, 1);
+                  assert.deepStrictEqual(applyRequests[0].body.settings, {{
+                    "voice.default_tts": "supertonic",
+                  }});
+
+                  requests.length = 0;
+                      vm.runInContext(`
+                        cockpit.runtimeSettingsApply.applyingGroup = null;
+                        cockpit.online = true;
+                        cockpit.runtimeSettingsApply.payload = payload;
+                    cockpit.settingsPreview.payload = payload;
+                    renderSttApplyControls(payload);
+                  `, context);
+                  context.__el.voiceSttSelect.value = "mlx_whisper";
+                  context.updateSttControlOptions();
+                  assert.strictEqual(context.__el.applySttSettingsButton.disabled, false);
+                  await context.applyRuntimeSettingsGroup("stt");
+                  applyRequests = requests.filter((request) => request.path === "/runtime/settings/apply");
+                  assert.strictEqual(applyRequests.length, 1);
+                  assert.deepStrictEqual(applyRequests[0].body.settings, {{
+                    "voice.default_stt": "mlx_whisper",
+                  }});
                 }})().catch((error) => {{
                   console.error(error);
                   process.exit(1);
@@ -2864,7 +3254,7 @@ def test_system_tab_has_active_settings_apply_sections_before_diagnostics() -> N
         "quickHealthHeading",
         "queueBargeInHeading",
         "memoryApprovalsHeading",
-        "developerTestHeading",
+        "runtimeChecksHeading",
         "latestTurnTraceHeading",
         "runtimeLogsSummaryHeading",
         "runtimeOverviewHeading",
@@ -2908,7 +3298,7 @@ def test_system_tab_is_actionable_first_and_logs_own_diagnostics() -> None:
         "Runtime summary",
         "Voice queue",
         "Memory / Approvals",
-        "Developer / Test",
+        "Runtime Checks",
         "Latest Turn Trace",
         "Settings Preview",
         "Połączenie",
@@ -3073,11 +3463,11 @@ def test_runtime_settings_apply_payload_is_allowlisted_and_posts(tmp_path: Path)
             const backendError = new Error("unsupported");
             backendError.detail = {{
               status: 422,
-              payload: {{ blockers: ["not apply-capable in POC"] }},
+              payload: {{ blockers: ["not apply-capable"] }},
             }};
             assert.strictEqual(
               context.runtimeSettingsErrorMessage(backendError),
-              "Blocked. No action available in this POC.",
+              "Blocked. No action available right now.",
             );
             const toolsFiltered = context.runtimeSettingsPayloadForGroup("tools", {{
               "security.require_approval_for_network": false,

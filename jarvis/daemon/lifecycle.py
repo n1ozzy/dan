@@ -95,6 +95,7 @@ from jarvis.daemon.app import (
     DaemonAppNotStartedError,
 )
 from jarvis.logging import get_logger
+from jarvis.panel.menubar_app import resolve_panel_asset
 from jarvis.security.transport import API_TOKEN_HEADER, verify_api_token
 from jarvis.store.event_store import EventStoreError
 from jarvis.memory import MemoryError
@@ -106,7 +107,10 @@ from jarvis.voice.listening import ListeningLeaseError
 
 MAX_REQUEST_BODY_BYTES = 1_048_576
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-ALLOWED_CORS_ORIGINS = {"http://127.0.0.1:41800", "http://localhost:41800"}
+ALLOWED_CORS_ORIGINS = {
+    "http://127.0.0.1:41800",
+    "http://localhost:41800",
+}
 CORS_ALLOW_METHODS = "GET, POST, PATCH, DELETE, OPTIONS"
 CORS_ALLOW_HEADERS = f"Content-Type, {API_TOKEN_HEADER}"
 MUTATING_METHODS = {"POST", "PATCH", "DELETE"}
@@ -317,6 +321,10 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
 
     if method == "GET" and path == "/stream":
         _handle_stream(handler, app, query)
+        return
+
+    if method == "GET" and (path == "/panel" or path == "/panel/" or path.startswith("/panel/")):
+        _handle_panel_asset(handler, path)
         return
 
     if method in MUTATING_METHODS and not _transport_authorized(handler, app):
@@ -953,6 +961,29 @@ def _write_json(
     send_cors_headers = getattr(handler, "_send_cors_headers", None)
     if callable(send_cors_headers):
         send_cors_headers()
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _handle_panel_asset(handler: BaseHTTPRequestHandler, path: str) -> None:
+    if path == "/panel" or path == "/panel/":
+        asset_url_path = "/index.html"
+    elif path.startswith("/panel/"):
+        asset_url_path = "/" + unquote(path[len("/panel/") :])
+    else:
+        _write_json(handler, 404, {"error": "Panel asset not found", "status": 404})
+        return
+
+    asset_path, mime = resolve_panel_asset(asset_url_path)
+    if asset_path is None:
+        _write_json(handler, 404, {"error": "Panel asset not found", "status": 404})
+        return
+
+    body = asset_path.read_bytes()
+    handler.send_response(200)
+    handler.send_header("Content-Type", mime)
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
     handler.end_headers()
     handler.wfile.write(body)
 

@@ -2332,7 +2332,7 @@ def test_get_runtime_settings_includes_settings_preview_payload_and_capability_g
     settings_preview = payload["settings_preview"]
     assert settings_preview["preview_only"] is True
     assert settings_preview["save_implemented"] is False
-    assert settings_preview["save_disabled_reason"] == "Save not implemented in POC"
+    assert settings_preview["save_disabled_reason"] == "Save is handled by targeted runtime apply controls."
 
     expected_sections = {
         "brain_provider": (
@@ -2422,13 +2422,6 @@ def test_get_runtime_settings_includes_settings_preview_payload_and_capability_g
             "active_style",
             "personality_source",
             "editable_later",
-        ),
-        "developer_test": (
-            "mock_provider",
-            "fake_tts",
-            "fake_stt",
-            "debug_mode",
-            "test_harness_status",
         ),
     }
     assert set(settings_preview["sections"]) == set(expected_sections)
@@ -2527,12 +2520,10 @@ def test_runtime_settings_structured_warnings_cover_invalid_preview_fixtures(
 
     tts_provider = _settings_preview_field(payload, "voice_tts", "tts_provider")
     stt_provider = _settings_preview_field(payload, "voice_stt", "stt_provider")
-    mock_provider = _settings_preview_field(payload, "developer_test", "mock_provider")
     assert tts_provider["status"] == "missing"
     assert tts_provider["blocker"]
     assert stt_provider["status"] == "missing"
     assert stt_provider["blocker"]
-    assert mock_provider["developer_only"] is True
 
 
 def test_runtime_settings_preview_blocks_tts_voice_id_required_for_supertonic(
@@ -3288,7 +3279,11 @@ def test_post_runtime_settings_apply_rejects_unavailable_provider(app: DaemonApp
         )
 
     assert status == 422
-    assert "not apply-capable in POC" in payload["error"] or "unavailable" in payload["error"].lower()
+    assert (
+        "not present in capability_graph" in payload["error"]
+        or "unavailable" in payload["error"].lower()
+        or "not registered" in payload["error"].lower()
+    )
 
 
 def test_post_runtime_settings_apply_graph_only_provider_does_not_persist(
@@ -3522,7 +3517,7 @@ def test_post_runtime_settings_apply_rejects_mock_as_normal_brain_provider(
 
     assert status == 422
     assert "mock" in payload["error"].lower()
-    assert "not_apply_capable" in payload["error"]
+    assert "not present in capability_graph" in payload["error"]
 
 
 def test_post_runtime_settings_apply_updates_session_voice_projection(app: DaemonApp) -> None:
@@ -3646,6 +3641,38 @@ def test_post_runtime_settings_apply_rejects_unsupported_ptt_mode(app: DaemonApp
 
     assert status == 422
     assert "voice.ptt_mode" in payload["error"]
+
+
+def test_post_runtime_settings_apply_updates_ptt_hotkey(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"voice.ptt_hotkey": "right_cmd+right_shift"}},
+        )
+        refreshed_status, refreshed = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200, payload
+    assert refreshed_status == 200
+    assert payload["applied_keys"] == ["voice.ptt_hotkey"]
+    assert payload["rejected_keys"] == []
+    assert payload["runtime_settings"]["voice"]["ptt_hotkey"]["effective_value"] == "right_cmd+right_shift"
+    ptt_hotkey = refreshed["settings_preview"]["sections"]["endpointing_ptt"]["fields"]["ptt_hotkey"]
+    assert ptt_hotkey["current"] == "right_cmd+right_shift"
+    assert ptt_hotkey["source"] == "settings"
+    assert ptt_hotkey["apply_capable"] is True
+
+
+def test_post_runtime_settings_apply_rejects_invalid_ptt_hotkey(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"voice.ptt_hotkey": "bad_key"}},
+        )
+
+    assert status == 422
+    assert "bad_key" in payload["error"]
 
 
 def test_post_runtime_settings_apply_blocks_merge_window_restart_only(app: DaemonApp) -> None:

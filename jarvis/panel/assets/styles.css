@@ -208,7 +208,12 @@ dl {
 #view-system.view {
   overflow-y: auto;
   overflow-x: hidden;
-  padding-bottom: 2px;
+  padding-bottom: 10px;
+}
+
+#view-system {
+  --system-row-bg: rgba(7, 11, 18, 0.58);
+  --system-row-border: rgba(71, 92, 119, 0.52);
 }
 
 /* --- Pasek zakładek ---------------------------------------------------------- */
@@ -1086,12 +1091,23 @@ details.card.collapsible[open] summary::after {
 /* Sekcja System (płaska): nagłówek + treść jak karta, bez zwijania. */
 .sys-section {
   display: grid;
-  gap: 8px;
+  gap: 7px;
   min-width: 0;
-  padding: 12px;
+  padding: 9px;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--panel);
+  border-radius: 8px;
+  background: rgba(9, 13, 20, 0.78);
+}
+
+.system-section-label {
+  margin: 3px 2px -1px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1.2;
+  text-transform: uppercase;
 }
 
 .sys-section > summary {
@@ -1112,8 +1128,8 @@ details.card.collapsible[open] summary::after {
   min-width: 0;
 }
 
-.developer-test-section {
-  border-color: rgba(240, 180, 69, 0.34);
+.runtime-checks-section {
+  border-color: var(--border-subtle);
   background: rgba(15, 18, 25, 0.92);
 }
 
@@ -1126,11 +1142,11 @@ details.card.collapsible[open] summary::after {
 }
 
 .mission-control {
-  gap: 10px;
+  gap: 8px;
   border-color: rgba(69, 182, 255, 0.32);
   background:
-    linear-gradient(180deg, rgba(69, 182, 255, 0.07), transparent 72px),
-    var(--panel);
+    linear-gradient(180deg, rgba(69, 182, 255, 0.08), transparent 60px),
+    rgba(10, 15, 24, 0.9);
 }
 
 .mission-head {
@@ -1145,7 +1161,7 @@ details.card.collapsible[open] summary::after {
   min-width: 0;
 }
 
-.poc-badge,
+.production-badge,
 .status-chip {
   display: inline-flex;
   align-items: center;
@@ -1161,15 +1177,15 @@ details.card.collapsible[open] summary::after {
   white-space: nowrap;
 }
 
-.poc-badge {
-  border-color: rgba(240, 180, 69, 0.55);
-  color: #f7dc96;
+.production-badge {
+  border-color: rgba(71, 188, 139, 0.55);
+  color: #9ee7c1;
 }
 
 .mission-summary {
   display: grid;
-  gap: 8px;
-  padding: 10px;
+  gap: 7px;
+  padding: 9px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: rgba(10, 15, 24, 0.78);
@@ -1193,6 +1209,88 @@ details.card.collapsible[open] summary::after {
   min-height: 16px;
 }
 
+.mission-glance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mission-glance-item {
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid rgba(69, 182, 255, 0.18);
+  border-radius: 7px;
+  background: rgba(7, 11, 18, 0.62);
+}
+
+.mission-glance-label,
+.mission-issue-label {
+  display: block;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.mission-glance-value {
+  display: block;
+  min-width: 0;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-issue-list {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 5px;
+  overflow: hidden;
+}
+
+.mission-issue-label {
+  flex: 0 0 58px;
+}
+
+.mission-issue-pill,
+.mission-issue-empty,
+.mission-module-fact {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(7, 11, 18, 0.64);
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-issue-blocked .mission-issue-pill {
+  border-color: rgba(255, 85, 85, 0.45);
+  color: #ffb7b7;
+}
+
+.mission-issue-warning .mission-issue-pill {
+  border-color: rgba(240, 180, 69, 0.48);
+  color: #f7dc96;
+}
+
+.mission-issue-action .mission-issue-pill {
+  border-color: rgba(69, 182, 255, 0.42);
+  color: #b6def8;
+}
+
 .module-grid,
 .doctor-grid,
 .checklist-grid {
@@ -1202,11 +1300,11 @@ details.card.collapsible[open] summary::after {
 
 .module-grid,
 .doctor-grid {
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
 }
 
 .checklist-grid {
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
 }
 
 .mission-card,
@@ -1217,27 +1315,105 @@ details.card.collapsible[open] summary::after {
 }
 
 #view-system .kv-list {
-  grid-template-columns: minmax(96px, 42%) minmax(0, 1fr);
-  align-items: start;
+  grid-template-columns: minmax(88px, 32%) minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 11px;
 }
 
 #view-system .kv-list dt {
   min-width: 0;
-  overflow-wrap: break-word;
+  overflow: hidden;
   word-break: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #view-system .kv-list dd {
   min-width: 0;
-  overflow-wrap: break-word;
+  overflow: hidden;
   word-break: normal;
-  white-space: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #view-system .mission-card .input-line,
 #view-system .checklist-item .input-line {
   overflow-wrap: break-word;
   word-break: normal;
+}
+
+.mission-card {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.mission-card-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-module-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.mission-module-fact {
+  flex: 0 1 auto;
+}
+
+#view-system .active-settings-section {
+  gap: 7px;
+  border-color: rgba(69, 182, 255, 0.18);
+  background: rgba(9, 13, 20, 0.7);
+}
+
+#view-system .active-settings-section .section-head {
+  align-items: flex-start;
+  gap: 8px;
+}
+
+#view-system .active-settings-section h2 {
+  font-size: 14px;
+}
+
+#view-system .active-settings-section .section-desc {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#view-system .list {
+  gap: 5px;
+}
+
+#view-system .compact-list {
+  max-height: 150px;
+}
+
+#view-system .list-row,
+#view-system .empty-row {
+  gap: 3px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: rgba(7, 11, 18, 0.62);
+}
+
+#view-system .payload-line,
+#view-system .error-line,
+#view-system .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mission-card.status-ready,
@@ -1439,9 +1615,47 @@ details.card.collapsible[open] summary::after {
 
 .settings-control-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 158px), 1fr));
+  gap: 7px;
   min-width: 0;
+}
+
+#view-system .field-label,
+#view-system .inline-toggle {
+  min-height: 48px;
+  padding: 7px;
+  border: 1px solid var(--system-row-border);
+  border-radius: 7px;
+  background: var(--system-row-bg);
+}
+
+#view-system .field-label > span,
+#view-system .inline-toggle > span:first-child {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+#view-system .field-label select,
+#view-system .field-label input[type="number"],
+#view-system .field-label input[type="text"] {
+  min-height: 30px;
+  padding: 5px 7px;
+}
+
+#view-system .voice-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 1px;
+}
+
+#view-system .voice-mode .mode-button {
+  min-height: 34px;
+  border-radius: 7px;
 }
 
 .inline-toggle {
@@ -1737,6 +1951,6 @@ details.card.collapsible[open] summary::after {
   }
 
   #view-system .kv-list {
-    grid-template-columns: minmax(88px, 38%) minmax(0, 1fr);
+    grid-template-columns: minmax(82px, 32%) minmax(0, 1fr);
   }
 }

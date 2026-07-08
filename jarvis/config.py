@@ -147,8 +147,8 @@ class BrainCliAdapterConfig:
 
 @dataclass(frozen=True)
 class BrainConfig:
-    default_adapter: str = "mock"
-    default_model: str = "mock-local"
+    default_adapter: str = "claude_cli"
+    default_model: str = "claude-sonnet-5"
     timeout_seconds: int = 60
     context_budget_chars: int = 24000
     provider_sessions_are_memory: bool = False
@@ -183,8 +183,8 @@ class VoiceConfig:
     enabled: bool = False
     speak_responses: bool = False
     broker_enabled: bool = False
-    default_tts: str = "mock"
-    default_stt: str = "mock"
+    default_tts: str = "supertonic"
+    default_stt: str = "mlx_whisper"
     ptt_mode: str = "hold"
     # Global push-to-talk hotkey held anywhere on the desktop (source
     # "global_hotkey"). Empty = no global hotkey (panel button still works).
@@ -192,7 +192,7 @@ class VoiceConfig:
     # "left_cmd+left_shift" (see jarvis/panel/hotkey.py). The panel's native
     # shell watches these keys and drives /voice/ptt/{down,up}; it needs
     # macOS Accessibility permission to observe keys outside its own window.
-    ptt_hotkey: str = ""
+    ptt_hotkey: str = "right_cmd+right_shift"
     queue_persisted: bool = True
     recorder: str = "mock"
     # sox recorder (G4a): leases decide WHEN it runs, the AudioDeviceManager
@@ -428,7 +428,7 @@ def compiled_memory_operator_env_controls(
 
 
 def load_config(path: str | Path | None = None) -> JarvisConfig:
-    """Load Jarvis configuration from explicit path, env, repo config, or example."""
+    """Load Jarvis configuration from explicit path, env, home, or repo config."""
 
     config_path = _select_config_path(path)
     raw = _read_toml(config_path)
@@ -457,10 +457,18 @@ def _select_config_path(path: str | Path | None) -> Path:
     if env_path:
         return _normalize_path(env_path)
 
+    home_config = _normalize_path("~/.jarvis/jarvis.toml")
+    if home_config.exists():
+        return home_config
+
     if DEFAULT_CONFIG_PATH.exists():
         return DEFAULT_CONFIG_PATH
 
-    return EXAMPLE_CONFIG_PATH
+    raise ConfigError(
+        "Jarvis config not found. Create ~/.jarvis/jarvis.toml or "
+        f"{DEFAULT_CONFIG_PATH}. The example config must be passed explicitly: "
+        f"{EXAMPLE_CONFIG_PATH}."
+    )
 
 
 def _optional_env_bool(

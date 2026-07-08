@@ -146,6 +146,25 @@ def test_post_brain_switch_switches_persists_and_emits_event(cli_app: DaemonApp)
     assert event_payload["to"] == "claude_cli"
 
 
+def test_runtime_settings_apply_switches_registered_brain_provider(cli_app: DaemonApp) -> None:
+    with running_server(cli_app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/runtime/settings/apply",
+            {"settings": {"brain.provider": "claude_cli"}},
+        )
+        assert status == 200
+        assert payload["applied"] == ["brain.provider"]
+        assert payload["status"] == "applied"
+
+        status, current = request_json("GET", f"{base_url}/brain/current")
+        assert status == 200
+        assert current["adapter"] == "claude_cli"
+
+    assert _settings_row(cli_app, BRAIN_ADAPTER_SETTING_KEY) == "claude_cli"
+    assert "brain.switched" in _event_types(cli_app)
+
+
 def test_post_brain_switch_unknown_adapter_is_404_and_keeps_state(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json(

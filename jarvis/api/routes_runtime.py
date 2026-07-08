@@ -40,6 +40,7 @@ from jarvis.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp
 from jarvis.runtime.models import RuntimeProcessObservation, RuntimeRisk
 from jarvis.runtime.supervisor import OFFICIAL_LABEL
 from jarvis.events.types import EventType
+from jarvis.panel.hotkey import HotkeySpecError, parse_hotkey
 from jarvis.security.redaction import redact_secrets
 from jarvis.store.db import close_quietly
 
@@ -72,6 +73,8 @@ VOICE_ENGINE_RESTART_ONLY_KEYS = frozenset(
     {
         "voice.default_tts",
         "voice.default_stt",
+        "voice.stt_model",
+        "voice.stt_language",
         "voice.voice_id",
         "voice.voice_profile",
         "voice.profile",
@@ -105,6 +108,8 @@ RUNTIME_SETTINGS_APPLY_ALLOWED_KEYS = frozenset(
         "brain.fast",
         "voice.default_tts",
         "voice.default_stt",
+        "voice.stt_model",
+        "voice.stt_language",
         "voice.voice_id",
         "voice.voice_profile",
         "voice.profile",
@@ -113,6 +118,7 @@ RUNTIME_SETTINGS_APPLY_ALLOWED_KEYS = frozenset(
         "voice.speak_responses",
         "voice.broker_enabled",
         "voice.ptt_mode",
+        "voice.ptt_hotkey",
         "voice.merge_window",
         "persona.profile",
     }
@@ -1591,22 +1597,10 @@ def _provider_apply_blocker(
 ) -> str | None:
     if provider.get("developer_only") and requested_provider_id != current_provider_id:
         return f"Provider {requested_provider_id!r} is Developer/Test only."
-    if not provider.get("available", False):
-        blocker = provider.get("blocker")
-        if blocker:
-            return f"{blocker} Provider {requested_provider_id!r} is not apply-capable."
-        return f"Provider {requested_provider_id!r} is unavailable; not apply-capable."
-    apply_semantics = provider.get("apply_semantics")
-    if apply_semantics and apply_semantics != "next_turn":
-        if apply_semantics == "requires_new_session":
-            return f"Provider {requested_provider_id!r} requires a new provider session."
-        if apply_semantics == "requires_daemon_restart":
-            return f"Provider {requested_provider_id!r} requires daemon restart."
-        return f"Provider {requested_provider_id!r} is not apply-capable."
-    if provider.get("auth_status") == "missing":
-        return f"Provider {requested_provider_id!r} auth is missing."
     if _support_bool(provider.get("command_status")) is False:
         return f"Provider {requested_provider_id!r} command is missing."
+    if provider.get("auth_status") == "missing":
+        return f"Provider {requested_provider_id!r} auth is missing."
     return None
 
 
@@ -1689,7 +1683,7 @@ def _brain_provider_for_apply(
     provider = _provider_by_id(capability_graph, provider_name)
     if provider is None:
         raise _apply_error(
-            f"Provider {provider_name!r} is not present in capability_graph; not apply-capable in POC."
+            f"Provider {provider_name!r} is not present in capability_graph."
         )
     current_provider_id = capability_graph.get("brain_capabilities", {}).get("current_provider")
     blocker = _provider_apply_blocker(
@@ -1718,12 +1712,18 @@ def _apply_brain_settings(
     brain_capabilities = capability_graph.get("brain_capabilities", {})
     if provider_value is not None:
         requested_provider = _required_apply_text(provider_value, "brain.provider")
-        reason = "not_apply_capable" if requested_provider == "mock" else "requires_new_session"
-        raise _apply_rejected(
-            "brain.provider",
-            reason,
-            f"Provider {requested_provider!r} cannot be selected through normal next-turn apply; not apply-capable in POC",
-        )
+        provider = _brain_provider_for_apply(capability_graph, requested_provider)
+        manager = app.brain_manager
+        if manager is None:
+            raise _apply_error("Brain manager is not initialized; provider cannot be selected.", status_code=409)
+        provider_id = str(provider["id"])
+        if provider_id not in set(manager.adapter_names()):
+            raise _apply_error(
+                f"Provider {provider_id!r} is not registered in BrainManager."
+            )
+        if manager.current_adapter_name != provider_id:
+            app.switch_brain(provider_id)
+        applied.append("brain.provider")
 
     target_provider_id = provider_value if provider_value is not None else brain_capabilities.get("current_provider")
     provider = _brain_provider_for_apply(capability_graph, target_provider_id)
@@ -1732,10 +1732,10 @@ def _apply_brain_settings(
     valid_next_turn_changes = set(apply_plan["valid_next_turn_changes"])
     manager = app.brain_manager
     if manager is None:
-        raise _apply_error("Brain manager is not initialized; provider is not apply-capable in POC.", status_code=409)
+        raise _apply_error("Brain manager is not initialized; provider cannot be selected.", status_code=409)
     if provider_id not in set(manager.adapter_names()):
         raise _apply_error(
-            f"Provider {provider_id!r} is not registered in BrainManager; not apply-capable in POC."
+            f"Provider {provider_id!r} is not registered in BrainManager."
         )
 
     settings_updates: dict[str, Any] = {}
@@ -1755,7 +1755,7 @@ def _apply_brain_settings(
         ]
         if not allowed_models:
             raise _apply_error(
-                f"Provider {provider_id!r} has no apply-capable model in POC."
+                f"Provider {provider_id!r} has no apply-capable model."
             )
         if model not in allowed_models:
             raise _apply_rejected(
@@ -1804,7 +1804,7 @@ def _apply_brain_settings(
                 setattr(adapter, "default_model", adapter_model_value)
         except BrainManagerError as exc:
             raise _apply_error(
-                f"Provider {provider_id!r} model update failed: {exc}; not apply-capable in POC.",
+                f"Provider {provider_id!r} model update failed: {exc}.",
                 status_code=409,
             ) from exc
     if "effort" in settings_updates:
@@ -1814,7 +1814,7 @@ def _apply_brain_settings(
                 setattr(adapter, "effort", settings_updates["effort"])
         except BrainManagerError as exc:
             raise _apply_error(
-                f"Provider {provider_id!r} effort update failed: {exc}; not apply-capable in POC.",
+                f"Provider {provider_id!r} effort update failed: {exc}.",
                 status_code=409,
             ) from exc
 
@@ -1840,7 +1840,7 @@ def _voice_provider_for_apply(
         )
     if not provider.get("available", False):
         raise _apply_error(
-            f"{provider_type.upper()} provider {provider_id!r} is unavailable; not apply-capable in POC."
+            f"{provider_type.upper()} provider {provider_id!r} is unavailable."
         )
     return provider
 
@@ -1921,7 +1921,7 @@ def _apply_voice_and_ptt_settings(
 
     if "voice.broker_enabled" in settings:
         raise RuntimeSettingsApplyError(
-            "voice.broker_enabled is not apply-capable in POC; voice broker lifecycle rebuild is not wired.",
+            "voice.broker_enabled requires daemon restart; voice broker lifecycle rebuild is not wired live.",
             status_code=409,
             apply_status="blocked",
             rejected_keys=["voice.broker_enabled"],
@@ -1956,10 +1956,23 @@ def _apply_voice_and_ptt_settings(
             )
         updates["ptt_mode"] = ptt_mode
 
+    if "voice.ptt_hotkey" in settings:
+        ptt_hotkey = str(settings["voice.ptt_hotkey"] or "").strip()
+        try:
+            parse_hotkey(ptt_hotkey)
+        except HotkeySpecError as exc:
+            raise _apply_error(str(exc)) from exc
+        updates["ptt_hotkey"] = ptt_hotkey
+
     if not updates:
         return []
 
     app.config = replace(app.config, voice=replace(voice, **updates))
+    settings_updates = {}
+    if "voice.ptt_hotkey" in settings:
+        settings_updates["voice.ptt_hotkey"] = updates.get("ptt_hotkey", "")
+    if settings_updates:
+        app.update_settings(settings_updates)
     if app.context_builder is not None:
         try:
             app.context_builder._config = app.config
@@ -1987,7 +2000,7 @@ def _apply_persona_settings(app: DaemonApp, settings: dict[str, Any]) -> list[st
     profile = _required_apply_text(settings["persona.profile"], "persona.profile")
     _, status = _resolve_persona_profile(profile)
     if status != "ok":
-        raise _apply_error(f"persona.profile {profile!r} is not apply-capable in this POC.")
+        raise _apply_error(f"persona.profile {profile!r} is not available.")
     app.update_settings({PERSONA_PROFILE_SETTING_KEY: profile})
     return ["persona.profile"]
 
@@ -2019,7 +2032,7 @@ def _apply_tools_internet_settings(
             blockers.append("Internet unavailable: no network/search tool registered")
             continue
         capability = apply_capabilities.get(key) if isinstance(apply_capabilities.get(key), dict) else {}
-        blocker = capability.get("blocker") or "not apply-capable in POC"
+        blocker = capability.get("blocker") or "not apply-capable"
         if capability.get("requires_restart"):
             requires_restart_keys.append(key)
             blockers.append(f"{key}: {blocker}")
@@ -4593,6 +4606,13 @@ def _voice_projection(
             status="ok" if app.config.voice.ptt_mode in CANONICAL_PTT_MODES else "invalid",
             editable_later=True,
         ),
+        "ptt_hotkey": _projection(
+            value=app.config.voice.ptt_hotkey,
+            effective_value=app.config.voice.ptt_hotkey,
+            source="config",
+            status="ok" if app.config.voice.ptt_hotkey else "missing",
+            editable_later=True,
+        ),
         "queue_size": _projection(
             value=queue_size,
             effective_value=queue_size,
@@ -5294,26 +5314,30 @@ def _build_voice_capabilities(
         str(app.config.voice.playback_binary or "")
     )
 
-    tts_providers = [
-        {
-            "id": "mock",
-            "label": "Mock TTS",
-            "configured": configured_tts == "mock",
-            "available": True,
-            "models": [{"id": "mock", "label": "mock", "available": True}],
-            "voice_ids": [],
-            "voice_profiles": [],
-            "controls": {
-                "speed": False,
-                "style": False,
-                "stability": False,
-                "similarity": False,
-                "streaming": False,
-                "continuity": False,
-            },
-            "developer_only": True,
-            "status": "ok",
-        },
+    tts_providers = []
+    if configured_tts == "mock":
+        tts_providers.append(
+            {
+                "id": "mock",
+                "label": "Mock TTS",
+                "configured": True,
+                "available": True,
+                "models": [{"id": "mock", "label": "mock", "available": True}],
+                "voice_ids": [],
+                "voice_profiles": [],
+                "controls": {
+                    "speed": False,
+                    "style": False,
+                    "stability": False,
+                    "similarity": False,
+                    "streaming": False,
+                    "continuity": False,
+                },
+                "developer_only": True,
+                "status": "ok",
+            }
+        )
+    tts_providers.append(
         {
             "id": "supertonic",
             "label": "Supertonic",
@@ -5334,7 +5358,7 @@ def _build_voice_capabilities(
             "status": "ok" if tts_binary_status == "ok" else "missing",
             "binary": tts_binary,
         },
-    ]
+    )
     if configured_tts and configured_tts not in {"mock", "supertonic"}:
         tts_providers.append(
             {
@@ -5358,17 +5382,21 @@ def _build_voice_capabilities(
             }
         )
 
-    stt_providers = [
-        {
-            "id": "mock",
-            "label": "Mock STT",
-            "configured": configured_stt == "mock",
-            "available": True,
-            "models": [{"id": "mock", "label": "mock", "available": True}],
-            "endpointing_support": False,
-            "developer_only": True,
-            "status": "ok",
-        },
+    stt_providers = []
+    if configured_stt == "mock":
+        stt_providers.append(
+            {
+                "id": "mock",
+                "label": "Mock STT",
+                "configured": True,
+                "available": True,
+                "models": [{"id": "mock", "label": "mock", "available": True}],
+                "endpointing_support": False,
+                "developer_only": True,
+                "status": "ok",
+            }
+        )
+    stt_providers.append(
         {
             "id": "mlx_whisper",
             "label": "MLX Whisper",
@@ -5388,7 +5416,7 @@ def _build_voice_capabilities(
             "status": "ok" if stt_package_status == KNOWN_PROVIDER_SUPPORT_YES else "missing",
             "package": stt_package_name,
         },
-    ]
+    )
     if configured_stt and configured_stt not in {"mock", "mlx_whisper", "mlx-whisper"}:
         stt_providers.append(
             {
@@ -5471,17 +5499,17 @@ def _build_tools_capabilities(
             "tools.enabled": {
                 "apply_capable": False,
                 "requires_restart": True,
-                "blocker": "tool registry enable/disable is not apply-capable in POC; requires restart",
+                "blocker": "tool registry enable/disable requires daemon restart",
             },
             "tools.network_enabled": {
                 "apply_capable": False,
                 "requires_restart": True,
-                "blocker": "network capability is registry-backed; no live network tool toggle is wired in POC",
+                "blocker": "network capability is registry-backed; no live network tool toggle is wired",
             },
             "security.network_enabled": {
                 "apply_capable": False,
                 "requires_restart": True,
-                "blocker": "network security toggle is not backed by a live runtime setting in POC",
+                "blocker": "network security toggle is not backed by a live runtime setting",
             },
             "security.require_approval_for_network": {
                 "apply_capable": False,
@@ -5501,17 +5529,17 @@ def _build_tools_capabilities(
             "security.destructive_tools_enabled": {
                 "apply_capable": False,
                 "requires_restart": True,
-                "blocker": "destructive tools remain read-only/high-risk in this POC",
+                "blocker": "destructive tools remain read-only/high-risk",
             },
             "destructive_tools_enabled": {
                 "apply_capable": False,
                 "requires_restart": True,
-                "blocker": "destructive tools remain read-only/high-risk in this POC",
+                "blocker": "destructive tools remain read-only/high-risk",
             },
             "provider_tools_enabled": {
                 "apply_capable": False,
                 "requires_restart": True,
-                "blocker": "provider tool support is provider capability, not a live toggle in this POC",
+                "blocker": "provider tool support is provider capability, not a live toggle",
             },
         },
     }
@@ -5590,6 +5618,10 @@ def _build_settings_preview(
     section = "brain_provider"
     brain_capabilities = capability_graph["brain_capabilities"]
     providers = brain_capabilities["providers"]
+    try:
+        runtime_settings = app.get_settings()
+    except Exception:
+        runtime_settings = {}
     current_provider_id = brain_capabilities.get("current_provider")
     current_provider = _provider_by_id(capability_graph, current_provider_id) or {}
     raw_provider = current_provider.get("raw", {}) if isinstance(current_provider.get("raw"), dict) else {}
@@ -6162,8 +6194,8 @@ def _build_settings_preview(
 
     endpoint_section = "endpointing_ptt"
     endpoint_fields = {
-        "ptt_mode": _preview_field(section=endpoint_section, field_id="ptt_mode", label="PTT mode", current=app.config.voice.ptt_mode, status="ok" if app.config.voice.ptt_mode in CANONICAL_PTT_MODES else "invalid", source="config", allowed_values=list(CANONICAL_PTT_MODES), editable_now=True, editable_later=True),
-        "ptt_hotkey": _preview_field(section=endpoint_section, field_id="ptt_hotkey", label="PTT hotkey", current=app.config.voice.ptt_hotkey, status="ok" if app.config.voice.ptt_hotkey else "missing", source="config", warning="PTT hotkey is missing." if app.config.voice.ptt_mode in CANONICAL_PTT_MODES and not app.config.voice.ptt_hotkey else None, requires_restart=True, editable_later=True),
+        "ptt_mode": _preview_field(section=endpoint_section, field_id="ptt_mode", label="PTT mode", current=app.config.voice.ptt_mode, status="ok" if app.config.voice.ptt_mode in CANONICAL_PTT_MODES else "invalid", source="config", allowed_values=list(CANONICAL_PTT_MODES), editable_now=True, editable_later=True, apply_capable=True),
+        "ptt_hotkey": _preview_field(section=endpoint_section, field_id="ptt_hotkey", label="PTT hotkey", current=app.config.voice.ptt_hotkey, status="ok" if app.config.voice.ptt_hotkey else "missing", source="settings" if "voice.ptt_hotkey" in runtime_settings else "config", warning="PTT hotkey is missing." if app.config.voice.ptt_mode in CANONICAL_PTT_MODES and not app.config.voice.ptt_hotkey else None, editable_now=True, editable_later=True, apply_capable=True),
         "merge_window": _preview_field(section=endpoint_section, field_id="merge_window", label="Merge window", current=app.config.voice.transcript_turn_retry_seconds, status="ok", source="config", blocker=VOICE_GATEWAY_RELOAD_BLOCKER, requires_restart=True, editable_now=False, editable_later=True),
         "silence_threshold": _preview_field(section=endpoint_section, field_id="silence_threshold", label="Silence threshold", current=app.config.voice.stt_min_rms, status="ok", source="config", requires_restart=True, editable_later=True),
         "silence_duration": _preview_field(section=endpoint_section, field_id="silence_duration", label="Silence duration", current=app.config.voice.stt_min_voiced_seconds, status="ok", source="config", requires_restart=True, editable_later=True),
@@ -6255,19 +6287,10 @@ def _build_settings_preview(
         "editable_later": _preview_field(section=personality_section, field_id="editable_later", label="Editable later", current=True, status="ok", source="runtime_detected", editable_later=True),
     }
 
-    developer_section = "developer_test"
-    developer_fields = {
-        "mock_provider": _preview_field(section=developer_section, field_id="mock_provider", label="Mock provider", current=current_provider_id == "mock", status="ok", source="runtime_detected", warning="Mock provider is Developer/Test only." if current_provider_id == "mock" else None, developer_only=True),
-        "fake_tts": _preview_field(section=developer_section, field_id="fake_tts", label="Fake TTS", current=configured_tts == "mock", status="ok", source="config", developer_only=True),
-        "fake_stt": _preview_field(section=developer_section, field_id="fake_stt", label="Fake STT", current=configured_stt == "mock", status="ok", source="config", developer_only=True),
-        "debug_mode": _preview_field(section=developer_section, field_id="debug_mode", label="Debug mode", current=str(app.config.daemon.log_level).upper() == "DEBUG", status="ok", source="config", developer_only=True),
-        "test_harness_status": _preview_field(section=developer_section, field_id="test_harness_status", label="Test harness", current="not active", status="unknown", source="runtime_detected", developer_only=True),
-    }
-
     return {
         "preview_only": True,
         "save_implemented": False,
-        "save_disabled_reason": "Save not implemented in POC",
+        "save_disabled_reason": "Save is handled by targeted runtime apply controls.",
         "sections": {
             "brain_provider": _preview_section(
                 "brain_provider",
@@ -6281,7 +6304,6 @@ def _build_settings_preview(
             "queue_barge_in": _preview_section("queue_barge_in", "Queue / Barge-in", queue_fields),
             "tools_internet": _preview_section("tools_internet", "Tools / Internet", tools_fields),
             "personality": _preview_section("personality", "Personality", personality_fields),
-            "developer_test": _preview_section("developer_test", "Developer / Test", developer_fields),
         },
     }
 
@@ -6370,10 +6392,10 @@ def _build_structured_compatibility_warnings(
         add(
             warning_id="mock_provider_developer_only",
             severity="info",
-            group="developer_test",
-            field_ids=["developer_test.mock_provider", "brain_provider.provider"],
-            message="Mock provider is Developer/Test only.",
-            reason="Mock is useful for tests and offline scaffolding but is not a normal brain provider.",
+            group="brain_provider",
+            field_ids=["brain_provider.provider"],
+            message="Non-production provider is active.",
+            reason="The active provider is not a normal runtime provider.",
             suggested_action="Use a real provider for normal operation.",
         )
     if current_provider is not None and current_provider.get("local_runtime") and not current_provider.get("models"):

@@ -27,6 +27,41 @@ from jarvis.security.transport import load_api_token
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
+# MIME types for the handful of static files the cockpit ships. Kept explicit
+# (not mimetypes.guess_type) so the contract is visible and deterministic.
+_ASSET_MIME_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".json": "application/json; charset=utf-8",
+    ".woff2": "font/woff2",
+    ".ico": "image/x-icon",
+}
+_DEFAULT_ASSET_MIME = "application/octet-stream"
+
+
+def resolve_panel_asset(url_path: str, assets_dir: Path = ASSETS_DIR) -> tuple[Path | None, str]:
+    """Map a daemon ``/panel`` asset path to a file under ``assets_dir``.
+
+    Returns ``(path, mime)`` for a real file inside the assets root, or
+    ``(None, mime)`` when the target is missing or escapes the root (path
+    traversal). The daemon answers ``None`` with a 404 — the panel asset route
+    must never be able to read outside its bundle.
+    """
+
+    root = assets_dir.resolve()
+    relative = url_path.lstrip("/") or "index.html"
+    candidate = (root / relative).resolve()
+    mime = _ASSET_MIME_TYPES.get(candidate.suffix.lower(), _DEFAULT_ASSET_MIME)
+
+    if root != candidate and root not in candidate.parents:
+        return None, mime  # escaped the assets root
+    if not candidate.is_file():
+        return None, mime
+    return candidate, mime
+
 # Must match API_TOKEN_STORAGE_KEY in jarvis/panel/assets/app.js.
 COCKPIT_TOKEN_STORAGE_KEY = "jarvis-api-token"
 
@@ -83,17 +118,33 @@ def resolve_shell_settings(config: JarvisConfig) -> ShellSettings:
     )
 
 
-def token_bootstrap_script(token: str | None) -> str | None:
-    """JS injected at document start so the cockpit finds the transport
-    token without prompting. json.dumps escapes the value — the token is
-    data, never script."""
+def panel_index_url(api_base_url: str) -> str:
+    return f"{api_base_url.rstrip('/')}/panel/index.html"
 
-    if token is None:
+
+def token_bootstrap_script(
+    token: str | None,
+    *,
+    api_base_url: str | None = None,
+) -> str | None:
+    """JS injected at document start so the cockpit finds native settings.
+
+    json.dumps escapes the values — config and token are data, never script.
+    """
+
+    statements: list[str] = []
+    if api_base_url is not None:
+        statements.append(
+            f"window.JARVIS_API_BASE = {json.dumps(api_base_url.rstrip('/'))};"
+        )
+    if token is not None:
+        statements.append(
+            f"window.localStorage.setItem({json.dumps(COCKPIT_TOKEN_STORAGE_KEY)}, "
+            f"{json.dumps(token)});"
+        )
+    if not statements:
         return None
-    return (
-        f"window.localStorage.setItem({json.dumps(COCKPIT_TOKEN_STORAGE_KEY)}, "
-        f"{json.dumps(token)});"
-    )
+    return "".join(statements)
 
 
 def _import_gui_modules() -> tuple[object, object]:
@@ -252,26 +303,13 @@ class MenuBarApp:
 
     def _build_panel(self, AppKit, WebKit):  # noqa: N803 - ObjC module names
         configuration = WebKit.WKWebViewConfiguration.alloc().init()
-        # The panel is a trusted local shell loaded from file:// — its Origin
-        # is "null", which the daemon's CORS allowlist deliberately rejects
-        # (FIX-01: a malicious file:// page must not read jarvisd). Let THIS
-        # WebView bypass CORS for its own XHRs to 127.0.0.1; the daemon stays
-        # strict, so real browsers are still blocked. KVC because PyObjC has no
-        # typed setter; guarded because the keys are version-dependent.
-        try:
-            configuration.preferences().setValue_forKey_(
-                True, "allowFileAccessFromFileURLs"
-            )
-            configuration.setValue_forKey_(
-                True, "allowUniversalAccessFromFileURLs"
-            )
-        except Exception:  # noqa: BLE001 - missing key must not break the panel
-            print(
-                "panel: nie udalo sie wlaczyc dostepu file:// -> daemon; "
-                "panel moze nie ladowac danych (CORS).",
-                file=sys.stderr,
-            )
-        bootstrap = token_bootstrap_script(self._settings.api_token)
+        # Load the cockpit from the daemon origin so WebKit fetches API routes
+        # same-origin. Custom-scheme pages can send localhost requests, but newer
+        # WebKit builds still reject exposing those responses to fetch().
+        bootstrap = token_bootstrap_script(
+            self._settings.api_token,
+            api_base_url=self._settings.api_base_url,
+        )
         if bootstrap is not None:
             script = WebKit.WKUserScript.alloc().initWithSource_injectionTime_forMainFrameOnly_(
                 bootstrap,
@@ -289,9 +327,8 @@ class MenuBarApp:
                 0x0E / 255, 0x11 / 255, 0x16 / 255, 1.0
             )
         )
-        index_url = AppKit.NSURL.fileURLWithPath_(str(self._settings.index_path))
-        assets_url = AppKit.NSURL.fileURLWithPath_(str(self._settings.index_path.parent))
-        webview.loadFileURL_allowingReadAccessToURL_(index_url, assets_url)
+        index_url = AppKit.NSURL.URLWithString_(panel_index_url(self._settings.api_base_url))
+        webview.loadRequest_(AppKit.NSURLRequest.requestWithURL_(index_url))
 
         # Warstwa webview robi tylko zaokrąglony clip karty (żeby okno miało
         # miękkie rogi i pasujący cień). Ramkę stanu — kolor i animację —

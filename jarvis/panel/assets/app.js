@@ -1,6 +1,13 @@
 "use strict";
 
-const DEFAULT_API_BASE = "http://127.0.0.1:41741";
+const DEFAULT_API_BASE = nativeApiBaseOverride() || "http://127.0.0.1:41741";
+
+function nativeApiBaseOverride() {
+  if (typeof window === "undefined" || typeof window.JARVIS_API_BASE !== "string") {
+    return "";
+  }
+  return window.JARVIS_API_BASE.trim().replace(/\/+$/, "");
+}
 
 const cockpit = {
   apiBase: DEFAULT_API_BASE,
@@ -87,7 +94,7 @@ const RUNTIME_OVERVIEW_READINESS = Object.freeze({
   UNSUPPORTED: "unsupported",
   UNKNOWN: "unknown",
 });
-// Production mode - no POC guards
+// Production runtime constants.
 const MISSION_CONTROL_ENDPOINTS = Object.freeze([
   { key: "health", path: "/health", method: "GET" },
   { key: "state", path: "/state", method: "GET" },
@@ -438,6 +445,7 @@ function bindElements() {
     "ttsApplyStatus",
     "sttApplyStatus",
     "pttModeSelect",
+    "pttHotkeyInput",
     "pttMergeWindowInput",
     "pttListeningSummary",
     "pttBargeInSummary",
@@ -471,7 +479,6 @@ function bindElements() {
     "personaApplyStatus",
     "refreshMemoryApprovalsButton",
     "memoryApprovalsList",
-    "developerTestList",
     "latestTurnTraceList",
     "refreshRuntimeLogsSummaryButton",
     "runtimeLogsSummaryList",
@@ -531,6 +538,8 @@ function bindEvents() {
   bindIf(el.voiceSttModelSelect, "change", updateSttControlOptions);
   bindIf(el.voiceSttLanguageSelect, "change", updateSttControlOptions);
   bindIf(el.pttModeSelect, "change", updatePttControlOptions);
+  bindIf(el.pttHotkeyInput, "input", updatePttControlOptions);
+  bindIf(el.pttMergeWindowInput, "input", updatePttControlOptions);
   bindIf(el.toolsEnabledToggle, "change", updateToolsControlOptions);
   bindIf(el.toolsNetworkEnabledToggle, "change", updateToolsControlOptions);
   bindIf(el.toolsNetworkApprovalToggle, "change", updateToolsControlOptions);
@@ -745,7 +754,7 @@ function renderVoiceQueue(rows) {
 }
 
 function renderVoice() {
-  const usable = cockpit.online && cockpit.voice.enabled && !POC_NO_PERSISTENCE_GUARD;
+  const usable = cockpit.online && cockpit.voice.enabled;
   el.pttModeButton.disabled = !usable;
   el.listenToggle.disabled = !usable;
 
@@ -758,8 +767,6 @@ function renderVoice() {
     status = "daemon offline";
   } else if (!cockpit.voice.enabled) {
     status = "głos wyłączony w configu";
-  } else if (POC_NO_PERSISTENCE_GUARD) {
-    status = "voice read-only in Mission Control POC";
   } else if (cockpit.voice.listening) {
     const holding = cockpit.voice.leases.some((lease) => lease.mode === "hold");
     status = holding ? "słucha (PTT)" : "słucha (nasłuch)";
@@ -779,15 +786,6 @@ function renderVoice() {
 // Panel ustawia TRYB słuchania (PTT vs ciągły nasłuch); samo trzymanie PTT
 // żyje na globalnym hotkeyu (menubar), nie na przycisku w webview.
 async function setVoiceMode(mode) {
-  if (POC_NO_PERSISTENCE_GUARD) {
-    renderError(
-      el.voiceError,
-      makeRequestError("Mission Control POC is read-only; no microphone activation from panel.", {
-        route: mode,
-      }),
-    );
-    return;
-  }
   if (!cockpit.online || !cockpit.voice.enabled) {
     return;
   }
@@ -822,7 +820,7 @@ function setupPttButtonHold() {
   if (!btn) return;
 
   const sendPtt = async (path) => {
-    if (!cockpit.online || !cockpit.voice.enabled || POC_NO_PERSISTENCE_GUARD) return;
+    if (!cockpit.online || !cockpit.voice.enabled) return;
     try {
       await requestJson(path, { method: "POST", body: { source: "ptt" } });
       await refreshVoice();
@@ -833,7 +831,6 @@ function setupPttButtonHold() {
 
   let holdTimer = null;
   const startHold = () => {
-    if (POC_NO_PERSISTENCE_GUARD) return;
     btn.classList.add("ptt-hold");
     sendPtt("/voice/ptt/down");
   };
@@ -1027,7 +1024,6 @@ const SETTINGS_PREVIEW_SECTION_ORDER = [
   "queue_barge_in",
   "tools_internet",
   "personality",
-  "developer_test",
 ];
 
 const SETTINGS_PREVIEW_SECTION_LABELS = {
@@ -1038,7 +1034,6 @@ const SETTINGS_PREVIEW_SECTION_LABELS = {
   queue_barge_in: "Queue / Barge-in",
   tools_internet: "Tools / Internet",
   personality: "Personality",
-  developer_test: "Developer / Test",
 };
 
 const SETTINGS_PREVIEW_CONTROL_FIELDS = new Set([
@@ -1065,7 +1060,7 @@ const RUNTIME_SETTINGS_GROUP_FIELDS = Object.freeze({
     "voice.profile",
     "voice.speed",
   ]),
-  stt: Object.freeze(["voice.default_stt"]),
+  stt: Object.freeze(["voice.default_stt", "voice.stt_model", "voice.stt_language"]),
   voice: Object.freeze([
     "voice.speak_responses",
     "voice.default_tts",
@@ -1075,7 +1070,7 @@ const RUNTIME_SETTINGS_GROUP_FIELDS = Object.freeze({
     "voice.profile",
     "voice.speed",
   ]),
-  ptt: Object.freeze(["voice.ptt_mode", "voice.merge_window"]),
+  ptt: Object.freeze(["voice.ptt_mode", "voice.ptt_hotkey", "voice.merge_window"]),
   tools: Object.freeze([
     "tools.enabled",
     "tools.network_enabled",
@@ -1107,7 +1102,10 @@ const RUNTIME_SETTING_LABELS = Object.freeze({
   "voice.speak_responses": "Speak responses",
   "voice.default_tts": "Text-to-speech engine",
   "voice.default_stt": "Speech-to-text engine",
+  "voice.stt_model": "Speech-to-text model",
+  "voice.stt_language": "Speech-to-text language",
   "voice.ptt_mode": "PTT mode",
+  "voice.ptt_hotkey": "PTT hotkey",
   "voice.merge_window": "Merge window",
   "tools.enabled": "Tools enabled",
   "tools.network_enabled": "Internet access",
@@ -1125,12 +1123,15 @@ const RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY = Object.freeze({
   "brain.fast": Object.freeze(["brain_provider", "fast"]),
   "voice.default_tts": Object.freeze(["voice_tts", "tts_provider"]),
   "voice.default_stt": Object.freeze(["voice_stt", "stt_provider"]),
+  "voice.stt_model": Object.freeze(["voice_stt", "stt_model"]),
+  "voice.stt_language": Object.freeze(["voice_stt", "language"]),
   "voice.voice_id": Object.freeze(["voice_tts", "voice_id"]),
   "voice.voice_profile": Object.freeze(["voice_tts", "voice_profile"]),
   "voice.profile": Object.freeze(["voice_tts", "voice_profile"]),
   "voice.speed": Object.freeze(["voice_tts", "speed_or_rate"]),
   "voice.rate": Object.freeze(["voice_tts", "speed_or_rate"]),
   "voice.ptt_mode": Object.freeze(["endpointing_ptt", "ptt_mode"]),
+  "voice.ptt_hotkey": Object.freeze(["endpointing_ptt", "ptt_hotkey"]),
   "voice.merge_window": Object.freeze(["endpointing_ptt", "merge_window"]),
   "tools.enabled": Object.freeze(["tools_internet", "tools_enabled"]),
   "tools.network_enabled": Object.freeze(["tools_internet", "internet_capability"]),
@@ -1309,6 +1310,9 @@ function humanShortReason(value) {
   if (lower.includes("runtime tool/network policy reload")) {
     return "Runtime policy changes require restart";
   }
+  if (lower.includes("new provider session") || lower.includes("requires new session")) {
+    return "New provider session required";
+  }
   if (lower.includes("requires daemon restart") || lower.includes("requires restart")) {
     return "Restart required";
   }
@@ -1316,7 +1320,7 @@ function humanShortReason(value) {
     return "No live network toggle is available";
   }
   if (lower.includes("not apply-capable")) {
-    return "Not apply-capable in this POC";
+    return "Not apply-capable";
   }
   if (lower.includes("missing")) {
     return text.length > 90 ? `${text.slice(0, 87)}...` : text;
@@ -1325,13 +1329,19 @@ function humanShortReason(value) {
   return withoutKeys.length > 90 ? `${withoutKeys.slice(0, 87)}...` : withoutKeys;
 }
 
-function humanActionForReason(reason, fallback = "No action available in this POC.") {
+function humanActionForReason(reason, fallback = "No action available right now.") {
   const lower = String(reason || "").toLowerCase();
   if (lower.includes("network/search tool")) {
     return "Install/register a network search tool.";
   }
   if (lower.includes("restart")) {
     return "Restart Jarvis to change this.";
+  }
+  if (lower.includes("new provider session") || lower.includes("requires new session")) {
+    return "Jarvis will apply this when it starts a new provider session.";
+  }
+  if (lower.includes("auth")) {
+    return "Authenticate the provider CLI if Jarvis rejects this.";
   }
   if (lower.includes("voice id")) {
     return "Set a voice id before using this voice.";
@@ -1459,6 +1469,9 @@ function runtimeSettingsUnknownDisabledReason(payload, key) {
   if (!runtimeSettingsEffectiveValueUnknown(payload, key)) {
     return "";
   }
+  if (key === "voice.ptt_hotkey" && runtimeSettingsUnknownCanApply(payload, key)) {
+    return "";
+  }
   return "Effective value: Unknown. Reason: runtime does not report this setting. Apply disabled.";
 }
 
@@ -1535,7 +1548,7 @@ function runtimeSettingsGroupApplyBlockedReason(group, settings, payload) {
   }
   for (const key of changedKeys) {
     if (!runtimeSettingsFieldCanApplyNow(payload, key)) {
-      return "Not apply-capable in this POC";
+      return "Not apply-capable";
     }
   }
   return "";
@@ -1560,6 +1573,29 @@ function runtimeSettingsPendingMessage(group, settings, payload) {
     return `${label}: ${runtimeSettingsFormatValue(effective)} -> ${runtimeSettingsFormatValue(settings[key])}`;
   });
   return `Pending change: ${pieces.join("; ")}`;
+}
+
+function runtimeSettingsAttemptPendingMessage(group, settings, payload) {
+  const changedKeys = runtimeSettingsChangedKeys(group, settings, payload);
+  if (changedKeys.length === 0) {
+    return "";
+  }
+  const pieces = changedKeys.map((key) => {
+    const label = RUNTIME_SETTING_LABELS[key] || key;
+    const effective = runtimeSettingsCurrentValueForKey(payload, key);
+    return `${label}: ${runtimeSettingsFormatValue(effective)} -> ${runtimeSettingsFormatValue(settings[key])}`;
+  });
+  return `Pending change: ${pieces.join("; ")}`;
+}
+
+function runtimeSettingsPendingBackendMessage(pending, validationMessage = "") {
+  if (!pending) {
+    return "";
+  }
+  const reason = humanShortReason(validationMessage);
+  return reason
+    ? `${pending}. Backend will validate: ${humanActionForReason(reason)}`
+    : `${pending}. Backend will validate.`;
 }
 
 function runtimeSettingsGroupResult(group) {
@@ -1613,6 +1649,12 @@ function runtimeSettingsCurrentValueForKey(payload, key) {
   if (key === "voice.default_stt") {
     return projectionValue(voice.default_stt);
   }
+  if (key === "voice.stt_model") {
+    return settingsPreviewFieldValue(source, "voice_stt", "stt_model");
+  }
+  if (key === "voice.stt_language") {
+    return settingsPreviewFieldValue(source, "voice_stt", "language");
+  }
   if (key === "voice.voice_id") {
     return settingsPreviewFieldValue(source, "voice_tts", "voice_id");
   }
@@ -1624,6 +1666,9 @@ function runtimeSettingsCurrentValueForKey(payload, key) {
   }
   if (key === "voice.ptt_mode") {
     return settingsPreviewFieldValue(source, "endpointing_ptt", "ptt_mode");
+  }
+  if (key === "voice.ptt_hotkey") {
+    return settingsPreviewFieldValue(source, "endpointing_ptt", "ptt_hotkey");
   }
   if (key === "voice.merge_window") {
     return settingsPreviewFieldValue(source, "endpointing_ptt", "merge_window");
@@ -1820,7 +1865,7 @@ function renderBrainApplyControls(payload) {
     ...normalProviders.map((provider) => ({
       value: provider.id,
       label: providerApplyLabel(provider, currentProvider),
-      disabled: Boolean(providerApplyBlocker(provider, currentProvider)),
+      disabled: false,
     })),
   ];
   if (keepDeveloperProviderActive) {
@@ -1894,7 +1939,7 @@ function updateBrainControlOptions() {
   const preserveDeveloperProvider = currentProviderId === "mock" || Boolean(currentProvider && currentProvider.developer_only);
   const lockedToDeveloperProvider = preserveDeveloperProvider && !selectedProvider;
   const models = Array.isArray(safeObject(provider).models) ? provider.models : [];
-  const modelDisabledReason = runtimeSettingsFieldCannotApplyReason(payload, "brain.model");
+  const modelDisabledReason = runtimeSettingsUnknownDisabledReason(payload, "brain.model");
   const currentModelControlValue = el.activeBrainModelSelect ? String(el.activeBrainModelSelect.value || "") : "";
   const modelIds = models.map((item) => String(item.id));
   const previewModel = runtimeSettingsPreviewValue(
@@ -1919,7 +1964,8 @@ function updateBrainControlOptions() {
     : [];
   const effortUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "brain.effort");
   const currentEffortControlValue = el.activeBrainEffortSelect ? String(el.activeBrainEffortSelect.value || "") : "";
-  const previewEffort = runtimeSettingsPreviewValue("brain", "brain.effort", efforts[0] || "");
+  const effectiveEffort = runtimeSettingsCurrentValueForKey(payload, "brain.effort");
+  const previewEffort = runtimeSettingsPreviewValue("brain", "brain.effort", effectiveEffort || efforts[0] || "");
   setSelectOptions(
     el.activeBrainEffortSelect,
     efforts.map((value) => ({ value, label: value })),
@@ -1938,18 +1984,22 @@ function updateBrainControlOptions() {
   runtimeSettingsSetPreview("brain", runtimeSettingsDraftForGroup("brain"));
   const blocker = provider ? providerApplyBlocker(provider, runtimeSettingsCurrentProvider(payload)) : "provider unavailable";
   const draft = runtimeSettingsPayloadForGroup("brain", runtimeSettingsDraftForGroup("brain"));
-  const pending = runtimeSettingsPendingMessage("brain", draft, payload);
+  const pending = runtimeSettingsAttemptPendingMessage("brain", draft, payload);
   const unknownMessage = runtimeSettingsBrainUnknownControlMessage(payload) || runtimeSettingsUnknownDisabledMessage("brain", draft, payload);
   const applyBlockedReason = runtimeSettingsGroupApplyBlockedReason("brain", draft, payload);
-  const disabledMessage = blocker || unknownMessage || applyBlockedReason;
+  const validationMessage = blocker || applyBlockedReason;
   const result = runtimeSettingsGroupResult("brain");
   setText(
     el.brainApplyStatus,
-    disabledMessage || (pending ? `${result ? `${result} ` : ""}${pending}` : result || runtimeSettingsGroupNoChangesMessage("brain")),
+    unknownMessage
+      ? unknownMessage
+      : pending
+        ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
+        : result || runtimeSettingsGroupNoChangesMessage("brain"),
   );
   setButtonEnabled(
     el.applyBrainSettingsButton,
-    !disabledMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+    !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
   );
 }
 
@@ -1982,7 +2032,7 @@ function renderTtsApplyControls(payload) {
     ttsProviders.map((provider) => ({
       value: provider.id,
       label: provider.available ? `${provider.label || provider.id} (requires restart)` : `${provider.label || provider.id} (missing)`,
-      disabled: true,
+      disabled: false,
     })),
     currentTts,
   );
@@ -1991,7 +2041,7 @@ function renderTtsApplyControls(payload) {
     (Array.isArray(ttsModelField.allowed_values) ? ttsModelField.allowed_values : []).map((value) => ({
       value,
       label: value,
-      disabled: true,
+      disabled: false,
     })),
     ttsModelField.effective || ttsModelField.current || "",
   );
@@ -2000,7 +2050,7 @@ function renderTtsApplyControls(payload) {
     (Array.isArray(voiceIdField.allowed_values) ? voiceIdField.allowed_values : []).map((value) => ({
       value,
       label: value,
-      disabled: true,
+      disabled: false,
     })),
     voiceIdField.effective || voiceIdField.current || "",
   );
@@ -2009,16 +2059,16 @@ function renderTtsApplyControls(payload) {
     (Array.isArray(voiceProfileField.allowed_values) ? voiceProfileField.allowed_values : []).map((value) => ({
       value,
       label: value,
-      disabled: true,
+      disabled: false,
     })),
     voiceProfileField.effective || voiceProfileField.current || "",
   );
-  if (el.voiceTtsSelect) el.voiceTtsSelect.disabled = true;
-  if (el.voiceTtsModelSelect) el.voiceTtsModelSelect.disabled = true;
-  if (el.voiceVoiceIdSelect) el.voiceVoiceIdSelect.disabled = true;
-  if (el.voiceProfileSelect) el.voiceProfileSelect.disabled = true;
+  if (el.voiceTtsSelect) el.voiceTtsSelect.disabled = ttsProviders.length === 0;
+  if (el.voiceTtsModelSelect) el.voiceTtsModelSelect.disabled = false;
+  if (el.voiceVoiceIdSelect) el.voiceVoiceIdSelect.disabled = false;
+  if (el.voiceProfileSelect) el.voiceProfileSelect.disabled = false;
   if (el.voiceSpeedInput) {
-    el.voiceSpeedInput.disabled = true;
+    el.voiceSpeedInput.disabled = false;
     const currentSpeed = settingsPreviewFieldValue(payload, "voice_tts", "speed_or_rate");
     el.voiceSpeedInput.value = currentSpeed === null || currentSpeed === undefined ? "" : currentSpeed;
   }
@@ -2041,7 +2091,7 @@ function renderSttApplyControls(payload) {
     sttProviders.map((provider) => ({
       value: provider.id,
       label: provider.available ? `${provider.label || provider.id} (requires restart)` : `${provider.label || provider.id} (missing)`,
-      disabled: true,
+      disabled: false,
     })),
     projectionValue(voice.default_stt),
   );
@@ -2050,7 +2100,7 @@ function renderSttApplyControls(payload) {
     (Array.isArray(sttModelField.allowed_values) ? sttModelField.allowed_values : []).map((value) => ({
       value,
       label: value,
-      disabled: true,
+      disabled: false,
     })),
     sttModelField.effective || sttModelField.current || "",
   );
@@ -2059,13 +2109,13 @@ function renderSttApplyControls(payload) {
     [languageField.effective || languageField.current || ""].filter(Boolean).map((value) => ({
       value,
       label: value,
-      disabled: true,
+      disabled: false,
     })),
     languageField.effective || languageField.current || "",
   );
-  if (el.voiceSttSelect) el.voiceSttSelect.disabled = true;
-  if (el.voiceSttModelSelect) el.voiceSttModelSelect.disabled = true;
-  if (el.voiceSttLanguageSelect) el.voiceSttLanguageSelect.disabled = true;
+  if (el.voiceSttSelect) el.voiceSttSelect.disabled = sttProviders.length === 0;
+  if (el.voiceSttModelSelect) el.voiceSttModelSelect.disabled = false;
+  if (el.voiceSttLanguageSelect) el.voiceSttLanguageSelect.disabled = false;
   renderSettingsSectionSummary(el.voiceSttStatusList, payload, "voice_stt");
   updateSttControlOptions();
   if (sttField.requires_restart || sttModelField.requires_restart || languageField.requires_restart) {
@@ -2086,60 +2136,66 @@ function updateTtsControlOptions() {
   if (ttsField.blocker && !String(ttsField.blocker).includes("requires restart")) blockers.push(ttsField.blocker);
   if (voiceIdField.blocker) blockers.push(voiceIdField.blocker);
   const draft = runtimeSettingsPayloadForGroup("tts", runtimeSettingsDraftForGroup("tts"));
-  const pending = runtimeSettingsPendingMessage("tts", draft, payload);
+  const pending = runtimeSettingsAttemptPendingMessage("tts", draft, payload);
   const unknownMessage = runtimeSettingsUnknownDisabledMessage("tts", draft, payload);
   const result = runtimeSettingsGroupResult("tts");
   const applyBlockedReason = runtimeSettingsGroupApplyBlockedReason("tts", draft, payload);
   const ttsGroupBlocked = !ttsCanApply || blockers.length > 0;
-  const speakResponsesBlocked = ttsGroupBlocked && !speakCanApply;
   if (el.voiceSpeakResponsesToggle) {
-    el.voiceSpeakResponsesToggle.disabled = speakResponsesBlocked || unknownMessage !== "";
-    el.voiceSpeakResponsesToggle.title = speakResponsesBlocked
-      ? runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts") || "Not apply-capable in this POC"
-      : "";
+    el.voiceSpeakResponsesToggle.disabled = unknownMessage !== "";
+    el.voiceSpeakResponsesToggle.title = unknownMessage || (ttsGroupBlocked && !speakCanApply
+      ? runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts") || "Backend will validate."
+      : "");
   }
   const ttsApplyBlocked = ttsGroupBlocked || Boolean(applyBlockedReason);
-  let blockedMessage = "";
+  let validationMessage = "";
   if (ttsApplyBlocked) {
     if (applyBlockedReason) {
-      blockedMessage = `Blocked. ${humanActionForReason(humanShortReason(applyBlockedReason))}`;
+      validationMessage = applyBlockedReason;
     } else if (blockers.length > 0) {
-      blockedMessage = `Blocked. ${humanActionForReason(humanShortReason(blockers[0]))}`;
+      validationMessage = blockers[0];
     } else {
-      blockedMessage = runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts")
-        || `Blocked. ${humanActionForReason("not apply-capable in this POC")}`;
+      validationMessage = runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts")
+        || `Blocked. ${humanActionForReason("not apply-capable")}`;
     }
   }
   setText(
     el.ttsApplyStatus,
-    blockedMessage || unknownMessage
-      ? blockedMessage || unknownMessage
+    unknownMessage
+      ? unknownMessage
       : pending
-        ? `${result ? `${result} ` : ""}${pending}`
-        : result || "Requires restart. Restart Jarvis to change engine, model, voice, or speed.",
+        ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
+        : result || validationMessage || "Requires restart. Restart Jarvis to change engine, model, voice, or speed.",
   );
   setButtonEnabled(
     el.applyTtsSettingsButton,
-    !ttsApplyBlocked && !unknownMessage && !applyBlockedReason && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+    !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
   );
 }
 
 function updateSttControlOptions() {
   const payload = cockpit.runtimeSettingsApply.payload || {};
+  runtimeSettingsSetPreview("stt", runtimeSettingsDraftForGroup("stt"));
   const stt = runtimeSettingsVoiceProvider(payload, el.voiceSttSelect ? el.voiceSttSelect.value : "", "stt");
   const blockers = [];
   if (!stt || stt.available === false) blockers.push("STT provider/runtime missing");
-  const changed = runtimeSettingsGroupHasChanges("stt", runtimeSettingsDraftForGroup("stt"), payload);
+  const draft = runtimeSettingsPayloadForGroup("stt", runtimeSettingsDraftForGroup("stt"));
+  const pending = runtimeSettingsAttemptPendingMessage("stt", draft, payload);
+  const unknownMessage = runtimeSettingsUnknownDisabledMessage("stt", draft, payload);
   const result = runtimeSettingsGroupResult("stt");
+  const validationMessage = blockers[0] || runtimeSettingsGroupApplyBlockedReason("stt", draft, payload);
   setText(
     el.sttApplyStatus,
-    blockers.length > 0
-      ? `Blocked. ${humanActionForReason(humanShortReason(blockers[0]))}`
-      : changed
-        ? "Requires restart. Restart Jarvis to change this."
-        : "Requires restart. Restart Jarvis to change transcription settings.",
+    unknownMessage
+      ? unknownMessage
+      : pending
+        ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
+        : result || validationMessage || "Requires restart. Restart Jarvis to change transcription settings.",
   );
-  setButtonEnabled(el.applySttSettingsButton, false);
+  setButtonEnabled(
+    el.applySttSettingsButton,
+    !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
 }
 
 function renderPttApplyControls(payload) {
@@ -2157,12 +2213,20 @@ function renderPttApplyControls(payload) {
     runtimeSettingsPreviewValue("ptt", "voice.ptt_mode", pttMode),
   );
   if (el.pttModeSelect) {
-    el.pttModeSelect.disabled = Boolean(pttUnknownReason) || pttField.editable_now !== true;
+    el.pttModeSelect.disabled = Boolean(pttUnknownReason);
     el.pttModeSelect.title = pttUnknownReason || "";
+  }
+  if (el.pttHotkeyInput) {
+    el.pttHotkeyInput.value = runtimeSettingsPreviewValue(
+      "ptt",
+      "voice.ptt_hotkey",
+      settingsPreviewFieldValue(payload, "endpointing_ptt", "ptt_hotkey") || "",
+    );
+    el.pttHotkeyInput.disabled = false;
   }
   if (el.pttMergeWindowInput) {
     el.pttMergeWindowInput.value = settingsPreviewFieldValue(payload, "endpointing_ptt", "merge_window") || "";
-    el.pttMergeWindowInput.disabled = true;
+    el.pttMergeWindowInput.disabled = false;
   }
   setText(el.pttListeningSummary, runtimeSettingsCompactUnknownStatus(settingsPreviewFieldValue(payload, "endpointing_ptt", "listening_lease_state")));
   setText(el.pttBargeInSummary, runtimeSettingsCompactUnknownStatus(settingsPreviewFieldValue(payload, "endpointing_ptt", "interrupt_policy")));
@@ -2177,22 +2241,22 @@ function updatePttControlOptions() {
   const pttField = settingsPreviewField(payload, "endpointing_ptt", "ptt_mode");
   const blocker = pttField.blocker || "";
   const draft = runtimeSettingsPayloadForGroup("ptt", runtimeSettingsDraftForGroup("ptt"));
-  const pending = runtimeSettingsPendingMessage("ptt", draft, payload);
-  const unknownMessage = runtimeSettingsUnknownDisabledMessage("ptt", draft, payload);
+  const pending = runtimeSettingsAttemptPendingMessage("ptt", draft, payload);
+  const pttUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "voice.ptt_mode");
+  const unknownMessage = runtimeSettingsUnknownDisabledMessage("ptt", draft, payload)
+    || (!pending && pttUnknownReason ? pttUnknownReason : "");
   const result = runtimeSettingsGroupResult("ptt");
   setText(
     el.pttApplyStatus,
-    blocker
-      ? `Blocked. ${humanActionForReason(humanShortReason(blocker))}`
-      : unknownMessage
-        ? unknownMessage
+    unknownMessage
+      ? unknownMessage
       : pending
-        ? `${result ? `${result} ` : ""}${pending}`
-        : result || "Requires restart. Restart Jarvis to change merge window.",
+        ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, blocker)}`
+        : result || blocker || "Requires restart. Restart Jarvis to change merge window.",
   );
   setButtonEnabled(
     el.applyPttSettingsButton,
-    !blocker && !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+    !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
   );
 }
 
@@ -2277,10 +2341,16 @@ function updateToolsControlOptions() {
   const applyCapabilities = safeObject(graphTools.apply_capabilities);
   const draft = runtimeSettingsPayloadForGroup("tools", runtimeSettingsDraftForGroup("tools"));
   const disabledReason = runtimeSettingsToolsApplyDisabledReason(payload, draft, applyCapabilities, tools);
-  setText(el.toolsApplyStatus, disabledReason || "Tools / Internet changes can apply now.");
+  const pending = runtimeSettingsAttemptPendingMessage("tools", draft, payload);
+  setText(
+    el.toolsApplyStatus,
+    pending
+      ? runtimeSettingsPendingBackendMessage(pending, disabledReason)
+      : disabledReason || runtimeSettingsGroupNoChangesMessage("tools"),
+  );
   setButtonEnabled(
     el.applyToolsSettingsButton,
-    !disabledReason && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+    Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
   );
 }
 
@@ -2299,7 +2369,7 @@ function setToolsToggleState(toggle, checked, key, applyCapabilities, forceDisab
     return;
   }
   toggle.checked = Boolean(checked);
-  toggle.disabled = Boolean(disabledReason);
+  toggle.disabled = false;
 }
 
 function setReadOnlyBooleanStatus(node, value) {
@@ -2359,11 +2429,11 @@ function runtimeSettingsToolsApplyDisabledReason(payload, settings, applyCapabil
   }
   const operator = toolsInternetOperatorState(tools, applyCapabilities);
   const changedKeys = runtimeSettingsChangedKeys("tools", settings, payload);
+  if (changedKeys.length === 0) {
+    return "";
+  }
   if (operator.applyStatus === "Blocked" || operator.applyStatus === "Requires restart") {
     return `${operator.applyStatus}. Apply disabled. ${operator.action}`;
-  }
-  if (changedKeys.length === 0) {
-    return "No Tools / Internet changes.";
   }
   for (const key of changedKeys) {
     const reason = runtimeSettingsToolControlDisabledReason(key, safeObject(safeObject(applyCapabilities)[key]));
@@ -2435,20 +2505,20 @@ function runtimeSettingsToolsNoLiveApplyReason(applyCapabilities, tools = null) 
 
 function setToolsSectionCompactMode(compact) {
   if (el.activeToolsSettingsSection && el.activeToolsSettingsSection.classList) {
-    el.activeToolsSettingsSection.classList.toggle("compact-only", Boolean(compact));
+    el.activeToolsSettingsSection.classList.toggle("compact-only", false);
   }
   if (el.toolsSectionDescription) {
-    el.toolsSectionDescription.hidden = Boolean(compact);
+    el.toolsSectionDescription.hidden = false;
   }
   for (const node of [el.toolsControlGrid, el.toolsSummaryDetails]) {
     if (node) {
-      node.hidden = Boolean(compact);
+      node.hidden = false;
     }
   }
   if (el.resetToolsPreviewButton) {
-    el.resetToolsPreviewButton.disabled = Boolean(compact);
-    el.resetToolsPreviewButton.hidden = Boolean(compact);
-    el.resetToolsPreviewButton.title = compact ? "No Tools / Internet preview can apply at runtime." : "";
+    el.resetToolsPreviewButton.disabled = false;
+    el.resetToolsPreviewButton.hidden = false;
+    el.resetToolsPreviewButton.title = compact ? "Backend will validate Tools / Internet changes." : "";
   }
 }
 
@@ -2588,10 +2658,9 @@ function renderPersonaApplyControls(payload) {
     selectedProfile,
   );
   renderPersonalityStatusList(payload, selectedProfile);
-  const capable = profiles.length > 0 && runtimeSettingsFieldCanApplyNow(payload, "persona.profile");
   setText(
     el.personaApplyStatus,
-    capable ? "Apply through Jarvis available." : "Read-only. No action available in this POC.",
+    profiles.length > 0 ? runtimeSettingsGroupNoChangesMessage("persona") : "No persona profiles available.",
   );
   updatePersonaControlOptions();
 }
@@ -2601,30 +2670,21 @@ function updatePersonaControlOptions() {
   runtimeSettingsSetPreview("persona", runtimeSettingsDraftForGroup("persona"));
   const field = settingsPreviewField(payload, "personality", "active_persona");
   const profiles = Array.isArray(field.allowed_values) ? field.allowed_values : [];
-  const capable = profiles.length > 0 && runtimeSettingsFieldCanApplyNow(payload, "persona.profile");
   const disabledReason = runtimeSettingsFieldCannotApplyReason(payload, "persona.profile");
-  const disabledText = capable
-    ? ""
-    : disabledReason.includes("Requires restart")
-      ? "Requires restart"
-      : "Not apply-capable in this POC";
   const draft = runtimeSettingsPayloadForGroup("persona", runtimeSettingsDraftForGroup("persona"));
-  const pending = runtimeSettingsPendingMessage("persona", draft, payload);
+  const pending = runtimeSettingsAttemptPendingMessage("persona", draft, payload);
   const applyBlockedReason = runtimeSettingsGroupApplyBlockedReason("persona", draft, payload);
   const result = runtimeSettingsGroupResult("persona");
+  const validationMessage = applyBlockedReason || disabledReason;
   setText(
     el.personaApplyStatus,
-    capable
-      ? applyBlockedReason
-        ? applyBlockedReason
-        : pending
-          ? `${result ? `${result} ` : ""}${pending}`
-          : result || runtimeSettingsGroupNoChangesMessage("persona")
-      : disabledText,
+    pending
+      ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
+      : result || validationMessage || runtimeSettingsGroupNoChangesMessage("persona"),
   );
   setButtonEnabled(
     el.applyPersonaSettingsButton,
-    capable && !applyBlockedReason && Boolean(pending) && cockpit.online,
+    profiles.length > 0 && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
   );
 }
 
@@ -2670,7 +2730,6 @@ function renderAuxiliaryCockpitSectionsFromPayload(payload) {
   renderPersonalityStatusList(payload);
   renderQueueBargeInSummary(payload);
   renderMemoryApprovalsSummary(payload);
-  renderDeveloperTestSummary(payload);
   renderLatestTurnTraceSummary(payload);
   renderRuntimeLogsSummaryFromPayload(payload);
 }
@@ -2706,7 +2765,7 @@ function renderQueueBargeInSummary(payload, rows = null) {
   ]);
   row.appendChild(values);
   el.queueBargeInList.appendChild(row);
-  setText(el.queueApplyStatus, "Manual cancel route not implemented in this panel POC.");
+  setText(el.queueApplyStatus, "Manual cancel route not implemented in this panel.");
   if (el.cancelCurrentSpeechButton) {
     el.cancelCurrentSpeechButton.disabled = true;
     el.cancelCurrentSpeechButton.title = "not implemented";
@@ -2746,10 +2805,6 @@ function latestProjectionWarning(group) {
     }
   }
   return "";
-}
-
-function renderDeveloperTestSummary(payload) {
-  renderSettingsSectionSummary(el.developerTestList, payload, "developer_test");
 }
 
 function renderLatestTurnTraceSummary(payload) {
@@ -2824,28 +2879,12 @@ async function applyRuntimeSettingsGroup(group) {
     return;
   }
   if (Object.keys(settings).length === 0) {
-    setText(statusNode, "read-only in this POC");
+    setText(statusNode, "No apply payload available.");
     return;
   }
   if (!runtimeSettingsGroupHasChanges(group, settings, cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {})) {
     setText(statusNode, "unchanged");
     return;
-  }
-  if (group === "tools") {
-    const button = runtimeSettingsApplyButton(group);
-    if (button && button.disabled) {
-      const payload = cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {};
-      const tools = safeObject(payload.tools);
-      const graphTools = safeObject(safeObject(payload.capability_graph).tools_capabilities);
-      const reason = runtimeSettingsToolsApplyDisabledReason(
-        payload,
-        settings,
-        safeObject(graphTools.apply_capabilities),
-        tools,
-      );
-      setText(statusNode, reason || "Apply Tools disabled.");
-      return;
-    }
   }
   cockpit.runtimeSettingsApply.applyingGroup = group;
   cockpit.runtimeSettingsApply.groupResults[group] = "Applying...";
@@ -2884,7 +2923,7 @@ async function applyRuntimeSettingsGroup(group) {
     cockpit.runtimeSettingsApply.applyingGroup = null;
     setRuntimeSettingsApplyBusy(false);
     renderRuntimeSettingsControls(cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {});
-    if (cockpit.settingsPreview.model) {
+    if (cockpit.settingsPreview.model && el.settingsPreviewList) {
       renderSettingsPreview(cockpit.settingsPreview.model);
     }
     setText(statusNode, resultMessage || "Apply finished.");
@@ -2969,11 +3008,14 @@ function runtimeSettingsDraftForGroup(group) {
   if (group === "stt") {
     return {
       "voice.default_stt": el.voiceSttSelect && !el.voiceSttSelect.disabled ? el.voiceSttSelect.value : undefined,
+      "voice.stt_model": el.voiceSttModelSelect && !el.voiceSttModelSelect.disabled ? el.voiceSttModelSelect.value : undefined,
+      "voice.stt_language": el.voiceSttLanguageSelect && !el.voiceSttLanguageSelect.disabled ? el.voiceSttLanguageSelect.value : undefined,
     };
   }
   if (group === "ptt") {
     return {
-      "voice.ptt_mode": el.pttModeSelect ? el.pttModeSelect.value : undefined,
+      "voice.ptt_mode": el.pttModeSelect && !el.pttModeSelect.disabled ? el.pttModeSelect.value : undefined,
+      "voice.ptt_hotkey": el.pttHotkeyInput && !el.pttHotkeyInput.disabled ? el.pttHotkeyInput.value.trim() : undefined,
       "voice.merge_window": el.pttMergeWindowInput && !el.pttMergeWindowInput.disabled && el.pttMergeWindowInput.value !== ""
         ? Number(el.pttMergeWindowInput.value)
         : undefined,
@@ -3007,16 +3049,11 @@ function runtimeSettingsDraftForGroup(group) {
 }
 
 function runtimeSettingsApplyPayloadForGroup(group, settings) {
-  if (group !== "brain" && group !== "tts" && group !== "stt" && group !== "persona" && group !== "ptt") {
-    return runtimeSettingsPayloadForGroup(group, settings);
-  }
-  const payload = safeObject(settings);
+  const payload = runtimeSettingsPayloadForGroup(group, settings);
   const runtimePayload = cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {};
   const filtered = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (runtimeSettingsFieldCanApplyNow(runtimePayload, key)) {
-      filtered[key] = value;
-    }
+  for (const key of runtimeSettingsChangedKeys(group, payload, runtimePayload)) {
+    filtered[key] = payload[key];
   }
   return filtered;
 }
@@ -3963,7 +4000,7 @@ function renderMissionControl(snapshot) {
   const summary = operatorSummaryFromSnapshot(safeSnapshot);
   renderMissionSummary(summary);
   renderMissionModules(safeSnapshot, summary);
-  renderPocChecklist(safeSnapshot);
+  renderOperationalChecklist(safeSnapshot);
   renderVoiceDoctor(safeSnapshot);
   renderProviderDoctor(safeSnapshot);
   renderMissionAuxiliarySummaries(safeSnapshot);
@@ -3975,13 +4012,11 @@ function renderMissionAuxiliarySummaries(snapshot) {
   if (Object.keys(runtimeSettings).length > 0) {
     renderQueueBargeInSummary(runtimeSettings);
     renderMemoryApprovalsSummary(runtimeSettings);
-    renderDeveloperTestSummary(runtimeSettings);
     renderLatestTurnTraceSummary(runtimeSettings);
     renderRuntimeLogsSummaryFromPayload(runtimeSettings, events);
   } else {
     renderQueueBargeInSummary({});
     renderMemoryApprovalsSummary({});
-    renderDeveloperTestSummary({});
     renderLatestTurnTraceSummary({});
     renderRuntimeLogsSummaryFromPayload({}, events);
   }
@@ -3994,30 +4029,27 @@ function renderMissionSummary(summary) {
   head.className = "mission-summary-head";
   const title = document.createElement("p");
   title.className = "mission-summary-title";
-  setText(title, `Jarvis POC status: ${summary.statusLine}`);
+  setText(title, `Jarvis: ${compactMissionText(summary.statusLine, 110)}`);
   head.append(title, missionStatusChip(summary.status, summary.status));
   el.missionControlSummary.appendChild(head);
 
-  const values = document.createElement("dl");
-  values.className = "kv-list";
-  renderKeyValues(values, [
-    ["top blockers", summary.blockers.length > 0 ? summary.blockers.slice(0, 3).join("; ") : "none"],
-    ["top warnings", summary.warnings.length > 0 ? summary.warnings.slice(0, 3).join("; ") : "none"],
-    ["backend connection", summary.backendConnected ? "connected" : "offline"],
-    ["daemon status", summary.daemonStatus],
-    ["panel status", summary.panelStatus],
-    ["active provider", summary.activeProvider],
+  const glance = document.createElement("div");
+  glance.className = "mission-glance-grid";
+  for (const item of [
+    ["backend", summary.backendConnected ? "connected" : "offline"],
+    ["provider", summary.activeProvider],
     ["voice", summary.voiceStatus],
-    ["tools/internet", summary.toolsInternetStatus],
-    ["memory/approval", summary.memoryApprovalStatus],
-    ["latest critical blocker", summary.latestCriticalBlocker],
-    ["latest safe error", summary.latestSafeError],
-    ["next action", summary.nextAction],
-    ["last refresh", summary.lastRefreshTime],
-    ["last important event", summary.lastImportantEvent || "none"],
-    ["safety", summary.safetyGuarantee],
-  ]);
-  el.missionControlSummary.appendChild(values);
+    ["tools", summary.toolsInternetStatus],
+    ["memory", summary.memoryApprovalStatus],
+    ["refresh", summary.lastRefreshTime],
+  ]) {
+    glance.appendChild(missionGlanceItem(item[0], item[1]));
+  }
+  el.missionControlSummary.appendChild(glance);
+
+  appendMissionIssueList(el.missionControlSummary, "action", [summary.nextAction], "action");
+  appendMissionIssueList(el.missionControlSummary, "blockers", summary.blockers, "blocked");
+  appendMissionIssueList(el.missionControlSummary, "warnings", summary.warnings, "warning");
 }
 
 function missionStatusChip(status, label) {
@@ -4025,6 +4057,54 @@ function missionStatusChip(status, label) {
   chip.className = `status-chip status-${status || "unknown"}`;
   setText(chip, label || "unknown");
   return chip;
+}
+
+function missionGlanceItem(label, value) {
+  const item = document.createElement("div");
+  item.className = "mission-glance-item";
+  const key = document.createElement("span");
+  key.className = "mission-glance-label";
+  setText(key, label);
+  const val = document.createElement("span");
+  val.className = "mission-glance-value";
+  val.title = displayValue(value);
+  setText(val, compactMissionText(value, 44));
+  item.append(key, val);
+  return item;
+}
+
+function appendMissionIssueList(parent, label, items, tone) {
+  const list = document.createElement("div");
+  list.className = `mission-issue-list mission-issue-${tone}`;
+  const labelNode = document.createElement("span");
+  labelNode.className = "mission-issue-label";
+  setText(labelNode, label);
+  list.appendChild(labelNode);
+
+  const values = uniqueNonEmpty(items || []).slice(0, 3);
+  if (values.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "mission-issue-empty";
+    setText(empty, "none");
+    list.appendChild(empty);
+  } else {
+    for (const value of values) {
+      const pill = document.createElement("span");
+      pill.className = "mission-issue-pill";
+      pill.title = displayValue(value);
+      setText(pill, compactMissionText(value, 72));
+      list.appendChild(pill);
+    }
+  }
+  parent.appendChild(list);
+}
+
+function compactMissionText(value, maxLength = 72) {
+  const text = displayValue(value).replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
 function renderMissionModules(snapshot, summary) {
@@ -4046,11 +4126,36 @@ function missionModuleCard(card) {
   head.append(title, missionStatusChip(card.status || "unknown", card.status || "unknown"));
   row.appendChild(head);
 
-  const values = document.createElement("dl");
-  values.className = "kv-list";
-  renderKeyValues(values, card.rows);
-  row.appendChild(values);
+  appendLine(row, missionModuleSummary(card.rows), "mission-card-summary");
+  const facts = document.createElement("div");
+  facts.className = "mission-module-facts";
+  for (const fact of missionModuleFacts(card.rows)) {
+    const pill = document.createElement("span");
+    pill.className = "mission-module-fact";
+    pill.title = fact.full;
+    setText(pill, fact.short);
+    facts.appendChild(pill);
+  }
+  row.appendChild(facts);
   return row;
+}
+
+function missionModuleSummary(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return "No diagnostics loaded.";
+  }
+  const [label, value] = rows[0];
+  return `${label}: ${compactMissionText(value, 82)}`;
+}
+
+function missionModuleFacts(rows) {
+  return (Array.isArray(rows) ? rows : []).slice(1, 4).map(([label, value]) => {
+    const full = `${label}: ${displayValue(value)}`;
+    return {
+      full,
+      short: compactMissionText(full, 54),
+    };
+  });
 }
 
 function missionControlModuleCards(context, summary) {
@@ -4076,7 +4181,7 @@ function missionControlModuleCards(context, summary) {
         ["command", providerCommandStatus(context)],
         ["credentials", providerCredentialsStatus(context)],
         ["unsupported stale values", providerCompatibilityWarnings(context).join("; ") || "none"],
-        ["mock/dev warning", providerMockDevWarning(context)],
+        ["non-production warning", providerMockDevWarning(context)],
       ],
     },
     {
@@ -4142,9 +4247,9 @@ function voicePipelineRow(context, groupKey, label, currentValue) {
   ];
 }
 
-function renderPocChecklist(snapshot) {
+function renderOperationalChecklist(snapshot) {
   clearNode(el.missionControlChecklist);
-  for (const item of pocChecklistItems(snapshot || {})) {
+  for (const item of operationalChecklistItems(snapshot || {})) {
     const row = document.createElement("article");
     row.className = `checklist-item status-${item.status}`;
     const head = document.createElement("p");
@@ -4160,7 +4265,7 @@ function renderPocChecklist(snapshot) {
   }
 }
 
-function pocChecklistItems(snapshot) {
+function operationalChecklistItems(snapshot) {
   const context = runtimeOverviewContext(snapshot || {});
   const backend = operatorBackendConnected(context);
   const runtimeLoaded = operatorRuntimeProjectionLoaded(context);
@@ -4375,7 +4480,7 @@ function voiceDoctorMeaning(context) {
   if (diagnoses.includes("queue stuck")) {
     return "Speech was queued or speaking too long; inspect voice queue and cancellation.";
   }
-  return "Voice looks usable enough for the POC; run a manual PTT and queue check.";
+  return "Voice looks usable; run a manual PTT and queue check.";
 }
 
 function providerDoctorRows(context) {
@@ -4420,7 +4525,7 @@ function providerDoctorDiagnoses(context) {
     diagnoses.push("local model missing");
   }
   if (providerName === "mock" || provider.kind === "Developer/Test") {
-    diagnoses.push("mock/dev selected");
+    diagnoses.push("non-production provider selected");
   }
   if (credentialsStatus === RUNTIME_OVERVIEW_READINESS.MISSING || credentialsStatus === RUNTIME_OVERVIEW_READINESS.UNKNOWN) {
     diagnoses.push("credentials unknown/missing");
@@ -4433,13 +4538,13 @@ function providerDoctorMeaning(context) {
   if (diagnoses.includes("provider command missing")) {
     return "The selected adapter cannot be executed from the safe runtime view.";
   }
-  if (diagnoses.includes("mock/dev selected")) {
-    return "Mock/dev is fine for smoke tests, but not proof of a real provider.";
+  if (diagnoses.includes("non-production provider selected")) {
+    return "The active provider is not a normal runtime provider.";
   }
   if (diagnoses.includes("credentials unknown/missing")) {
     return "Credentials are not exposed here; run a manual provider smoke if needed.";
   }
-  return "Provider status is known enough for a POC text turn.";
+  return "Provider status is known enough for a text turn.";
 }
 
 function operatorSummaryFromSnapshot(snapshot) {
@@ -4479,7 +4584,7 @@ function operatorSummaryFromSnapshot(snapshot) {
       : "unknown",
     lastImportantEvent: lastImportantEventSummary(context),
     safetyGuarantee:
-      "POC mode - not production; no config writes; no settings save; no provider switch execution; no model loading; no microphone activation; no external API/provider calls; no paid calls; no raw secret rendering",
+      "Production mode; backend-owned state; redacted diagnostics; explicit approval gates; no raw secret rendering",
   };
 }
 
@@ -4689,7 +4794,7 @@ function scriptsJarvisStatusHint(context) {
 function providerMockDevWarning(context) {
   const provider = safeObject(currentProviderCapability(context));
   if (provider.name === "mock" || provider.kind === "Developer/Test") {
-    return "mock/dev selected";
+    return "non-production provider selected";
   }
   return "none";
 }
@@ -5416,11 +5521,11 @@ const RUNTIME_OVERVIEW_SECTIONS = [
       field("last failure source", "events", (ctx) => runtimeOverviewSourceFailures(ctx.failures)),
       field("backend data gaps", "contract", (ctx) => backendDataGapsSummary(ctx)),
       field("warnings summary", "contract", (ctx) => runtimeOverviewWarningsSummary(ctx)),
-      field("test/debug status", "events", () => RUNTIME_OVERVIEW_NOT_EXPOSED),
+      field("diagnostic status", "events", () => RUNTIME_OVERVIEW_NOT_EXPOSED),
     ],
   },
   {
-    title: "Developer/Test",
+    title: "Runtime Checks",
     fields: [
       field("active persona/profile", "settings", (ctx) => overviewPersona(ctx.settings)),
       field("runtime change without restart", "contract", () =>
@@ -5431,9 +5536,10 @@ const RUNTIME_OVERVIEW_SECTIONS = [
         "style.profile",
         "voice.style",
       ])),
-      field("mock adapter/provider", "brain", (ctx) =>
-        adapterRegistration(ctx.adapters, ["mock"], "Developer/Test registered"),
-      ),
+      field("runtime config", "runtimeSettings", (ctx) => readinessValue(ctx, "daemon_config"), {
+        readiness: (ctx) => readinessStatus(ctx, "daemon_config"),
+        warnings: (ctx) => readinessWarnings(ctx, ["daemon_config"]),
+      }),
     ],
   },
 ];
@@ -7603,16 +7709,6 @@ async function saveSetting(event) {
   event.preventDefault();
   clearError(el.settingsError);
 
-  if (POC_NO_PERSISTENCE_GUARD) {
-    renderError(
-      el.settingsError,
-      makeRequestError("Mission Control POC is read-only; settings save is disabled.", {
-        route: "/settings",
-      }),
-    );
-    return;
-  }
-
   const key = el.settingKey.value.trim();
   if (!key || !cockpit.online) {
     return;
@@ -7649,16 +7745,6 @@ async function saveSetting(event) {
 
 async function switchBrain() {
   clearError(el.settingsError);
-
-  if (POC_NO_PERSISTENCE_GUARD) {
-    renderError(
-      el.settingsError,
-      makeRequestError("Mission Control POC is read-only; provider switch execution is disabled.", {
-        route: "/brain/switch",
-      }),
-    );
-    return;
-  }
 
   const adapter = el.brainAdapterSelect.value;
   if (!adapter || !cockpit.online) {
@@ -8412,6 +8498,7 @@ function setInteractiveEnabled(enabled) {
     el.applyTtsSettingsButton,
     el.applySttSettingsButton,
     el.pttModeSelect,
+    el.pttHotkeyInput,
     el.pttMergeWindowInput,
     el.applyPttSettingsButton,
     el.refreshQueueButton,
@@ -8439,7 +8526,7 @@ function setInteractiveEnabled(enabled) {
     el.saveSettingButton,
   ]) {
     if (control) {
-      control.disabled = !enabled || POC_NO_PERSISTENCE_GUARD;
+      control.disabled = !enabled;
     }
   }
 }
@@ -8501,7 +8588,6 @@ function clearDynamicSections() {
   clearNode(el.voiceSttStatusList);
   clearNode(el.queueBargeInList);
   clearNode(el.memoryApprovalsList);
-  clearNode(el.developerTestList);
   clearNode(el.latestTurnTraceList);
   clearNode(el.runtimeLogsSummaryList);
   clearNode(el.personalityStatusList);
@@ -8559,6 +8645,8 @@ function renderKeyValues(node, rows) {
     const dd = document.createElement("dd");
     setText(dt, label);
     setText(dd, displayValue(value));
+    dt.title = displayValue(label);
+    dd.title = displayValue(value);
     node.append(dt, dd);
   }
 }
@@ -8628,7 +8716,9 @@ function setBusy(button, busy) {
     return;
   }
   button.disabled = busy || !cockpit.online;
-  button.classList.toggle("busy", busy);
+  if (button.classList && typeof button.classList.toggle === "function") {
+    button.classList.toggle("busy", busy);
+  }
 }
 
 function setText(node, value) {

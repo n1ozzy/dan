@@ -165,12 +165,11 @@
             <div id="memoryApprovalsList" class="list compact-list"></div>
           </div>
 
-          <details class="sys-section developer-test-section" aria-labelledby="developerTestHeading">
+          <details class="sys-section runtime-checks-section" aria-labelledby="runtimeChecksHeading">
             <summary>
-              <h2 id="developerTestHeading">Developer / Test</h2>
-              <span class="summary-hint muted">mock, fake engines, debug flags</span>
+              <h2 id="runtimeChecksHeading">Runtime Checks</h2>
+              <span class="summary-hint muted">provider and voice readiness</span>
             </summary>
-            <div id="developerTestList" class="list compact-list"></div>
             <div class="doctor-grid">
               <div class="doctor-panel" aria-labelledby="voiceDoctorHeading">
                 <h3 id="voiceDoctorHeading">Voice diagnostics</h3>
@@ -268,7 +267,7 @@
                 Adres daemona. Zmieniaj tylko, jeśli wiesz po co.
               </p>
             </div>
-            <div class="subsection"subsection" aria-labelledby="settingsHeading">
+            <div class="subsection" aria-labelledby="settingsHeading">
               <div class="section-head">
                 <h4 id="settingsHeading">Ustawienia surowe</h4>
                 <button id="refreshSettingsButton" type="button" class="ghost">Odśwież</button>
@@ -312,13 +311,13 @@
               <div>
                 <h2 id="missionControlHeading">Mission Control</h2>
                 <p class="muted section-desc">
-                  POC control surface. Read-only refresh, no provider calls, no mic activation.
+                  Runtime status, blockers, and next action.
                 </p>
               </div>
               <div class="mission-actions">
-                <span class="poc-badge">POC mode - not production</span>
+                <span class="production-badge">production</span>
                 <button id="refreshMissionControlButton" type="button" class="ghost">
-                  Refresh Mission Control
+                  Refresh
                 </button>
               </div>
             </div>
@@ -326,6 +325,8 @@
             <p id="missionControlRefreshStatus" class="muted mission-refresh-status" aria-live="polite"></p>
             <div id="missionControlModules" class="module-grid"></div>
           </div>
+
+          <div class="system-section-label" aria-hidden="true">Live settings</div>
 
           <div class="sys-section active-settings-section" aria-labelledby="activeBrainSettingsHeading">
             <div class="section-head">
@@ -447,15 +448,29 @@
               <div>
                 <h2 id="activePttSettingsHeading">Endpointing / PTT</h2>
                 <p class="muted section-desc">
-                  PTT mode, listening lease, merge window, VAD mode, and interrupt policy.
+                  Hotkey, press-to-talk mode, merge window, and interrupt policy.
                 </p>
               </div>
-              <button id="applyPttSettingsButton" type="button">Apply PTT</button>
+              <div class="mission-actions">
+                <button id="applyPttSettingsButton" type="button">Apply PTT</button>
+              </div>
             </div>
             <div class="settings-control-grid">
               <label class="field-label">
                 <span>PTT mode</span>
                 <select id="pttModeSelect" aria-label="PTT mode"></select>
+              </label>
+              <label class="field-label">
+                <span>Global hotkey</span>
+                <input
+                  id="pttHotkeyInput"
+                  type="text"
+                  inputmode="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="right_cmd+right_shift"
+                  aria-label="PTT global hotkey"
+                />
               </label>
               <label class="field-label">
                 <span>Merge window</span>

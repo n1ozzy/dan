@@ -18,6 +18,7 @@ from jarvis.panel.menubar_app import (
     MenuBarApp,
     PanelShellError,
     ShellSettings,
+    panel_index_url,
     resolve_shell_settings,
     token_bootstrap_script,
 )
@@ -58,6 +59,15 @@ class TestResolveShellSettings:
 
 
 class TestTokenBootstrapScript:
+    def test_seeds_api_base_for_native_panel(self) -> None:
+        script = token_bootstrap_script(
+            "cafe1234",
+            api_base_url="http://127.0.0.1:41888/",
+        )
+
+        assert "window.JARVIS_API_BASE" in script
+        assert '"http://127.0.0.1:41888"' in script
+
     def test_seeds_cockpit_local_storage_key(self) -> None:
         script = token_bootstrap_script("cafe1234")
 
@@ -75,6 +85,12 @@ class TestTokenBootstrapScript:
 
 
 class TestMenuBarAppGuard:
+    def test_panel_index_url_is_served_by_daemon_origin(self) -> None:
+        assert (
+            panel_index_url("http://127.0.0.1:41741/")
+            == "http://127.0.0.1:41741/panel/index.html"
+        )
+
     def test_module_imports_without_pyobjc(self) -> None:
         # The module was imported at the top of this file; the real guard is
         # that it must not import AppKit/WebKit at module import time.
@@ -292,3 +308,8 @@ class TestLauncher:
 
         assert "jarvis.db" not in text
         assert "/tmp" not in text
+
+    def test_launcher_rejects_example_config_as_runtime(self) -> None:
+        text = (ROOT / "scripts" / "jarvis-panel").read_text(encoding="utf-8")
+
+        assert "config/jarvis.example.toml is not a runtime config" in text

@@ -16,12 +16,40 @@ fi
 DAEMON_PAT="jarvis.cli daemon run"
 PANEL_PAT="jarvis.panel.menubar_app"
 
-# Resolve config ownership exactly as the daemon CLI does.
-if [ -z "${JARVIS_CONFIG:-}" ] && [ -f "$HOME/.jarvis/jarvis.toml" ]; then
-  JARVIS_CONFIG="$HOME/.jarvis/jarvis.toml"
+# Resolve local runtime config without falling back to the example config. The
+# example file is documentation/input material, not a live lifecycle target.
+if [ -z "${JARVIS_CONFIG:-}" ]; then
+  if [ -f "$HOME/.jarvis/jarvis.toml" ]; then
+    JARVIS_CONFIG="$HOME/.jarvis/jarvis.toml"
+  elif [ -f "$JARVIS_REPO/config/jarvis.toml" ]; then
+    JARVIS_CONFIG="$JARVIS_REPO/config/jarvis.toml"
+  else
+    echo "Jarvis runtime config not found." >&2
+    echo "Create ~/.jarvis/jarvis.toml or $JARVIS_REPO/config/jarvis.toml." >&2
+    echo "config/jarvis.example.toml is not used for lifecycle runtime." >&2
+    exit 1
+  fi
+fi
+JARVIS_CONFIG_REAL="$("$PYTHON" - "$JARVIS_CONFIG" <<'PY'
+import sys
+from pathlib import Path
+
+print(Path(sys.argv[1]).expanduser().resolve(strict=False))
+PY
+)"
+JARVIS_EXAMPLE_REAL="$("$PYTHON" - "$JARVIS_REPO/config/jarvis.example.toml" <<'PY'
+import sys
+from pathlib import Path
+
+print(Path(sys.argv[1]).expanduser().resolve(strict=False))
+PY
+)"
+if [ "$JARVIS_CONFIG_REAL" = "$JARVIS_EXAMPLE_REAL" ]; then
+  echo "config/jarvis.example.toml is not a runtime config." >&2
+  echo "Use ~/.jarvis/jarvis.toml or $JARVIS_REPO/config/jarvis.toml." >&2
+  exit 1
 fi
 export JARVIS_CONFIG
-JARVIS_CONFIG="${JARVIS_CONFIG:-$JARVIS_REPO/config/jarvis.example.toml}"
 
 resolve_runtime_context() {
   # shellcheck disable=SC2046
@@ -119,11 +147,17 @@ daemon_health() {
   curl -fsS -m 1 "$JARVIS_BASE/health" >/dev/null 2>&1
 }
 
+daemon_owned_health() {
+  local pid
+  pid="$(daemon_pid_on_configured_port)"
+  [ -n "$pid" ] && daemon_health
+}
+
 wait_for_daemon_health() {
   local wait_seconds=15
   local waited=0
   while [ "$waited" -lt "$((wait_seconds * 2))" ]; do
-    if daemon_health; then
+    if daemon_owned_health; then
       return 0
     fi
     sleep 0.5
@@ -143,14 +177,34 @@ first_pid() {
 daemon_pid() { first_pid "$DAEMON_PAT" "$JARVIS_DAEMON_PID_FILE"; }
 panel_pid() { first_pid "$PANEL_PAT" "$JARVIS_PANEL_PID_FILE"; }
 
+start_daemon_with_screen() {
+  local daemon_launcher daemon_log command_line
+  printf -v daemon_launcher '%q' "$SCRIPT_DIR/jarvisd"
+  printf -v daemon_log '%q' "$JARVIS_DAEMON_LOG_FILE"
+  command_line="exec $daemon_launcher >>$daemon_log 2>&1"
+
+  screen -S jarvis-daemon -X quit >/dev/null 2>&1 || true
+  screen -dmS jarvis-daemon bash -lc "$command_line"
+}
+
+start_daemon_with_nohup() {
+  nohup "$SCRIPT_DIR/jarvisd" >>"$JARVIS_DAEMON_LOG_FILE" 2>&1 &
+}
+
 start_daemon() {
-  if daemon_health; then
+  if daemon_owned_health; then
     echo "daemon: already healthy at $JARVIS_BASE"
     return 0
   fi
 
   local existing
-  existing="$(daemon_processes | tr '\n' ' ')"
+  existing="$(daemon_pid_on_configured_port | tr '\n' ' ')"
+  if [ -z "$existing" ] && daemon_health; then
+    echo "daemon: $JARVIS_BASE answered /health, but no owned jarvisd process was found." >&2
+    echo "daemon: stop the foreign process on port $JARVIS_PORT before starting Jarvis." >&2
+    port_owner >&2 || true
+    return 1
+  fi
   if [ -n "$existing" ]; then
     echo "daemon: unhealthy existing process(es): ${existing}. Restarting."
     stop_daemon_forced
@@ -159,32 +213,53 @@ start_daemon() {
 
   mkdir -p "$JARVIS_LOGS_DIR"
   echo "daemon: starting -> $JARVIS_DAEMON_LOG_FILE"
-  nohup "$SCRIPT_DIR/jarvisd" >>"$JARVIS_DAEMON_LOG_FILE" 2>&1 &
-  local start_pid=$!
-  echo "$start_pid" > "$JARVIS_DAEMON_PID_FILE"
+  if command -v screen >/dev/null 2>&1; then
+    start_daemon_with_screen
+  else
+    start_daemon_with_nohup
+  fi
 
   if wait_for_daemon_health; then
+    local actual_pid
+    actual_pid="$(daemon_pid_on_configured_port)"
+    if [ -n "$actual_pid" ]; then
+      echo "$actual_pid" > "$JARVIS_DAEMON_PID_FILE"
+    fi
     return 0
   fi
   echo "daemon: FAILED to become healthy in ~15s — check $JARVIS_DAEMON_LOG_FILE" >&2
   tail -n 30 "$JARVIS_DAEMON_LOG_FILE" >&2 2>/dev/null || true
-  if ! is_pid_alive "$start_pid"; then
-    rm -f "$JARVIS_DAEMON_PID_FILE"
-  fi
+  rm -f "$JARVIS_DAEMON_PID_FILE"
   return 1
 }
 
-is_panel_stable() {
-  local pid="$1"
+wait_for_panel_process() {
   local tries=0
-  while [ "$tries" -lt 6 ]; do
-    if is_pid_alive "$pid" && [ "$(panel_processes | tr '\n' ' ')" ]; then
+  local pid
+  while [ "$tries" -lt 10 ]; do
+    pid="$(panel_pid)"
+    if [ -n "$pid" ]; then
+      echo "$pid"
       return 0
     fi
     sleep 0.5
     tries=$((tries + 1))
   done
   return 1
+}
+
+start_panel_with_screen() {
+  local panel_launcher panel_log command_line
+  printf -v panel_launcher '%q' "$SCRIPT_DIR/jarvis-panel"
+  printf -v panel_log '%q' "$JARVIS_PANEL_LOG_FILE"
+  command_line="exec $panel_launcher >>$panel_log 2>&1"
+
+  screen -S jarvis-panel -X quit >/dev/null 2>&1 || true
+  screen -dmS jarvis-panel bash -lc "$command_line"
+}
+
+start_panel_with_nohup() {
+  nohup "$SCRIPT_DIR/jarvis-panel" >>"$JARVIS_PANEL_LOG_FILE" 2>&1 &
 }
 
 start_panel() {
@@ -197,25 +272,20 @@ start_panel() {
 
   mkdir -p "$JARVIS_RUNTIME_DIR"
   echo "panel: starting -> $JARVIS_PANEL_LOG_FILE"
-  nohup "$SCRIPT_DIR/jarvis-panel" >>"$JARVIS_PANEL_LOG_FILE" 2>&1 &
-  local start_pid=$!
-  echo "$start_pid" > "$JARVIS_PANEL_PID_FILE"
+  if command -v screen >/dev/null 2>&1; then
+    start_panel_with_screen
+  else
+    start_panel_with_nohup
+  fi
 
-  if is_panel_stable "$start_pid"; then
-    local pid
-    pid="$(panel_pid)"
-    if [ -z "$pid" ]; then
-      pid="$start_pid"
-    fi
+  local pid
+  if pid="$(wait_for_panel_process)"; then
+    echo "$pid" > "$JARVIS_PANEL_PID_FILE"
     echo "panel: running pid $pid"
     return 0
   fi
 
-  if ! is_pid_alive "$start_pid"; then
-    echo "panel: process exited immediately; inspect $JARVIS_PANEL_LOG_FILE" >&2
-  else
-    echo "panel: did not stay running; inspect $JARVIS_PANEL_LOG_FILE" >&2
-  fi
+  echo "panel: process exited immediately or was not detected; inspect $JARVIS_PANEL_LOG_FILE" >&2
   echo "panel: if icon is missing, verify PyObjC access and menubar visibility." >&2
   tail -n 40 "$JARVIS_PANEL_LOG_FILE" >&2 2>/dev/null || true
   rm -f "$JARVIS_PANEL_PID_FILE"
@@ -245,16 +315,21 @@ stop_named() {
 
 stop_daemon_forced() {
   local pids
-  pids="$(daemon_processes || true)"
+  pids="$(daemon_pid_on_configured_port || true)"
   if [ -z "$pids" ]; then
     return 0
   fi
   # Stop owned helper processes before final cleanup only after daemon is drained.
-  stop_named "daemon" "$DAEMON_PAT" "$JARVIS_DAEMON_PID_FILE"
+  for pid in $pids; do
+    if is_pid_alive "$pid"; then
+      kill -TERM "$pid" || true
+      echo "daemon: SIGTERM sent to $pid"
+    fi
+  done
   local waited=0
   local remaining
   while [ "$waited" -lt 12 ]; do
-    remaining="$(daemon_processes | tr '\n' ' ' || true)"
+    remaining="$(daemon_pid_on_configured_port | tr '\n' ' ' || true)"
     if [ -z "$remaining" ]; then
       break
     fi
@@ -284,7 +359,7 @@ is_known_helper_cmd() {
 
 collect_helper_pids() {
   local daemon
-  for daemon in $(daemon_processes || true); do
+  for daemon in $(daemon_pid_on_configured_port || true); do
     for child in $(pgrep -P "$daemon" || true); do
       cmd="$(ps -p "$child" -o command= 2>/dev/null || true)"
       if is_known_helper_cmd "$cmd"; then
@@ -329,6 +404,38 @@ port_owner() {
   lsof -nP -iTCP:"$JARVIS_PORT" -sTCP:LISTEN 2>/dev/null || true
 }
 
+port_owner_pids() {
+  lsof -nP -tiTCP:"$JARVIS_PORT" -sTCP:LISTEN 2>/dev/null || true
+}
+
+pid_in_list() {
+  local needle="$1"
+  local pid
+  while IFS= read -r pid; do
+    if [ "$pid" = "$needle" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+daemon_pid_on_configured_port() {
+  local port_pids
+  local pid
+  port_pids="$(port_owner_pids)"
+  if [ -z "$port_pids" ]; then
+    return 0
+  fi
+  while IFS= read -r pid; do
+    if printf '%s\n' "$port_pids" | pid_in_list "$pid"; then
+      echo "$pid"
+      return 0
+    fi
+  done <<EOF
+$(daemon_processes)
+EOF
+}
+
 show_leftover_helpers() {
   local helpers
   helpers="$(collect_helper_pids | sort -u | tr '\n' ' ' || true)"
@@ -345,11 +452,13 @@ show_status() {
   cleanup_stale_pid "$JARVIS_DAEMON_PID_FILE" "$DAEMON_PAT"
   cleanup_stale_pid "$JARVIS_PANEL_PID_FILE" "$PANEL_PAT"
 
-  daemon_pid_current="$(daemon_pid)"
-  if daemon_health; then
+  daemon_pid_current="$(daemon_pid_on_configured_port)"
+  if [ -n "$daemon_pid_current" ] && daemon_health; then
     daemon="running"
   elif [ -n "$daemon_pid_current" ]; then
     daemon="down (process not healthy)"
+  elif daemon_health; then
+    daemon="not running (foreign process answered /health)"
   else
     daemon="not running"
   fi

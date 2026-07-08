@@ -15,8 +15,8 @@ path = "~/.jarvis/jarvis.db"
 
 [brain]
 default_adapter = "claude_cli"
-default_model = "sonnet"
-timeout_seconds = 120
+default_model = "claude-sonnet-5"
+timeout_seconds = 60
 context_budget_chars = 24000
 provider_sessions_are_memory = false
 
@@ -24,6 +24,11 @@ provider_sessions_are_memory = false
 enabled = true
 command = "claude"
 args = ["-p"]
+stream_args = [
+  "--output-format", "stream-json",
+  "--verbose",
+  "--include-partial-messages",
+]
 model = "claude-sonnet-5"
 timeout_seconds = 180
 
@@ -31,11 +36,18 @@ timeout_seconds = 180
 enabled = true
 command = "codex"
 args = []
-model = "gpt-5.5"
 timeout_seconds = 180
 
+# Uncomment to use Claude CLI Warm (persistent process, requires new session for changes):
+# [brain.claude_cli_warm]
+# enabled = true
+# command = "claude"
+# args = ["-p"]
+# model = "claude-sonnet-5"
+# timeout_seconds = 180
+
 [memory]
-enabled = true
+enabled = false
 max_active_blocks = 50
 max_context_chars = 12000
 worker_candidates_require_promotion = true
@@ -48,37 +60,21 @@ compiled_context_include_procedural = false
 
 [voice]
 enabled = true
-speak_responses = true
-broker_enabled = true
+speak_responses = false
+broker_enabled = false
 default_tts = "supertonic"
 default_stt = "mlx_whisper"
 ptt_mode = "hold"
+ptt_hotkey = "right_cmd+right_shift"
 queue_persisted = true
-# Fillers: Polish voice fillers played while brain is thinking.
-# Configured as array of strings - cycles through them.
-fillers = [
-  "Sekundę, myślę...",
-  "Daj chwilę, analizuję...",
-  "Moment, sprawdzam...",
-  "Zaraz to sprawdzę...",
-]
-filler_after_ms = 300
-# Supertonic TTS settings (decree §7.3). Speed 1.35 is clean for >=24 char
-# sentences at G4 live gate (2026-07-02). Short sentences (<=24 chars) use
-# short_sentence_speed=1.0 to avoid final-phoneme clipping above ~1.15.
-supertonic_speed = 1.35
-supertonic_short_sentence_chars = 24
-supertonic_short_sentence_speed = 1.0
-supertonic_voice = "M1"
-supertonic_lang = "pl"
-supertonic_steps = 14
+recorder = "sox"
 
 [audio]
 enabled = true
 input_policy = "pin_builtin_mic"
 preferred_input = "Mikrofon (MacBook Air)"
 output_policy = "follow_system_default"
-allow_bluetooth_microphone = true
+allow_bluetooth_microphone = false
 always_listen_enabled = false
 
 [panel]
@@ -89,26 +85,11 @@ height = 620
 
 [security]
 localhost_only = true
-require_approval_for_shell = false
-require_approval_for_file_write = false
-require_approval_for_network = false
-destructive_tools_enabled = true
-# File-tool containment roots. Voice + auto_approve work within these paths.
-# Empty = fail-closed (daemon home only). Set your workspace root(s) here.
-approved_roots = ["~/Documents/dev"]
-# Voice auto-approval: VOICE_COMMAND gets ALLOW for mutation tools within approved_roots.
-# Requires approved_roots to be non-empty. Turn on for voice-first workflows.
-voice_auto_approve_tools = true
-# Auto-approve mode for model-originated tools (like Codex/Claude CLI).
-# Options: "off" (default), "model" (auto-approve model-originated tools in trusted scopes/approved roots),
-# "voice" (same as voice_auto_approve_tools), "all" (auto-approve all non-destructive tools).
-# When enabled, tools are approved AND executed automatically in one turn.
-auto_approve_mode = "model"
-# Trusted scopes: model-originated tools auto-approved within these paths.
-# Configure in [security.trusted_scopes] as array of tables.
-# trusted_scopes = [
-#   { name = "jarvis-dev", path = "~/Documents/dev/jarvis", tools = ["file_read", "file_write"], ttl_minutes = 60 }
-# ]
+api_token_required = false
+require_approval_for_shell = true
+require_approval_for_file_write = true
+require_approval_for_network = true
+destructive_tools_enabled = false
 
 [runtime]
 home = "~/.jarvis"

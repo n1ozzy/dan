@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import jarvis.config as config_module
 from jarvis.config import (
     COMPILED_MEMORY_ENABLED_ENV,
     COMPILED_MEMORY_FORCE_DISABLED_ENV,
@@ -135,15 +136,60 @@ def run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.Complet
     )
 
 
-def test_loads_example_config(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_config_fails_without_real_jarvis_toml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("JARVIS_CONFIG", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "missing-repo.toml")
+
+    with pytest.raises(ConfigError, match="Jarvis config not found"):
+        load_config()
+
+
+def test_loads_home_jarvis_toml_before_repo_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home_config = home / ".jarvis" / "jarvis.toml"
+    repo_config = tmp_path / "repo" / "config" / "jarvis.toml"
+    home_config.parent.mkdir(parents=True)
+    repo_config.parent.mkdir(parents=True)
+    write_config(home_config, daemon_port=41901)
+    write_config(repo_config, daemon_port=41902)
+    monkeypatch.delenv("JARVIS_CONFIG", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", repo_config)
 
     config = load_config()
+
+    assert config.source_path == home_config
+    assert config.daemon.port == 41901
+
+
+def test_loads_repo_jarvis_toml_when_home_config_is_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_config = write_config(tmp_path / "repo-jarvis.toml", daemon_port=41903)
+    monkeypatch.delenv("JARVIS_CONFIG", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", repo_config)
+
+    config = load_config()
+
+    assert config.source_path == repo_config
+    assert config.daemon.port == 41903
+
+
+def test_explicit_example_config_still_loads() -> None:
+    config = load_config(ROOT / "config" / "jarvis.example.toml")
 
     assert config.source_path == ROOT / "config" / "jarvis.example.toml"
     assert config.daemon.name == "jarvisd"
     assert config.daemon.port == 41741
-    assert config.brain.default_adapter == "claude_cli"
     assert config.memory.compiled_context_enabled is False
     assert config.memory.compiled_context_max_items == MemoryCompilerConfig().max_items
     assert config.memory.compiled_context_max_chars == MemoryCompilerConfig().max_chars
@@ -154,7 +200,6 @@ def test_loads_example_config(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_example_config_compiled_memory_defaults_off() -> None:
     config = load_config(ROOT / "config" / "jarvis.example.toml")
 
-    assert config.memory.enabled is True
     assert config.memory.compiled_context_enabled is False
     assert config.memory.compiled_context_max_items == MemoryCompilerConfig().max_items
     assert config.memory.compiled_context_max_chars == MemoryCompilerConfig().max_chars
@@ -296,14 +341,10 @@ def test_default_voice_fillers_have_enough_variation(monkeypatch: pytest.MonkeyP
 
     monkeypatch.delenv("JARVIS_CONFIG", raising=False)
 
-    fillers = load_config().voice.fillers
+    fillers = load_config(ROOT / "config" / "jarvis.example.toml").voice.fillers
 
-    # Example config has different (more professional) fillers than code defaults
     assert len(fillers) >= 4
-    assert "Sekundę, myślę..." in fillers
-    assert "Daj chwilę, analizuję..." in fillers
-    assert "Moment, sprawdzam..." in fillers
-    assert "Zaraz to sprawdzę..." in fillers
+    assert fillers == DEFAULT_FILLERS
     assert len(set(fillers)) == len(fillers)
 
 

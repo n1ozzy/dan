@@ -72,6 +72,14 @@ def test_wrapper_script_runs_the_real_daemon() -> None:
     assert "not implemented" not in text
 
 
+def test_wrapper_rejects_example_config_as_runtime() -> None:
+    text = read(WRAPPER)
+    install_text = read(INSTALL)
+
+    assert "config/jarvis.example.toml is not a runtime config" in text
+    assert "config/jarvis.example.toml is not a runtime config" in install_text
+
+
 def test_install_script_prints_plan_and_requires_explicit_yes() -> None:
     assert_executable(INSTALL)
     text = read(INSTALL)
@@ -101,10 +109,15 @@ def test_uninstall_script_unloads_but_never_deletes_the_database() -> None:
             assert ".jarvis/logs" not in line
 
 
-def test_lifecycle_scripts_pass_bash_syntax_check() -> None:
-    for script in (WRAPPER, INSTALL, UNINSTALL):
+def test_lifecycle_scripts_pass_shebang_syntax_check() -> None:
+    checks = (
+        ("sh", WRAPPER),
+        ("bash", INSTALL),
+        ("bash", UNINSTALL),
+    )
+    for shell, script in checks:
         result = subprocess.run(
-            ["bash", "-n", str(script)],
+            [shell, "-n", str(script)],
             capture_output=True,
             text=True,
             check=False,
