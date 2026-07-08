@@ -464,13 +464,19 @@ def load_config(path: str | Path | None = None) -> JarvisConfig:
     raw = _read_toml(config_path)
     _require_sections(raw)
 
+    # Wspólne źródło głosów/wymowy (~/.config/jarvis-voice/voices.toml) scala się
+    # jako BAZA pod lokalny [voice]; brak pliku → no-op (import leniwy, bez cyklu).
+    from jarvis.voice.shared_voice import apply_shared_voices
+
+    voice_cfg = apply_shared_voices(_build_section(VoiceConfig, raw["voice"]))
+
     return JarvisConfig(
         source_path=config_path,
         daemon=_build_section(DaemonConfig, raw["daemon"]),
         database=_build_section(DatabaseConfig, raw["database"]),
         brain=_build_brain_config(raw["brain"]),
         memory=_build_memory_config(raw["memory"]),
-        voice=_build_section(VoiceConfig, raw["voice"]),
+        voice=voice_cfg,
         audio=_build_section(AudioConfig, raw["audio"]),
         panel=_build_section(PanelConfig, raw["panel"]),
         security=_build_security_config(raw["security"]),

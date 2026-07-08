@@ -1,0 +1,115 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# WSPÓLNE ŹRÓDŁO GŁOSÓW I WYMOWY — jedno miejsce dla WSZYSTKICH systemów na tym Macu.
+#
+# Czytają go:
+#   • Jarvis daemon  → jarvis/voice/shared_voice.py (zasila VoiceConfig)
+#   • DAN            → dan_core/say.py + tools/jarvis/voice_broker.py
+#   • skille (standup) → dziedziczą przez DAN say.py
+#
+# Zmiana TUTAJ = zmiana wszędzie. Dodajesz słowo do [pronunciations] raz i gada
+# je każdy system. Głos persony ustawiasz raz i brzmi tak samo w demonie i standupie.
+#
+# FALLBACK (zero regresji): brak pliku albo brak klucza → każdy system używa
+# swoich wbudowanych map (hardcoded). Ten plik tylko NADPISUJE to, co poda.
+#
+# Właściciel: jarvis-session. Koordynacja przez ~/.claude/jarvis-coord.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+schema_version = 1
+
+# ── PERSONY ──────────────────────────────────────────────────────────────────
+# voice     = kod głosu supertonica (M1..M5 męskie, F1..F5 damskie)
+# mastering = profil ffmpeg: "clean" | "bastard" | "gritty" | "raw" (=surowy, bez obróbki)
+# speed     = tempo mowy (0.8–1.6)
+
+[personas.jarvis]
+voice = "M2"          # Ozzy A/B 2026-07-08: pick „numer 2" = M2 (był M5 w standupie, M1 w decree)
+mastering = "clean"   # Ozzy A/B: „wariant 2" = clean, bez sztucznych pauz
+speed = 1.35
+
+[personas.dan]
+voice = "M3"          # żywy stan z dan/state/overrides.json (nie martwy M1 z say.py)
+mastering = "raw"     # Ozzy: „DAN przywróć jak było" — surowy, bez masteringu
+speed = 1.25
+
+[personas.danusia]
+voice = "F4"          # żywy stan z overrides.json (nie martwy F3)
+mastering = "clean"
+speed = 1.3
+
+# ── WYMOWA ANGLICYZMÓW ───────────────────────────────────────────────────────
+# Klucz = angielskie słowo (case-insensitive), wartość = polska fonetyka.
+# Superset scalony z 3 rozjechanych kopii (Jarvis tts_pronunciations + DAN broker
+# _PL_PHONETIC + DAN say.py _TECH_WORDS). Dłuższe klucze dopasowują się pierwsze,
+# więc odmiany (committed) wygrywają z rdzeniem (commit) tam, gdzie system sortuje
+# po długości. Dokładaj gdy coś kłuje w uchu — w tym jednym miejscu.
+
+[pronunciations]
+# — dev / git —
+commit = "komit"
+committed = "skomitowane"
+commits = "komity"
+push = "pusz"
+pushed = "spuszowane"
+pull = "pul"
+merge = "merdż"
+merged = "zmerdżowane"
+branch = "brancz"
+main = "mejn"
+master = "master"
+origin = "oridżin"
+remote = "rimout"
+repo = "repo"
+github = "git hab"
+git = "git"
+release = "rilis"
+rollback = "rolbek"
+deploy = "diploj"
+worktree = "łorktri"
+spike = "spajk"
+merge_conflict = "merdż konflikt"
+# — runtime / backend —
+runtime = "rantajm"
+backend = "bekend"
+frontend = "frontend"
+stateless = "stejtles"
+streaming = "striming"
+request = "rikłest"
+response = "rispons"
+endpoint = "endpojnt"
+gateway = "gejtłej"
+feature = "ficzer"
+token = "tołken"
+cache = "kesz"
+queue = "kju"
+default = "difolt"
+review = "riwju"
+prefetch = "prifecz"
+timeout = "tajmałt"
+hardcode = "hardkod"
+config = "konfig"
+thread = "tred"
+serve = "serw"
+fallback = "folbek"
+chunker = "czanker"
+latency = "lejtensi"
+barge = "bardż"
+health = "helf"
+update = "apdejt"
+debug = "dibag"
+bug = "bag"
+# — narzędzia / TTS —
+markdown = "markdałn"
+python = "pajton"
+supertonic = "supertonik"
+chatterbox = "czaterboks"
+whisper = "łisper"
+loudnorm = "laudnorm"
+codex = "kodeks"
+chrome = "krom"
+browser = "brałzer"
+# — literowane skróty —
+url = "u er el"
+api = "ej pi aj"
+tts = "ti ti es"
+wav = "ław"
