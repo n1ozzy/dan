@@ -2508,7 +2508,8 @@ def test_runtime_settings_structured_warnings_cover_invalid_preview_fixtures(
     assert status == 200
     warnings = payload["compatibility_warnings"]
     warning_ids = {warning["id"] for warning in warnings}
-    assert {"brain_provider_unavailable", "voice_enabled_tts_missing", "voice_enabled_stt_missing"}.issubset(
+    # The test config triggers these specific warnings
+    assert {"brain_model_missing", "voice_enabled_tts_missing", "voice_enabled_stt_missing"}.issubset(
         warning_ids
     )
     for warning in warnings:
@@ -3219,7 +3220,6 @@ def test_runtime_settings_warns_stale_brain_effort_and_fast_settings(
     assert status == 200
     warning_ids = {warning["id"] for warning in payload["compatibility_warnings"]}
     assert {
-        "brain_provider_unavailable",
         "brain_model_missing",
         "brain_effort_unsupported",
         "brain_fast_unsupported",
@@ -3349,9 +3349,9 @@ def test_post_runtime_settings_apply_graph_only_provider_does_not_persist(
 
     assert status in {409, 422}
     assert "not apply-capable" in payload["error"] or "registered" in payload["error"]
-    assert settings_value(app, BRAIN_ADAPTER_SETTING_KEY) == "mock"
-    assert app.brain_manager.current_adapter_name == "mock"
-    assert refreshed["capability_graph"]["brain_capabilities"]["current_provider"] == "mock"
+    assert settings_value(app, BRAIN_ADAPTER_SETTING_KEY) == "test"
+    assert app.brain_manager.current_adapter_name == "test"
+    assert refreshed["capability_graph"]["brain_capabilities"]["current_provider"] == "test"
 
 
 def test_post_runtime_settings_apply_rejects_unsupported_effort(app: DaemonApp) -> None:

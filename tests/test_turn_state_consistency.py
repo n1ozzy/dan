@@ -44,6 +44,22 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
         close_quietly(connection)
 
 
+class StreamingMockBrainAdapter:
+    """Mock adapter that supports streaming for state consistency tests."""
+    
+    name = "streaming-mock"
+    default_model = "streaming-mock"
+    supports_streaming = True
+
+    def available_models(self) -> list[str]:
+        return [self.default_model]
+
+    def generate(self, request: BrainRequest, *, on_delta=None) -> BrainResponse:
+        if on_delta is not None:
+            on_delta("Streaming response")
+        return BrainResponse(text="Streaming response", model=self.default_model)
+
+
 class FailingBrainAdapter:
     name = "failing"
     default_model = "failing-model"
@@ -68,7 +84,7 @@ def build_orchestrator(
         event_store=event_store,
         event_bus=None,
         state_machine=state_machine,
-        brain_manager=brain_manager or BrainManager([MockBrainAdapter()], default_adapter="mock"),
+        brain_manager=brain_manager or BrainManager([StreamingMockBrainAdapter()], default_adapter="streaming-mock"),
         context_builder=ContextBuilder(conn),
         speech_pipeline=speech_pipeline,
     )
