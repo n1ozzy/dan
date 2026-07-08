@@ -287,6 +287,27 @@ class VoiceConfig:
     # phonetically, e.g. runtime -> rantajm. Case-insensitive substring
     # match, so inflections ("runtime'ie") keep their endings.
     tts_pronunciations: dict[str, str] = field(default_factory=dict)
+    # Warm serve (ported from DAN 2026-07-08): the supertonic CLI reloads the
+    # model on EVERY chunk (~0.64s each). `supertonic serve` loads it once and
+    # answers over HTTP, killing that per-chunk reload. Empty URL = disabled
+    # (CLI-only, the original path). When a URL is set, synthesize() POSTs to
+    # {url}/v1/tts and falls back to the CLI if the server is down or errors,
+    # so warm-serve NEVER regresses to silence. Barge-in is unaffected: it
+    # kills the PLAYER (stop_playback), not synthesis.
+    supertonic_serve_url: str = ""
+    supertonic_serve_model: str = "supertonic-3"
+    # Autostart: if the URL is set but no server answers, spawn `supertonic
+    # serve` ourselves (detached, killed on engine close). False = expect an
+    # externally-managed server (e.g. the broker or a launchd job).
+    supertonic_serve_autostart: bool = False
+    supertonic_serve_max_chunk_length: int = 400
+    # Per-persona mastering (ported from DAN): ffmpeg timbre chain applied
+    # after synthesis (pitch down + EQ + exciter + compressor + limiter +
+    # loudnorm). Empty = raw supertonic (no mastering). Profiles: bastard
+    # (Jarvis — the ziomek voice), gritty, clean. Fail-safe: any ffmpeg error
+    # plays the raw chunk, so mastering never causes silence.
+    mastering_profile: str = ""
+    mastering_binary: str = "ffmpeg"
 
 
 @dataclass(frozen=True)

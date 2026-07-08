@@ -69,6 +69,89 @@ ptt_hotkey = "right_cmd+right_shift"
 queue_persisted = true
 recorder = "sox"
 
+# Warm serve (ported from DAN 2026-07-08). Empty url = CLI-only (model reloads
+# ~0.64s per chunk). Set the url to POST synthesis to a warm `supertonic serve`
+# (model loaded once). autostart=true spawns the server if none answers; leave
+# false to manage it externally. Falls back to CLI on any server failure.
+supertonic_serve_url = ""            # e.g. "http://127.0.0.1:7788"
+supertonic_serve_model = "supertonic-3"
+supertonic_serve_autostart = false
+supertonic_serve_max_chunk_length = 400
+
+# Per-persona mastering (ffmpeg timbre chain, ported from DAN). Empty = raw
+# supertonic. "bastard" = Jarvis (the ziomek voice, less bass); also "gritty",
+# "clean". Fail-safe: any ffmpeg error plays the raw chunk.
+mastering_profile = ""               # e.g. "bastard"
+mastering_binary = "ffmpeg"
+
+# Anglicisms spoken Polish-phonetically before synthesis (data, not code;
+# longest key wins, case-insensitive, keeps PL inflections). Ported from DAN's
+# _PL_PHONETIC. The panel/logs keep the original spelling — only speech changes.
+[voice.tts_pronunciations]
+markdown = "markdałn"
+python = "pajton"
+commit = "komit"
+supertonic = "supertonik"
+backend = "bekend"
+frontend = "frontend"
+update = "apdejt"
+deploy = "diploj"
+merge = "merdż"
+branch = "brancz"
+release = "rilis"
+rollback = "rolbek"
+debug = "dibag"
+whisper = "łisper"
+bug = "bag"
+runtime = "rantajm"
+stateless = "stejtles"
+streaming = "striming"
+request = "rikłest"
+response = "rispons"
+endpoint = "endpojnt"
+gateway = "gejtłej"
+feature = "ficzer"
+token = "tołken"
+cache = "kesz"
+queue = "kju"
+default = "difolt"
+review = "riwju"
+prefetch = "prifecz"
+timeout = "tajmałt"
+hardcode = "hardkod"
+config = "konfig"
+thread = "tred"
+serve = "serw"
+fallback = "folbek"
+chunker = "czanker"
+latency = "lejtensi"
+barge = "bardż"
+worktree = "łorktri"
+spike = "spajk"
+health = "helf"
+loudnorm = "laudnorm"
+daemon = "dimon"
+broker = "brołker"
+orchestrator = "orkestrejtor"
+schema = "skima"
+override = "ołwerajd"
+session = "seszyn"
+worker = "łorker"
+mutex = "mjuteks"
+pipeline = "pajplajn"
+socket = "soket"
+buffer = "bafer"
+payload = "pejlod"
+async = "ejsink"
+await = "ałejt"
+wrapper = "raper"
+callback = "kolbek"
+logger = "loger"
+timestamp = "tajmstamp"
+flush = "flasz"
+lease = "lis"
+hash = "hasz"
+
 [audio]
 enabled = true
 input_policy = "pin_builtin_mic"

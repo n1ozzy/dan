@@ -7,6 +7,8 @@ decree — asking for them is an explicit error, never a silent fallback.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import shutil
@@ -15,10 +17,14 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 BANNED_ENGINES = ("edgetts", "piper", "xtts")
@@ -131,6 +137,40 @@ def apply_pronunciations(text: str, pronunciations: dict[str, str]) -> str:
     return rewritten
 
 
+# Per-persona mastering chains, ported 1:1 from DAN's voice_broker
+# (2026-07-08). asetrate*k + atempo=1/k pitches DOWN without changing tempo;
+# then EQ (bass/presence), aexciter + crystalizer (transient sparkle so it
+# reads as "recorded", not "synthetic"), deesser, compressor, limiter. The
+# loudnorm tail evens out loudness. Raw supertonic sounds thin/robotic; this is
+# what makes Jarvis a ziomek, not a text-to-speech readout.
+_MASTER_TAIL = ",loudnorm=I=-14:TP=-2.0:LRA=7,aresample=44100"
+_MASTER_PROFILES = {
+    # Jarvis: slightly LESS bass (Ozzy 2026-07-08) — pitch 0.91->0.93, bass +3dB.
+    "bastard": ("asetrate=44100*0.93,aresample=44100,atempo=1.0753,"
+                "equalizer=f=105:t=q:w=1:g=3,equalizer=f=300:t=q:w=1.2:g=-2,"
+                "equalizer=f=2200:t=q:w=1.5:g=3.5,aexciter=amount=2.5:drive=7:blend=0.4:freq=3500,"
+                "crystalizer=i=1.8,deesser=i=0.4,"
+                "acompressor=threshold=-19dB:ratio=3:attack=8:release=120:makeup=3:knee=4,"
+                "alimiter=limit=0.96,aresample=44100"),
+    "gritty": ("asetrate=44100*0.92,aresample=44100,atempo=1.087,"
+               "equalizer=f=110:t=q:w=1:g=4,equalizer=f=1800:t=q:w=2:g=2.5,"
+               "aexciter=amount=3.5:drive=8:blend=0.6:freq=3500,crystalizer=i=2.0,deesser=i=0.4,"
+               "acompressor=threshold=-24dB:ratio=4:attack=3:release=60:makeup=3,"
+               "alimiter=limit=0.97,aresample=44100"),
+    "clean": ("asetrate=44100*0.96,aresample=44100,atempo=1.0417,"
+              "equalizer=f=120:t=q:w=1:g=2.5,equalizer=f=2200:t=q:w=1.5:g=2,"
+              "aexciter=amount=1.5:drive=5:blend=0.25:freq=3500,crystalizer=i=1.4,deesser=i=0.3,"
+              "acompressor=threshold=-18dB:ratio=2.5:attack=6:release=90,"
+              "alimiter=limit=0.95,aresample=44100"),
+}
+
+
+def mastering_filter(profile: str) -> str:
+    """ffmpeg -af chain for a profile, or '' when the profile is unknown/empty."""
+    chain = _MASTER_PROFILES.get(str(profile or "").strip().lower())
+    return (chain + _MASTER_TAIL) if chain else ""
+
+
 class SupertonicEngine:
     """First real TTS engine (decree §7.3): shells out to the supertonic CLI.
 
@@ -180,21 +220,115 @@ class SupertonicEngine:
         workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(workdir, 0o700)
         self.workdir = str(workdir)
+        # Per-persona mastering (ported from DAN): resolve the ffmpeg chain once.
+        self._mastering_profile = str(getattr(voice_cfg, "mastering_profile", "") or "")
+        self._mastering_filter = mastering_filter(self._mastering_profile)
+        self._mastering_binary = str(getattr(voice_cfg, "mastering_binary", "ffmpeg") or "ffmpeg")
+        if self._mastering_filter and not shutil.which(self._mastering_binary):
+            _LOGGER.warning(
+                "mastering profile %r set but %r not found on PATH; playing raw audio.",
+                self._mastering_profile, self._mastering_binary,
+            )
+            self._mastering_filter = ""
+        # Warm serve (ported from DAN): reuse an existing server, optionally
+        # autostart one, else stay None -> CLI-only. The model reloads per CLI
+        # chunk (~0.64s); serve loads it once. Fallback to CLI on any failure.
+        self._serve_url = str(getattr(voice_cfg, "supertonic_serve_url", "") or "").rstrip("/")
+        self._serve_model = str(getattr(voice_cfg, "supertonic_serve_model", "supertonic-3") or "supertonic-3")
+        self._serve_autostart = bool(getattr(voice_cfg, "supertonic_serve_autostart", False))
+        self._serve_max_chunk = max(1, int(getattr(voice_cfg, "supertonic_serve_max_chunk_length", 400) or 400))
+        self._serve: str | None = None
+        self._serve_proc: subprocess.Popen[str] | None = None
+        if self._serve_url:
+            self._ensure_serve()
 
-    def synthesize(self, text: str) -> SynthesizedChunk:
-        spoken = apply_pronunciations(str(text or ""), self._pronunciations)
-        clean = spoken.translate(_SUPERTONIC_STRIP).strip()
-        if not clean:
-            raise TTSEngineError(f"Nothing speakable left after sanitizing {text!r}.")
+    # -- warm serve ----------------------------------------------------------
+
+    def _serve_alive(self) -> bool:
+        try:
+            with urllib.request.urlopen(self._serve_url + "/v1/health", timeout=2) as r:
+                return r.status == 200
+        except Exception:
+            return False
+
+    def _ensure_serve(self) -> None:
+        """Reuse a running server, else (autostart) spawn one, else stay CLI."""
+        if self._serve_alive():
+            self._serve = self._serve_url
+            _LOGGER.info("supertonic serve: reusing %s (warm model)", self._serve_url)
+            return
+        if not self._serve_autostart:
+            _LOGGER.info(
+                "supertonic serve %s not answering and autostart off; using CLI.",
+                self._serve_url,
+            )
+            return
+        try:
+            port = self._serve_url.rsplit(":", 1)[-1]
+            self._serve_proc = subprocess.Popen(
+                [self._binary, "serve", "--model", self._serve_model,
+                 "--port", port, "--log-level", "warning"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                text=True, start_new_session=True,
+            )
+            for _ in range(40):
+                if self._serve_alive():
+                    self._serve = self._serve_url
+                    _LOGGER.info("supertonic serve: started %s (warm model)", self._serve_url)
+                    return
+                time.sleep(0.5)
+            _LOGGER.warning("supertonic serve did not come up in 20s; using CLI.")
+        except Exception:
+            _LOGGER.exception("supertonic serve failed to start; using CLI.")
+
+    def _synth_serve(self, clean: str, speed: float) -> bytes:
+        """POST to the warm server -> WAV bytes. Field is `lang` NOT `language`
+        (the server's pydantic model silently ignores unknown fields)."""
+        body = json.dumps({
+            "text": clean,
+            "voice": self._voice,
+            "lang": self._lang,
+            "speed": float(speed),
+            "steps": self._steps,
+            "max_chunk_length": self._serve_max_chunk,
+            "silence_duration": 0.0,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            self._serve + "/v1/tts", data=body,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=self._timeout) as r:
+            audio = r.read()
+        if len(audio) < 1000:
+            raise TTSEngineError("supertonic serve returned no usable audio.")
+        return audio
+
+    def _apply_mastering(self, audio: bytes) -> bytes:
+        """Run the ffmpeg persona chain; fail-safe returns the raw audio."""
+        if not self._mastering_filter:
+            return audio
+        src = Path(self.workdir) / f"master-in-{uuid.uuid4().hex}.wav"
+        dst = Path(self.workdir) / f"master-out-{uuid.uuid4().hex}.wav"
+        try:
+            src.write_bytes(audio)
+            proc = subprocess.run(
+                [self._mastering_binary, "-y", "-i", str(src),
+                 "-af", self._mastering_filter, str(dst)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=20, check=False,
+            )
+            if proc.returncode == 0 and dst.is_file() and dst.stat().st_size > 44:
+                return dst.read_bytes()
+            _LOGGER.warning("mastering ffmpeg failed (rc=%s); playing raw.", proc.returncode)
+        except Exception:
+            _LOGGER.exception("mastering raised; playing raw audio.")
+        finally:
+            src.unlink(missing_ok=True)
+            dst.unlink(missing_ok=True)
+        return audio
+
+    def _synth_cli(self, clean: str, speed: float) -> bytes:
         out = Path(self.workdir) / f"tts-{uuid.uuid4().hex}.wav"
-        # Measured at the G4 live gate (2026-07-02): above ~1.15 speed the
-        # model clips the final phoneme of short sentences (a hot cut inside
-        # the generated audio, so playback pads cannot help) and above ~1.25
-        # occasionally emits a near-silent file. Short sentences may only be
-        # slowed down, never sped up.
-        speed = self._speed
-        if 0 < len(clean) <= self._short_chars:
-            speed = min(speed, self._short_speed)
         cmd = [
             self._binary, "tts", clean, "-o", str(out),
             "--voice", self._voice, "--lang", self._lang,
@@ -210,11 +344,38 @@ class SupertonicEngine:
                 )
             if not out.is_file() or out.stat().st_size < 1000:
                 raise TTSEngineError("supertonic produced no usable audio output.")
-            return SynthesizedChunk(text=text, audio=out.read_bytes())
+            return out.read_bytes()
         except subprocess.TimeoutExpired as exc:
             raise TTSEngineError(f"supertonic timed out after {self._timeout}s.") from exc
         finally:
             out.unlink(missing_ok=True)
+
+    def synthesize(self, text: str) -> SynthesizedChunk:
+        spoken = apply_pronunciations(str(text or ""), self._pronunciations)
+        clean = spoken.translate(_SUPERTONIC_STRIP).strip()
+        if not clean:
+            raise TTSEngineError(f"Nothing speakable left after sanitizing {text!r}.")
+        # Measured at the G4 live gate (2026-07-02): above ~1.15 speed the
+        # model clips the final phoneme of short sentences (a hot cut inside
+        # the generated audio, so playback pads cannot help) and above ~1.25
+        # occasionally emits a near-silent file. Short sentences may only be
+        # slowed down, never sped up.
+        speed = self._speed
+        if 0 < len(clean) <= self._short_chars:
+            speed = min(speed, self._short_speed)
+        # Warm serve first (no per-chunk model reload); any failure falls back
+        # to the CLI so warm-serve never regresses to silence.
+        audio: bytes | None = None
+        if self._serve:
+            try:
+                audio = self._synth_serve(clean, speed)
+            except Exception:
+                _LOGGER.warning("supertonic serve synth failed; CLI fallback.", exc_info=True)
+                if not self._serve_alive():
+                    self._serve = None  # server died -> stop trying, go CLI
+        if audio is None:
+            audio = self._synth_cli(clean, speed)
+        return SynthesizedChunk(text=text, audio=self._apply_mastering(audio))
 
     def play(self, chunk: SynthesizedChunk, should_play: Any = None) -> None:
         path = Path(self.workdir) / f"play-{uuid.uuid4().hex}.wav"
@@ -257,6 +418,20 @@ class SupertonicEngine:
                 )
         finally:
             path.unlink(missing_ok=True)
+
+    def close(self) -> None:
+        """Terminate an autostarted warm-serve server (no-op if reused/absent).
+
+        A server we did NOT start (reuse) is left running so the next engine
+        keeps the warm model — same reuse behavior as DAN's broker.
+        """
+        proc = self._serve_proc
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.terminate()
+        except Exception:
+            pass
 
     def stop_playback(self) -> None:
         """Barge-in leg 3: kill the current player process (and only it)."""
