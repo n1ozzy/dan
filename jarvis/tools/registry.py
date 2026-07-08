@@ -364,6 +364,26 @@ class ApprovalGate:
         ).fetchall()
         return [_approval_from_row(row) for row in rows]
 
+    def list_pending_and_approved(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Both still-open decisions AND already-approved-but-not-yet-executed
+        approvals. The daemon drops the ones that already ran; keeping approved
+        rows here is what stops an approved-but-unexecuted approval from
+        vanishing (server truth, not client memory)."""
+
+        bounded_limit = _bounded_limit(limit)
+        rows = self._conn.execute(
+            """
+            SELECT id, created_at, decided_at, status, risk, requested_by,
+                   action_type, payload_json, decision_reason, metadata_json
+            FROM approvals
+            WHERE status IN ('pending', 'approved')
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+            """,
+            (bounded_limit,),
+        ).fetchall()
+        return [_approval_from_row(row) for row in rows]
+
     def _append_event(
         self,
         event_type: str,

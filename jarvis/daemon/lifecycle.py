@@ -11,6 +11,7 @@ from urllib.parse import unquote
 
 from jarvis.api.routes_approvals import (
     ApprovalRequestValidationError,
+    approve_and_execute_approval,
     approve_approval,
     execute_approval,
     get_approvals,
@@ -578,6 +579,13 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             if action == "execute":
                 _write_json(handler, 200, execute_approval(app, approval_id, request_payload))
                 return
+            if action == "approve-and-execute":
+                _write_json(
+                    handler,
+                    200,
+                    approve_and_execute_approval(app, approval_id, request_payload),
+                )
+                return
 
         if method == "POST" and path == "/settings":
             request_payload = _read_json_body(handler)
@@ -895,7 +903,7 @@ def _approval_action(path: str) -> tuple[str, str] | None:
     if len(parts) != 3 or parts[0] != "approvals":
         return None
     approval_id, action = parts[1], parts[2]
-    if action not in {"approve", "reject", "execute"}:
+    if action not in {"approve", "reject", "execute", "approve-and-execute"}:
         return None
     if not approval_id:
         return None

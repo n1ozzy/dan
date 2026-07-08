@@ -1068,6 +1068,52 @@ class DaemonApp:
             raise DaemonAppNotStartedError("Daemon app is not started.")
         return self._require_approval_gate().list_pending(limit=limit)
 
+    def list_actionable_approvals(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Everything the operator can still act on: pending decisions plus
+        approvals that were approved but never executed (e.g. a prior execute
+        failed). Approved rows that already ran are dropped — they are done,
+        not silently discarded. This is the source of truth the panel renders,
+        so nothing disappears just because a client forgot it."""
+
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        gate = self._require_approval_gate()
+        recorder = self._require_tool_run_recorder()
+        actionable: list[dict[str, Any]] = []
+        for approval in gate.list_pending_and_approved(limit=limit):
+            if approval.get("status") == "approved" and recorder.get_by_approval_id(
+                str(approval.get("id"))
+            ) is not None:
+                continue
+            actionable.append(approval)
+        return actionable
+
+    def approve_and_execute_tool(
+        self, approval_id: str, *, reason: str | None = None
+    ) -> dict[str, Any]:
+        """One operator click: approve (if still pending) then execute, under a
+        single lock so there is no half-approved window and no separate second
+        step. A double-click conflicts on "already executed" instead of running
+        twice; an approval that was approved earlier but never ran is retried."""
+
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+
+        normalized_approval_id = _required_text(approval_id, "approval_id")
+        with self.tool_execution_lock:
+            gate = self._require_approval_gate()
+            approval = gate.get_approval(normalized_approval_id)
+            if approval is None:
+                raise DaemonAppNotFoundError(f"Unknown approval: {normalized_approval_id}")
+            status = approval.get("status")
+            if status == "pending":
+                gate.decide(normalized_approval_id, "approved", reason=reason)
+            elif status != "approved":
+                raise DaemonAppConflictError(
+                    f"Approval is not actionable: {normalized_approval_id}"
+                )
+            return self._execute_approved_tool_locked(normalized_approval_id)
+
     def approve(self, approval_id: str, *, reason: str | None = None) -> dict[str, Any]:
         if not self.started:
             raise DaemonAppNotStartedError("Daemon app is not started.")

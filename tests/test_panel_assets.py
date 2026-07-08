@@ -2742,6 +2742,98 @@ def test_developer_only_brain_provider_preserved_without_auto_switch_or_pending(
         assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_pending_approval_approves_and_executes_in_one_request(tmp_path: Path) -> None:
+        # Ozzy 2026-07-08: clicking the pending approval button must do BOTH in a
+        # single atomic backend call (/approve-and-execute), never a separate
+        # approve then execute that can strand a second "execute" step.
+        harness = tmp_path / "approval-one-click-harness.js"
+        harness.write_text(
+            textwrap.dedent(
+                f"""
+                const assert = require("assert");
+                const fs = require("fs");
+                const vm = require("vm");
+
+                function createNode(tag) {{
+                  const children = [];
+                  return {{
+                    tagName: tag,
+                    children,
+                    textContent: "",
+                    className: "",
+                    hidden: false,
+                    disabled: false,
+                    value: "",
+                    appendChild(child) {{ children.push(child); return child; }},
+                    append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
+                    removeChild(child) {{
+                      const index = children.indexOf(child);
+                      if (index >= 0) children.splice(index, 1);
+                      return child;
+                    }},
+                    get firstChild() {{ return children[0] || null; }},
+                    addEventListener() {{}},
+                    closest() {{ return null; }},
+                    querySelectorAll() {{ return []; }},
+                    classList: {{ add() {{}}, remove() {{}}, toggle() {{}} }},
+                  }};
+                }}
+
+                const requests = [];
+                const context = {{
+                  console,
+                  URL,
+                  location: {{ origin: "http://127.0.0.1:41741" }},
+                  localStorage: {{ getItem: () => "token", setItem: () => {{}}, removeItem: () => {{}} }},
+                  createNode,
+                  window: {{}},
+                  document: {{ addEventListener: () => {{}}, createElement: createNode }},
+                  fetch: async (url, init = {{}}) => {{
+                    const parsed = new URL(url);
+                    requests.push({{ path: parsed.pathname, method: init.method || "GET" }});
+                    return {{
+                      ok: true,
+                      status: 200,
+                      text: async () => JSON.stringify({{ approvals: [], events: [], items: [], conversations: [] }}),
+                    }};
+                  }},
+                }};
+                context.window.localStorage = context.localStorage;
+                context.globalThis = context;
+                vm.createContext(context);
+                vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{ filename: "app.js" }});
+
+                vm.runInContext(`
+                  el.approvalList = createNode("div");
+                  el.approvalsError = createNode("pre");
+                  cockpit.online = true;
+                `, context);
+
+                (async () => {{
+                  await context.approveAndExecuteApproval("appr-1", createNode("button"));
+                  const atomic = requests.filter((r) => r.method === "POST" && r.path === "/approvals/appr-1/approve-and-execute");
+                  const legacyApprove = requests.filter((r) => r.method === "POST" && r.path === "/approvals/appr-1/approve");
+                  const legacyExecute = requests.filter((r) => r.method === "POST" && r.path === "/approvals/appr-1/execute");
+                  assert.strictEqual(atomic.length, 1, "expected exactly one atomic approve-and-execute POST");
+                  assert.strictEqual(legacyApprove.length, 0, "must not POST separate /approve");
+                  assert.strictEqual(legacyExecute.length, 0, "must not POST separate /execute");
+                }})().catch((error) => {{ console.error(error); process.exit(1); }});
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            ["node", str(harness)],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_personality_apply_posts_when_persona_requires_restart(tmp_path: Path) -> None:
         harness = tmp_path / "personality-requires-restart-harness.js"
         harness.write_text(
@@ -4137,9 +4229,10 @@ def test_approval_cards_support_memory_save_one_click_and_idempotent_execute() -
 
 
 def test_memory_approve_execute_failure_preserves_approved_retry_state(tmp_path: Path) -> None:
-    # The one-click memory flow is approve + explicit execute. If execute fails
-    # after approve succeeds, retry must execute the approved row instead of
-    # sending approve again and hitting "Approval is not pending".
+    # One atomic click (/approve-and-execute). If execution fails, the approval
+    # stays approved-but-unexecuted on the SERVER (/approvals still lists it), so
+    # the panel re-renders a retry card straight from server truth — nothing
+    # disappears silently and retry runs execute, not approve again.
     harness = tmp_path / "approval-flow-harness.js"
     harness.write_text(
         textwrap.dedent(
@@ -4294,14 +4387,18 @@ def test_memory_approve_execute_failure_preserves_approved_retry_state(tmp_path:
                 const parsed = new URL(url);
                 const path = `${{parsed.pathname}}${{parsed.search}}`;
                 calls.push({{ path, method: init.method || "GET" }});
-                if (path === "/approvals/ap-1/approve") {{
-                  return response(200, {{ approval: approvedApproval }});
+                if (path === "/approvals/ap-1/approve-and-execute") {{
+                  // Atomic approve+execute where execution is blocked/fails: the
+                  // approval remains approved-but-unexecuted server-side.
+                  return response(200, {{ ok: false, error: "execute failed" }});
                 }}
                 if (path === "/approvals/ap-1/execute") {{
-                  return response(500, {{ error: "execute failed" }});
+                  return response(200, {{ ok: true }});
                 }}
                 if (path === "/approvals?limit=25") {{
-                  return response(200, {{ approvals: [] }});
+                  // Server truth: the approved-but-unexecuted approval is still
+                  // listed, so the retry card survives a panel refresh/reload.
+                  return response(200, {{ approvals: [approvedApproval] }});
                 }}
                 return response(200, {{}});
               }},
@@ -4315,9 +4412,14 @@ def test_memory_approve_execute_failure_preserves_approved_retry_state(tmp_path:
             (async () => {{
               await context.approveAndExecuteApproval("ap-1", new FakeNode("button"));
 
-              assert.deepStrictEqual(
-                calls.map((call) => call.path),
-                ["/approvals/ap-1/approve", "/approvals/ap-1/execute", "/approvals?limit=25"],
+              // One atomic call — never the legacy separate approve step.
+              assert.strictEqual(
+                calls.filter((call) => call.path === "/approvals/ap-1/approve-and-execute").length,
+                1,
+              );
+              assert.strictEqual(
+                calls.filter((call) => call.path === "/approvals/ap-1/approve").length,
+                0,
               );
               assert.match(node("approvalsError").textContent, /execute failed/);
               const buttons = flatten(node("approvalList")).filter((item) => item.tagName === "button");
@@ -4326,16 +4428,12 @@ def test_memory_approve_execute_failure_preserves_approved_retry_state(tmp_path:
                 false,
               );
               const executeButton = buttons.find((button) => button.textContent === "Wykonaj zatwierdzone");
-              assert.ok(executeButton, "approved card should render execute retry");
+              assert.ok(executeButton, "approved card should render execute retry from server truth");
 
               await executeButton.listeners.click();
               assert.strictEqual(
-                calls.filter((call) => call.path === "/approvals/ap-1/approve").length,
-                1,
-              );
-              assert.strictEqual(
                 calls.filter((call) => call.path === "/approvals/ap-1/execute").length,
-                2,
+                1,
               );
             }})().catch((error) => {{
               console.error(error && error.stack ? error.stack : error);

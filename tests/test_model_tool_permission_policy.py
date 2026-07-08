@@ -385,6 +385,107 @@ def test_explicit_execute_approved_behavior_is_unchanged_for_model_created_appro
     assert table_count(app, "tool_runs") == 1
 
 
+def test_approve_and_execute_runs_the_tool_in_one_call(app: DaemonApp) -> None:
+    # Ozzy 2026-07-08: one click must both approve AND execute — no second
+    # "execute" step.
+    set_model_tool_response(
+        app,
+        BrainToolCall(id="call-atomic", name="approval_probe", arguments={"purpose": "atomic"}),
+    )
+    app.start()
+    payload = post_text(app)
+    approval_id = str(payload["tool_calls"][0]["approval_id"])
+    assert table_count(app, "tool_runs") == 0
+
+    result = app.approve_and_execute_tool(approval_id, reason="one click")
+
+    assert result["ok"] is True
+    assert result["result"] == {"ok": True, "message": "approval_probe executed safely"}
+    assert table_count(app, "tool_runs") == 1
+    approval = app.approval_gate.get_approval(approval_id)  # type: ignore[union-attr]
+    assert approval is not None
+    assert approval["status"] == "approved"
+
+
+def test_approve_and_execute_is_idempotent_on_double_click(app: DaemonApp) -> None:
+    # A second click (or a stray retry) must conflict, not run the tool twice.
+    set_model_tool_response(
+        app,
+        BrainToolCall(id="call-atomic-2", name="approval_probe", arguments={}),
+    )
+    app.start()
+    approval_id = str(post_text(app)["tool_calls"][0]["approval_id"])
+
+    app.approve_and_execute_tool(approval_id, reason="first")
+    with pytest.raises(DaemonAppConflictError):
+        app.approve_and_execute_tool(approval_id, reason="second")
+    assert table_count(app, "tool_runs") == 1
+
+
+def test_approve_and_execute_retries_an_approved_but_unexecuted_approval(app: DaemonApp) -> None:
+    # If a prior execute failed, the approval is already "approved" but has no
+    # tool_run. approve_and_execute must still run it (retry), not choke on the
+    # non-pending status.
+    set_model_tool_response(
+        app,
+        BrainToolCall(id="call-retry", name="approval_probe", arguments={}),
+    )
+    app.start()
+    approval_id = str(post_text(app)["tool_calls"][0]["approval_id"])
+    app.approve(approval_id, reason="approved, not executed")
+    assert table_count(app, "tool_runs") == 0
+
+    result = app.approve_and_execute_tool(approval_id, reason="retry")
+
+    assert result["ok"] is True
+    assert table_count(app, "tool_runs") == 1
+
+
+def test_actionable_approvals_include_approved_but_not_executed(app: DaemonApp) -> None:
+    # "Nothing disappears silently": an approved-but-not-yet-executed approval
+    # must remain visible in the actionable list (server truth), so the panel
+    # never loses it just because a client-side map forgot it.
+    set_model_tool_response(
+        app,
+        BrainToolCall(id="call-visible", name="approval_probe", arguments={}),
+    )
+    app.start()
+    approval_id = str(post_text(app)["tool_calls"][0]["approval_id"])
+
+    # pending is actionable
+    pending = app.list_actionable_approvals()
+    assert [entry["id"] for entry in pending] == [approval_id]
+    assert pending[0]["status"] == "pending"
+
+    # approved-but-not-executed stays actionable
+    app.approve(approval_id, reason="ok")
+    approved = app.list_actionable_approvals()
+    assert [entry["id"] for entry in approved] == [approval_id]
+    assert approved[0]["status"] == "approved"
+
+    # once executed it drops off (it is done, not silently gone)
+    app.execute_approved_tool(approval_id)
+    assert app.list_actionable_approvals() == []
+
+
+def test_http_approve_and_execute_endpoint_runs_tool_in_one_request(app: DaemonApp) -> None:
+    set_model_tool_response(
+        app,
+        BrainToolCall(id="call-http-atomic", name="approval_probe", arguments={}),
+    )
+    app.start()
+    with running_server(app) as base_url:
+        _, created = request_json("POST", f"{base_url}/input/text", {"text": "go"})
+        approval_id = str(created["tool_calls"][0]["approval_id"])
+        status, result = request_json(
+            "POST", f"{base_url}/approvals/{approval_id}/approve-and-execute"
+        )
+
+    assert status == 200
+    assert result["ok"] is True
+    assert table_count(app, "tool_runs") == 1
+
+
 def test_model_originated_memory_save_waits_for_approval_and_execute_promotes_once(
     app: DaemonApp,
 ) -> None:

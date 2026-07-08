@@ -16,7 +16,11 @@ class ApprovalRequestValidationError(ValueError):
 
 
 def get_approvals(app: DaemonApp, *, limit: int = 50) -> dict[str, object]:
-    return {"approvals": app.list_pending_approvals(limit=limit)}
+    # Actionable = pending decisions PLUS approved-but-not-yet-executed. The
+    # panel renders straight from this so an approved approval whose execution
+    # failed stays visible (server truth) instead of living only in client
+    # memory — nothing disappears silently.
+    return {"approvals": app.list_actionable_approvals(limit=limit)}
 
 
 def approve_approval(
@@ -44,6 +48,15 @@ def execute_approval(
 ) -> dict[str, object]:
     _reject_unexpected_payload(request_payload)
     return app.execute_approved_tool(approval_id)
+
+
+def approve_and_execute_approval(
+    app: DaemonApp,
+    approval_id: str,
+    request_payload: Any | None = None,
+) -> dict[str, object]:
+    reason = _optional_reason(request_payload)
+    return app.approve_and_execute_tool(approval_id, reason=reason)
 
 
 def _optional_reason(request_payload: Any | None) -> str | None:
@@ -75,6 +88,7 @@ def register_routes(app: object) -> None:
 __all__ = [
     "ApprovalRequestValidationError",
     "ROUTE_GROUP",
+    "approve_and_execute_approval",
     "approve_approval",
     "execute_approval",
     "get_approvals",

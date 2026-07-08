@@ -7615,17 +7615,23 @@ function renderTools(tools) {
   }
 }
 
-function renderApprovals(pendingApprovals) {
+// Zgody renderujemy WYŁĄCZNIE z prawdy serwera (/approvals = actionable:
+// pending + approved-niewykonane). Żaden stan nie żyje tylko w kliencie, więc
+// nic nie znika po cichu — approved-niewykonane (np. execute padł) zostaje
+// widoczne po odświeżeniu i po reloadzie panelu.
+function renderApprovals(approvals) {
   clearNode(el.approvalList);
-  setPendingBadge(pendingApprovals.length);
+  const list = Array.isArray(approvals) ? approvals : [];
+  const pending = list.filter((approval) => (approval.status || "pending") === "pending");
+  const approved = list.filter((approval) => approval.status === "approved");
+  setPendingBadge(pending.length);
 
-  const approved = Array.from(cockpit.approvedApprovals.values());
-  if (pendingApprovals.length === 0 && approved.length === 0) {
+  if (list.length === 0) {
     renderApprovalsEmpty();
     return;
   }
 
-  for (const approval of pendingApprovals) {
+  for (const approval of pending) {
     el.approvalList.appendChild(approvalCard(approval, "pending"));
   }
   for (const approval of approved) {
@@ -7654,7 +7660,7 @@ function renderApprovalsEmpty() {
 
   const note = document.createElement("p");
   note.className = "empty-state-note muted";
-  setText(note, "Zatwierdzenie nie wykonuje — wykonanie to osobny klik.");
+  setText(note, "Jeden klik „Zatwierdź i wykonaj” załatwia całość.");
 
   box.append(mark, title, hint, note);
   el.approvalList.appendChild(box);
@@ -7677,7 +7683,9 @@ function approvalCard(approval, mode) {
   eyebrow.className = "approval-eyebrow";
   setText(
     eyebrow,
-    mode === "pending" ? "Jarvis prosi o zgodę na:" : "Zatwierdzone — gotowe do wykonania:",
+    mode === "pending"
+      ? "Jarvis prosi o zgodę na:"
+      : "Zatwierdzone, ale wykonanie się nie udało — ponów:",
   );
   card.appendChild(eyebrow);
 
@@ -7830,32 +7838,39 @@ async function decideApproval(approvalId, action, button) {
   }
 }
 
+// Jeden klik = zatwierdź I wykonaj, jednym atomowym żądaniem do serwera (approve
+// + execute pod wspólnym lockiem). Zero osobnego kroku „execute", zero okna
+// półstanu. Gdy wykonanie się nie uda (blocked/błąd narzędzia), approval zostaje
+// po stronie serwera jako approved-niewykonane i wróci jako karta z retry —
+// nic nie ginie po cichu, pokazujemy tylko powód.
 async function approveAndExecuteApproval(approvalId, button) {
   clearError(el.approvalsError);
   setApprovalCardBusy(button, true);
-  let approveSucceeded = false;
   try {
-    const payload = await requestJson(`/approvals/${encodeURIComponent(approvalId)}/approve`, {
-      method: "POST",
-      body: { reason: "panel approve and save" },
-    });
-    approveSucceeded = true;
-    if (payload.approval) {
-      cockpit.approvedApprovals.set(approvalId, payload.approval);
-    }
-    await executeApprovalRequest(approvalId);
-    cockpit.approvedApprovals.delete(approvalId);
+    const result = await requestJson(
+      `/approvals/${encodeURIComponent(approvalId)}/approve-and-execute`,
+      {
+        method: "POST",
+        body: { reason: "panel approve and execute" },
+      },
+    );
+    // Refresh first (it clears the error banner), THEN surface any failure so
+    // the reason survives — the approved-but-unexecuted card comes back from the
+    // server refresh and the message stays next to it.
     await refreshAfterApprovalExecution();
+    if (result && result.ok === false) {
+      renderError(
+        el.approvalsError,
+        new Error(result.error || "Wykonanie zablokowane — zgoda czeka na ponowienie."),
+      );
+    }
   } catch (error) {
     if (isAlreadyExecutedConflict(error)) {
-      cockpit.approvedApprovals.delete(approvalId);
       await refreshAfterApprovalExecution();
       return;
     }
-    if (approveSucceeded) {
-      await refreshApprovals();
-    }
     renderError(el.approvalsError, error);
+    await refreshApprovals();
   } finally {
     setApprovalCardBusy(button, false);
   }
