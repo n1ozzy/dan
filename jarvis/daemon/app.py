@@ -78,6 +78,7 @@ from jarvis.tools.registry import ApprovalProbeTool, ToolRegistryError
 from jarvis.tools.screen_tool import ScreenOcrRegionTool, ScreenReadWindowTool
 from jarvis.tools.terminal_tool import TerminalPasteTool, TerminalReadScreenTool
 from jarvis.tools.shell_tool import ShellReadTool
+from jarvis.tools.web_tool import WebFetchTool
 from jarvis.tools.ui_tool import (
     UiActiveAppTool,
     UiClickTool,
@@ -1527,6 +1528,7 @@ def create_daemon_app_from_config(
     tool_registry.register(
         ShellReadTool(whitelist=shell_read_whitelist, approved_roots=approved_roots)
     )
+    tool_registry.register(WebFetchTool())
     ui_reader = create_reader(config.security.ui_read_backend)
     tool_registry.register(UiActiveAppTool(ui_reader))
     tool_registry.register(UiReadWindowTool(ui_reader))
