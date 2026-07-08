@@ -11,7 +11,7 @@
 > `auto_approve_mode="all"`, `destructive_tools_enabled=true`,
 > `permission_mode="bypassPermissions"`. The matrix below describes the
 > **architectural design**, not current runtime policy. Enforcement gates are
-> in place in the code; permission modes relax them selectively per config.).
+> in place in the code; permission modes relax them selectively per config.
 
 Motivation ([MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.md) §5.4):
 "the user says *click this*" is not the same event as "the model decided to
