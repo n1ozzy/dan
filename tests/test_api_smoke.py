@@ -870,7 +870,7 @@ def test_env_force_disabled_blocks_every_runtime_enablement_path(
     daemon_app = create_daemon_app(
         config_path,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-runtime", "default"),
+            ("conversation-runtime", "jarvis"),
         ),
     )
     try:
@@ -944,7 +944,7 @@ def test_memory_disabled_blocks_env_enablement_and_request_override(
     daemon_app = create_daemon_app(
         config_path,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-runtime", "default"),
+            ("conversation-runtime", "jarvis"),
         ),
     )
     try:
@@ -1173,7 +1173,7 @@ def test_create_daemon_app_scoped_enablement_uses_config_gate_without_global_lea
     daemon_app = create_daemon_app(
         config_path,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-runtime", "default"),
+            ("conversation-runtime", "jarvis"),
         ),
     )
     try:
@@ -1294,7 +1294,7 @@ def test_create_daemon_app_scoped_enablement_requires_config_gate(
         config_path,
         memory_compiler=compiler,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-runtime", "default"),
+            ("conversation-runtime", "jarvis"),
         ),
     )
     try:

@@ -2907,6 +2907,12 @@ function renderToolsInternetStatusList(payload, tools, applyCapabilities) {
   el.toolsInternetStatusList.appendChild(row);
 }
 
+function personaProfileDisplayLabel(value) {
+  // Jarvis runs a single persona; show it capitalised ("jarvis" -> "Jarvis").
+  const text = value === undefined || value === null ? "" : String(value);
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
 function renderPersonaApplyControls(payload) {
   const field = settingsPreviewField(payload, "personality", "active_persona");
   const profiles = Array.isArray(field.allowed_values) ? field.allowed_values : [];
@@ -2917,7 +2923,7 @@ function renderPersonaApplyControls(payload) {
   );
   setSelectOptions(
     el.personaProfileSelect,
-    profiles.map((value) => ({ value, label: value })),
+    profiles.map((value) => ({ value, label: personaProfileDisplayLabel(value) })),
     selectedProfile,
   );
   renderPersonalityStatusList(payload, selectedProfile);

@@ -11,7 +11,11 @@ from types import SimpleNamespace
 import pytest
 
 from jarvis.brain import BrainRequest
-from jarvis.brain.context_builder import ContextBuilder, ContextBuilderError
+from jarvis.brain.context_builder import (
+    DEFAULT_PERSONA_PROFILE,
+    ContextBuilder,
+    ContextBuilderError,
+)
 from jarvis.memory import MemoryManager
 from jarvis.store.db import close_quietly, initialize_database
 from tests.git_guards import assert_schema_and_migrations_unchanged
@@ -511,7 +515,7 @@ def test_corrupted_settings_row_is_skipped_and_valid_rows_still_load(
         input_text="Now",
     )
 
-    assert result.context_snapshot["persona_profile"] == "default"
+    assert result.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
 
 
 def test_runtime_state_appears_in_context_when_provided(
@@ -772,6 +776,27 @@ def test_persona_profile_setting_selects_profile_file(
     assert result.context_snapshot["persona_profile"] == "gangus-3"
 
 
+def test_base_persona_profile_is_named_jarvis(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    # Ozzy 2026-07-08: there is exactly ONE persona and it is named "jarvis"
+    # (the base persona file, no more "default").
+    assert DEFAULT_PERSONA_PROFILE == "jarvis"
+    insert_conversation(conn)
+    builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
+
+    result = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    )
+
+    first = result.request.context_messages[0]
+    assert first.metadata["profile"] == "jarvis"
+    assert result.context_snapshot["persona_profile"] == "jarvis"
+
+
 def test_missing_persona_profile_setting_uses_base_persona(
     conn: sqlite3.Connection,
     persona_path: Path,
@@ -788,8 +813,8 @@ def test_missing_persona_profile_setting_uses_base_persona(
 
     first = result.request.context_messages[0]
     assert "Persona: Jarvis owns memory" in first.content
-    assert first.metadata["profile"] == "default"
-    assert result.context_snapshot["persona_profile"] == "default"
+    assert first.metadata["profile"] == DEFAULT_PERSONA_PROFILE
+    assert result.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
 
 
 def test_unknown_persona_profile_falls_back_to_base_persona(
@@ -809,7 +834,7 @@ def test_unknown_persona_profile_falls_back_to_base_persona(
 
     first = result.request.context_messages[0]
     assert "Persona: Jarvis owns memory" in first.content
-    assert result.context_snapshot["persona_profile"] == "default"
+    assert result.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
 
 
 def test_persona_profile_path_traversal_is_rejected(
@@ -832,7 +857,7 @@ def test_persona_profile_path_traversal_is_rejected(
     first = result.request.context_messages[0]
     assert "EVIL PERSONA" not in first.content
     assert "Persona: Jarvis owns memory" in first.content
-    assert result.context_snapshot["persona_profile"] == "default"
+    assert result.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
 
 
 def test_non_string_persona_profile_falls_back_to_base_persona(
@@ -851,7 +876,7 @@ def test_non_string_persona_profile_falls_back_to_base_persona(
     )
 
     assert "Persona: Jarvis owns memory" in result.request.context_messages[0].content
-    assert result.context_snapshot["persona_profile"] == "default"
+    assert result.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
 
 
 def test_explicit_settings_override_persona_profile_from_table(

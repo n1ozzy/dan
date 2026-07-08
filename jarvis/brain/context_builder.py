@@ -28,7 +28,7 @@ DEFAULT_CONTEXT_BUDGET_CHARS = 24000
 JOB_PROMPT_PREVIEW_CHARS = 120
 
 PERSONA_PROFILE_SETTING_KEY = "persona.profile"
-DEFAULT_PERSONA_PROFILE = "default"
+DEFAULT_PERSONA_PROFILE = "jarvis"
 # Conservative file names only: the profile is a settings-supplied value, so
 # anything that could escape the persona directory is rejected outright.
 _PERSONA_PROFILE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
