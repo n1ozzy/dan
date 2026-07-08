@@ -128,7 +128,7 @@ def build_claude_cli_command(
     runtime_model: Any = None,
     runtime_effort: Any = None,
     request_settings: Mapping[str, Any] | None = None,
-    streaming: bool = False,
+    streaming: bool = True,
 ) -> ClaudeCliCommandContract:
     """Build the executable argv and redacted preview for one Claude CLI turn."""
 

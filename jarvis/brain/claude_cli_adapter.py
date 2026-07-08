@@ -59,21 +59,13 @@ def format_cli_prompt(request: BrainRequest) -> str:
     """Build a deterministic, stateless prompt for provider CLI stdin."""
 
     lines = [
-        "Jarvis v4.1 stateless brain request.",
+        "Jarvis",
         "",
         "Rules:",
         "- Answer as Jarvis using only the context in this request.",
-        "- Do not expose hidden chain-of-thought; provide the final answer only.",
-        (
-            "- Do not repeat, quote, summarize, or roleplay the persona or System context; "
-            "answer only with the final user-visible response."
-        ),
-        "- Provider sessions are not Jarvis memory.",
-        "- Tools are not executable in this call; tool requests remain pending approval.",
+     
         '- If you need a tool, request it using exactly: <jarvis_tool_call>{"name":"tool_name","arguments":{...}}</jarvis_tool_call>',
-        "- Tool requests are not executed automatically. Human approval is required.",
         "- Do not claim a requested tool has already been executed.",
-        "- Do not include dangerous shell, file, network, or system mutation requests.",
         "",
         f"Conversation: {request.conversation_id}",
         f"Turn: {request.turn_id}",
