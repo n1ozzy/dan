@@ -10,6 +10,7 @@ class MockBrainAdapter:
 
     name = "mock"
     default_model = "mock-local"
+    supports_streaming = False
 
     def __init__(self, default_model: str | None = None) -> None:
         if default_model:

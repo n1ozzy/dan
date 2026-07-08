@@ -96,6 +96,7 @@ class BrainAdapter(Protocol):
 
     name: str
     default_model: str
+    supports_streaming: bool
 
     def available_models(self) -> list[str]:
         """Return model identifiers this adapter can currently offer."""

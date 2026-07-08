@@ -132,7 +132,7 @@ def test_mock_brain_adapter_raw_metadata_marks_mock_and_stateless() -> None:
 
 
 def test_brain_manager_registers_mock_adapter() -> None:
-    manager = BrainManager([MockBrainAdapter()])
+    manager = BrainManager([MockBrainAdapter()], default_adapter="mock")
 
     assert manager.adapter_names() == ["mock"]
     assert manager.current_adapter_name == "mock"
@@ -141,11 +141,11 @@ def test_brain_manager_registers_mock_adapter() -> None:
 
 def test_brain_manager_rejects_duplicate_adapter_names() -> None:
     with pytest.raises(BrainManagerError, match="Duplicate brain adapter"):
-        BrainManager([MockBrainAdapter(), MockBrainAdapter()])
+        BrainManager([MockBrainAdapter(), MockBrainAdapter()], default_adapter="mock")
 
 
 def test_brain_manager_rejects_unknown_adapter() -> None:
-    manager = BrainManager([MockBrainAdapter()])
+    manager = BrainManager([MockBrainAdapter()], default_adapter="mock")
 
     with pytest.raises(BrainManagerError, match="Unknown brain adapter"):
         manager.get_adapter("missing")
@@ -157,7 +157,7 @@ def test_brain_manager_rejects_missing_default_adapter() -> None:
 
 
 def test_brain_manager_generate_uses_current_default_adapter() -> None:
-    manager = BrainManager([MockBrainAdapter()])
+    manager = BrainManager([MockBrainAdapter()], default_adapter="mock")
 
     response = manager.generate(make_request("default path"))
 
@@ -166,7 +166,7 @@ def test_brain_manager_generate_uses_current_default_adapter() -> None:
 
 
 def test_brain_manager_generate_can_use_explicit_adapter_name() -> None:
-    manager = BrainManager([MockBrainAdapter(), AlternateFakeAdapter()])
+    manager = BrainManager([MockBrainAdapter(), AlternateFakeAdapter()], default_adapter="mock")
 
     response = manager.generate(make_request("route me"), adapter_name="alternate")
 
@@ -175,7 +175,7 @@ def test_brain_manager_generate_can_use_explicit_adapter_name() -> None:
 
 
 def test_brain_manager_switch_adapter_works_with_second_adapter() -> None:
-    manager = BrainManager([MockBrainAdapter(), AlternateFakeAdapter()])
+    manager = BrainManager([MockBrainAdapter(), AlternateFakeAdapter()], default_adapter="mock")
 
     manager.switch_adapter("alternate")
     response = manager.generate(make_request("after switch"))
@@ -185,7 +185,7 @@ def test_brain_manager_switch_adapter_works_with_second_adapter() -> None:
 
 
 def test_brain_manager_switch_adapter_does_not_modify_request_data() -> None:
-    manager = BrainManager([MockBrainAdapter(), AlternateFakeAdapter()])
+    manager = BrainManager([MockBrainAdapter(), AlternateFakeAdapter()], default_adapter="mock")
     request = make_request("preserve me")
     before = asdict(request)
 
@@ -197,16 +197,20 @@ def test_brain_manager_switch_adapter_does_not_modify_request_data() -> None:
 
 def test_brain_manager_from_config_uses_brain_defaults() -> None:
     config = SimpleNamespace(
-        brain=SimpleNamespace(default_adapter="mock", default_model="mock-configured")
+        brain=SimpleNamespace(
+            default_adapter="test",
+            default_model="mock-configured",
+            test=SimpleNamespace(enabled=True, model="mock-configured")
+        )
     )
 
     manager = BrainManager.from_config(config)
     response = manager.generate(make_request("configured model"))
 
-    # Auto-detection registers available providers; mock is always present
+    # Auto-detection registers available providers; test adapter is registered
     names = manager.adapter_names()
-    assert "mock" in names
-    assert manager.current_adapter_name == "mock"
+    assert "test" in names
+    assert manager.current_adapter_name == "test"
     assert response.model == "mock-configured"
 
 

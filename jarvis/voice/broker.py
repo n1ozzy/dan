@@ -23,7 +23,7 @@ from jarvis.voice.tts import PlaybackCancelled, SynthesizedChunk
 
 _LOGGER = get_logger("voice.broker")
 
-DEFAULT_POLL_INTERVAL_SECONDS = 0.25
+DEFAULT_POLL_INTERVAL_SECONDS = 0.05
 INTERRUPT_WATCH_INTERVAL_SECONDS = 0.01
 
 

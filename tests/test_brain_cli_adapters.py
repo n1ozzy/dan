@@ -150,6 +150,7 @@ def config_text(
     default_adapter: str = "mock",
     claude_enabled: bool = False,
     codex_enabled: bool = False,
+    test_enabled: bool = True,
 ) -> str:
     return f"""
 [daemon]
@@ -183,6 +184,10 @@ command = "codex"
 args = []
 model = "codex-test"
 timeout_seconds = 120
+
+[brain.test]
+enabled = {str(test_enabled).lower()}
+model = "test-model"
 
 [memory]
 enabled = true
@@ -1030,30 +1035,32 @@ def test_adapters_do_not_require_real_provider_cli_when_runner_is_injected() -> 
     assert response.text == "works without executable"
 
 
-def test_brain_manager_from_config_registers_only_mock_by_default() -> None:
+def test_brain_manager_from_config_registers_production_adapters_by_default() -> None:
     config = load_config(ROOT / "config" / "jarvis.example.toml")
 
     manager = BrainManager.from_config(config)
 
-    assert manager.adapter_names() == ["mock"]
+    # Production adapters only: claude_cli, codex_cli (mock removed from production)
+    assert manager.adapter_names() == ["claude_cli", "codex_cli"]
+    assert manager.current_adapter_name == "claude_cli"
 
 
 def test_brain_manager_from_config_registers_claude_cli_when_enabled(tmp_path: Path) -> None:
-    config = load_config(write_config(tmp_path, claude_enabled=True))
+    config = load_config(write_config(tmp_path, claude_enabled=True, test_enabled=False))
 
     manager = BrainManager.from_config(config)
 
-    assert manager.adapter_names() == ["claude_cli", "mock"]
-    assert manager.current_adapter_name == "mock"
+    assert manager.adapter_names() == ["claude_cli"]
+    assert manager.current_adapter_name == "claude_cli"
 
 
 def test_brain_manager_from_config_registers_codex_cli_when_enabled(tmp_path: Path) -> None:
-    config = load_config(write_config(tmp_path, codex_enabled=True))
+    config = load_config(write_config(tmp_path, codex_enabled=True, test_enabled=False))
 
     manager = BrainManager.from_config(config)
 
-    assert manager.adapter_names() == ["codex_cli", "mock"]
-    assert manager.current_adapter_name == "mock"
+    assert manager.adapter_names() == ["codex_cli"]
+    assert manager.current_adapter_name == "codex_cli"
 
 
 def test_brain_manager_from_config_can_use_claude_cli_as_default(tmp_path: Path) -> None:
@@ -1075,12 +1082,21 @@ def test_brain_manager_from_config_can_use_codex_cli_as_default(tmp_path: Path) 
 
 
 def test_text_turn_pipeline_still_works_with_mock_default() -> None:
-    manager = BrainManager.from_config(load_config(ROOT / "config" / "jarvis.example.toml"))
+    # Example config has claude_cli as default, so use test config
+    from types import SimpleNamespace
+    config = SimpleNamespace(
+        brain=SimpleNamespace(
+            default_adapter="test",
+            default_model="test-model",
+            test=SimpleNamespace(enabled=True, model="test-model")
+        )
+    )
+    manager = BrainManager.from_config(config)
 
     response = manager.generate(make_request())
 
-    assert manager.current_adapter_name == "mock"
-    assert response.text == "Jarvis mock response: Kim jesteś?"
+    assert manager.current_adapter_name == "test"
+    assert "Test response:" in response.text
 
 
 def test_text_turn_pipeline_can_use_fake_custom_adapter_by_injection() -> None:

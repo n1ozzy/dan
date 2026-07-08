@@ -222,7 +222,6 @@ class VoiceConfig:
     stt_min_voiced_seconds: float = 0.3
     stt_min_voiced_ratio: float = 0.05
     stt_junk_phrases: tuple[str, ...] = (
-        "dziękuję",
         "dziękuję bardzo",
         "dziękuję za oglądanie",
         "dzięki za oglądanie",
@@ -231,7 +230,6 @@ class VoiceConfig:
         "napisy wykonane przez społeczność amara.org",
         "zapraszam na kolejny film",
         "do zobaczenia w kolejnym filmie",
-        "thank you",
         "thank you for watching",
         "thanks for watching",
     )

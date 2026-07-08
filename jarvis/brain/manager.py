@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -179,21 +178,13 @@ class BrainManager:
         on_delta: Callable[[str], None] | None = None,
     ) -> BrainResponse:
         adapter = self.get_adapter(adapter_name)
-        if on_delta is not None and _accepts_on_delta(adapter):
+        if on_delta is not None and getattr(adapter, "supports_streaming", False):
             return adapter.generate(request, on_delta=on_delta)
         return adapter.generate(request)
 
     def supports_streaming(self, adapter_name: str | None = None) -> bool:
         adapter = self.get_adapter(adapter_name)
-        return _accepts_on_delta(adapter)
-
-
-def _accepts_on_delta(adapter: BrainAdapter) -> bool:
-    try:
-        parameters = inspect.signature(adapter.generate).parameters
-    except (TypeError, ValueError):
-        return False
-    return "on_delta" in parameters
+        return getattr(adapter, "supports_streaming", False)
 
 
 def _should_register_cli_adapter(config: object, default_adapter: str, adapter_name: str) -> bool:

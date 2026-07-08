@@ -537,6 +537,7 @@ def _runtime_command(
 
 class ClaudeCliAdapter:
     name = "claude_cli"
+    supports_streaming = True
 
     def __init__(
         self,

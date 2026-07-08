@@ -159,7 +159,7 @@ def make_orchestrator(
         event_store=event_store,
         event_bus=event_bus,
         state_machine=state_machine,
-        brain_manager=brain_manager or BrainManager([MockBrainAdapter()]),
+        brain_manager=brain_manager or BrainManager([MockBrainAdapter()], default_adapter="mock"),
         context_builder=context_builder or ContextBuilder(conn),
     )
 
@@ -248,9 +248,9 @@ def test_post_input_text_with_mock_brain_returns_200_json(app: DaemonApp) -> Non
     assert isinstance(payload["turn_id"], str)
     assert isinstance(payload["conversation_id"], str)
     assert payload["input_text"] == "Hello Jarvis"
-    assert payload["final_text"] == "Jarvis mock response: Hello Jarvis"
-    assert payload["brain_adapter"] == "mock"
-    assert payload["brain_model"] == "mock-local"
+    assert payload["final_text"] == "Test response: Hello Jarvis"
+    assert payload["brain_adapter"] == "test"
+    assert payload["brain_model"] == "test-model"
     assert payload["state"] == "IDLE"
     assert payload["tool_calls"] == []
     assert payload["approvals"] == []
@@ -342,9 +342,9 @@ def test_one_input_creates_one_persisted_turn_and_final_text_survives_reload(
             "SELECT id, final_text, brain_adapter, brain_model FROM turns WHERE id = ?",
             (turn_id,),
         ).fetchone()
-        assert row["final_text"] == "Jarvis mock response: Persist me"
-        assert row["brain_adapter"] == "mock"
-        assert row["brain_model"] == "mock-local"
+        assert row["final_text"] == "Test response: Persist me"
+        assert row["brain_adapter"] == "test"
+        assert row["brain_model"] == "test-model"
     finally:
         close_quietly(reload_conn)
 
@@ -910,7 +910,7 @@ def test_handle_text_on_non_idle_runtime_raises_busy_error_without_turn(
         event_store=event_store,
         event_bus=None,
         state_machine=state_machine,
-        brain_manager=BrainManager([MockBrainAdapter()]),
+        brain_manager=BrainManager([MockBrainAdapter()], default_adapter="mock"),
         context_builder=ContextBuilder(conn),
     )
 

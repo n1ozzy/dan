@@ -15,6 +15,7 @@ class SyncAdapterWrapper(BrainAdapter):
         self._adapter = async_adapter
         self.name = async_adapter.name
         self.default_model = async_adapter.default_model
+        self.supports_streaming = getattr(async_adapter, "supports_streaming", False)
 
     def available_models(self) -> list[str]:
         return self._adapter.available_models()

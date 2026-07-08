@@ -54,7 +54,7 @@ MAX_TOKEN_CANDIDATES = 8
 
 # The stream tails the append-only events table; the poll interval bounds
 # push latency, the batch limit bounds a single replay burst.
-STREAM_POLL_INTERVAL_SECONDS = 0.25
+STREAM_POLL_INTERVAL_SECONDS = 0.05
 STREAM_BATCH_LIMIT = 200
 STREAM_PING_INTERVAL_SECONDS = 20.0
 MAX_CLIENT_BUFFER_BYTES = 65536

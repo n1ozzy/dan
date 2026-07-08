@@ -68,7 +68,7 @@ def build_orchestrator(
         event_store=event_store,
         event_bus=None,
         state_machine=state_machine,
-        brain_manager=brain_manager or BrainManager([MockBrainAdapter()]),
+        brain_manager=brain_manager or BrainManager([MockBrainAdapter()], default_adapter="mock"),
         context_builder=ContextBuilder(conn),
         speech_pipeline=speech_pipeline,
     )

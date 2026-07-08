@@ -190,7 +190,7 @@ def test_new_input_after_pending_approval_is_allowed(tmp_path: Path) -> None:
 
         with running_server(app) as base_url:
             first_status, first = request_json("POST", f"{base_url}/input/text", {"text": "Needs tool"})
-            app.brain_manager = BrainManager([MockBrainAdapter()])
+            app.brain_manager = BrainManager([MockBrainAdapter()], default_adapter="mock")
             second_status, second = request_json(
                 "POST",
                 f"{base_url}/input/text",

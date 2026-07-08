@@ -10,6 +10,7 @@ class TestBrainAdapter:
 
     name = "test"
     default_model = "test-model"
+    supports_streaming = False
 
     def __init__(self, default_model: str = "test-model") -> None:
         self.default_model = default_model

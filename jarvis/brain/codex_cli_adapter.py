@@ -20,6 +20,7 @@ from jarvis.brain.codex_cli_contract import (
 
 class CodexCliAdapter:
     name = "codex_cli"
+    supports_streaming = False
 
     def __init__(
         self,

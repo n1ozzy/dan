@@ -416,7 +416,7 @@ def test_filler_fires_once_when_generation_is_slow(db_path: Path) -> None:
     ).fetchall()
     close_quietly(conn)
     assert len(rows) == 1
-    assert rows[0][0] in ("A spierdalaj...","Już sprawdzam.")
+    assert rows[0][0] == "A spierdalaj cwelu"
     assert '"kind": "filler"' in rows[0][1]
     assert rows[0][2] == "interruptible"
 

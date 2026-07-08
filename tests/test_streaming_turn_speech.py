@@ -31,6 +31,7 @@ class StreamingFakeAdapter:
 
     name = "streaming-fake"
     default_model = "streaming-model"
+    supports_streaming = True
 
     def __init__(
         self,

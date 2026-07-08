@@ -30,6 +30,7 @@ GROQ_MODELS = [
 
 class GroqAdapter(BrainAdapter):
     name = "groq"
+    supports_streaming = True
 
     def __init__(
         self,
