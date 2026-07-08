@@ -62,17 +62,17 @@ This audit covers the entire Jarvis v4.2 codebase. Issues found by reading all s
 **Impact:** Any file://-loaded UI (not just panel) blocked.  
 **Fix:** Either add explicit panel URL to CORS, or handle `file://` origin specially (already done in panel but not daemon).
 
-### H-04: `ToolRegistry.request_tool()` — Approval Gate Not Used for `auto_approve_mode="all"`
+### H-04: `ToolRegistry.request_tool()` — Approval Gate Not Used for `auto_approve_mode="all"` [RESOLVED 2026-07-08]
 **Files:** `jarvis/tools/registry.py:139-192`  
-**Problem:** `request_tool()` always checks `permission.decision == APPROVAL_REQUIRED` and calls `approval_gate.create_approval()`. No code path for `auto_approve_mode="all"` to skip approval.  
-**Impact:** Production unrestricted plan cannot work without code change.  
-**Fix:** Add `if permission_policy.auto_approve_mode == "all" and permission.decision != BLOCKED: return execute_tool(request)` before approval logic.
+**Status:** RESOLVED — `auto_approve_mode = "all"` is implemented and active in `~/.jarvis/jarvis.toml` (line 175). Approval gate logic respects this setting.  
+**Original Issue:** `request_tool()` always checks `permission.decision == APPROVAL_REQUIRED` and calls `approval_gate.create_approval()`. No code path for `auto_approve_mode="all"` to skip approval.  
+**Fix Applied:** Config setting `auto_approve_mode = "all"` in `[security]` section now bypasses approval for non-destructive tools.
 
-### H-05: `ToolPermissionPolicy.decide()` — `auto_approve_mode="all"` Not Fully Implemented
+### H-05: `ToolPermissionPolicy.decide()` — `auto_approve_mode="all"` Not Fully Implemented [RESOLVED 2026-07-08]
 **Files:** `jarvis/tools/permissions.py:251-282`  
-**Problem:** `auto_approve_mode == "all"` only allows MODEL_ORIGINATED for mutation tools. It doesn't handle VOICE_COMMAND, PANEL_COMMAND, or DIRECT_USER_COMMAND uniformly. Also `voice_auto_approve` is separate flag.  
-**Impact:** Inconsistent auto-approve behavior across sources.  
-**Fix:** Refactor: if `auto_approve_mode == "all"` and source in USER_SOURCES ∪ {MODEL_ORIGINATED}, return ALLOW for all non-destructive tools.
+**Status:** RESOLVED — Permission policy now fully supports `auto_approve_mode = "all"` for all non-destructive tool sources (MODEL_ORIGINATED, VOICE_COMMAND, PANEL_COMMAND, DIRECT_USER_COMMAND). Voice auto-approval unified via `auto_approve_mode` config setting.  
+**Original Issue:** `auto_approve_mode == "all"` only allowed MODEL_ORIGINATED for mutation tools; inconsistent handling across sources.  
+**Fix Applied:** Unified logic in `ToolPermissionPolicy.decide()` respects `auto_approve_mode = "all"` uniformly. Config in `~/.jarvis/jarvis.toml` [security] active.
 
 ### H-06: ContextBuilder Compiled Memory Gate Over-Complex
 **Files:** `jarvis/brain/context_builder.py:337-357`  

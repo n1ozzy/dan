@@ -1,15 +1,18 @@
-"""Wspólne źródło głosów i wymowy — cienki loader ~/.config/jarvis-voice/voices.toml.
+"""Wspólne źródło głosów i wymowy — czytnik katalogu ~/.config/voice/.
 
-Jedno miejsce dla Jarvis + DAN + skille (patrz sam plik voices.toml). Ten moduł
-CZYTA plik i scala jego dane do VoiceConfig demona. Świadomie NIE dotyka silnika
-syntezy (jarvis/voice/tts.py) — działa wyłącznie na danych konfiguracji.
+Dwa pliki, dwie sprawy:
+  personas.toml       — kto jakim głosem gada (voice / mastering / speed)
+  pronunciations.toml — słownik wymowy anglicyzmów (słowo -> polska fonetyka)
 
-Semantyka scalania: wspólny plik jest BAZĄ, lokalny ~/.jarvis/jarvis.toml
-NADPISUJE (user-local wygrywa). Dzięki temu nowe słowo dopisane do voices.toml
-gada od razu, a ręczne poprawki w ~/.jarvis nadal mają pierwszeństwo.
+To samo źródło dla Jarvis daemon, DAN i skilli (standup) — ale KAŻDY projekt ma
+własny, niezależny czytnik; współdzielony jest tylko plik danych w ~/.config
+(poza repo, jak ~/.jarvis/jarvis.toml). Ten moduł czyta pliki i scala je do
+VoiceConfig demona; NIE dotyka silnika syntezy (jarvis/voice/tts.py).
 
-Fail-safe: brak pliku / zły TOML / złe typy → zwraca wejściowy VoiceConfig bez
-zmian. Nigdy nie rzuca — brak wspólnego pliku = zachowanie sprzed bindingu.
+Semantyka: wspólny plik = BAZA, lokalny ~/.jarvis/jarvis.toml = OVERRIDE
+(user-local wygrywa). Katalog nadpisuje env VOICE_CONFIG_DIR (testy / inna
+lokalizacja). Fail-safe: brak katalogu / pliku / zły TOML → zwraca wejściowy
+VoiceConfig bez zmian (systemy jadą na swoich wbudowanych mapach).
 """
 
 from __future__ import annotations
@@ -22,29 +25,26 @@ from typing import Any, TypeVar
 
 _VOICE_CFG = TypeVar("_VOICE_CFG")
 
-# Domyślna ścieżka; JARVIS_VOICES_FILE nadpisuje (testy, alternatywna lokalizacja).
-DEFAULT_VOICES_PATH = Path.home() / ".config" / "jarvis-voice" / "voices.toml"
+# Domyślny katalog; VOICE_CONFIG_DIR nadpisuje (neutralna nazwa — bez brandu
+# projektu, bo plik jest wspólny dla Jarvisa i DAN-a).
+DEFAULT_VOICE_DIR = Path.home() / ".config" / "voice"
+PERSONAS_FILE = "personas.toml"
+PRONUNCIATIONS_FILE = "pronunciations.toml"
 
-# "raw"/"none"/"" → surowy głos. Jarvis reprezentuje surowy jako pusty profil
-# masteringu (mastering_profile == "" → brak łańcucha ffmpeg). Reszta przechodzi
-# jak jest ("clean"/"bastard"/"gritty"); nieznany profil i tak fail-safe'uje w tts.
+# "raw"/"none"/"" → surowy głos = pusty profil masteringu (brak łańcucha ffmpeg).
 _RAW_ALIASES = {"raw", "none", ""}
 
 
-def _resolve_path(path: str | Path | None) -> Path:
-    if path is not None:
-        return Path(path).expanduser()
-    env = os.environ.get("JARVIS_VOICES_FILE")
-    if env:
-        return Path(env).expanduser()
-    return DEFAULT_VOICES_PATH
+def _resolve_dir(directory: str | Path | None) -> Path:
+    if directory is not None:
+        return Path(directory).expanduser()
+    env = os.environ.get("VOICE_CONFIG_DIR")
+    return Path(env).expanduser() if env else DEFAULT_VOICE_DIR
 
 
-def load_shared_voices(path: str | Path | None = None) -> dict[str, Any]:
-    """Surowy dict z voices.toml, albo {} gdy pliku brak/uszkodzony."""
-    target = _resolve_path(path)
+def _load_toml(path: Path) -> dict[str, Any]:
     try:
-        with open(target, "rb") as handle:
+        with open(path, "rb") as handle:
             data = tomllib.load(handle)
     except (FileNotFoundError, IsADirectoryError, PermissionError):
         return {}
@@ -53,30 +53,35 @@ def load_shared_voices(path: str | Path | None = None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def load_personas(directory: str | Path | None = None) -> dict[str, dict]:
+    """{'jarvis': {'voice': 'M2', 'mastering': 'clean', ...}, ...}; {} gdy brak."""
+    data = _load_toml(_resolve_dir(directory) / PERSONAS_FILE)
+    return {n: s for n, s in data.items() if isinstance(n, str) and isinstance(s, dict)}
+
+
+def load_pronunciations(directory: str | Path | None = None) -> dict[str, str]:
+    """{'runtime': 'rantajm', ...}, klucze lowercase; {} gdy brak."""
+    data = _load_toml(_resolve_dir(directory) / PRONUNCIATIONS_FILE)
+    return {k.lower(): v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
+
+
 def _normalize_mastering(value: str) -> str:
     return "" if value.strip().lower() in _RAW_ALIASES else value.strip()
 
 
-def apply_shared_voices(voice_cfg: _VOICE_CFG, path: str | Path | None = None) -> _VOICE_CFG:
-    """Zwróć VoiceConfig wzbogacony o wspólny plik (baza), z lokalnym override.
+def apply_shared_voices(voice_cfg: _VOICE_CFG, directory: str | Path | None = None) -> _VOICE_CFG:
+    """Zwróć VoiceConfig wzbogacony o wspólny katalog (baza), z lokalnym override.
 
     Scala trzy pola: persona_voices, persona_mastering, tts_pronunciations.
-    Wszystko inne (głos globalny, tempo silnika itd.) zostaje bez zmian —
-    to warstwa danych person + wymowy, nie przełącznik silnika.
+    Nic innego nie rusza — to warstwa danych person + wymowy, nie silnik.
     """
-    data = load_shared_voices(path)
-    if not data:
+    personas = load_personas(directory)
+    pron = load_pronunciations(directory)
+    if not personas and not pron:
         return voice_cfg
 
-    personas = data.get("personas")
-    pron = data.get("pronunciations")
-
     # ── wymowa: wspólny plik jako baza, lokalne wpisy nadpisują ──
-    merged_pron: dict[str, str] = {}
-    if isinstance(pron, dict):
-        for key, val in pron.items():
-            if isinstance(key, str) and isinstance(val, str):
-                merged_pron[key.lower()] = val
+    merged_pron: dict[str, str] = dict(pron)
     for key, val in (getattr(voice_cfg, "tts_pronunciations", None) or {}).items():
         if isinstance(key, str) and isinstance(val, str):
             merged_pron[key.lower()] = val
@@ -84,16 +89,13 @@ def apply_shared_voices(voice_cfg: _VOICE_CFG, path: str | Path | None = None) -
     # ── persony: wspólny plik jako baza, lokalne mapy nadpisują ──
     shared_voices: dict[str, str] = {}
     shared_master: dict[str, str] = {}
-    if isinstance(personas, dict):
-        for name, spec in personas.items():
-            if not isinstance(name, str) or not isinstance(spec, dict):
-                continue
-            voice = spec.get("voice")
-            master = spec.get("mastering")
-            if isinstance(voice, str) and voice.strip():
-                shared_voices[name] = voice.strip()
-            if isinstance(master, str):
-                shared_master[name] = _normalize_mastering(master)
+    for name, spec in personas.items():
+        voice = spec.get("voice")
+        master = spec.get("mastering")
+        if isinstance(voice, str) and voice.strip():
+            shared_voices[name] = voice.strip()
+        if isinstance(master, str):
+            shared_master[name] = _normalize_mastering(master)
 
     merged_voices = {**shared_voices, **(getattr(voice_cfg, "persona_voices", None) or {})}
     merged_master = {**shared_master, **(getattr(voice_cfg, "persona_mastering", None) or {})}
@@ -106,4 +108,9 @@ def apply_shared_voices(voice_cfg: _VOICE_CFG, path: str | Path | None = None) -
     )
 
 
-__all__ = ["load_shared_voices", "apply_shared_voices", "DEFAULT_VOICES_PATH"]
+__all__ = [
+    "load_personas",
+    "load_pronunciations",
+    "apply_shared_voices",
+    "DEFAULT_VOICE_DIR",
+]

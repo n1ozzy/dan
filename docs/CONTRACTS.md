@@ -5,6 +5,12 @@
 > behaviors below are binding. Field *types* and *additional* optional fields
 > may be refined by later prompts, but nothing here may be contradicted without
 > an [ADR](DECISIONS.md) update.
+>
+> **CURRENT CONFIG (2026-07-08):** Security configured as "Ozzy mode":
+> `destructive_tools_enabled=true`, `auto_approve_mode="all"`,
+> `permission_mode="bypassPermissions"`. Mechanisms below remain canonical; this
+> doc describes behavior at all configuration points (restrictive default through
+> permissive override).
 
 ## How to read this document
 
@@ -324,7 +330,7 @@ A request to run a registered tool, gated by permission policy.
   `tool.run.started` / `tool.run.finished` / `tool.rejected`.
 - **Forbidden behavior:**
   - A rejected or blocked call **never executes** ([ADR-010](DECISIONS.md#adr-010)).
-  - Destructive operations never run unless explicitly enabled.
+  - Destructive operations run only when `destructive_tools_enabled=true` in config; when false, they are blocked.
   - Secrets never appear unredacted in event payloads.
   - A recorded `ToolRun` is not replayed to satisfy continuation. Duplicate
     execute conflicts instead of running the handler or brain continuation again.
@@ -354,7 +360,7 @@ A human (or policy) decision authorizing a gated action.
   `approval.approved`, and `approval.rejected`.
 - **Forbidden behavior:**
   - The gated action never runs before `approved`.
-  - Destructive actions are never auto-approved.
+  - Destructive actions require approval unless `auto_approve_mode="all"` in config, which enables automatic approval for model-originated requests.
   - Approval alone never executes a tool and never continues a turn.
 
 ## 12. One-shot Tool Result Continuation

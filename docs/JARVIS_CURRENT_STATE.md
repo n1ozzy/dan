@@ -138,10 +138,10 @@ Runtime/config/ContextBuilder/test work is complete through session/profile scop
 - Session/profile scoped enablement and request-scoped override support exist as internal-only wiring and do not persist a public user setting.
 - No env, panel, public API, user-facing, or global production enablement exists for compiled memory.
 - Provider CLI adapters are configured disabled by default unless enabled in config.
-- Voice is configured disabled by default in `config/jarvis.example.toml`.
+- Voice is configured disabled by default in `config/jarvis.example.toml`, but enabled in local development with M2 voice and clean mastering profile.
 - Launchd auto-install is disabled by default.
-- Destructive tools are disabled by default.
-- Network access through tools requires explicit approval policy and is not casually enabled.
+- Destructive tools are disabled by default in `config/jarvis.example.toml`, but enabled in local development.
+- Network access through tools requires explicit approval by default, but is enabled without approval in local development.
 
 ## Not implemented yet
 
@@ -166,7 +166,7 @@ Runtime/config/ContextBuilder/test work is complete through session/profile scop
 
 ## Safety posture
 
-Current safety posture is conservative.
+Current safety posture is conservative in default configuration; local development configuration is permissive (destructive tools and network enabled, auto-approval for all operations).
 
 - Jarvis-owned state is assembled from DB/config/request data.
 - Provider sessions are not memory.

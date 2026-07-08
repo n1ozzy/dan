@@ -175,7 +175,7 @@ curated. See [SECURITY_MODEL.md](SECURITY_MODEL.md) §6 and
 
 ## ADR-010 — Tools require a registry plus an approval policy
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-022](#adr-022) (2026-07-08)
 
 **Context.** The old command path ran with `--dangerously-skip-permissions`,
 relying on push-to-talk as the only safety brake.
@@ -559,6 +559,38 @@ scope pending their own ADRs.
 
 ---
 
+## ADR-022 — Security bypass mode: all tools auto-approved for local testing and development (Ozzy explicit)
+
+**Status:** Accepted
+
+**Context.** ADR-010 established a permission matrix where reads are allowed,
+writes/shell/network require approval, and destructive tools are blocked by
+default. This regime is appropriate for production and untrusted sources. On
+2026-07-08, the operator (Ozzy) explicitly configured local runtime security to
+bypass approvals for accelerated development and testing on a single-user
+machine.
+
+**Decision.** With full awareness and intent, the Jarvis instance is configured
+with `[security] auto_approve_mode = "all"` + `destructive_tools_enabled = true`
++ all approval flags (`require_approval_for_shell`, `require_approval_for_file_write`,
+`require_approval_for_network`) set to `false`. Every tool request from every
+source (user, model, worker) is auto-approved. The permission policy still
+classifies risk and records every tool run in the audit log; the gate does not
+block. This mode is a **conscious operational trade-off**, valid only in a
+single-user, offline, air-gapped development environment under direct human
+supervision.
+
+**Consequences.** Development and testing iterate faster with no approval
+prompts. The security matrix (ADR-010 matrix row / permission classes) remains
+defined and auditable but unenforced; a future gate re-enabling approval will
+require no code change — only `jarvis.toml` reversion. The ToolPermissionPolicy
+still assigns risk classifications to every call, so real-world deployment,
+shared machines, or untrusted input demands immediate re-lock (approval required
+for mutations + destructive blocked). See [SECURITY_MODEL.md](SECURITY_MODEL.md)
+§1, `jarvis/tools/permissions.py`, and `[security]` config in `jarvis.toml`.
+
+---
+
 ## Decision log
 
 | ADR | Title | Status |
@@ -584,6 +616,7 @@ scope pending their own ADRs.
 | 019 | `GET /stream` is a token-gated, read-only websocket that never carries bulk tool output | Accepted |
 | 020 | `screen_read` D4 is narrow-only: `screencapture` + Vision-via-ctypes in a crash-isolated subprocess, pixels never persist | Accepted |
 | 021 | Terminal profile D5: fixed-script osascript bridge, read and paste split, paste never submits | Accepted |
+| 022 | Security bypass mode: all tools auto-approved for local testing and development (Ozzy explicit) | Accepted (supersedes ADR-010) |
 
 > ADR-013 and ADR-014 were added by the Prompt 00B inventory, grounded in
 > [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md). Further migration

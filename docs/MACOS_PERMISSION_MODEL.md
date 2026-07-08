@@ -5,6 +5,13 @@
 > first-class dimension, the operator permission classes, the user-presence
 > model, and the local transport token. It contains **no runtime code**;
 > implementation is FAZA C (C1 transport token, C2 `decide(source=...)`).
+>
+> **⚠️ Configuration note (2026-07-08):** The local dev config
+> (`~/.jarvis/jarvis.toml [security]`) runs in bypass mode:
+> `auto_approve_mode="all"`, `destructive_tools_enabled=true`,
+> `permission_mode="bypassPermissions"`. The matrix below describes the
+> **architectural design**, not current runtime policy. Enforcement gates are
+> in place in the code; permission modes relax them selectively per config.).
 
 Motivation ([MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.md) §5.4):
 "the user says *click this*" is not the same event as "the model decided to
@@ -79,8 +86,8 @@ Columns: `user` = `direct_user_command` / `panel_command` / `voice_command`
 | `file_write` | AP | AP | **B** | no unattended writes, period |
 | `shell_read` | AP | AP | **B** | |
 | `shell_write` | AP | AP | **B** | |
-| `network` | AP | AP | **B** | |
-| `destructive` | B / AP* | B / AP* | **B** | *AP only when `destructive_tools_enabled`; `auto` is B even then |
+| `network` | AP | AP | **B** | config: `require_approval_for_network` can relax user column to A |
+| `destructive` | B / AP* | B / AP* | **B** | *AP only when `destructive_tools_enabled` (true in dev); `auto` is always B; config: `auto_approve_mode` can relax model column further |
 | `ui_read` | A (approved surfaces) | AP | B | secure text fields never read, any source |
 | `ui_act` | AP | AP | **B** | user column may earn per-surface trust later (§6) |
 | `screen_read` (narrow) | A | AP | B | narrow = current window / named region |
@@ -104,10 +111,13 @@ Reading the matrix:
   notify; it does not mutate anything without a human in the loop. Workers
   needing writes produce *proposals* (approvals), not actions.
 - **The `model` column never contains a plain A** except broker-mediated
-  speech. This is deliberate and matches the current conservative stance —
-  see §6 for the earned-trust path.
-- **AP is never auto-approved.** Approval remains a human decision plus an
-  explicit execute step (approve ≠ execute, unchanged).
+  speech. This is deliberate and matches the designed conservative stance —
+  see §6 for the earned-trust path. Config relaxations (e.g.,
+  `auto_approve_mode="all"`) override this when explicitly enabled.
+- **Approval is human-gated by design.** The default policy keeps it a human
+  decision plus an explicit execute step (approve ≠ execute). Config modes
+  (e.g., `auto_approve_mode` in dev) can relax this; those modes are
+  intentional deviations, not the default.
 
 ## 4. User-presence model
 
@@ -166,8 +176,10 @@ only sanctioned relaxation mechanism, all deferred until after MVP-operator:
 2. **Per-surface trust** for `ui_act` × user column (e.g. "typing into
    Terminal windows I named") — requires presence `present` + D-phase
    experience before design.
-3. Nothing ever relaxes: the `auto` column, `destructive`, `audio_input`,
-   `secret_ref`, out-of-roots file access, non-whitelisted automations.
+3. **Hard boundaries (by design):** the `auto` column (scheduled work), `audio_input`
+   (mic is user-gated), `secret_ref` (no tool sees values), out-of-roots file
+   access, non-whitelisted automations. Modes like `auto_approve_mode` relax
+   other cells; these remain closed even in full bypass.
 
 ## 7. Implementation contract for FAZA C2 (summary)
 

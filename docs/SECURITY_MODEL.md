@@ -39,14 +39,16 @@ default policy:
 | `shell_read` | **approval required (initially)** | read-only shell commands |
 | `shell_write` | **approval required** | state-changing shell commands |
 | `network` | **approval required** | any outbound network access |
-| `destructive` | **blocked unless explicitly enabled** | irreversible/dangerous ops |
+| `destructive` | **blocked-by-default; enabled in Ozzy mode** | irreversible/dangerous ops |
 
 ### Rules (FROZEN)
 
 - A **rejected** or **blocked** `ToolCall` **never executes**.
 - An **approved** call **records a `tool_run`** (in `tool_runs`).
-- `destructive` is **blocked** unless explicitly enabled — it is never reachable
-  by default and never auto-approved.
+- `destructive` is **blocked** unless explicitly enabled in configuration
+  (e.g., `security.destructive_tools_enabled=true` in `~/.jarvis/jarvis.toml`).
+  Normally never auto-approved even when enabled; in Ozzy mode with
+  `auto_approve_mode="all"`, may be auto-approved for model-originated requests.
 - File access is **root-scoped**: `file_read` is only allowed within approved
   roots; absolute paths and parent-escapes (`..`) outside approved roots are
   refused.
@@ -69,7 +71,9 @@ approval.rejected ─► ToolCall rejected ──► NEVER executes
 ```
 
 - The gated action **never runs before `approved`**.
-- Destructive actions are **never auto-approved**.
+- Destructive actions are **normally never auto-approved**; in Ozzy mode
+  (`auto_approve_mode="all"`), they may be auto-approved for model-originated
+  requests.
 - Decisions are persisted (`approvals`) and event-logged (`approval.*`).
 - `WAITING_APPROVAL` is not a v4.1 runtime state; approval waiting is modeled by
   `approvals`, approval/tool events and, when the runtime is actively waiting as
@@ -135,16 +139,34 @@ A worker (Codex/Claude background job) is even more constrained than a brain:
 
 ---
 
-## 7. Network & destructive posture
+## 7. Network & destructive posture (default configuration)
 
-- **Network is off by default** (`network` requires approval). No tool reaches
-  out without an explicit decision.
-- **Destructive operations are blocked**, not merely gated — enabling them is a
-  deliberate, separate configuration act, and even then individual calls remain
-  subject to approval.
+- **Network is approval-gated by default** (`network` requires approval). In
+  Ozzy mode with `auto_approve_mode="all"`, network calls like `web_fetch` are
+  auto-approved for model-originated requests. No tool reaches out without an
+  explicit configuration decision or approval.
+- **Destructive operations are blocked by default**, not merely gated — enabling
+  them is a deliberate, separate configuration act
+  (`security.destructive_tools_enabled=true`), and even when enabled, individual
+  calls normally require approval (unless `auto_approve_mode="all"`).
 - **No automatic killing** of processes (see
   [LAUNCH_SUPERVISION.md](LAUNCH_SUPERVISION.md)).
 - **No destructive cleanup** of the old `dan` repo, ever, automatically.
+
+---
+
+## 7a. Ozzy mode (bypass configuration)
+
+When `~/.jarvis/jarvis.toml [security]` sets:
+- `auto_approve_mode = "all"`
+- `destructive_tools_enabled = true`
+- `[brain.claude_cli] permission_mode = "bypassPermissions"`
+
+The runtime auto-approves **all non-blocked tools** for model-originated
+requests. Network calls (`web_fetch`), file writes, shell commands, and even
+destructive operations bypass the approval gate. This is the current Jarvis
+configuration for Ozzy. The `ToolPermissionPolicy` still classifies and audits
+all actions; bypass is a configuration choice, not a removal of the gate.
 
 ---
 
@@ -177,5 +199,7 @@ policy narrows that risk.
 3. Secrets are redacted before any event/DB write.
 4. Brains are stateless and mute; they can only *propose* actions.
 5. Workers are mute and cannot write memory facts directly.
-6. Destructive is blocked-by-default; network is approval-by-default.
+6. Destructive is blocked-by-default (enabled + auto-approved in Ozzy mode);
+   network is approval-by-default (auto-approved in Ozzy mode with
+   `auto_approve_mode="all"`).
 7. Models never operate macOS directly; `jarvisd` mediates operator capabilities.

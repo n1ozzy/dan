@@ -6,9 +6,9 @@ approval decision events. It applies `ToolPermissionPolicy` to
 model-originated tool-call capture and marks turns with pending model-created
 approvals as `awaiting_approval`. It also continues the original turn after a
 successful explicit execution of a continuation-eligible one-shot tool result.
-It still does not add real shell execution, file writing, network access,
-workers, provider-side tool calling, automatic execution of model-originated
-tool requests, operator sessions, or a global `WAITING_APPROVAL` runtime state.
+It still does not add real shell execution, file writing, workers,
+provider-side tool calling, automatic execution of model-originated tool
+requests, operator sessions, or a global `WAITING_APPROVAL` runtime state.
 
 ## ToolRegistry
 
@@ -44,9 +44,11 @@ The daemon default registry contains:
 
 - `echo`, risk `safe_read`: returns the request arguments.
 - `system_status`, risk `safe_status`: returns a static placeholder message.
+- `web_fetch`, risk `network`: HTTP(S) GET fetcher for any URL with response
+  size and timeout guards. Auto-approved when `auto_approve_mode='all'`.
 - `approval_probe`, risk `shell_read`: approval-required demo tool used by the
   manual smoke harness. It is not a shell tool, does not read files, does not
-  write files, does not inspect processes, and does not use network access.
+  write files, and does not inspect processes.
 
 ## Permission Categories
 
@@ -58,7 +60,7 @@ Jarvis v4.1 uses these risk values:
 - `file_write`: approval required.
 - `shell_read`: approval required.
 - `shell_write`: approval required.
-- `network`: approval required.
+- `network`: auto-approved when `auto_approve_mode='all'`, otherwise approval required.
 - `destructive`: blocked unless `destructive_tools_enabled` is true, then
   approval required.
 
@@ -290,7 +292,6 @@ Prompt 15 intentionally does not implement:
 - shell execution
 - file writing
 - real file reading
-- network tools
 - system mutation
 - process inspection
 - automatic replay execution after approval
@@ -349,7 +350,6 @@ It does not prove:
 
 - no real shell execution
 - no file writing
-- no network tools
 - no worker replay
 - no provider tool calling yet
 - no automatic approval replay

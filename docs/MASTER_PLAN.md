@@ -178,7 +178,7 @@ nie designu DAN-a). Implementacja zawsze clean-room pod kontrakty v4.1.
 | Whisper halucynuje na ciszy/szumie — potrzebne filtry śmieci i próg no-speech | fakt o narzędziu (whisper) | **KEEP — G4** (filtry napiszemy własne) |
 | MLX trzyma model+stream per wątek — synteza/inferencja MLX musi żyć w dedykowanym wątku | fakt o narzędziu (MLX) | **KEEP — G5** (dotyczy też STT MLX w G4) |
 | TTS chunkowany per-silnik + przygotowywanie następnego chunka podczas grania | wymaganie (płynność) | **KEEP — G3** (własny design w brokerze) |
-| Persona gangus (poziomy ostrości) + Jarvis-mentor; persona = data, nie stan | wymaganie | **KEEP — E4** (treść person od Ozzy'ego na nowo, nie kopiowana z persona.py) |
+| Persona jarvis (jedyna, własna, bez kagańca); persona = data, nie stan | wymaganie | **KEEP — ZREALIZOWANE (2026-07-08)** (config/persona/jarvis.md; gangus/mentor skasowane; patrz §7.7) |
 | Głos docelowy: voice-clone; do tego czasu dostępne głosy dozwolonych silników | wymaganie | **KEEP — G3/G5** (zestaw silników: decyzja §7.3) |
 | Multi-provider brain (groq, qwen, local Bielik, chain) | wymaganie (przyszłe) | **DEFER — po MVP-voice** |
 | Work modes normal/auto/plan | zastąpione | source-sensitive policy (FAZA B) + ApprovalGate — lepszy model tego samego |
@@ -258,16 +258,14 @@ Gate D (GATE): każdy etap osobno + review; D2 wymaga działającego C1 (auth).
 - **E2** — WorkerBroker + pierwszy worker (mock, potem codex/claude);
   worker nie mówi, nie pisze pamięci, wynik = memory candidate.
 - **E3** — settings UI w cockpicie.
-- **E4** — persona: styl gangus (poziomy ostrości) + Jarvis-mentor jako
-  `config/persona/` data zgodnie z PRODUCT.md (persona nie ma stanu, nie
-  decyduje o toolach, nie omija approvals). Treść pisana od nowa z Ozzym,
-  nie kopiowana z persona.py (dekret §7.6). Zakres skorygowany dekretem
-  Ozzy'ego (2026-07-02, §7.7): oprócz plików data wchodzi mały selektor
-  profilu — ContextBuilder czyta setting `persona.profile` per request
-  i ładuje `config/persona/<profil>.md`; brak/zły profil ⇒ fallback na
-  `jarvis.md` (fail-closed, daemon się nie wywala). Poziomy ostrości są
-  wtedy realnie przełączalne z settings UI (E3), a treść pozostaje datą
-  edytowalną bez kodu ("wróci się do niej na koniec").
+- **E4** — persona: **ZAKTUALIZOWANO 2026-07-08:** Jarvis — jedyna persona, własna,
+  bez kagańca, dla Ozzy'ego. Zwyrolska, wulgarna, bezlitośnie sarkastyczna.
+  Implementacja: `config/persona/jarvis.md` (dane, nie kod). Gangus-1/2/3
+  i mentor skasowane (plan E4 z 2026-07-02 zakładał 4 profile z granicami;
+  dekret 2026-07-08 konsoliduje do JEDNEJ persony). ContextBuilder ładuje
+  `config/persona/jarvis.md` bez selektora profilu (fail-closed, daemon
+  się nie wywala; przyszła rotacja profili = decyzja Ozzy'ego). Persona
+  nie ma stanu, nie decyduje o toolach, nie omija approvals.
 
 ### FAZA F — Stabilizacja
 
@@ -378,14 +376,14 @@ Kryteria voice (PRO §16 pkt 8–11) przechodzą do milestone'u MVP-voice po FAZ
    o narzędziach trzecich**, które i tak wybraliśmy (właściwości MLX, sox,
    whispera — patrz §4a, kolumna "charakter"). Wszystko implementujemy
    clean-room pod kontrakty v4.1.
-7. **Persona (E4): profile przez settings, treść świeża i krótka.**
-   Dekret Ozzy'ego (2026-07-02): poziom ostrości wybierany settingiem
-   `persona.profile` (mały kod w ContextBuilder, fail-closed fallback na
-   `jarvis.md`) zamiast czystego config-only; treść profili (gangus-1..3,
-   mentor) pisana świeżo w sesji z Ozzym — kierunek: maksymalnie ostro
-   i sarkastycznie w gangus-3 — z granicami z `jarvis.md` powtórzonymi
-   w każdym profilu; copy-paste z legacy `persona.py` pozostaje zakazany
-   (§7.6); dopieszczanie treści odroczone "na koniec" (data, nie kod).
+7. **Persona (E4): JEDYNA persona jarvis, bez kagańca.**
+   **ZAKTUALIZOWANO 2026-07-08:** Dekret Ozzy'ego (2026-07-02) zakładał
+   4 profile (gangus-1..3 + mentor) z selektorem przez settings. Realnie
+   wdrożone: JEDNA persona `config/persona/jarvis.md` — zwyrolska, bez
+   granic, bez kagańca, dla Ozzy'ego. Gangus-1/2/3 i mentor skasowane.
+   Treść świeża w sesji z Ozzym (nie copy-paste z persona.py, dekret §7.6).
+   ContextBuilder ładuje `jarvis.md` bez profilu-selektora (fail-closed).
+   Przyszła rotacja profili = osobna decyzja Ozzy'ego.
 8. **G5 voice-clone: ODROCZONE "na kiedyś".** Dekret Ozzy'ego (2026-07-02,
    po zamknięciu Gate G4): supertonic M1 zostaje głosem Jarvisa do odwołania;
    chatterbox pozostaje w RESERVED_ENGINES (zarezerwowany, nie implementowany).

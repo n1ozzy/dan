@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SŁOWNIK WYMOWY — angielskie słowo = polska fonetyka. Wspólny dla WSZYSTKICH
+# systemów: Jarvis daemon, DAN, skille (standup). Sąsiad: personas.toml (głosy).
+#
+# Klucz case-insensitive, dopasowanie po rdzeniu (końcówka PL zostaje). Dłuższe
+# klucze dopasowują się pierwsze, więc odmiany (committed) wygrywają z rdzeniem.
+# Dokładaj gdy coś kłuje w uchu — w tym jednym miejscu, gada wszędzie.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# — dev / git —
+commit = "komit"
+committed = "skomitowane"
+commits = "komity"
+push = "pusz"
+pushed = "spuszowane"
+pull = "pul"
+merge = "merdż"
+merged = "zmerdżowane"
+branch = "brancz"
+main = "mejn"
+master = "master"
+origin = "oridżin"
+remote = "rimout"
+repo = "repo"
+github = "git hab"
+git = "git"
+release = "rilis"
+rollback = "rolbek"
+deploy = "diploj"
+worktree = "łorktri"
+spike = "spajk"
+
+# — runtime / backend —
+runtime = "rantajm"
+backend = "bekend"
+frontend = "frontend"
+stateless = "stejtles"
+streaming = "striming"
+request = "rikłest"
+response = "rispons"
+endpoint = "endpojnt"
+gateway = "gejtłej"
+feature = "ficzer"
+token = "tołken"
+cache = "kesz"
+queue = "kju"
+default = "difolt"
+review = "riwju"
+prefetch = "prifecz"
+timeout = "tajmałt"
+hardcode = "hardkod"
+config = "konfig"
+thread = "tred"
+serve = "serw"
+fallback = "folbek"
+chunker = "czanker"
+latency = "lejtensi"
+barge = "bardż"
+health = "helf"
+update = "apdejt"
+debug = "dibag"
+bug = "bag"
+
+# — narzędzia / TTS —
+markdown = "markdałn"
+python = "pajton"
+supertonic = "supertonik"
+chatterbox = "czaterboks"
+whisper = "łisper"
+loudnorm = "laudnorm"
+codex = "kodeks"
+chrome = "krom"
+browser = "brałzer"
+
+# — literowane skróty —
+url = "u er el"
+api = "ej pi aj"
+tts = "ti ti es"
+wav = "ław"
