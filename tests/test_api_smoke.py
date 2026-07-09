@@ -2745,7 +2745,7 @@ def test_get_runtime_settings_includes_latest_turn_trace_for_last_text_turn(
     assert turn_state["generation_state"]["value"] == "idle"
 
 
-def test_get_runtime_settings_turn_trace_records_ptt_down_barge_in(tmp_path: Path) -> None:
+def test_ptt_down_acquires_lease_without_cancelling_current_speech(tmp_path: Path) -> None:
     config_path = rewrite_voice_section(
         write_config(
             tmp_path / "jarvis.toml",
@@ -2807,8 +2807,21 @@ def test_get_runtime_settings_turn_trace_records_ptt_down_barge_in(tmp_path: Pat
                 {"source": "ptt"},
             )
             assert status == 200, ptt_payload
-            assert ptt_payload["cancellation"]["interrupted_previous_response"] is True
-            assert ptt_payload["cancellation"]["interruption_reason"] == "ptt_down"
+            # Contract (80dcbb5 "Stabilize PTT contracts"): ptt/down acquires a
+            # hold lease and does NOT cancel current speech as a side effect of
+            # the key press. Mic-side barge-in is the gateway's job when the
+            # user's transcript actually arrives (gateway.handle_transcript →
+            # cancel_active_speech), covered by test_voice_turn_gateway.
+            assert ptt_payload["ok"] is True
+            assert "cancellation" not in ptt_payload
+            assert ptt_payload["lease"]
+
+            # The queued speech must still be alive — pressing PTT did not cancel it.
+            row = app.conn.execute(
+                "SELECT status FROM voice_queue WHERE id = ?", (queued.id,)
+            ).fetchone()
+            assert row is not None and row[0] != "cancelled"
+
             status, runtime_payload = request_json(
                 "GET",
                 f"{base_url}/runtime/settings",
@@ -2818,21 +2831,8 @@ def test_get_runtime_settings_turn_trace_records_ptt_down_barge_in(tmp_path: Pat
         app.close()
 
     assert status == 200
-    trace = runtime_payload["latest_turn_trace"]
-    assert trace["turn_id"]["value"] == turn_id
-    assert trace["interrupted_previous_response"]["value"] is True
-    assert trace["cancelled_speech_id"]["value"] == queued.id
-    assert trace["previous_turn_id"]["value"] == turn_id
-    assert trace["new_turn_source"]["value"] == "PTT"
-    assert trace["cancellation_reason"]["value"] == "ptt_down"
-    turn_state = runtime_payload["current_turn_state"]
-    assert turn_state["current_turn_id"]["value"] is None
-    assert turn_state["current_turn_source"]["value"] == "voice_ptt"
-    assert turn_state["generation_state"]["value"] == "listening"
-    assert turn_state["interrupted_previous_response"]["value"] is True
-    assert turn_state["interrupted_turn_id"]["value"] == turn_id
-    assert turn_state["interruption_reason"]["value"] == "ptt_down"
-    assert turn_state["cancelled_speech_id"]["value"] == queued.id
+    # runtime/settings stays readable after a PTT hold lease was acquired.
+    assert "latest_turn_trace" in runtime_payload
 
 
 def test_get_runtime_settings_does_not_apply_stale_barge_in_to_later_text_turn(
