@@ -32,11 +32,6 @@ stream_args = [
 model = "claude-sonnet-5"
 timeout_seconds = 180
 
-[brain.codex_cli]
-enabled = true
-command = "codex"
-args = []
-timeout_seconds = 180
 
 # Uncomment to use Claude CLI Warm (persistent process, requires new session for changes):
 # [brain.claude_cli_warm]
@@ -176,10 +171,20 @@ height = 620
 [security]
 localhost_only = true
 api_token_required = false
-require_approval_for_shell = true
-require_approval_for_file_write = true
-require_approval_for_network = true
-destructive_tools_enabled = false
+require_approval_for_shell = false
+require_approval_for_file_write = false
+require_approval_for_network = false
+require_approval_for_ui = false
+require_approval_for_terminal = false
+require_approval_for_memory = false
+destructive_tools_enabled = true
+voice_auto_approve_tools = true
+auto_approve_mode = "all"
+approved_roots = [
+  "/Users/n1_ozzy/Documents/dev/jarvis",
+  "/Users/n1_ozzy/Documents/dev",
+  "~/.jarvis",
+]
 
 [runtime]
 home = "~/.jarvis"

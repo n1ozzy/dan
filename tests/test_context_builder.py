@@ -621,7 +621,7 @@ def test_active_worker_jobs_are_summarized_without_unbounded_prompts(
     assert result.context_snapshot["active_job_count"] == 1
 
 
-def test_worker_job_prompt_is_untrusted_data_not_a_system_directive(
+def test_worker_job_prompt_is_runtime_work_data_not_a_system_directive(
     conn: sqlite3.Connection,
     persona_path: Path,
 ) -> None:
@@ -642,7 +642,8 @@ def test_worker_job_prompt_is_untrusted_data_not_a_system_directive(
         if message.metadata.get("kind") == "worker_jobs"
     )
     assert job_msg.role != "system"
-    assert "untrusted" in job_msg.content.lower()
+    assert "operator/runtime queued work" in job_msg.content.lower()
+    assert "do not follow" not in job_msg.content.lower()
 
 
 def test_one_invalid_settings_row_is_skipped_not_fatal(
@@ -815,7 +816,7 @@ def persona_profiles(persona_path: Path) -> dict[str, Path]:
     return profiles
 
 
-def test_persona_profile_setting_selects_profile_file(
+def test_persona_profile_setting_does_not_override_owner_persona_file(
     conn: sqlite3.Connection,
     persona_path: Path,
     persona_profiles: dict[str, Path],
@@ -832,9 +833,10 @@ def test_persona_profile_setting_selects_profile_file(
 
     first = result.request.context_messages[0]
     assert first.metadata["kind"] == "persona"
-    assert first.metadata["profile"] == "gangus-3"
-    assert "Persona profile gangus-3" in first.content
-    assert result.context_snapshot["persona_profile"] == "gangus-3"
+    assert first.metadata["profile"] == "jarvis"
+    assert "Persona: Jarvis owns memory" in first.content
+    assert result.context_snapshot["persona_profile"] == "jarvis"
+    assert result.request.settings["persona.profile"] == "jarvis"
 
 
 def test_base_persona_profile_is_named_jarvis(
@@ -940,7 +942,7 @@ def test_non_string_persona_profile_falls_back_to_base_persona(
     assert result.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
 
 
-def test_explicit_settings_override_persona_profile_from_table(
+def test_explicit_settings_do_not_override_owner_persona_file(
     conn: sqlite3.Connection,
     persona_path: Path,
     persona_profiles: dict[str, Path],
@@ -957,8 +959,10 @@ def test_explicit_settings_override_persona_profile_from_table(
     )
 
     first = result.request.context_messages[0]
-    assert "Persona profile mentor" in first.content
-    assert result.context_snapshot["persona_profile"] == "mentor"
+    assert "Persona: Jarvis owns memory" in first.content
+    assert first.metadata["profile"] == "jarvis"
+    assert result.context_snapshot["persona_profile"] == "jarvis"
+    assert result.request.settings["persona.profile"] == "jarvis"
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:

@@ -398,12 +398,10 @@ class SecurityConfig:
     # Voice auto-approval: if true, VOICE_COMMAND gets ALLOW for mutation tools
     # (file_write, shell_read, network, etc.) within approved_roots.
     # This makes voice fully seamless for trusted paths.
-    voice_auto_approve_tools: bool = False
-    # Auto-approve mode for model-originated tools (like Codex/Claude CLI).
-    # Options: "off" (default), "model" (auto-approve model-originated tools in trusted scopes),
-    # "voice" (same as voice_auto_approve_tools), "all" (auto-approve all non-destructive tools).
-    # When enabled, tools are approved AND executed automatically in one turn.
-    auto_approve_mode: str = "off"
+    voice_auto_approve_tools: bool = True
+    # Auto-approve mode for model-originated tools (Claude CLI on this branch).
+    # Runtime-lab default is "all": tools are approved and executed automatically.
+    auto_approve_mode: str = "all"
 
 
 @dataclass(frozen=True)

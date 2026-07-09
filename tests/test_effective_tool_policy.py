@@ -157,8 +157,8 @@ def test_overlay_preserves_approved_roots_from_base(tmp_path) -> None:
     assert result.decision == ToolDecision.ALLOW
 
 
-def test_destructive_stays_gated_even_in_auto_run(tmp_path) -> None:
-    """The one floor: even full auto-run never turns destructive into ALLOW."""
+def test_destructive_runs_when_explicitly_enabled_in_auto_run(tmp_path) -> None:
+    """Runtime-lab branch: auto_approve_mode=all means all when destructive is enabled."""
 
     base = ToolPermissionPolicy(destructive_tools_enabled=True, auto_approve_mode="off")
 
@@ -178,4 +178,4 @@ def test_destructive_stays_gated_even_in_auto_run(tmp_path) -> None:
         tool_name="delete_everything",
         payload={},
     )
-    assert result.decision == ToolDecision.APPROVAL_REQUIRED
+    assert result.decision == ToolDecision.ALLOW

@@ -1701,6 +1701,16 @@ def _setting_text(settings: Mapping[str, Any], key: str, default: str) -> str:
     return default
 
 
+def _setting_list(settings: Mapping[str, Any], key: str, default: Iterable[str]) -> tuple[str, ...]:
+    value = settings.get(key)
+    if isinstance(value, (list, tuple)):
+        items = tuple(str(item).strip() for item in value if str(item).strip())
+        return items or tuple(default)
+    if isinstance(value, str) and value.strip():
+        return (value.strip(),)
+    return tuple(default)
+
+
 def _policy_with_settings_overlay(
     base: ToolPermissionPolicy,
     settings: Mapping[str, Any],
@@ -1712,19 +1722,20 @@ def _policy_with_settings_overlay(
     are overlaid here so the panel is the single source of truth. Malformed or
     missing values fall back to the base/config default (fail-closed).
 
-    Only the operator-facing knobs are overlaid. Containment (approved_roots,
-    trusted_scopes) and voice auto-approval stay as configured — the panel does
-    not edit them. ``destructive`` keeps its own gate inside the policy, so even
-    full auto-run never turns a destructive tool into ALLOW.
+    Runtime-lab branch: overlay all operator-facing knobs that affect whether a
+    setting actually works on the next turn, including approved_roots and voice
+    auto-approval.
     """
 
     return ToolPermissionPolicy(
         destructive_tools_enabled=_setting_bool(
             settings, "security.destructive_tools_enabled", base.destructive_tools_enabled
         ),
-        approved_roots=base.approved_roots,
+        approved_roots=_setting_list(settings, "security.approved_roots", base.approved_roots),
         trusted_scopes=base.trusted_scopes,
-        voice_auto_approve=base.voice_auto_approve,
+        voice_auto_approve=_setting_bool(
+            settings, "security.voice_auto_approve_tools", base.voice_auto_approve
+        ),
         auto_approve_mode=_setting_auto_approve_mode(
             settings, "security.auto_approve_mode", base.auto_approve_mode
         ),
@@ -1786,7 +1797,13 @@ def create_daemon_app_from_config(
     runtime_supervisor = RuntimeSupervisor(home=paths.home)
     # One containment source feeds both the policy and the file tool so the
     # advisory check and the execution-time re-check can never disagree.
-    approved_roots = [str(root) for root in config.security.approved_roots] or [str(paths.home)]
+    # On this runtime branch, the repo itself is always in scope so Jarvis can
+    # actually work on the project instead of being trapped under ~/.jarvis.
+    repo_root = Path(__file__).resolve().parents[2]
+    approved_roots = [str(root) for root in config.security.approved_roots] or [
+        str(paths.home),
+        str(repo_root),
+    ]
     shell_read_whitelist = [str(cmd) for cmd in config.security.shell_read_whitelist] or None
     tool_registry = create_default_tool_registry()
     tool_registry.register(ApprovalProbeTool())

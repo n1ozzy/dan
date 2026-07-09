@@ -213,6 +213,26 @@ class ToolPermissionPolicy:
                 source=str(source),
             )
 
+
+        known_risks = {item.value for item in PermissionClass}
+        if self.auto_approve_mode == "all" and normalized_risk in known_risks:
+            if normalized_risk == PermissionClass.FILE_READ:
+                return self._decide_file_read(
+                    tool_name=tool_name,
+                    payload=payload,
+                    source=normalized_source,
+                )
+            if normalized_risk == PermissionClass.DESTRUCTIVE and not self.destructive_tools_enabled:
+                return _blocked(
+                    normalized_risk,
+                    f"{tool_name} is destructive and destructive tools are disabled.",
+                    source=normalized_source,
+                )
+            return _allow(
+                normalized_risk,
+                f"{tool_name} is {normalized_risk} and allowed by auto_approve_mode=all.",
+                source=normalized_source,
+            )
         if normalized_risk in {PermissionClass.SAFE_READ, PermissionClass.SAFE_STATUS}:
             if normalized_source in USER_SOURCES:
                 return _allow(
@@ -397,6 +417,12 @@ class ToolPermissionPolicy:
             return _allow(
                 "file_read",
                 f"{tool_name} file_read path is under an approved root.",
+                source=source,
+            )
+        if self.auto_approve_mode == "all":
+            return _allow(
+                "file_read",
+                f"{tool_name} file_read path is under an approved root and allowed by auto_approve_mode=all.",
                 source=source,
             )
         # Trusted scopes: MODEL_ORIGINATED gets ALLOW within configured paths/tools.

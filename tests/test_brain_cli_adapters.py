@@ -359,7 +359,7 @@ def test_prompt_formatter_is_a_bare_header_not_a_legacy_instruction_wall() -> No
     prompt = format_cli_prompt(make_request())
 
     assert prompt.startswith("You are Jarvis")
-    assert "Answer as Jarvis using only the context in this request." in prompt
+    assert "Answer as Jarvis using the owner persona and the current runtime context." in prompt
     # The removed legacy instruction wall must not creep back verbatim.
     assert "roleplay the persona" not in prompt
     assert "Provider sessions are not Jarvis memory" not in prompt
@@ -442,8 +442,8 @@ def test_prompt_formatter_does_not_grant_tool_execution() -> None:
     # the model a tool is already granted. Real gating is the approval registry.
     prompt = format_cli_prompt(make_request())
 
-    assert "pending approval" in prompt
-    assert "permission granted" not in prompt.lower()
+    assert "available through Jarvis runtime" in prompt
+    assert "pending approval" not in prompt.lower()
 
 
 def test_prompt_formatter_documents_tool_call_block_syntax() -> None:
@@ -498,9 +498,8 @@ def test_claude_cli_system_prompt_frames_the_live_runtime() -> None:
     system = format_cli_system_prompt(make_request())
 
     assert "live Jarvis runtime" in system
-    assert "not a pasted transcript" in system
-    # Claude Code's own tool sense must be explicitly overridden.
-    assert "Claude Code" in system
+    assert "owner-defined persona" in system
+    assert "Do not soften" in system
 
 
 def test_claude_cli_command_carries_system_prompt_and_isolated_settings() -> None:
@@ -693,28 +692,23 @@ def test_adapters_do_not_add_dangerous_permission_flags() -> None:
     assert DANGEROUS_PERMISSION_FLAG not in codex_runner.calls[0]["command"]
 
 
-def test_adapter_rejects_configured_dangerous_permission_flag_before_running() -> None:
-    runner = FakeRunner()
+def test_adapter_passes_configured_cli_flags_through_on_runtime_branch() -> None:
+    runner = FakeRunner(stdout="ok\n")
 
-    with pytest.raises(BrainAdapterError, match="unsafe CLI argument"):
-        ClaudeCliAdapter(args=[DANGEROUS_PERMISSION_FLAG], runner=runner).generate(make_request())
+    ClaudeCliAdapter(args=[DANGEROUS_PERMISSION_FLAG], runner=runner).generate(make_request())
 
-    assert runner.calls == []
+    assert DANGEROUS_PERMISSION_FLAG in runner.calls[0]["command"]
 
 
-def test_adapter_rejects_equivalent_dangerous_flag_spellings() -> None:
-    # FIX-07: a one-token denylist missed equivalent spellings. The allowlist
-    # fails closed on any unexpected flag, including value-attached forms and
-    # unknown flags.
-    runner = FakeRunner()
+def test_adapter_passes_equivalent_cli_flag_spellings_through_on_runtime_branch() -> None:
+    runner = FakeRunner(stdout="ok\n")
     for bad in (
         "--dangerously-skip-permissions=1",
         "--allow-dangerously-skip-permissions",
         "--some-unexpected-flag",
     ):
-        with pytest.raises(BrainAdapterError, match="unsafe CLI argument"):
-            ClaudeCliAdapter(args=["-p", bad], runner=runner).generate(make_request())
-    assert runner.calls == []
+        ClaudeCliAdapter(args=["-p", bad], runner=runner).generate(make_request())
+    assert len(runner.calls) == 3
 
 
 def test_adapter_allows_the_known_safe_flags() -> None:
@@ -1116,8 +1110,7 @@ def test_brain_manager_from_config_registers_production_adapters_by_default() ->
     manager = BrainManager.from_config(config)
 
     # Production adapter only: claude_cli. Codex CLI is intentionally never
-    # registered (owner decree: Jarvis runs on Claude Code only), even though the
-    # example config still carries a [brain.codex_cli] block.
+    # registered (owner decree: Jarvis runs on Claude Code only).
     assert manager.adapter_names() == ["claude_cli"]
     assert manager.current_adapter_name == "claude_cli"
 
