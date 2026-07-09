@@ -166,6 +166,33 @@ def test_run_activates_candidate_into_memory_items_without_memory_blocks(
     )
 
 
+def test_run_activates_candidate_whose_body_looks_like_a_secret(
+    tool: MemorySaveTool,
+    conn: sqlite3.Connection,
+) -> None:
+    # Regression: create_candidate stores claim/title redacted. run() must compare
+    # the payload through the same redaction, else a secret-shaped body makes the
+    # stored (redacted) claim differ from the raw payload and strands the
+    # candidate forever. A real save with a key-shaped string must still persist.
+    secret_body = "The deploy key is AKIAIOSFODNN7EXAMPLE do not lose it."
+    proposed = tool.propose(
+        {"kind": "fact", "title": "Deploy note", "body": secret_body},
+        source_id="call-secret-save",
+    )
+
+    output = tool.run(
+        {
+            "candidate_id": proposed["candidate_id"],
+            "kind": "fact",
+            "title": "Deploy note",
+            "body": secret_body,
+        }
+    )
+
+    assert output["ok"] is True
+    assert table_count(conn, "memory_items") == 1
+
+
 def test_run_rejects_invalid_kind(tool: MemorySaveTool, manager: MemoryManager) -> None:
     with pytest.raises(ValueError, match="kind"):
         tool.propose({"kind": "nope", "title": "T", "body": "B"})

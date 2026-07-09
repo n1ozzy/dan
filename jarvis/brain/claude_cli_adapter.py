@@ -580,13 +580,17 @@ class ClaudeCliAdapter:
         # active model so the running model is ALWAYS offered even if discovery
         # lags or the account carries a private/pinned id. The sentinel
         # "claude-cli" (no model configured) is never surfaced as a real id.
-        resolved = resolve_available_models(self.command)
-        models: list[str] = list(resolved)
+        #
+        # block=False: this runs on the /runtime/settings request path (the panel
+        # polls it), so it must never wait on a live CLI probe — the resolver
+        # serves the cached list and refreshes in the background.
+        models = list(resolve_available_models(self.command, block=False))
         active = self.default_model
         if active and active != "claude-cli" and active not in models:
+            # resolved is already deduped and the active id is inserted only when
+            # absent, so the result stays duplicate-free without a second pass.
             models.insert(0, active)
-        # Dedup preserving order (active-first if it was inserted).
-        return list(dict.fromkeys(models))
+        return models
 
     def command_settings(self) -> ClaudeCliCommandSettings:
         return ClaudeCliCommandSettings(

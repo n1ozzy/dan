@@ -261,9 +261,9 @@ class _SpyEngine(MockTTSEngine):
         self.stop_playback_calls += 1
         super().stop_playback()
 
-    def play(self, chunk: SynthesizedChunk) -> None:
+    def play(self, chunk: SynthesizedChunk, should_play=None, on_started=None) -> None:
         time.sleep(0.05)
-        super().play(chunk)
+        super().play(chunk, should_play=should_play, on_started=on_started)
 
 
 def test_broker_stop_interrupts_drain_loop_and_shuts_executor(db_path: Path) -> None:

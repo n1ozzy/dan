@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -178,34 +179,47 @@ def _write_cache(cache_path: Path, models: list[str], *, now: float) -> None:
         _LOGGER.debug("could not persist model cache to %s", cache_path, exc_info=True)
 
 
-def resolve_available_models(
-    command: str = "claude",
-    *,
-    runner: CliRunner | None = None,
-    cache_path: Path | str | None = None,
-    ttl: float = _DEFAULT_TTL,
-    now: float | None = None,
+# In-process memo: a settings request touches available_models() more than once
+# (adapter loop + provider-capability build), and the panel polls that endpoint
+# on a heartbeat. The memo returns the last resolved list without re-reading the
+# disk cache or re-filtering, keyed by command. Only used on the production path
+# (default cache_path/now) so injected-clock tests never share global state.
+_MEMO_LOCK = threading.Lock()
+_MEMO: dict[str, tuple[float, list[str]]] = {}
+
+# Single-flight guard so concurrent stale reads spawn at most one background
+# probe per (command, cache file) instead of a thundering herd of CLI spawns.
+_INFLIGHT_LOCK = threading.Lock()
+_INFLIGHT: set[tuple[str, str]] = set()
+
+
+def _memo_get(key: str, clock: float, ttl: float) -> list[str] | None:
+    if ttl <= 0:
+        return None
+    with _MEMO_LOCK:
+        entry = _MEMO.get(key)
+    if entry is None:
+        return None
+    ts, models = entry
+    if (clock - ts) < ttl:
+        return list(models)
+    return None
+
+
+def _memo_put(key: str, models: list[str], ts: float) -> None:
+    with _MEMO_LOCK:
+        _MEMO[key] = (ts, list(models))
+
+
+def _probe_live(
+    command: str,
+    runner: CliRunner | None,
+    resolved_cache: Path,
+    cached: tuple[float, list[str]] | None,
+    clock: float,
 ) -> list[str]:
-    """Return the current Claude model ids this CLI accepts as ``--model``.
-
-    Live source: one cheap ``claude -p --model <cheap> <prompt>`` turn. Result is
-    filtered, deduped, and cached to ``~/.jarvis/model_cache.json`` (TTL
-    ``ttl``). Within the TTL the cache is returned without spawning the CLI. On
-    any failure the last-good cache is used, else a minimal hard-coded net.
-
-    ``runner`` is injectable for tests — the real ``claude`` binary must never be
-    invoked from tests. ``now``/``ttl`` are injectable for deterministic cache
-    tests (fake clock).
-    """
-
-    resolved_cache = Path(cache_path) if cache_path is not None else _default_cache_path()
-    clock = time.time() if now is None else now
-    cached = _read_cache(resolved_cache)
-
-    if cached is not None:
-        cached_ts, cached_models = cached
-        if ttl > 0 and (clock - cached_ts) < ttl:
-            return list(cached_models)
+    """One live ``claude -p`` discovery turn; on ANY failure fall back to the
+    last-good cache, then the hard-coded net. Writes the cache on success."""
 
     run = runner or _default_runner
     argv = [command, "-p", "--model", _DISCOVERY_MODEL, _DISCOVERY_PROMPT]
@@ -227,6 +241,96 @@ def resolve_available_models(
         return list(_FALLBACK_MODELS)
 
     _write_cache(resolved_cache, models, now=clock)
+    return models
+
+
+def _spawn_background_refresh(
+    command: str,
+    runner: CliRunner | None,
+    resolved_cache: Path,
+    memo_key: str,
+    use_memo: bool,
+) -> None:
+    """Refresh the model list off the request path, single-flight per target."""
+
+    key = (command, str(resolved_cache))
+    with _INFLIGHT_LOCK:
+        if key in _INFLIGHT:
+            return
+        _INFLIGHT.add(key)
+
+    def _work() -> None:
+        try:
+            now = time.time()
+            cached = _read_cache(resolved_cache)
+            models = _probe_live(command, runner, resolved_cache, cached, now)
+            if use_memo:
+                _memo_put(memo_key, models, now)
+        except Exception:  # noqa: BLE001 - background task, never raise
+            _LOGGER.debug("background model refresh failed", exc_info=True)
+        finally:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.discard(key)
+
+    threading.Thread(target=_work, name="jarvis-model-refresh", daemon=True).start()
+
+
+def resolve_available_models(
+    command: str = "claude",
+    *,
+    runner: CliRunner | None = None,
+    cache_path: Path | str | None = None,
+    ttl: float = _DEFAULT_TTL,
+    now: float | None = None,
+    block: bool = True,
+) -> list[str]:
+    """Return the current Claude model ids this CLI accepts as ``--model``.
+
+    Live source: one cheap ``claude -p --model <cheap> <prompt>`` turn. Result is
+    filtered, deduped, and cached to ``~/.jarvis/model_cache.json`` (TTL
+    ``ttl``), plus an in-process memo. Within the TTL the cached/memoed list is
+    returned without spawning the CLI.
+
+    ``block`` controls what happens on a stale/cold cache:
+    - ``True`` (default; tests, warmup): probe the CLI synchronously and return
+      the fresh list — may take up to the discovery timeout.
+    - ``False`` (the request path, e.g. ``GET /runtime/settings``): NEVER wait on
+      the probe. Serve the last-known list immediately (stale cache, else the
+      safety net) and refresh in the background, single-flight. Stale-while-
+      revalidate — the next poll gets the fresh list.
+
+    ``runner`` is injectable for tests — the real ``claude`` binary must never be
+    invoked from tests. ``now``/``ttl`` are injectable for deterministic cache
+    tests (fake clock).
+    """
+
+    resolved_cache = Path(cache_path) if cache_path is not None else _default_cache_path()
+    clock = time.time() if now is None else now
+    # Memo only on the production path — an injected clock/cache_path means a test
+    # that must not see (or leak into) cross-call global state.
+    use_memo = cache_path is None and now is None
+    memo_key = command
+
+    if use_memo:
+        hit = _memo_get(memo_key, clock, ttl)
+        if hit is not None:
+            return hit
+
+    cached = _read_cache(resolved_cache)
+    if cached is not None and ttl > 0 and (clock - cached[0]) < ttl:
+        if use_memo:
+            _memo_put(memo_key, cached[1], cached[0])
+        return list(cached[1])
+
+    if not block:
+        _spawn_background_refresh(command, runner, resolved_cache, memo_key, use_memo)
+        if cached is not None:
+            return list(cached[1])
+        return list(_FALLBACK_MODELS)
+
+    models = _probe_live(command, runner, resolved_cache, cached, clock)
+    if use_memo:
+        _memo_put(memo_key, models, clock)
     return models
 
 

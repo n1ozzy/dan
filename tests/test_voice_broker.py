@@ -303,7 +303,7 @@ def test_broker_does_not_play_a_row_cancelled_in_the_spawn_gap(db_path: Path) ->
         def synthesize(self, text: str) -> SynthesizedChunk:
             return SynthesizedChunk(text=text, audio=b"audio-bytes")
 
-        def play(self, chunk: SynthesizedChunk, should_play=None) -> None:
+        def play(self, chunk: SynthesizedChunk, should_play=None, on_started=None) -> None:
             # Barge-in lands right here, in the check->spawn gap.
             gap_conn = connect(db_path)
             try:
@@ -312,6 +312,10 @@ def test_broker_does_not_play_a_row_cancelled_in_the_spawn_gap(db_path: Path) ->
                 close_quietly(gap_conn)
             if should_play is not None and not should_play():
                 raise PlaybackCancelled("cancelled in the spawn gap")
+            # Reached only if the player would truly spawn — mirrors the real
+            # engine calling on_started right after Popen.
+            if on_started is not None:
+                on_started()
             self.played.append(chunk.text)
 
         def stop_playback(self) -> None:
@@ -327,6 +331,13 @@ def test_broker_does_not_play_a_row_cancelled_in_the_spawn_gap(db_path: Path) ->
         "SELECT status FROM voice_queue WHERE id = ?", (request.id,)
     ).fetchone()[0]
     assert status == "cancelled"
+    # FIX-09 anti-echo truth: a chunk cancelled in the check->spawn gap never
+    # put audio in the air, so it must NOT be stamped spoken_at (else the
+    # anti-echo gate would falsely reject the user's overlapping next turn).
+    spoken_at = conn.execute(
+        "SELECT spoken_at FROM voice_queue WHERE id = ?", (request.id,)
+    ).fetchone()[0]
+    assert spoken_at is None
     close_quietly(conn)
 
 

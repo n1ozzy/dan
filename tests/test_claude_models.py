@@ -7,6 +7,8 @@ runner or a tmp cache file.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -156,3 +158,62 @@ class TestFallback:
 
         result = resolve_available_models(runner=runner, cache_path=_cache(tmp_path))
         assert result == list(_FALLBACK_MODELS)
+
+
+class TestNonBlocking:
+    """block=False (the request path): never wait on the probe; serve last-known
+    immediately and refresh in the background (stale-while-revalidate)."""
+
+    def _wait_for_cache(self, cache: Path, timeout: float = 5.0) -> dict:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cache.exists():
+                try:
+                    return json.loads(cache.read_text())
+                except ValueError:
+                    pass
+            time.sleep(0.01)
+        raise AssertionError("background refresh never wrote the cache")
+
+    def test_cold_cache_returns_net_immediately_then_refreshes(self, tmp_path: Path) -> None:
+        cache = _cache(tmp_path)
+        gate = threading.Event()
+
+        def runner(argv: list[str], timeout: float) -> str:
+            gate.wait(5.0)  # hold the probe so the caller can't have waited on it
+            return '["claude-opus-4-8", "claude-sonnet-5"]'
+
+        # Returns without blocking on the (gated) probe.
+        result = resolve_available_models(
+            runner=runner, cache_path=cache, ttl=3600.0, now=1000.0, block=False
+        )
+        assert result == list(_FALLBACK_MODELS)
+        assert not cache.exists()  # background probe still gated → no write yet
+
+        gate.set()
+        data = self._wait_for_cache(cache)
+        assert data["models"] == ["claude-opus-4-8", "claude-sonnet-5"]
+
+    def test_stale_cache_returns_old_immediately_then_refreshes(self, tmp_path: Path) -> None:
+        cache = _cache(tmp_path)
+        cache.write_text(json.dumps({"ts": 100.0, "models": ["claude-old-1"]}))
+
+        def runner(argv: list[str], timeout: float) -> str:
+            return '["claude-new-9"]'
+
+        result = resolve_available_models(
+            runner=runner, cache_path=cache, ttl=1.0, now=100_000.0, block=False
+        )
+        assert result == ["claude-old-1"]  # stale served instantly
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                data = json.loads(cache.read_text())
+            except (ValueError, OSError):  # mid-write by the background thread
+                data = {}
+            if data.get("models") == ["claude-new-9"]:
+                break
+            time.sleep(0.01)
+        else:  # pragma: no cover
+            raise AssertionError("background refresh never replaced the stale cache")

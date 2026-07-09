@@ -128,17 +128,24 @@ class VoiceBroker:
                     current = next_request
                     continue
 
-                # Committed to play this chunk: stamp spoken_at BEFORE playback so
-                # the anti-echo corpus counts it even if the player is killed
-                # mid-play (a partial that still put audio in the air — FIX-09).
-                self._mark_spoken(current)
+                # Play this chunk. spoken_at is stamped via on_started, which the
+                # engine calls the instant the player actually spawns (under the
+                # player lock, AFTER the should_play re-check). A barge-in that
+                # raises PlaybackCancelled BEFORE the spawn therefore never marks
+                # spoken_at — only audio that truly went out counts toward the
+                # anti-echo corpus, so a cancelled-before-sound chunk no longer
+                # causes false echo rejections of the user's next turn (FIX-09).
                 watcher = self._start_interrupt_watcher(current)
                 interrupted = False
                 try:
                     # should_play is re-checked inside the engine under its player
                     # lock, right before spawning — closes the barge-in TOCTOU the
                     # pre-play check above cannot (FIX-09).
-                    self._play(chunk, should_play=lambda: self._still_speaking(current))
+                    self._play(
+                        chunk,
+                        should_play=lambda: self._still_speaking(current),
+                        on_started=lambda: self._mark_spoken(current),
+                    )
                 except PlaybackCancelled:
                     # Cancelled in the check->spawn gap: the row is already
                     # 'cancelled' (leg 2), so skip cleanly — no done, no failure.
@@ -177,8 +184,13 @@ class VoiceBroker:
 
     # -- internals ------------------------------------------------------------
 
-    def _play(self, chunk: SynthesizedChunk, should_play: Callable[[], bool] | None = None) -> None:
-        self._engine.play(chunk, should_play=should_play)
+    def _play(
+        self,
+        chunk: SynthesizedChunk,
+        should_play: Callable[[], bool] | None = None,
+        on_started: Callable[[], None] | None = None,
+    ) -> None:
+        self._engine.play(chunk, should_play=should_play, on_started=on_started)
 
     def _claim(self) -> VoiceRequest | None:
         return self._with_queue(lambda queue: queue.claim_next())

@@ -86,7 +86,12 @@ class MockTTSEngine:
             raise TTSEngineError(f"mock synthesis failure for {text!r}")
         return SynthesizedChunk(text=text, audio=text.encode("utf-8"))
 
-    def play(self, chunk: SynthesizedChunk, should_play: Any = None) -> None:
+    def play(
+        self,
+        chunk: SynthesizedChunk,
+        should_play: Any = None,
+        on_started: Any = None,
+    ) -> None:
         interrupt = threading.Event()
         with self._lock:
             # Same lock stop_playback uses: the should_play re-check and the
@@ -94,6 +99,10 @@ class MockTTSEngine:
             if should_play is not None and not should_play():
                 raise PlaybackCancelled(f"playback skipped for {chunk.text!r}")
             self._current_interrupt = interrupt
+        # Committed to play (past the should_play gate) — mark spoken now, like
+        # the real engine does right after spawning its player.
+        if on_started is not None:
+            on_started()
         try:
             if self._play_gate is not None:
                 deadline = time.monotonic() + 30
@@ -425,7 +434,12 @@ class SupertonicEngine:
             text=text, audio=self._apply_mastering(audio, self._mastering_filter_for(profile))
         )
 
-    def play(self, chunk: SynthesizedChunk, should_play: Any = None) -> None:
+    def play(
+        self,
+        chunk: SynthesizedChunk,
+        should_play: Any = None,
+        on_started: Any = None,
+    ) -> None:
         path = Path(self.workdir) / f"play-{uuid.uuid4().hex}.wav"
         try:
             path.touch(mode=0o600)
@@ -450,6 +464,12 @@ class SupertonicEngine:
                     start_new_session=True,
                 )
                 self._player_proc = proc
+            # Player is live — audio is going out. Signal "spoken" now (outside
+            # the player lock so a DB write can't block stop_playback). A
+            # barge-in raising PlaybackCancelled above never reaches here, so
+            # only truly-audible chunks are marked (FIX-09 anti-echo truth).
+            if on_started is not None:
+                on_started()
             try:
                 _, stderr = proc.communicate(timeout=duration + 30)
             except subprocess.TimeoutExpired as exc:

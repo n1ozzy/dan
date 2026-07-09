@@ -4,6 +4,10 @@ Ozzy 2026-07-08: ANY URL, no domain allowlist. The guards here are hygiene,
 not policy — they keep a hostile or broken server from hanging or flooding the
 daemon, they do NOT restrict where Jarvis may go:
 - http/https only (no file:// / ftp:// / gopher:// reaching into the local box),
+- an SSRF guard: the target host, AND every redirect hop, must resolve to a
+  public address — loopback / private-LAN / link-local / metadata (169.254.x)
+  IPs are refused. "ANY URL" still means the whole public internet; it never
+  means the operator's own daemon endpoints or LAN services,
 - a request timeout,
 - a response size cap (read max_bytes+1, report truncation),
 - urllib's default redirect cap.
@@ -16,6 +20,8 @@ store caps long strings (registry.PERSIST_MAX_STRING_CHARS) as elsewhere.
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 import ssl
 import urllib.error
 import urllib.request
@@ -39,6 +45,83 @@ def _build_ssl_context() -> ssl.SSLContext | None:
 
 
 _SSL_CONTEXT = _build_ssl_context()
+
+
+def _ip_is_forbidden(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _host_is_blocked(host: str) -> bool:
+    """True when ``host`` is, or resolves to, a non-public address.
+
+    An SSRF guard, not a domain policy: it never blocks a public host, it only
+    stops web_fetch (and any redirect it follows) from turning into a request
+    against the local box, a private-LAN service, or the cloud metadata IP
+    (169.254.169.254). Hostnames are resolved, so a name pointing at 127.0.0.1
+    is caught too. A resolution failure is NOT treated as blocked — urlopen will
+    fail on its own; we don't want every transient DNS error surfaced as a
+    security refusal."""
+
+    if not host:
+        return False
+    candidate = host.strip("[]").split("%", 1)[0]
+    try:  # literal IP — no DNS
+        return _ip_is_forbidden(ipaddress.ip_address(candidate))
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    for info in infos:
+        addr = info[4][0].split("%", 1)[0]
+        try:
+            if _ip_is_forbidden(ipaddress.ip_address(addr)):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-apply the scheme/SSRF guard to every redirect hop.
+
+    urllib follows 30x automatically; without this a public URL the operator
+    approved could bounce web_fetch onto http://127.0.0.1/ or the metadata IP
+    (the operator never saw the final host). A blocked hop raises URLError, which
+    run() surfaces as a ToolExecutionError."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parsed = urlparse(newurl)
+        if parsed.scheme not in ("http", "https"):
+            raise urllib.error.URLError(
+                f"web_fetch refused redirect to non-http(s) scheme: {parsed.scheme or '(none)'}"
+            )
+        if _host_is_blocked(parsed.hostname or ""):
+            raise urllib.error.URLError(
+                f"web_fetch refused redirect to non-public host: {parsed.hostname}"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(
+    _GuardedRedirectHandler(),
+    urllib.request.HTTPSHandler(context=_SSL_CONTEXT),
+)
+
+
+def _perform_request(request: urllib.request.Request, timeout: float):
+    """Single seam for the actual GET (patched in tests). Uses the guarded
+    opener so redirects are re-validated hop by hop."""
+
+    return _OPENER.open(request, timeout=timeout)
 
 
 DEFAULT_MAX_BYTES = 524_288
@@ -97,13 +180,17 @@ class WebFetchTool(Tool):
             )
         if not parsed.netloc:
             raise ToolExecutionError("web_fetch URL has no host.")
+        if _host_is_blocked(parsed.hostname or ""):
+            raise ToolExecutionError(
+                f"web_fetch refused non-public host (SSRF guard): {parsed.hostname}"
+            )
 
         max_bytes = _clamp_int(arguments.get("max_bytes"), DEFAULT_MAX_BYTES, 1, HARD_MAX_BYTES)
         timeout = _clamp_float(arguments.get("timeout_seconds"), DEFAULT_TIMEOUT, 0.1, HARD_TIMEOUT)
 
         request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT}, method="GET")
         try:
-            with urllib.request.urlopen(request, timeout=timeout, context=_SSL_CONTEXT) as response:
+            with _perform_request(request, timeout) as response:
                 status = getattr(response, "status", None) or response.getcode()
                 content_type = response.headers.get("Content-Type", "") if response.headers else ""
                 raw = response.read(max_bytes + 1)

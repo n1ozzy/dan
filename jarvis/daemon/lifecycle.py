@@ -122,14 +122,18 @@ MAX_STREAM_SESSIONS = 8
 # Private-data reads gated behind the transport token (FIX-06 follow-up): after
 # removing CORS null and validating Host, an untokened GET of conversations,
 # memory or settings was the remaining "any local process reads your data"
-# vector. Status/mechanism reads (/health, /state, /events, /tools, /approvals)
-# stay open for monitoring and panel bootstrap.
+# vector. Status/mechanism reads (/health, /state, /events, /tools) stay open
+# for monitoring and panel bootstrap. /approvals is token-gated too: its
+# payloads carry tool arguments — file paths + up to 4096 chars of file content,
+# fetch URLs, memory claims — i.e. exactly the private data that /memory and
+# /conversations guard; leaving it open was an inconsistency in the hardening.
 TOKEN_PROTECTED_GET_PATHS = {
     "/conversations",
     "/turns",
     "/memory",
     "/memory/candidates",
     "/memory/items",
+    "/approvals",
     "/workers/jobs",
     "/runtime/legacy",
     "/runtime/processes",

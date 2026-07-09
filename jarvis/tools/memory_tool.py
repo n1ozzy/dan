@@ -20,6 +20,7 @@ from jarvis.memory.inbox import (
 from jarvis.memory.evidence import MemoryEvidenceRepository
 from jarvis.memory.items import MemoryItemRepository
 from jarvis.memory.policies import MEMORY_KINDS, validate_memory_kind
+from jarvis.security.redaction import redact_secret_text
 from jarvis.tools.registry import Tool
 
 # The durable prompt budget is 12000 chars across 50 blocks; a single save may
@@ -107,10 +108,16 @@ class MemorySaveTool(Tool):
         candidate = self._candidate_repository.get_candidate(candidate_id)
         if candidate is None:
             raise ValueError(f"memory_save candidate does not exist: {candidate_id}")
+        # create_candidate stored claim/title through redact_secret_text, so the
+        # approved payload must be compared through the SAME redaction. Comparing
+        # the redacted stored value against the raw payload made any secret-shaped
+        # content (API keys, connection strings, PEM) fail this guard and strand
+        # the candidate — memory_save could then NEVER persist it. Payload text is
+        # already stripped by _capped_str, matching inbox's _required_text.
         if (
             candidate.candidate_kind != payload.kind
-            or candidate.title != payload.title
-            or candidate.claim != payload.body
+            or candidate.title != redact_secret_text(payload.title)
+            or candidate.claim != redact_secret_text(payload.body)
         ):
             raise ValueError("memory_save candidate_id does not match the approved payload.")
         if candidate.status == NEEDS_REVIEW:
