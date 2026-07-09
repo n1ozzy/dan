@@ -216,9 +216,26 @@ TOOLS_INTERNET_APPLY_KEYS = frozenset(
         "security.require_approval_for_network",
         "security.require_approval_for_shell",
         "security.require_approval_for_file_write",
+        "security.require_approval_for_ui",
+        "security.require_approval_for_terminal",
+        "security.require_approval_for_memory",
         "security.destructive_tools_enabled",
         "destructive_tools_enabled",
         "provider_tools_enabled",
+    }
+)
+# Tool-policy keys the daemon reads live from the settings table each turn
+# (_policy_with_settings_overlay): applying them needs no restart. Everything
+# else in TOOLS_INTERNET_APPLY_KEYS is registry-backed and stays restart-bound.
+LIVE_TOOL_POLICY_APPLY_KEYS = frozenset(
+    {
+        "security.require_approval_for_network",
+        "security.require_approval_for_shell",
+        "security.require_approval_for_file_write",
+        "security.require_approval_for_ui",
+        "security.require_approval_for_terminal",
+        "security.require_approval_for_memory",
+        "security.destructive_tools_enabled",
     }
 )
 BRAIN_NEXT_TURN_APPLY_KEYS = frozenset({"brain.model", "brain.effort"})
@@ -2149,6 +2166,25 @@ def _apply_tools_internet_settings(
     tool_keys = [key for key in settings if key in TOOLS_INTERNET_APPLY_KEYS]
     if not tool_keys:
         return []
+
+    # Live tool-policy keys: written straight to the settings table — the
+    # per-turn overlay picks them up on the next turn, no restart. Applied
+    # BEFORE the restart-bound keys are evaluated, so a mixed request still
+    # lands the live part (the error below then reports only the blocked keys).
+    applied: list[str] = []
+    live_keys = sorted(key for key in tool_keys if key in LIVE_TOOL_POLICY_APPLY_KEYS)
+    for key in live_keys:
+        if not isinstance(settings[key], bool):
+            raise RuntimeSettingsApplyError(
+                f"{key} must be a boolean.",
+                rejected_keys=[key],
+            )
+    if live_keys:
+        app.update_settings({key: settings[key] for key in live_keys})
+        applied.extend(live_keys)
+    tool_keys = [key for key in tool_keys if key not in LIVE_TOOL_POLICY_APPLY_KEYS]
+    if not tool_keys:
+        return applied
 
     capabilities = capability_graph.get("tools_capabilities", {})
     apply_capabilities = capabilities.get("apply_capabilities")
@@ -4875,13 +4911,23 @@ def _tools_projection(
         tools_master_flag = "unknown"
     else:
         tools_master_flag = "enabled" if configured_tools_enabled else "disabled"
+    # Effective policy = TOML seed overlaid with the panel's live settings —
+    # the projection must show what the engine will actually enforce on the
+    # next turn, not the stale TOML value (review 2026-07-09 Important #1).
+    live_policy = app._live_tool_permission_policy()
     approval_required = []
-    if app.config.security.require_approval_for_shell:
+    if live_policy.require_approval_for_shell:
         approval_required.append("shell")
-    if app.config.security.require_approval_for_file_write:
+    if live_policy.require_approval_for_file_write:
         approval_required.append("file_write")
-    if app.config.security.require_approval_for_network:
+    if live_policy.require_approval_for_network:
         approval_required.append("network")
+    if live_policy.require_approval_for_ui:
+        approval_required.append("ui")
+    if live_policy.require_approval_for_terminal:
+        approval_required.append("terminal")
+    if live_policy.require_approval_for_memory:
+        approval_required.append("memory")
     internet_warning = None
     if status == "invalid":
         internet_state = "unknown"
@@ -4896,9 +4942,12 @@ def _tools_projection(
         internet_warning = "Internet unavailable: no network/search tool registered"
     network_search_tool_status = "ok" if has_network_tool else ("invalid" if status == "invalid" else "missing")
     network_search_tool_value = "unknown" if status == "invalid" else ("registered" if has_network_tool else "missing")
-    apply_capability_warning = TOOLS_POLICY_RESTART_BLOCKER
-    requires_restart_value = True
-    blocker_value = internet_warning or apply_capability_warning
+    # The section's primary controls (approval grants + destructive enable)
+    # apply live via the settings overlay; only registry-backed toggles keep
+    # their per-key restart blockers in apply_capabilities.
+    apply_capability_warning = None
+    requires_restart_value = False
+    blocker_value = internet_warning
 
     return {
         "tools_enabled": _projection(
@@ -4957,8 +5006,8 @@ def _tools_projection(
         ),
         "network_policy": _projection(
             value="approval_required" if app.config.security.require_approval_for_network else "allowed",
-            effective_value="approval_required" if app.config.security.require_approval_for_network else "allowed",
-            source="config",
+            effective_value="approval_required" if live_policy.require_approval_for_network else "allowed",
+            source="settings",
             status="ok",
             editable_later=True,
             warning=None if has_network_tool else "network enabled but no network tool registered",
@@ -4966,8 +5015,16 @@ def _tools_projection(
         "approval_required_tools": _projection(
             value=approval_required,
             effective_value=approval_required,
-            source="config",
-            status="ok" if approval_required else "missing",
+            source="settings",
+            status="ok",
+            editable_later=True,
+            warning=None,
+        ),
+        "destructive_tools_enabled": _projection(
+            value=app.config.security.destructive_tools_enabled,
+            effective_value=live_policy.destructive_tools_enabled,
+            source="settings",
+            status="ok",
             editable_later=True,
             warning=None,
         ),
@@ -4980,10 +5037,10 @@ def _tools_projection(
             warning=warning,
         ),
         "apply_capability": _projection(
-            value="no",
-            effective_value="no",
+            value="yes",
+            effective_value="yes",
             source="runtime_detected",
-            status="unsupported",
+            status="ok",
             editable_later=True,
             warning=apply_capability_warning,
         ),
@@ -5656,7 +5713,12 @@ def _build_tools_capabilities(
     network_tools = _network_tool_specs(registered if isinstance(registered, list) else [])
     internet_capability = _runtime_projection_value(tools_projection.get("internet_capability")) or {}
     approval_required = _runtime_projection_value(tools_projection.get("approval_required_tools")) or []
-    live_toggle_blocker = TOOLS_POLICY_RESTART_BLOCKER
+    # Every live tool-policy key applies through the settings overlay — no
+    # restart, no blocker (review 2026-07-09 Important #1).
+    live_policy_capability = {
+        key: {"apply_capable": True, "requires_restart": False, "blocker": None}
+        for key in sorted(LIVE_TOOL_POLICY_APPLY_KEYS)
+    }
     return {
         "tools_enabled": bool(registered),
         "tools_master_flag": _runtime_projection_value(tools_projection.get("tools_master_flag")) or "unknown",
@@ -5685,26 +5747,7 @@ def _build_tools_capabilities(
                 "requires_restart": True,
                 "blocker": "network security toggle is not backed by a live runtime setting",
             },
-            "security.require_approval_for_network": {
-                "apply_capable": False,
-                "requires_restart": True,
-                "blocker": live_toggle_blocker,
-            },
-            "security.require_approval_for_shell": {
-                "apply_capable": False,
-                "requires_restart": True,
-                "blocker": live_toggle_blocker,
-            },
-            "security.require_approval_for_file_write": {
-                "apply_capable": False,
-                "requires_restart": True,
-                "blocker": live_toggle_blocker,
-            },
-            "security.destructive_tools_enabled": {
-                "apply_capable": False,
-                "requires_restart": True,
-                "blocker": "destructive tools remain read-only/high-risk",
-            },
+            **live_policy_capability,
             "destructive_tools_enabled": {
                 "apply_capable": False,
                 "requires_restart": True,

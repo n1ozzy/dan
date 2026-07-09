@@ -124,6 +124,9 @@ api_token_required = false
 require_approval_for_shell = true
 require_approval_for_file_write = true
 require_approval_for_network = true
+require_approval_for_ui = true
+require_approval_for_terminal = true
+require_approval_for_memory = true
 destructive_tools_enabled = false
 
 [brain.test]
@@ -3790,47 +3793,72 @@ def test_runtime_settings_tools_internet_projection_uses_registered_network_tool
     assert any("network enabled but no network tool registered" in message for message in warnings)
 
 
-def test_runtime_settings_tools_apply_projection_is_restart_only_not_live_apply(
+def test_runtime_settings_tool_policy_keys_are_live_apply_capable(
     app: DaemonApp,
 ) -> None:
+    """The approval grants (and destructive enable) apply live via settings —
+    the API must say so instead of claiming a restart is needed (review
+    2026-07-09 Important #1). Registry-backed toggles stay restart-bound."""
+
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/runtime/settings")
 
     assert status == 200
     tools = payload["tools"]
-    assert tools["apply_capability"]["effective_value"] == "no"
-    assert tools["requires_restart"]["effective_value"] is True
-    assert "tool/network policy reload requires daemon restart" in tools["apply_capability"]["warning"]
+    assert tools["apply_capability"]["effective_value"] == "yes"
+    assert tools["requires_restart"]["effective_value"] is False
 
     apply_capabilities = payload["capability_graph"]["tools_capabilities"]["apply_capabilities"]
     for key in (
-        "tools.enabled",
-        "tools.network_enabled",
         "security.require_approval_for_network",
         "security.require_approval_for_shell",
         "security.require_approval_for_file_write",
+        "security.require_approval_for_ui",
+        "security.require_approval_for_terminal",
+        "security.require_approval_for_memory",
+        "security.destructive_tools_enabled",
     ):
         capability = apply_capabilities[key]
-        assert capability["apply_capable"] is False
-        assert capability["requires_restart"] is True
-        assert capability["blocker"]
+        assert capability["apply_capable"] is True, key
+        assert capability["requires_restart"] is False, key
+    # The tool registry itself still cannot be rebuilt without a restart.
+    for key in ("tools.enabled", "tools.network_enabled"):
+        capability = apply_capabilities[key]
+        assert capability["apply_capable"] is False, key
+        assert capability["requires_restart"] is True, key
 
 
-def test_post_runtime_settings_apply_tools_policy_returns_blocker(app: DaemonApp) -> None:
+def test_post_runtime_settings_apply_tool_policy_applies_live(app: DaemonApp) -> None:
+    """Toggling an approval grant through /runtime/settings/apply lands in the
+    settings table AND is reflected back in the effective projection."""
+
     with running_server(app) as base_url:
         status, payload = request_json(
             "POST",
             f"{base_url}/runtime/settings/apply",
-            {"settings": {"security.require_approval_for_network": False}},
+            {
+                "settings": {
+                    "security.require_approval_for_network": False,
+                    "security.require_approval_for_ui": False,
+                }
+            },
         )
+        assert status == 200
+        assert payload["status"] == "applied"
+        assert "security.require_approval_for_network" in payload["applied_keys"]
+        assert "security.require_approval_for_ui" in payload["applied_keys"]
+        assert payload["rejected_keys"] == []
 
-    assert status == 409
-    assert "daemon restart" in payload["error"] or "not apply-capable" in payload["error"]
-    assert payload["status"] in {"blocked", "requires_restart"}
-    assert payload["applied_keys"] == []
-    assert "security.require_approval_for_network" in payload["rejected_keys"]
-    assert "security.require_approval_for_network" in payload["requires_restart_keys"]
-    assert payload["blockers"]
+        status, projection = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    approval_required = projection["tools"]["approval_required_tools"]["effective_value"]
+    assert "network" not in approval_required
+    assert "ui" not in approval_required
+    assert "shell" in approval_required  # untouched grants still gate
+    settings = app.get_settings()
+    assert settings["security.require_approval_for_network"] is False
+    assert settings["security.require_approval_for_ui"] is False
 
 
 def test_runtime_settings_marks_invalid_stale_effort_and_fast_state_for_current_provider(

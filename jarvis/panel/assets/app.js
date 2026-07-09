@@ -9,10 +9,39 @@ function nativeApiBaseOverride() {
   return window.JARVIS_API_BASE.trim().replace(/\/+$/, "");
 }
 
+// Wybrana rozmowa musi przeżyć reload/reconnect panelu — trzymana tylko w
+// pamięci gubiła się przy każdym odświeżeniu i pierwszy strzał po reloadzie
+// leciał bez conversation_id, więc daemon zakładał NOWĄ rozmowę ("czasami
+// nowa sesja"). Persystujemy id w localStorage i czytamy je przy starcie.
+const SELECTED_CONVERSATION_KEY = "jarvis.selectedConversationId";
+
+function readStoredConversationId() {
+  try {
+    const stored = window.localStorage.getItem(SELECTED_CONVERSATION_KEY);
+    return stored && stored.trim() ? stored : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function setSelectedConversation(conversationId) {
+  const next = conversationId || null;
+  cockpit.selectedConversationId = next;
+  try {
+    if (next) {
+      window.localStorage.setItem(SELECTED_CONVERSATION_KEY, next);
+    } else {
+      window.localStorage.removeItem(SELECTED_CONVERSATION_KEY);
+    }
+  } catch (_error) {
+    // Brak localStorage (tryb prywatny/embed) — zostaje pamięć procesu.
+  }
+}
+
 const cockpit = {
   apiBase: DEFAULT_API_BASE,
   online: false,
-  selectedConversationId: null,
+  selectedConversationId: readStoredConversationId(),
   approvedApprovals: new Map(),
   // Tytuły rozmów dorabiane z pierwszego input_text (GET /turns?limit=1);
   // cache po id rozmowy, bo pierwsza tura się nie zmienia.
@@ -469,9 +498,13 @@ function bindElements() {
     "toolsControlGrid",
     "toolsEnabledToggle",
     "toolsNetworkEnabledToggle",
-    "toolsNetworkApprovalToggle",
-    "toolsShellApprovalToggle",
-    "toolsFileWriteApprovalToggle",
+    "grantShellToggle",
+    "grantFileWriteToggle",
+    "grantNetworkToggle",
+    "grantUiToggle",
+    "grantTerminalToggle",
+    "grantMemoryToggle",
+    "destructiveEnabledToggle",
     "resetToolsPreviewButton",
     "applyToolsSettingsButton",
     "toolsApplyStatus",
@@ -552,9 +585,13 @@ function bindEvents() {
   bindIf(el.testPttButton, "click", testPttPath);
   bindIf(el.toolsEnabledToggle, "change", updateToolsControlOptions);
   bindIf(el.toolsNetworkEnabledToggle, "change", updateToolsControlOptions);
-  bindIf(el.toolsNetworkApprovalToggle, "change", updateToolsControlOptions);
-  bindIf(el.toolsShellApprovalToggle, "change", updateToolsControlOptions);
-  bindIf(el.toolsFileWriteApprovalToggle, "change", updateToolsControlOptions);
+  bindIf(el.grantShellToggle, "change", updateToolsControlOptions);
+  bindIf(el.grantFileWriteToggle, "change", updateToolsControlOptions);
+  bindIf(el.grantNetworkToggle, "change", updateToolsControlOptions);
+  bindIf(el.grantUiToggle, "change", updateToolsControlOptions);
+  bindIf(el.grantTerminalToggle, "change", updateToolsControlOptions);
+  bindIf(el.grantMemoryToggle, "change", updateToolsControlOptions);
+  bindIf(el.destructiveEnabledToggle, "change", updateToolsControlOptions);
   bindIf(el.personaProfileSelect, "change", updatePersonaControlOptions);
   // Instant auto-apply: every settings control persists immediately on change — no Apply/Reset buttons.
   const instantApplyTimers = {};
@@ -570,7 +607,16 @@ function bindEvents() {
     tts: [el.voiceSpeakResponsesToggle, el.voiceTtsSelect, el.voiceTtsModelSelect, el.voiceVoiceIdSelect, el.voiceProfileSelect, el.voiceSpeedInput],
     stt: [el.voiceSttSelect, el.voiceSttModelSelect, el.voiceSttLanguageSelect],
     ptt: [el.pttModeSelect, el.pttHotkeyInput, el.pttMergeWindowInput],
-    tools: [el.toolsEnabledToggle, el.toolsNetworkApprovalToggle, el.toolsShellApprovalToggle, el.toolsFileWriteApprovalToggle],
+    tools: [
+      el.toolsEnabledToggle,
+      el.grantShellToggle,
+      el.grantFileWriteToggle,
+      el.grantNetworkToggle,
+      el.grantUiToggle,
+      el.grantTerminalToggle,
+      el.grantMemoryToggle,
+      el.destructiveEnabledToggle,
+    ],
     persona: [el.personaProfileSelect],
   };
   for (const [group, elems] of Object.entries(instantApplyGroups)) {
@@ -597,7 +643,7 @@ function bindEvents() {
     if (!conversationId) {
       return;
     }
-    cockpit.selectedConversationId = conversationId;
+    setSelectedConversation(conversationId);
     cockpit.composingNew = false;
     clearError(el.historyError);
     try {
@@ -636,7 +682,7 @@ function bindEvents() {
   }
   bindIf(el.approvalNudge, "click", () => switchView("approvals"));
   bindIf(el.newConversationButton, "click", () => {
-    cockpit.selectedConversationId = null;
+    setSelectedConversation(null);
     cockpit.composingNew = true;
     ensureNewConversationOption();
     renderEmpty(el.turnList, "Nowa rozmowa — napisz pierwszą wiadomość poniżej.");
@@ -649,7 +695,7 @@ function bindEvents() {
     const nextBase = el.apiBaseInput.value.trim();
     cockpit.apiBase = nextBase || DEFAULT_API_BASE;
     el.apiBaseInput.value = cockpit.apiBase;
-    cockpit.selectedConversationId = null;
+    setSelectedConversation(null);
     cockpit.approvedApprovals.clear();
     cockpit.conversationTitles.clear();
     disconnectStream("api base changed");
@@ -1116,6 +1162,9 @@ const RUNTIME_SETTINGS_GROUP_FIELDS = Object.freeze({
     "security.require_approval_for_network",
     "security.require_approval_for_shell",
     "security.require_approval_for_file_write",
+    "security.require_approval_for_ui",
+    "security.require_approval_for_terminal",
+    "security.require_approval_for_memory",
     "security.destructive_tools_enabled",
     "destructive_tools_enabled",
     "provider_tools_enabled",
@@ -1148,9 +1197,13 @@ const RUNTIME_SETTING_LABELS = Object.freeze({
   "tools.enabled": "Narzędzia włączone",
   "tools.network_enabled": "Dostęp do internetu",
   "security.network_enabled": "Polityka sieci",
-  "security.require_approval_for_network": "Wymagaj zgody na sieć",
-  "security.require_approval_for_shell": "Wymagaj zgody na powłokę",
-  "security.require_approval_for_file_write": "Wymagaj zgody na zapis plików",
+  "security.require_approval_for_network": "Sam: internet",
+  "security.require_approval_for_shell": "Sam: komendy (shell)",
+  "security.require_approval_for_file_write": "Sam: zapis plików",
+  "security.require_approval_for_ui": "Sam: klikanie po ekranie",
+  "security.require_approval_for_terminal": "Sam: terminal",
+  "security.require_approval_for_memory": "Sam: zapis pamięci",
+  "security.destructive_tools_enabled": "Destrukcyjne dozwolone",
   "persona.profile": "Profil persony",
 });
 
@@ -1177,6 +1230,9 @@ const RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY = Object.freeze({
   "security.require_approval_for_network": Object.freeze(["tools_internet", "network_policy"]),
   "security.require_approval_for_shell": Object.freeze(["tools_internet", "approval_required_tools"]),
   "security.require_approval_for_file_write": Object.freeze(["tools_internet", "approval_required_tools"]),
+  "security.require_approval_for_ui": Object.freeze(["tools_internet", "approval_required_tools"]),
+  "security.require_approval_for_terminal": Object.freeze(["tools_internet", "approval_required_tools"]),
+  "security.require_approval_for_memory": Object.freeze(["tools_internet", "approval_required_tools"]),
   "persona.profile": Object.freeze(["personality", "active_persona"]),
 });
 
@@ -1735,6 +1791,21 @@ function runtimeSettingsCurrentValueForKey(payload, key) {
   if (key === "security.require_approval_for_file_write") {
     const approvalRequired = projectionValue(tools.approval_required_tools);
     return Array.isArray(approvalRequired) && approvalRequired.includes("file_write");
+  }
+  if (key === "security.require_approval_for_ui") {
+    const approvalRequired = projectionValue(tools.approval_required_tools);
+    return Array.isArray(approvalRequired) && approvalRequired.includes("ui");
+  }
+  if (key === "security.require_approval_for_terminal") {
+    const approvalRequired = projectionValue(tools.approval_required_tools);
+    return Array.isArray(approvalRequired) && approvalRequired.includes("terminal");
+  }
+  if (key === "security.require_approval_for_memory") {
+    const approvalRequired = projectionValue(tools.approval_required_tools);
+    return Array.isArray(approvalRequired) && approvalRequired.includes("memory");
+  }
+  if (key === "security.destructive_tools_enabled") {
+    return Boolean(projectionValue(tools.destructive_tools_enabled));
   }
   return undefined;
 }
@@ -2533,26 +2604,48 @@ function renderToolsApplyControls(payload) {
     applyCapabilities,
     missingInternetReason,
   );
+  // Grant semantics: checked = Jarvis runs the class on his own (approval OFF).
   setToolsToggleState(
-    el.toolsNetworkApprovalToggle,
-    approvalRequired.includes("network"),
-    "security.require_approval_for_network",
-    applyCapabilities,
-    missingInternetReason,
-  );
-  setToolsToggleState(
-    el.toolsShellApprovalToggle,
-    approvalRequired.includes("shell"),
+    el.grantShellToggle,
+    !approvalRequired.includes("shell"),
     "security.require_approval_for_shell",
     applyCapabilities,
-    missingInternetReason,
   );
   setToolsToggleState(
-    el.toolsFileWriteApprovalToggle,
-    approvalRequired.includes("file_write"),
+    el.grantFileWriteToggle,
+    !approvalRequired.includes("file_write"),
     "security.require_approval_for_file_write",
     applyCapabilities,
-    missingInternetReason,
+  );
+  setToolsToggleState(
+    el.grantNetworkToggle,
+    !approvalRequired.includes("network"),
+    "security.require_approval_for_network",
+    applyCapabilities,
+  );
+  setToolsToggleState(
+    el.grantUiToggle,
+    !approvalRequired.includes("ui"),
+    "security.require_approval_for_ui",
+    applyCapabilities,
+  );
+  setToolsToggleState(
+    el.grantTerminalToggle,
+    !approvalRequired.includes("terminal"),
+    "security.require_approval_for_terminal",
+    applyCapabilities,
+  );
+  setToolsToggleState(
+    el.grantMemoryToggle,
+    !approvalRequired.includes("memory"),
+    "security.require_approval_for_memory",
+    applyCapabilities,
+  );
+  setToolsToggleState(
+    el.destructiveEnabledToggle,
+    Boolean(projectionValue(tools.destructive_tools_enabled)),
+    "security.destructive_tools_enabled",
+    applyCapabilities,
   );
   const compactBlocked = operator.applyStatus !== "Dostępne" || !hasLiveApplyControl;
   setToolsSectionCompactMode(compactBlocked);
@@ -3220,14 +3313,28 @@ function runtimeSettingsDraftForGroup(group) {
     if (el.toolsNetworkEnabledToggle && !el.toolsNetworkEnabledToggle.disabled) {
       draft["tools.network_enabled"] = Boolean(el.toolsNetworkEnabledToggle.checked);
     }
-    if (el.toolsNetworkApprovalToggle && !el.toolsNetworkApprovalToggle.disabled) {
-      draft["security.require_approval_for_network"] = Boolean(el.toolsNetworkApprovalToggle.checked);
+    // Grant checkboxes are the INVERSE of the stored require_approval keys:
+    // checked (może sam) => require_approval = false.
+    if (el.grantShellToggle && !el.grantShellToggle.disabled) {
+      draft["security.require_approval_for_shell"] = !el.grantShellToggle.checked;
     }
-    if (el.toolsShellApprovalToggle && !el.toolsShellApprovalToggle.disabled) {
-      draft["security.require_approval_for_shell"] = Boolean(el.toolsShellApprovalToggle.checked);
+    if (el.grantFileWriteToggle && !el.grantFileWriteToggle.disabled) {
+      draft["security.require_approval_for_file_write"] = !el.grantFileWriteToggle.checked;
     }
-    if (el.toolsFileWriteApprovalToggle && !el.toolsFileWriteApprovalToggle.disabled) {
-      draft["security.require_approval_for_file_write"] = Boolean(el.toolsFileWriteApprovalToggle.checked);
+    if (el.grantNetworkToggle && !el.grantNetworkToggle.disabled) {
+      draft["security.require_approval_for_network"] = !el.grantNetworkToggle.checked;
+    }
+    if (el.grantUiToggle && !el.grantUiToggle.disabled) {
+      draft["security.require_approval_for_ui"] = !el.grantUiToggle.checked;
+    }
+    if (el.grantTerminalToggle && !el.grantTerminalToggle.disabled) {
+      draft["security.require_approval_for_terminal"] = !el.grantTerminalToggle.checked;
+    }
+    if (el.grantMemoryToggle && !el.grantMemoryToggle.disabled) {
+      draft["security.require_approval_for_memory"] = !el.grantMemoryToggle.checked;
+    }
+    if (el.destructiveEnabledToggle && !el.destructiveEnabledToggle.disabled) {
+      draft["security.destructive_tools_enabled"] = Boolean(el.destructiveEnabledToggle.checked);
     }
     return draft;
   }
@@ -7043,7 +7150,7 @@ async function sendTextInput(event) {
       method: "POST",
       body,
     });
-    cockpit.selectedConversationId = payload.conversation_id || cockpit.selectedConversationId;
+    setSelectedConversation(payload.conversation_id || cockpit.selectedConversationId);
     cockpit.composingNew = false;
     await Promise.all([refreshHistory(), refreshEvents(), refreshToolsAndApprovals()]);
   } catch (error) {
@@ -7083,12 +7190,16 @@ async function refreshHistory() {
     const hasSelected = conversations.some((conversation) => {
       return conversation.id === cockpit.selectedConversationId;
     });
+    // Auto-wybór najnowszej rozmowy TYLKO gdy naprawdę nic nie jest wybrane.
+    // Wcześniej wystarczyło, że wybrana rozmowa wypadła z listy 12 ostatnich
+    // (hasSelected=false) i panel po cichu przeskakiwał na najnowszą — stąd
+    // "czasami nowa sesja". Zapisane id honorujemy nawet spoza widocznej listy.
     if (
       !cockpit.composingNew &&
-      (!cockpit.selectedConversationId || !hasSelected) &&
+      !cockpit.selectedConversationId &&
       conversations.length > 0
     ) {
-      cockpit.selectedConversationId = conversations[0].id;
+      setSelectedConversation(conversations[0].id);
     }
     if (cockpit.selectedConversationId) {
       await refreshTurns(cockpit.selectedConversationId);
@@ -8790,9 +8901,13 @@ function setInteractiveEnabled(enabled) {
     el.cancelCurrentSpeechButton,
     el.toolsEnabledToggle,
     el.toolsNetworkEnabledToggle,
-    el.toolsNetworkApprovalToggle,
-    el.toolsShellApprovalToggle,
-    el.toolsFileWriteApprovalToggle,
+    el.grantShellToggle,
+    el.grantFileWriteToggle,
+    el.grantNetworkToggle,
+    el.grantUiToggle,
+    el.grantTerminalToggle,
+    el.grantMemoryToggle,
+    el.destructiveEnabledToggle,
     el.applyToolsSettingsButton,
     el.personaProfileSelect,
     el.applyPersonaSettingsButton,

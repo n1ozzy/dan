@@ -450,17 +450,37 @@
                 <span>Dostęp do internetu</span>
                 <span id="toolsNetworkEnabledToggle" class="status-badge" role="status">unknown</span>
               </div>
+            </div>
+            <h3 class="settings-subhead">Jarvis może sam (bez pytania):</h3>
+            <p class="muted">Zaznaczone = robi od ręki. Odznaczone = czeka na Twoją zgodę w Zgodach.</p>
+            <div class="settings-control-grid">
               <label class="inline-toggle">
-                <input id="toolsNetworkApprovalToggle" type="checkbox" disabled />
-                <span>Wymagaj zgody na sieć</span>
+                <input id="grantShellToggle" type="checkbox" disabled />
+                <span>Komendy (shell)</span>
               </label>
               <label class="inline-toggle">
-                <input id="toolsShellApprovalToggle" type="checkbox" disabled />
-                <span>Wymagaj zgody na powłokę</span>
+                <input id="grantFileWriteToggle" type="checkbox" disabled />
+                <span>Zapis plików</span>
               </label>
               <label class="inline-toggle">
-                <input id="toolsFileWriteApprovalToggle" type="checkbox" disabled />
-                <span>Wymagaj zgody na zapis plików</span>
+                <input id="grantNetworkToggle" type="checkbox" disabled />
+                <span>Internet</span>
+              </label>
+              <label class="inline-toggle">
+                <input id="grantUiToggle" type="checkbox" disabled />
+                <span>Klikanie i pisanie po ekranie</span>
+              </label>
+              <label class="inline-toggle">
+                <input id="grantTerminalToggle" type="checkbox" disabled />
+                <span>Wklejanie do terminala</span>
+              </label>
+              <label class="inline-toggle">
+                <input id="grantMemoryToggle" type="checkbox" disabled />
+                <span>Zapis pamięci</span>
+              </label>
+              <label class="inline-toggle">
+                <input id="destructiveEnabledToggle" type="checkbox" disabled />
+                <span>Destrukcyjne dozwolone (i tak zawsze pytają)</span>
               </label>
             </div>
             <p id="toolsApplyStatus" class="muted apply-status" aria-live="polite"></p>

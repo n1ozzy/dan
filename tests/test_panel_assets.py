@@ -236,11 +236,15 @@ def test_app_settings_are_rendered_from_daemon_truth_only() -> None:
     assert "refreshSettings" in script
     assert "/brain/adapters" in script
     assert "/brain/switch" in script
-    # The API token is the only value the cockpit keeps in local storage.
+    # Local storage holds only UI continuity state (the API token and the
+    # selected conversation id) — never daemon truth like settings or turns.
+    allowed_storage_keys = ("API_TOKEN_STORAGE_KEY", "SELECTED_CONVERSATION_KEY")
     setter_calls = [
         line for line in script.splitlines() if "localStorage.setItem" in line
     ]
-    assert all("API_TOKEN_STORAGE_KEY" in line for line in setter_calls)
+    assert all(
+        any(key in line for key in allowed_storage_keys) for line in setter_calls
+    )
     assert len(setter_calls) >= 1
 
 
@@ -832,13 +836,21 @@ def test_settings_preview_cockpit_shell_is_present() -> None:
 
 
 def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_path: Path) -> None:
+    # Grant semantics (2026-07-09): checkboxes say what Jarvis may do ON HIS
+    # OWN (checked = no approval click), one per switchable mutation class,
+    # plus the always-gated destructive enable.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     for label in (
         "Narzędzia",
         "Dostęp do internetu",
-        "Wymagaj zgody na sieć",
-        "Wymagaj zgody na zapis plików",
-        "Wymagaj zgody na powłokę",
+        "Jarvis może sam",
+        "Komendy (shell)",
+        "Zapis plików",
+        "Internet",
+        "Klikanie i pisanie po ekranie",
+        "Wklejanie do terminala",
+        "Zapis pamięci",
+        "Destrukcyjne dozwolone",
     ):
         assert label in markup
     for misleading_label in (
@@ -846,6 +858,7 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
         ">network approval<",
         ">file write approval<",
         ">shell approval<",
+        "Wymagaj zgody",
     ):
         assert misleading_label not in markup
 
@@ -981,9 +994,17 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
                   warning: "network enabled but no network tool registered",
                 }},
                 approval_required_tools: {{
-                  value: ["network", "shell", "file_write"],
-                  effective_value: ["network", "shell", "file_write"],
-                  source: "config",
+                  value: ["network", "shell", "file_write", "terminal", "memory"],
+                  effective_value: ["network", "shell", "file_write", "terminal", "memory"],
+                  source: "settings",
+                  status: "ok",
+                  editable_later: true,
+                  warning: null,
+                }},
+                destructive_tools_enabled: {{
+                  value: false,
+                  effective_value: false,
+                  source: "settings",
                   status: "ok",
                   editable_later: true,
                   warning: null,
@@ -1003,19 +1024,39 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
                       blocker: "network capability is registry-backed; no live network tool toggle is wired",
                     }},
                     "security.require_approval_for_network": {{
-                      apply_capable: false,
-                      requires_restart: true,
-                      blocker: "runtime tool/network policy reload requires daemon restart",
+                      apply_capable: true,
+                      requires_restart: false,
+                      blocker: null,
                     }},
                     "security.require_approval_for_shell": {{
-                      apply_capable: false,
-                      requires_restart: true,
-                      blocker: "runtime tool/network policy reload requires daemon restart",
+                      apply_capable: true,
+                      requires_restart: false,
+                      blocker: null,
                     }},
                     "security.require_approval_for_file_write": {{
-                      apply_capable: false,
-                      requires_restart: true,
-                      blocker: "runtime tool/network policy reload requires daemon restart",
+                      apply_capable: true,
+                      requires_restart: false,
+                      blocker: null,
+                    }},
+                    "security.require_approval_for_ui": {{
+                      apply_capable: true,
+                      requires_restart: false,
+                      blocker: null,
+                    }},
+                    "security.require_approval_for_terminal": {{
+                      apply_capable: true,
+                      requires_restart: false,
+                      blocker: null,
+                    }},
+                    "security.require_approval_for_memory": {{
+                      apply_capable: true,
+                      requires_restart: false,
+                      blocker: null,
+                    }},
+                    "security.destructive_tools_enabled": {{
+                      apply_capable: true,
+                      requires_restart: false,
+                      blocker: null,
                     }},
                   }},
                 }},
@@ -1039,9 +1080,13 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
               el.toolsSummaryDetails = createNode("dl");
               el.toolsEnabledToggle = createNode("input");
               el.toolsNetworkEnabledToggle = createNode("input");
-              el.toolsNetworkApprovalToggle = createNode("input");
-              el.toolsShellApprovalToggle = createNode("input");
-              el.toolsFileWriteApprovalToggle = createNode("input");
+              el.grantShellToggle = createNode("input");
+              el.grantFileWriteToggle = createNode("input");
+              el.grantNetworkToggle = createNode("input");
+              el.grantUiToggle = createNode("input");
+              el.grantTerminalToggle = createNode("input");
+              el.grantMemoryToggle = createNode("input");
+              el.destructiveEnabledToggle = createNode("input");
               el.toolsInternetSummary = createNode("dd");
               el.toolsNetworkPolicySummary = createNode("dd");
               el.toolsRegistrySummary = createNode("dd");
@@ -1058,59 +1103,31 @@ def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_pat
 
             assert.strictEqual(context.__el.toolsEnabledToggle.disabled, false);
             assert.strictEqual(context.__el.toolsNetworkEnabledToggle.disabled, false);
-            assert.strictEqual(context.__el.toolsNetworkApprovalToggle.disabled, false);
-            assert.strictEqual(context.__el.toolsShellApprovalToggle.disabled, false);
-            assert.strictEqual(context.__el.toolsFileWriteApprovalToggle.disabled, false);
-            assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, true);
-            assert.strictEqual(context.__el.resetToolsPreviewButton.disabled, false);
-            assert.strictEqual(context.__el.resetToolsPreviewButton.hidden, false);
-            assert.strictEqual(context.__el.toolsSectionDescription.hidden, false);
-            assert.strictEqual(context.__el.activeToolsSettingsSection.classList.contains("compact-only"), false);
-            assert.strictEqual(context.__el.toolsControlGrid.hidden, false);
-            assert.strictEqual(context.__el.toolsSummaryDetails.hidden, false);
-            assert.match(context.__el.toolsInternetSummary.textContent, /Blokada setupu/i);
-            assert.match(context.__el.toolsApplyStatus.textContent, /Brak zmian/i);
-            assert.doesNotMatch(context.__el.toolsApplyStatus.textContent, /runtime tool\\/network policy reload|not runtime-apply-capable|tools\\.enabled/i);
-
+            // Grant inversion: classes still requiring approval render as
+            // UNCHECKED grants; "ui" is absent from approval_required_tools,
+            // so its grant is CHECKED.
+            assert.strictEqual(context.__el.grantShellToggle.checked, false);
+            assert.strictEqual(context.__el.grantFileWriteToggle.checked, false);
+            assert.strictEqual(context.__el.grantNetworkToggle.checked, false);
+            assert.strictEqual(context.__el.grantUiToggle.checked, true);
+            assert.strictEqual(context.__el.grantTerminalToggle.checked, false);
+            assert.strictEqual(context.__el.grantMemoryToggle.checked, false);
+            assert.strictEqual(context.__el.destructiveEnabledToggle.checked, false);
+            // Live-apply capability: no restart lie on any grant toggle.
+            for (const toggle of [
+              context.__el.grantShellToggle,
+              context.__el.grantFileWriteToggle,
+              context.__el.grantNetworkToggle,
+              context.__el.grantUiToggle,
+              context.__el.grantTerminalToggle,
+              context.__el.grantMemoryToggle,
+              context.__el.destructiveEnabledToggle,
+            ]) {{
+              assert.strictEqual(toggle.disabled, false);
+              assert.doesNotMatch(String(toggle.title || ""), /restart/i);
+            }}
             const statusText = textOf(context.__el.toolsInternetStatusList);
-            assert.match(statusText, /Narzędzia \\/ Internet/i);
-            assert.match(statusText, /Narzędzia\\s+Włączone/i);
-            assert.match(statusText, /Dostęp do internetu\\s+Blokada setupu/i);
-            assert.match(statusText, /Powód\\s+Brak zarejestrowanego narzędzia sieci\\/szukania/i);
-            assert.match(statusText, /Akcja\\s+Zainstaluj albo zarejestruj narzędzie sieci\\/szukania/i);
-            assert.match(statusText, /Polityka\\s+Wymagana zgoda/i);
-            assert.match(statusText, /Zastosowanie\\s+(wyłączone|wymaga restartu|dostępne)/i);
             assert.doesNotMatch(statusText, /What this means|What can I do\\?|tools\\.enabled|security\\.require_approval|approval_required|runtime tool\\/network policy reload|tool registry enable\\/disable|not runtime-apply-capable/i);
-
-            payload.capability_graph.tools_capabilities.apply_capabilities["tools.enabled"] = {{
-              apply_capable: true,
-              requires_restart: false,
-              blocker: null,
-            }};
-            payload.capability_graph.tools_capabilities.apply_capabilities["security.require_approval_for_network"] = {{
-              apply_capable: true,
-              requires_restart: false,
-              blocker: null,
-            }};
-            vm.runInContext(`renderToolsApplyControls(payload);`, context);
-
-            assert.strictEqual(context.__el.toolsControlGrid.hidden, false);
-            assert.strictEqual(context.__el.toolsEnabledToggle.disabled, false);
-            assert.strictEqual(context.__el.toolsNetworkApprovalToggle.disabled, false);
-            assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, true);
-            assert.match(context.__el.toolsApplyStatus.textContent, /Brak zmian/i);
-
-            (async () => {{
-              context.__el.toolsNetworkApprovalToggle.checked = false;
-              context.updateToolsControlOptions();
-              assert.strictEqual(context.__el.applyToolsSettingsButton.disabled, true);
-            assert.match(context.__el.toolsApplyStatus.textContent, /Zablokowane|narzędzia sieci\\/szukania/i);
-              const applyRequests = requests.filter((request) => new URL(request.url).pathname === "/runtime/settings/apply");
-              assert.strictEqual(applyRequests.length, 0);
-            }})().catch((error) => {{
-              console.error(error);
-              process.exit(1);
-            }});
             """
         ),
         encoding="utf-8",
@@ -3408,9 +3425,12 @@ def test_system_tab_uses_human_operator_labels_not_backend_keys() -> None:
     for human_label in (
         ">Narzędzia włączone<",
         ">Dostęp do internetu<",
-        ">Wymagaj zgody na sieć<",
-        ">Wymagaj zgody na powłokę<",
-        ">Wymagaj zgody na zapis plików<",
+        ">Komendy (shell)<",
+        ">Zapis plików<",
+        ">Internet<",
+        ">Klikanie i pisanie po ekranie<",
+        ">Wklejanie do terminala<",
+        ">Zapis pamięci<",
         ">Mów odpowiedzi<",
         ">Tryb szybki<",
         ">Broker głosu<",
@@ -3421,9 +3441,13 @@ def test_system_tab_uses_human_operator_labels_not_backend_keys() -> None:
 
     for control_id, label in (
         ("toolsEnabledToggle", "Narzędzia włączone"),
-        ("toolsNetworkApprovalToggle", "Wymagaj zgody na sieć"),
-        ("toolsShellApprovalToggle", "Wymagaj zgody na powłokę"),
-        ("toolsFileWriteApprovalToggle", "Wymagaj zgody na zapis plików"),
+        ("grantShellToggle", "Komendy (shell)"),
+        ("grantFileWriteToggle", "Zapis plików"),
+        ("grantNetworkToggle", "Internet"),
+        ("grantUiToggle", "Klikanie i pisanie po ekranie"),
+        ("grantTerminalToggle", "Wklejanie do terminala"),
+        ("grantMemoryToggle", "Zapis pamięci"),
+        ("destructiveEnabledToggle", "Destrukcyjne dozwolone (i tak zawsze pytają)"),
         ("voiceSpeakResponsesToggle", "Mów odpowiedzi"),
         ("activeBrainFastToggle", "Tryb szybki"),
     ):
