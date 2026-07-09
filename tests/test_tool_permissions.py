@@ -195,6 +195,24 @@ def test_approval_required_risks_require_approval(risk: str) -> None:
     assert result.blocked is False
 
 
+def test_shell_allows_model_originated_when_shell_approval_disabled() -> None:
+    """The panel's "require approval for shell" toggle is the real knob: when
+    it is off, model-originated shell tools run without an approval click."""
+
+    policy = ToolPermissionPolicy(require_approval_for_shell=False)
+
+    result = policy.decide(
+        "shell_read",
+        source=RequestSource.MODEL_ORIGINATED,
+        tool_name="shell.read",
+        payload={},
+    )
+
+    assert result.decision == ToolDecision.ALLOW
+    assert result.approval_required is False
+    assert result.blocked is False
+
+
 def test_destructive_blocked_by_default() -> None:
     result = ToolPermissionPolicy().decide("destructive", source=RequestSource.DIRECT_USER_COMMAND, tool_name="delete_everything", payload={})
 

@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -1151,7 +1151,7 @@ class DaemonApp:
 
         try:
             orchestrator = self._create_turn_orchestrator()
-            return orchestrator.handle_text(
+            result = orchestrator.handle_text(
                 text=text,
                 conversation_id=conversation_id,
                 metadata=metadata,
@@ -1159,6 +1159,98 @@ class DaemonApp:
             )
         finally:
             self.text_turn_lock.release()
+        # Auto-run the tools the live policy would ALLOW. Done after the turn
+        # generation lock is released, on the same approve→execute→continue path
+        # a human click would drive (approve_and_execute_tool takes its own
+        # tool_execution_lock), so a panel switch turned off actually runs the
+        # tool instead of stranding it as a pending approval.
+        return self._auto_run_allowed_tools(result)
+
+    def _approval_decision_is_allow(
+        self, approval: Mapping[str, Any], policy: ToolPermissionPolicy
+    ) -> bool:
+        """Would the live policy ALLOW this captured tool outright? Only ALLOW
+        auto-runs; APPROVAL_REQUIRED (and destructive) stay pending for a human."""
+
+        source = _request_source_from_approval(approval)
+        if source is None:
+            return False
+        tool_request = _tool_request_from_approval(approval)
+        try:
+            tool = self.tool_registry.get(tool_request.tool_name)
+        except ToolRegistryError:
+            return False
+        decision = policy.decide(
+            tool.risk,
+            source=source,
+            tool_name=tool.name,
+            payload=tool_request.arguments,
+        ).decision
+        return decision == ToolDecision.ALLOW
+
+    def _auto_run_allowed_tools(self, result: TextTurnResult) -> TextTurnResult:
+        """Never let the auto-run pass break a turn or lose its conversation id.
+
+        Any failure here logs and returns the turn result untouched — the turn
+        itself already finished/awaits in the orchestrator, and callers (voice
+        especially) rely on the returned result to carry the conversation id."""
+
+        try:
+            return self._auto_run_allowed_tools_inner(result)
+        except Exception:
+            get_logger(__name__).warning(
+                "Auto-run pass failed; returning the turn result unchanged.",
+                exc_info=True,
+            )
+            return result
+
+    def _auto_run_allowed_tools_inner(self, result: TextTurnResult) -> TextTurnResult:
+        """Execute the model-originated tools the live policy would ALLOW, right
+        after the turn captured them as approvals, then reflect the finished
+        turn back in the result so the caller sees the final answer directly.
+
+        Approvals the policy still gates (destructive, or a class whose panel
+        switch is on) are left pending for a human. Reuses the exact
+        approve→execute→continue path a human click would drive."""
+
+        approvals = list(result.approvals or [])
+        if not approvals:
+            return result
+        policy = self._live_tool_permission_policy()
+        gate = self._require_approval_gate()
+        ran_any = False
+        for summary in approvals:
+            approval_id = summary.get("id") if isinstance(summary, Mapping) else None
+            if not approval_id:
+                continue
+            # Contain failures per approval: one rotten approval (malformed
+            # payload in the allow check, execute error, anything) must not
+            # abort the pass — the remaining ALLOW approvals still run.
+            try:
+                approval = gate.get_approval(str(approval_id))
+                if approval is None or approval.get("status") != "pending":
+                    continue
+                if not self._approval_decision_is_allow(approval, policy):
+                    continue
+                self.approve_and_execute_tool(
+                    str(approval_id),
+                    reason="auto-run: approval for this tool class is disabled in settings",
+                )
+            except DaemonAppError:
+                get_logger(__name__).warning(
+                    "Auto-run of approval %s failed; leaving it for manual review.",
+                    approval_id,
+                    exc_info=True,
+                )
+                continue
+            ran_any = True
+        if not ran_any:
+            return result
+        refreshed_turn = TurnRepository(self._require_conn()).get(result.turn_id)
+        if refreshed_turn is None:
+            return result
+        final_text = refreshed_turn.final_text or result.final_text
+        return replace(result, final_text=final_text, turn=refreshed_turn)
 
     def _start_voice_turn(self, text: str) -> TextTurnResult:
         """Gateway hook: an accepted transcript enters the SAME orchestrator
@@ -1166,18 +1258,50 @@ class DaemonApp:
         refuses this source on purpose — only this internal path mints voice
         turns.
 
-        Utterances roll into one conversation: pass the remembered id (None on
-        the first turn) and store whatever the orchestrator resolved, so the
-        next utterance continues the same session instead of starting fresh."""
+        Every utterance rolls into the ONE durable conversation persisted in
+        settings (voice.conversation_id) — resolved up front, so cancelled or
+        failed turns cannot lose it."""
 
-        result = self.handle_text_input(
+        conversation_id = self._resolve_voice_conversation_id()
+        # Log BEFORE the turn runs: a cancelled turn raises, and the cancelled
+        # turns are exactly the ones the conversation-id diagnosis needs to see.
+        get_logger(__name__).info("voice-turn conversation: id=%s", conversation_id)
+        return self.handle_text_input(
             text=text,
-            conversation_id=self._voice_conversation_id,
+            conversation_id=conversation_id,
             source="voice",
             metadata={"origin": "voice_transcript"},
         )
-        self._voice_conversation_id = result.conversation_id
-        return result
+
+    _VOICE_CONVERSATION_SETTING = "voice.conversation_id"
+
+    def _resolve_voice_conversation_id(self) -> str:
+        """The ONE durable conversation every voice utterance rolls into.
+
+        Persisted in settings, so it survives daemon restarts AND cancelled or
+        failed turns — PTT is never a new chat, ever. A cancelled turn used to
+        skip saving the rolling id (the turn raised before the save), which is
+        exactly why the first few utterances after a restart spawned fresh
+        chats. A fixed, stored id removes that whole class of bug. Context stays
+        bounded by the recent-turn window, so one long-lived conversation is
+        fine."""
+
+        try:
+            settings = self.get_settings()
+        except Exception:
+            settings = {}
+        existing = settings.get(self._VOICE_CONVERSATION_SETTING)
+        if isinstance(existing, str) and existing.strip():
+            return existing.strip()
+        new_id = str(uuid.uuid4())
+        try:
+            self.update_settings({self._VOICE_CONVERSATION_SETTING: new_id})
+        except Exception:
+            get_logger(__name__).warning(
+                "Could not persist the voice conversation id; using it for this run only.",
+                exc_info=True,
+            )
+        return new_id
 
     def _sweep_listening_leases(self) -> None:
         """Sweeper tick: expire stale leases and sync the recorder."""
@@ -1290,6 +1414,21 @@ class DaemonApp:
             raise DaemonAppError("Daemon app is not initialized with a tool run recorder.")
         return self.tool_run_recorder
 
+    def _live_tool_permission_policy(self) -> ToolPermissionPolicy:
+        """Tool-permission policy for the current turn: the startup policy (TOML
+        seed) overlaid with the panel's live settings. Rebuilt per turn so panel
+        changes take effect on the next turn without a restart."""
+
+        try:
+            settings = self.get_settings()
+        except Exception:  # a settings read must never harden into a turn failure
+            get_logger(__name__).warning(
+                "Live settings read failed; using startup permission policy.",
+                exc_info=True,
+            )
+            return self.tool_permission_policy
+        return _policy_with_settings_overlay(self.tool_permission_policy, settings)
+
     def _create_turn_orchestrator(self) -> TurnOrchestrator:
         speech_pipeline = None
         if self.config.voice.enabled and self.config.voice.speak_responses:
@@ -1310,7 +1449,7 @@ class DaemonApp:
             approval_gate=self._approval_gate_for_tool_requests(
                 source=RequestSource.MODEL_ORIGINATED
             ),
-            tool_permission_policy=self.tool_permission_policy,
+            tool_permission_policy=self._live_tool_permission_policy(),
             speech_pipeline=speech_pipeline,
         )
 
@@ -1369,7 +1508,7 @@ class DaemonApp:
                 "error": "Approval payload has no valid request source; execution is blocked.",
             }
         tool = self.tool_registry.get(tool_request.tool_name)
-        permission = self.tool_permission_policy.decide(
+        permission = self._live_tool_permission_policy().decide(
             tool.risk,
             source=request_source,
             tool_name=tool.name,
@@ -1550,6 +1689,88 @@ def create_daemon_app(
     )
 
 
+def _setting_bool(settings: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = settings.get(key)
+    return value if isinstance(value, bool) else default
+
+
+def _setting_text(settings: Mapping[str, Any], key: str, default: str) -> str:
+    value = settings.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return default
+
+
+def _policy_with_settings_overlay(
+    base: ToolPermissionPolicy,
+    settings: Mapping[str, Any],
+) -> ToolPermissionPolicy:
+    """Rebuild the tool-permission policy from the panel's live settings.
+
+    ``base`` is the startup policy — a full reflection of the TOML config.
+    The panel writes to the settings table under ``security.*``; those values
+    are overlaid here so the panel is the single source of truth. Malformed or
+    missing values fall back to the base/config default (fail-closed).
+
+    Only the operator-facing knobs are overlaid. Containment (approved_roots,
+    trusted_scopes) and voice auto-approval stay as configured — the panel does
+    not edit them. ``destructive`` keeps its own gate inside the policy, so even
+    full auto-run never turns a destructive tool into ALLOW.
+    """
+
+    return ToolPermissionPolicy(
+        destructive_tools_enabled=_setting_bool(
+            settings, "security.destructive_tools_enabled", base.destructive_tools_enabled
+        ),
+        approved_roots=base.approved_roots,
+        trusted_scopes=base.trusted_scopes,
+        voice_auto_approve=base.voice_auto_approve,
+        auto_approve_mode=_setting_auto_approve_mode(
+            settings, "security.auto_approve_mode", base.auto_approve_mode
+        ),
+        require_approval_for_shell=_setting_bool(
+            settings, "security.require_approval_for_shell", base.require_approval_for_shell
+        ),
+        require_approval_for_file_write=_setting_bool(
+            settings,
+            "security.require_approval_for_file_write",
+            base.require_approval_for_file_write,
+        ),
+        require_approval_for_network=_setting_bool(
+            settings, "security.require_approval_for_network", base.require_approval_for_network
+        ),
+        require_approval_for_ui=_setting_bool(
+            settings, "security.require_approval_for_ui", base.require_approval_for_ui
+        ),
+        require_approval_for_terminal=_setting_bool(
+            settings, "security.require_approval_for_terminal", base.require_approval_for_terminal
+        ),
+        require_approval_for_memory=_setting_bool(
+            settings, "security.require_approval_for_memory", base.require_approval_for_memory
+        ),
+    )
+
+
+_AUTO_APPROVE_MODES = frozenset({"off", "model", "voice", "all"})
+
+
+def _setting_auto_approve_mode(
+    settings: Mapping[str, Any], key: str, default: str
+) -> str:
+    """Overlay the auto-approve mode only when it is a known value.
+
+    An unrecognized string must not silently half-work as "off" — it is
+    rejected here with a log and the base/config mode stays in force."""
+
+    value = _setting_text(settings, key, default)
+    if value in _AUTO_APPROVE_MODES:
+        return value
+    get_logger(__name__).warning(
+        "Ignoring unknown %s value %r; keeping %r.", key, value, default
+    )
+    return default
+
+
 def create_daemon_app_from_config(
     config: JarvisConfig,
     *,
@@ -1597,12 +1818,22 @@ def create_daemon_app_from_config(
     terminal_bridge = create_terminal_bridge(config.security.terminal_backend)
     tool_registry.register(TerminalReadScreenTool(terminal_bridge))
     tool_registry.register(TerminalPasteTool(terminal_bridge))
+    # The startup policy fully reflects the TOML config. It is the SEED: each
+    # turn overlays the panel's settings on top (see _live_tool_permission_policy),
+    # so what the operator sets in the panel wins on the next turn without a
+    # restart — the same live-settings pattern the model/effort picker uses.
     tool_permission_policy = ToolPermissionPolicy(
         destructive_tools_enabled=config.security.destructive_tools_enabled,
         approved_roots=approved_roots,
         trusted_scopes=config.security.trusted_scopes,
         voice_auto_approve=config.security.voice_auto_approve_tools,
         auto_approve_mode=config.security.auto_approve_mode,
+        require_approval_for_shell=config.security.require_approval_for_shell,
+        require_approval_for_file_write=config.security.require_approval_for_file_write,
+        require_approval_for_network=config.security.require_approval_for_network,
+        require_approval_for_ui=config.security.require_approval_for_ui,
+        require_approval_for_terminal=config.security.require_approval_for_terminal,
+        require_approval_for_memory=config.security.require_approval_for_memory,
     )
 
     if not initialize:

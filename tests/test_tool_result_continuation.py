@@ -160,6 +160,262 @@ def test_execute_approved_one_shot_tool_continues_original_awaiting_turn(tmp_pat
         app.close()
 
 
+def test_shell_tool_auto_runs_when_panel_disables_shell_approval(tmp_path: Path) -> None:
+    """Panel toggle off → a model shell tool runs AND continues in a single
+    handle_text_input call, with no manual approval and no turn left awaiting."""
+
+    tool = RecordingContinuationTool()  # risk = shell_read
+    adapter = SequenceBrainAdapter(
+        model_tool_response(tool.name, {"question": "status"}),
+        BrainResponse(text="Answer built from the tool result.", model="sequence-model"),
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(tool)
+    try:
+        app.start()
+        app.update_settings({"security.require_approval_for_shell": False})
+
+        result = app.handle_text_input(text="Check the status")
+
+        assert tool.calls == [{"question": "status"}]
+        assert table_count(app, "tool_runs") == 1
+        stored = turn_row(app, result.turn_id)
+        assert stored["status"] == TurnStatus.FINISHED
+        assert stored["final_text"] == "Answer built from the tool result."
+        assert result.final_text == "Answer built from the tool result."
+    finally:
+        app.close()
+
+
+def test_shell_tool_still_awaits_when_shell_approval_enabled(tmp_path: Path) -> None:
+    """Default (approval on) is unchanged: the tool does not auto-run — it waits
+    for a human approval, exactly as before."""
+
+    tool = RecordingContinuationTool()
+    adapter = SequenceBrainAdapter(
+        model_tool_response(tool.name, {"question": "status"}),
+        BrainResponse(text="must not run yet", model="sequence-model"),
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(tool)
+    try:
+        app.start()
+
+        result = app.handle_text_input(text="Check the status")
+
+        assert tool.calls == []
+        assert len(result.approvals) == 1
+        stored = turn_row(app, result.turn_id)
+        assert stored["status"] == TurnStatus.AWAITING_APPROVAL
+    finally:
+        app.close()
+
+
+def test_destructive_tool_never_auto_runs_even_in_full_auto(tmp_path: Path) -> None:
+    """The one floor: with everything switched to auto-run, a destructive tool
+    still creates an approval and waits for a human — it never auto-executes."""
+
+    class DestructiveTool(Tool):
+        name = "wipe"
+        description = "irreversible"
+        risk = "destructive"
+        input_schema = {"type": "object"}
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def run(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+            self.calls.append(dict(arguments))
+            return {"wiped": True}
+
+    tool = DestructiveTool()
+    adapter = SequenceBrainAdapter(
+        model_tool_response(tool.name, {"target": "everything"}),
+        BrainResponse(text="must not run", model="sequence-model"),
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(tool)
+    try:
+        app.start()
+        app.update_settings(
+            {
+                "security.auto_approve_mode": "all",
+                "security.destructive_tools_enabled": True,
+                "security.require_approval_for_shell": False,
+                "security.require_approval_for_file_write": False,
+                "security.require_approval_for_network": False,
+            }
+        )
+
+        result = app.handle_text_input(text="wipe it")
+
+        assert tool.calls == []
+        assert len(result.approvals) == 1
+        stored = turn_row(app, result.turn_id)
+        assert stored["status"] == TurnStatus.AWAITING_APPROVAL
+    finally:
+        app.close()
+
+
+def test_cancelled_voice_turn_keeps_one_durable_conversation(tmp_path: Path) -> None:
+    """The real bug Ozzy hit: a barge-in/echo-CANCELLED voice turn used to spawn
+    a fresh chat for the next utterance (the rolling id was never saved because
+    the turn raised). With one durable conversation, a cancelled turn changes
+    nothing — the next utterance lands in the same chat."""
+
+    from jarvis.brain import BrainGenerationCancelled
+    from jarvis.turns.orchestrator import TurnCancelledError
+
+    adapter = SequenceBrainAdapter(
+        BrainGenerationCancelled("barge-in killed it"),  # turn 1 cancelled
+        BrainResponse(text="ok", model="sequence-model"),  # turn 2 finishes
+    )
+    app = make_app(tmp_path, adapter)
+    try:
+        app.start()
+
+        with pytest.raises(TurnCancelledError):
+            app._start_voice_turn("raz")  # cancelled — must NOT start a new chat
+        r2 = app._start_voice_turn("dwa")
+
+        assert app.conn is not None
+        convs = {
+            row[0]
+            for row in app.conn.execute(
+                "SELECT DISTINCT conversation_id FROM turns WHERE source='voice'"
+            )
+        }
+        assert len(convs) == 1  # cancelled + finished share ONE conversation
+        assert r2.conversation_id in convs
+    finally:
+        app.close()
+
+
+def test_voice_conversation_id_is_durable_across_restart(tmp_path: Path) -> None:
+    """One conversation, forever: a restarted daemon reuses the SAME voice
+    conversation (persisted in settings), never a fresh one."""
+
+    app1 = make_app(tmp_path, SequenceBrainAdapter(BrainResponse(text="a", model="sequence-model")))
+    app1.start()
+    first = app1._resolve_voice_conversation_id()
+    app1.close()
+
+    # Simulated restart: a new DaemonApp on the SAME database.
+    app2 = make_app(tmp_path, SequenceBrainAdapter(BrainResponse(text="b", model="sequence-model")))
+    app2.start()
+    second = app2._resolve_voice_conversation_id()
+    app2.close()
+
+    assert first == second
+
+
+def test_voice_turns_roll_into_one_conversation(tmp_path: Path) -> None:
+    """The reported bug: each PTT utterance made a new chat. Consecutive voice
+    turns must roll into ONE conversation (rolling _voice_conversation_id)."""
+
+    adapter = SequenceBrainAdapter(
+        BrainResponse(text="raz", model="sequence-model"),
+        BrainResponse(text="dwa", model="sequence-model"),
+        BrainResponse(text="trzy", model="sequence-model"),
+    )
+    app = make_app(tmp_path, adapter)
+    try:
+        app.start()
+        r1 = app._start_voice_turn("pierwsza wiadomosc")
+        r2 = app._start_voice_turn("druga wiadomosc")
+        r3 = app._start_voice_turn("trzecia wiadomosc")
+
+        assert r1.conversation_id == r2.conversation_id == r3.conversation_id
+    finally:
+        app.close()
+
+
+def test_voice_conversation_survives_auto_run_and_a_throwing_auto_run(tmp_path: Path) -> None:
+    """Even when a tool auto-runs (and even if the auto-run pass blows up), the
+    voice conversation id must still be saved so the next utterance continues."""
+
+    tool = RecordingContinuationTool()  # shell_read → auto-runs when approval off
+    adapter = SequenceBrainAdapter(
+        model_tool_response(tool.name, {"q": "1"}),
+        BrainResponse(text="ciag 1", model="sequence-model"),
+        model_tool_response(tool.name, {"q": "2"}),
+        BrainResponse(text="ciag 2", model="sequence-model"),
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(tool)
+    try:
+        app.start()
+        app.update_settings({"security.require_approval_for_shell": False})
+
+        r1 = app._start_voice_turn("pierwsza")
+
+        # Force the auto-run pass to blow up on the NEXT turn: the wrapper must
+        # swallow it and still return a result carrying the conversation id.
+        def boom(_result):
+            raise RuntimeError("auto-run exploded")
+
+        app._auto_run_allowed_tools_inner = boom  # type: ignore[method-assign]
+        r2 = app._start_voice_turn("druga")
+
+        assert r1.conversation_id == r2.conversation_id
+        assert r2.conversation_id  # not None/empty
+    finally:
+        app.close()
+
+
+def test_auto_run_skips_a_malformed_approval_and_still_runs_the_rest(tmp_path: Path) -> None:
+    """One rotten approval payload must not abort the whole auto-run pass:
+    the exception is contained per approval and the remaining ALLOW tools
+    still execute (review 2026-07-09, Important #4)."""
+
+    bad_tool = RecordingContinuationTool(name="bad_probe")
+    good_tool = RecordingContinuationTool(name="good_probe")
+    adapter = SequenceBrainAdapter(
+        BrainResponse(
+            text="Need two tools.",
+            model="sequence-model",
+            tool_calls=[
+                BrainToolCall(id="c-bad", name=bad_tool.name, arguments={}),
+                BrainToolCall(id="c-good", name=good_tool.name, arguments={}),
+            ],
+        ),
+        BrainResponse(text="ciag po dobrym", model="sequence-model"),
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(bad_tool)
+    app.tool_registry.register(good_tool)
+    try:
+        app.start()
+
+        # Approval ON: both tool calls land as pending approvals.
+        result = app.handle_text_input(text="Run both tools")
+        assert len(result.approvals) == 2
+
+        # Corrupt the FIRST approval's payload (arguments -> string), keeping a
+        # valid source so the malformed path raises inside the allow check.
+        first_id = str(result.approvals[0]["id"])
+        assert app.conn is not None
+        row = app.conn.execute(
+            "SELECT payload_json FROM approvals WHERE id = ?", (first_id,)
+        ).fetchone()
+        payload = json.loads(row[0])
+        payload["arguments"] = "not-a-mapping"
+        with app.conn:
+            app.conn.execute(
+                "UPDATE approvals SET payload_json = ? WHERE id = ?",
+                (json.dumps(payload), first_id),
+            )
+
+        # Flip the switch and re-run the auto-run pass over the same result.
+        app.update_settings({"security.require_approval_for_shell": False})
+        app._auto_run_allowed_tools(result)
+
+        assert bad_tool.calls == []  # malformed: skipped, left for a human
+        assert good_tool.calls == [{}]  # the rest of the pass still ran
+    finally:
+        app.close()
+
+
 def test_duplicate_execute_does_not_duplicate_tool_run_or_continuation(tmp_path: Path) -> None:
     tool = RecordingContinuationTool()
     adapter = SequenceBrainAdapter(

@@ -107,12 +107,32 @@ class ToolPermissionPolicy:
         trusted_scopes: Iterable[TrustedScope] | None = None,
         voice_auto_approve: bool = False,
         auto_approve_mode: str = "off",
+        require_approval_for_shell: bool = True,
+        require_approval_for_file_write: bool = True,
+        require_approval_for_network: bool = True,
+        require_approval_for_ui: bool = True,
+        require_approval_for_terminal: bool = True,
+        require_approval_for_memory: bool = True,
     ):
         self.destructive_tools_enabled = destructive_tools_enabled
         self.approved_roots = tuple(_normalize_root(root) for root in approved_roots or ())
         self.trusted_scopes = tuple(trusted_scopes or ())
         self.voice_auto_approve = voice_auto_approve
         self.auto_approve_mode = auto_approve_mode  # "off", "model", "voice", "all"
+        # Per-class approval switches — the panel's "require approval for
+        # shell / file / network" toggles. These are the PRIMARY, single knob:
+        # when a class is switched off, every attended source (user AND model)
+        # runs it without an approval click. Unattended AUTO_SOURCES stay
+        # blocked; destructive keeps its own gate. Default True preserves the
+        # fail-closed posture when nothing is configured.
+        self.require_approval_for_shell = require_approval_for_shell
+        self.require_approval_for_file_write = require_approval_for_file_write
+        self.require_approval_for_network = require_approval_for_network
+        self.require_approval_for_ui = require_approval_for_ui
+        self.require_approval_for_terminal = require_approval_for_terminal
+        # memory_write defaults to human promotion (ADR-009); switching this
+        # off is the operator explicitly overriding that default for himself.
+        self.require_approval_for_memory = require_approval_for_memory
 
     def _is_model_trusted_for_tool(self, tool_name: str, payload: Mapping[str, Any] | None) -> bool:
         """Check if a MODEL_ORIGINATED request is within a trusted scope for the tool."""
@@ -152,6 +172,28 @@ class ToolPermissionPolicy:
             )
         # For network, no path to check — conservative: require explicit config
         return False
+
+    def _class_requires_approval(self, risk: str) -> bool:
+        """Whether an attended request of this mutation class still needs an
+        approval click, given the operator's per-class switches.
+
+        Every switchable mutation class has a panel grant: shell, file_write,
+        network, ui_act, terminal_write and memory_write. ``destructive`` is
+        deliberately NOT here — it keeps its own always-gated branch."""
+
+        if risk in {PermissionClass.SHELL_READ, PermissionClass.SHELL_WRITE}:
+            return self.require_approval_for_shell
+        if risk == PermissionClass.FILE_WRITE:
+            return self.require_approval_for_file_write
+        if risk == PermissionClass.NETWORK:
+            return self.require_approval_for_network
+        if risk == PermissionClass.UI_ACT:
+            return self.require_approval_for_ui
+        if risk == PermissionClass.TERMINAL_WRITE:
+            return self.require_approval_for_terminal
+        if risk == PermissionClass.MEMORY_WRITE:
+            return self.require_approval_for_memory
+        return True
 
     def decide(
         self,
@@ -245,6 +287,18 @@ class ToolPermissionPolicy:
                     normalized_risk,
                     f"{tool_name} is {normalized_risk} and unattended {normalized_source} "
                     "requests may not mutate anything.",
+                    source=normalized_source,
+                )
+            # Primary knob: the operator's per-class approval switch. When the
+            # panel toggle for this class is off, every attended source — user
+            # AND model — runs it without an approval click. This is what makes
+            # the panel checkbox the single source of truth. AUTO_SOURCES are
+            # already blocked above; destructive is handled in its own branch.
+            if not self._class_requires_approval(normalized_risk):
+                return _allow(
+                    normalized_risk,
+                    f"{tool_name} is {normalized_risk} but approval for this class is "
+                    "disabled by policy.",
                     source=normalized_source,
                 )
             # Auto-approve mode: auto-approve model-originated tools based on config.

@@ -357,10 +357,18 @@ class TrustedScope:
 class SecurityConfig:
     localhost_only: bool = True
     api_token_required: bool = True
-    require_approval_for_shell: bool = True
-    require_approval_for_file_write: bool = True
-    require_approval_for_network: bool = True
-    destructive_tools_enabled: bool = False
+    # Product defaults are OPEN (Ozzy's decree 2026-07-09): Jarvis on his own
+    # machine runs every attended tool class without an approval click. The
+    # panel grants flip any class back to ask-first; the code floor stays:
+    # destructive always takes one click, unattended sources never mutate.
+    # (ToolPermissionPolicy keeps conservative defaults for direct/library use.)
+    require_approval_for_shell: bool = False
+    require_approval_for_file_write: bool = False
+    require_approval_for_network: bool = False
+    require_approval_for_ui: bool = False
+    require_approval_for_terminal: bool = False
+    require_approval_for_memory: bool = False
+    destructive_tools_enabled: bool = True
     # File-tool containment roots. Empty means "no roots configured": the
     # daemon then falls back to its runtime home only — never to the whole
     # filesystem (fail-closed, docs/SECURITY_MODEL.md).
