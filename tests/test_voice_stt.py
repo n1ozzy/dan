@@ -36,6 +36,16 @@ def mlx_config(tmp_path: Path, **voice_overrides) -> SimpleNamespace:
     )
 
 
+@pytest.fixture(autouse=True)
+def _mlx_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Per the module docstring the MLX engine's real model call is patched in
+    # every test, so the heavy mlx_whisper package need not be installed. The
+    # construction guard (_mlx_whisper_available) would otherwise block every
+    # engine test in environments without it (CI / this venv). Force it True;
+    # the one test that exercises the missing-package path re-patches to False.
+    monkeypatch.setattr("jarvis.voice.stt._mlx_whisper_available", lambda: True)
+
+
 # --- build_stt_engine ---------------------------------------------------------
 
 

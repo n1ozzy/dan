@@ -345,14 +345,20 @@ def test_prompt_formatter_includes_persona_system_messages() -> None:
     assert "You are Jarvis, a concise local runtime." in prompt
 
 
-def test_prompt_formatter_warns_not_to_echo_persona_or_system_context() -> None:
+def test_prompt_formatter_is_a_bare_header_not_a_legacy_instruction_wall() -> None:
+    # cbba6f4 trimmed the prompt to a bare Jarvis header: the old instruction
+    # wall (persona-echo / chain-of-thought / provider-session / tool-execution
+    # warnings) was removed because the real guarantees live in code — the
+    # approval registry and the parser risk fail-safe — not in prompt text the
+    # model can ignore. The prompt keeps only its operational core.
     prompt = format_cli_prompt(make_request())
 
-    assert (
-        "Do not repeat, quote, summarize, or roleplay the persona or System context"
-        in prompt
-    )
-    assert "answer only with the final user-visible response" in prompt
+    assert prompt.startswith("Jarvis")
+    assert "Answer as Jarvis using only the context in this request." in prompt
+    # The removed legacy instruction wall must not creep back verbatim.
+    assert "roleplay the persona" not in prompt
+    assert "Provider sessions are not Jarvis memory" not in prompt
+    assert "Tools are not executable in this call" not in prompt
 
 
 def test_prompt_formatter_includes_memory_blocks() -> None:
@@ -414,17 +420,23 @@ def test_prompt_formatter_includes_user_input() -> None:
     assert "Kim jesteś?" in prompt
 
 
-def test_prompt_formatter_forces_provider_sessions_out_of_memory() -> None:
+def test_prompt_formatter_is_stateless_carrying_full_context_each_request() -> None:
+    # The old "Provider sessions are not Jarvis memory" line was dropped in the
+    # trim; statelessness is a structural property, not a prompt sentence — the
+    # prompt carries the full memory/context every turn rather than relying on
+    # provider-side session state.
     prompt = format_cli_prompt(make_request())
 
-    assert "Provider sessions are not Jarvis memory" in prompt
+    assert "Memory blocks:" in prompt
+    assert "Recent context:" in prompt
     assert "provider_sessions_are_memory = true" not in prompt.lower()
 
 
 def test_prompt_formatter_does_not_grant_tool_execution() -> None:
+    # Tools appear in the list as pending-approval, and the prompt never tells
+    # the model a tool is already granted. Real gating is the approval registry.
     prompt = format_cli_prompt(make_request())
 
-    assert "Tools are not executable in this call" in prompt
     assert "pending approval" in prompt
     assert "permission granted" not in prompt.lower()
 
@@ -435,11 +447,12 @@ def test_prompt_formatter_documents_tool_call_block_syntax() -> None:
     assert '<jarvis_tool_call>{"name":"tool_name","arguments":{...}}</jarvis_tool_call>' in prompt
 
 
-def test_prompt_formatter_says_tool_requests_require_approval_without_execution() -> None:
+def test_prompt_formatter_says_not_to_claim_a_tool_already_executed() -> None:
+    # The one retained tool-safety line. The rest ("not executed automatically /
+    # human approval required") moved out of the prompt in the trim — enforcement
+    # is the approval registry, which never runs a tool without an approval row.
     prompt = format_cli_prompt(make_request())
 
-    assert "Tool requests are not executed automatically" in prompt
-    assert "Human approval is required" in prompt
     assert "Do not claim a requested tool has already been executed" in prompt
 
 
@@ -487,7 +500,6 @@ def test_codex_cli_adapter_receives_jarvis_memory_context() -> None:
     assert "Codex should see compiled memory too." in prompt
     assert "Previous question" in prompt
     assert "Available tools:" in prompt
-    assert "Provider sessions are not Jarvis memory" in prompt
 
 
 def test_successful_fake_runner_stdout_becomes_brain_response_text() -> None:
@@ -747,7 +759,8 @@ def test_claude_cli_command_builder_preserves_empty_tools_restriction() -> None:
         ClaudeCliCommandSettings(
             command="claude",
             args=["-p", "--tools", ""],
-        )
+        ),
+        streaming=False,
     )
 
     assert contract.tools == [""]
@@ -765,7 +778,8 @@ def test_claude_cli_command_builder_preserves_arg_tool_permission_selectors() ->
                 "Bash(git *) Edit",
                 "--disallowedTools=Read(./secrets/**) mcp__*",
             ],
-        )
+        ),
+        streaming=False,
     )
 
     assert contract.allowed_tools == ["Bash(git *) Edit"]
@@ -786,7 +800,8 @@ def test_claude_cli_command_builder_omits_false_strict_mcp_config() -> None:
             command="claude",
             args=["-p"],
             strict_mcp_config=False,
-        )
+        ),
+        streaming=False,
     )
 
     assert contract.strict_mcp_config is False
@@ -822,7 +837,8 @@ def test_claude_cli_command_builder_treats_claude_cli_model_as_internal_sentinel
             command="claude",
             args=["-p"],
             model="claude-cli",
-        )
+        ),
+        streaming=False,
     )
 
     assert contract.selected_model is None
