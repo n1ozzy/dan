@@ -55,9 +55,12 @@ class BrainManager:
         # Priority order for default adapter (codex_cli intentionally excluded)
         priority = ["claude_cli", "groq", "claude_cli_warm"]
 
-        # Register Claude CLI adapter
-        if detected["claude_cli"].available:
-            claude_config = getattr(brain_config, "claude_cli", None)
+        # Register Claude CLI adapter. This branch is Claude-CLI-first: config can
+        # declare the adapter even when this test/runtime machine cannot detect the
+        # binary yet. Actual execution still fails clearly if the command is missing.
+        claude_config = getattr(brain_config, "claude_cli", None)
+        claude_explicit = bool(getattr(claude_config, "enabled", False)) if claude_config else False
+        if detected["claude_cli"].available or claude_explicit or config_default == "claude_cli":
             if claude_config is None:
                 from types import SimpleNamespace
                 claude_config = SimpleNamespace(

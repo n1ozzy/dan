@@ -220,9 +220,6 @@ TOOLS_INTERNET_APPLY_KEYS = frozenset(
         "security.require_approval_for_terminal",
         "security.require_approval_for_memory",
         "security.destructive_tools_enabled",
-        "security.voice_auto_approve_tools",
-        "security.auto_approve_mode",
-        "security.approved_roots",
         "destructive_tools_enabled",
         "provider_tools_enabled",
     }
@@ -239,13 +236,8 @@ LIVE_TOOL_POLICY_APPLY_KEYS = frozenset(
         "security.require_approval_for_terminal",
         "security.require_approval_for_memory",
         "security.destructive_tools_enabled",
-        "security.voice_auto_approve_tools",
-        "security.auto_approve_mode",
-        "security.approved_roots",
     }
 )
-
-AUTO_APPROVE_MODES = frozenset({"off", "model", "voice", "all"})
 BRAIN_NEXT_TURN_APPLY_KEYS = frozenset({"brain.model", "brain.effort"})
 BRAIN_PROVIDER_SESSION_CHANGE_KEYS = frozenset({"brain.provider", "brain.adapter"})
 BRAIN_REQUIRES_NEW_SESSION_KEYS = BRAIN_NEXT_TURN_APPLY_KEYS | BRAIN_PROVIDER_SESSION_CHANGE_KEYS
@@ -2181,38 +2173,15 @@ def _apply_tools_internet_settings(
     # lands the live part (the error below then reports only the blocked keys).
     applied: list[str] = []
     live_keys = sorted(key for key in tool_keys if key in LIVE_TOOL_POLICY_APPLY_KEYS)
-    live_updates: dict[str, Any] = {}
     for key in live_keys:
-        value = settings[key]
-        if key == "security.auto_approve_mode":
-            if not isinstance(value, str) or value not in AUTO_APPROVE_MODES:
-                raise RuntimeSettingsApplyError(
-                    f"{key} must be one of {', '.join(sorted(AUTO_APPROVE_MODES))}.",
-                    rejected_keys=[key],
-                )
-            live_updates[key] = value
-            continue
-        if key == "security.approved_roots":
-            if isinstance(value, str):
-                roots = [value]
-            elif isinstance(value, list) and all(isinstance(item, str) for item in value):
-                roots = value
-            else:
-                raise RuntimeSettingsApplyError(
-                    f"{key} must be a string or a list of strings.",
-                    rejected_keys=[key],
-                )
-            live_updates[key] = [root for root in (str(item).strip() for item in roots) if root]
-            continue
-        if not isinstance(value, bool):
+        if not isinstance(settings[key], bool):
             raise RuntimeSettingsApplyError(
                 f"{key} must be a boolean.",
                 rejected_keys=[key],
             )
-        live_updates[key] = value
-    if live_updates:
-        app.update_settings(live_updates)
-        applied.extend(live_updates)
+    if live_keys:
+        app.update_settings({key: settings[key] for key in live_keys})
+        applied.extend(live_keys)
     tool_keys = [key for key in tool_keys if key not in LIVE_TOOL_POLICY_APPLY_KEYS]
     if not tool_keys:
         return applied
