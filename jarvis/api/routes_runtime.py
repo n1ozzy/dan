@@ -5610,13 +5610,15 @@ def _build_voice_capabilities(
             if model_id
         )
     )
-    # The configured language wins first place so a non-standard code still shows.
+    # Operator decree (Ozzy 2026-07-09): the picker offers ONLY the languages
+    # Jarvis actually speaks — Polish and English. Whisper accepts ~100 codes
+    # (WHISPER_LANGUAGE_CODES stays as the validation contract), but a
+    # 100-entry select is noise. The configured value wins first place so a
+    # hand-set non-standard code still shows.
     configured_stt_language = str(app.config.voice.stt_language or "").strip()
     stt_language_codes = list(
         dict.fromkeys(
-            code
-            for code in [configured_stt_language, *WHISPER_LANGUAGE_CODES]
-            if code
+            code for code in [configured_stt_language, "pl", "en"] if code
         )
     )
     stt_providers.append(
@@ -6403,7 +6405,21 @@ def _build_settings_preview(
             editable_now=bool(stt_model_values),
             editable_later=True,
         ),
-        "language": _preview_field(section=stt_section, field_id="language", label="Language", current=app.config.voice.stt_language, status="ok" if app.config.voice.stt_language else "missing", source="config", requires_restart=True, editable_later=True),
+        "language": _preview_field(
+            section=stt_section,
+            field_id="language",
+            label="Language",
+            current=app.config.voice.stt_language,
+            status="ok" if app.config.voice.stt_language else "missing",
+            source="config",
+            # Without allowed_values the panel rendered a one-option select
+            # (live incident 2026-07-09). The list is the operator's language
+            # choice (pl/en), sourced from the voice capability graph.
+            allowed_values=list(voice_capabilities.get("stt_languages", [])),
+            requires_restart=True,
+            editable_now=bool(voice_capabilities.get("stt_languages")),
+            editable_later=True,
+        ),
         "transcription_ready": _preview_field(section=stt_section, field_id="transcription_ready", label="Transcription ready", current=voice_capabilities["stt_readiness"] == "ok", status=voice_capabilities["stt_readiness"], source="runtime_detected", dependencies=["voice_stt.stt_provider", "voice_stt.stt_model"]),
         "endpointing_support": _preview_field(section=stt_section, field_id="endpointing_support", label="Endpointing support", current=bool((stt_provider or {}).get("endpointing_support")), status="ok", source="runtime_detected", dependencies=["voice_stt.stt_provider"]),
         "latest_stt_error": _preview_field(section=stt_section, field_id="latest_stt_error", label="Latest STT error", current=_runtime_projection_value(stt_projection.get("latest_safe_error")), status="ok" if not _runtime_projection_value(stt_projection.get("latest_safe_error")) else "invalid", source="runtime_detected"),
