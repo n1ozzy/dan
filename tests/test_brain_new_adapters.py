@@ -178,15 +178,17 @@ class TestBrainManagerRegistration:
         config = SimpleNamespace(
             brain=SimpleNamespace(default_model="mock-local")
         )
-        # No explicit claude_cli, codex_cli configs - let auto-detection work
+        # No explicit claude_cli config - let auto-detection work
 
-        # Auto-detection should find claude_cli, codex_cli
+        # Auto-detection should find claude_cli
         manager = BrainManager.from_config(config)
         names = manager.adapter_names()
 
-        # These should always be detected if binaries exist
+        # claude_cli should always be detected if the binary exists.
         assert "claude_cli" in names
-        assert "codex_cli" in names
+        # Codex CLI is intentionally never registered (owner decree: Claude
+        # Code only), even if the binary is installed.
+        assert "codex_cli" not in names
 
     def test_manager_uses_config_when_provided(self):
         """Test that explicit config overrides auto-detection for default adapter."""

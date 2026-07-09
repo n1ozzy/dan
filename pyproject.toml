@@ -30,6 +30,12 @@ voice = [
 panel = [
   "pyobjc-framework-Cocoa==12.2.1",
   "pyobjc-framework-WebKit==12.2.1",
+  # AXIsProcessTrusted: detect (not silently swallow) a missing Accessibility
+  # grant, without which the global PTT hotkey monitor never fires.
+  # ApplicationServices imports CoreText imports Quartz, so pin the whole
+  # chain — the AX symbol is unreachable if any link is missing.
+  "pyobjc-framework-ApplicationServices==12.2.1",
+  "pyobjc-framework-Quartz==12.2.1",
 ]
 
 [project.scripts]

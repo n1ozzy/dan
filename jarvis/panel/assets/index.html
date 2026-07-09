@@ -174,10 +174,6 @@
                 <h3 id="voiceDoctorHeading">Voice diagnostics</h3>
                 <div id="voiceDoctorList" class="list compact-list"></div>
               </div>
-              <div class="doctor-panel" aria-labelledby="providerDoctorHeading">
-                <h3 id="providerDoctorHeading">Provider diagnostics</h3>
-                <div id="providerDoctorList" class="list compact-list"></div>
-              </div>
             </div>
           </details>
 
@@ -311,19 +307,12 @@
             <button id="restartJarvisButton" type="button" class="ghost">Restart Jarvisa</button>
           </div>
 
-          <div class="sys-section active-settings-section" aria-labelledby="activeBrainSettingsHeading">
-            <div class="section-head">
+          <details class="sys-section active-settings-section collapsible-card" open aria-labelledby="activeBrainSettingsHeading">
+            <summary class="section-head">
               <div>
-                <h2 id="activeBrainSettingsHeading">Mózg / Dostawca</h2>
-                <p class="muted section-desc">
-                  Aktywny dostawca, wybór z podglądu, model, poziom wysiłku, komenda, uprawnienia, narzędzia i streaming.
-                </p>
+                <h2 id="activeBrainSettingsHeading">Mózg</h2>
               </div>
-              <div class="mission-actions">
-                <button id="resetBrainPreviewButton" type="button" class="ghost">Reset podglądu</button>
-                <button id="applyBrainSettingsButton" type="button">Zastosuj mózg</button>
-              </div>
-            </div>
+            </summary>
             <div class="settings-control-grid">
               <label class="field-label">
                 <span>Dostawca</span>
@@ -337,29 +326,17 @@
                 <span>Poziom wysiłku</span>
                 <select id="activeBrainEffortSelect" aria-label="Poziom wysiłku mózgu"></select>
               </label>
-              <label class="inline-toggle">
-                <input id="activeBrainFastToggle" type="checkbox" />
-                <span>Tryb szybki</span>
-              </label>
             </div>
-            <div id="brainSettingsSummaryList" class="list compact-list"></div>
             <p id="brainApplyStatus" class="muted apply-status" aria-live="polite"></p>
-          </div>
+          </details>
 
-          <div class="sys-section active-settings-section" aria-labelledby="voiceTtsSettingsHeading">
-            <div class="section-head">
+          <details class="sys-section active-settings-section collapsible-card" aria-labelledby="voiceTtsSettingsHeading">
+            <summary class="section-head">
               <div>
                 <h2 id="voiceTtsSettingsHeading">Głos / TTS</h2>
                 <span id="voiceHeading" hidden>Głos / TTS</span>
-                <p class="muted section-desc">
-                  Prawda o syntezie mowy. Zmiany dostawcy, modelu i głosu zwykle wymagają restartu.
-                </p>
               </div>
-              <div class="mission-actions">
-                <button id="resetTtsPreviewButton" type="button" class="ghost">Reset podglądu</button>
-                <button id="applyTtsSettingsButton" type="button">Zapisz TTS</button>
-              </div>
-            </div>
+            </summary>
             <div class="settings-control-grid">
               <label class="inline-toggle">
                 <input id="voiceSpeakResponsesToggle" type="checkbox" />
@@ -390,24 +367,16 @@
                 <input id="voiceSpeedInput" type="number" step="0.05" min="0.5" max="2" />
               </label>
             </div>
-            <div id="voiceTtsStatusList" class="list compact-list"></div>
             <p id="ttsApplyStatus" class="muted apply-status" aria-live="polite"></p>
             <p id="voiceApplyStatus" class="muted apply-status" hidden aria-live="polite"></p>
-          </div>
+          </details>
 
-          <div class="sys-section active-settings-section" aria-labelledby="voiceSttSettingsHeading">
-            <div class="section-head">
+          <details class="sys-section active-settings-section collapsible-card" aria-labelledby="voiceSttSettingsHeading">
+            <summary class="section-head">
               <div>
-                <h2 id="voiceSttSettingsHeading">Głos / STT</h2>
-                <p class="muted section-desc">
-                  Gotowość transkrypcji bez aktywowania mikrofonu i bez ładowania modelu.
-                </p>
+                <h2 id="voiceSttSettingsHeading">Nasłuch (STT)</h2>
               </div>
-              <div class="mission-actions">
-                <button id="resetSttPreviewButton" type="button" class="ghost">Reset podglądu</button>
-                <button id="applySttSettingsButton" type="button">Zapisz STT</button>
-              </div>
-            </div>
+            </summary>
             <div class="settings-control-grid">
               <label class="field-label">
                 <span>Dostawca STT</span>
@@ -422,22 +391,15 @@
                 <select id="voiceSttLanguageSelect" aria-label="Język STT"></select>
               </label>
             </div>
-            <div id="voiceSttStatusList" class="list compact-list"></div>
             <p id="sttApplyStatus" class="muted apply-status" aria-live="polite"></p>
-          </div>
+          </details>
 
-          <div class="sys-section active-settings-section" aria-labelledby="activePttSettingsHeading">
-            <div class="section-head">
+          <details class="sys-section active-settings-section collapsible-card" aria-labelledby="activePttSettingsHeading">
+            <summary class="section-head">
               <div>
-                <h2 id="activePttSettingsHeading">PTT / Detekcja końca</h2>
-                <p class="muted section-desc">
-                  Operator PTT: skrót, lease, recorder i dowody STT.
-                </p>
+                <h2 id="activePttSettingsHeading">PTT</h2>
               </div>
-              <div class="mission-actions">
-                <button id="applyPttSettingsButton" type="button">Zapisz PTT</button>
-              </div>
-            </div>
+            </summary>
             <div class="settings-control-grid">
               <label class="field-label">
                 <span>Tryb PTT</span>
@@ -464,16 +426,6 @@
                 <input id="pttMergeWindowInput" type="number" step="0.5" min="0" />
               </label>
             </div>
-            <dl class="kv-list">
-              <dt>Tryb nasłuchu</dt>
-              <dd id="pttListeningSummary">unknown</dd>
-              <dt>Przerwanie mowy</dt>
-              <dd id="pttBargeInSummary">unknown</dd>
-              <dt>Skrót</dt>
-              <dd id="pttHotkeySummary">unknown</dd>
-              <dt>VAD / detekcja tury</dt>
-              <dd id="pttVadSummary">unknown</dd>
-            </dl>
             <div class="voice-mode ptt-operator-controls" role="group" aria-label="Kontrolki operatora PTT">
               <button id="pttModeButton" type="button" class="mode-button" title="Przytrzymaj, aby utworzyć lease PTT">Przytrzymaj</button>
               <button id="listenToggle" type="button" class="mode-button" title="Przełącz zablokowany lease nasłuchu">Zablokowany</button>
@@ -481,21 +433,14 @@
             </div>
             <div id="pttTestStatusList" class="list compact-list"></div>
             <p id="pttApplyStatus" class="muted apply-status" aria-live="polite"></p>
-          </div>
+          </details>
 
-          <div id="activeToolsSettingsSection" class="sys-section active-settings-section" aria-labelledby="activeToolsSettingsHeading">
-            <div class="section-head">
+          <details id="activeToolsSettingsSection" class="sys-section active-settings-section collapsible-card" aria-labelledby="activeToolsSettingsHeading">
+            <summary class="section-head">
               <div>
-                <h2 id="activeToolsSettingsHeading">Narzędzia / Internet</h2>
-                <p id="toolsSectionDescription" class="muted section-desc">
-                  Rejestr narzędzi, wsparcie dostawcy i polityka zgód. Brak internetu to blokada setupu, nie przełącznik.
-                </p>
+                <h2 id="activeToolsSettingsHeading">Narzędzia</h2>
               </div>
-              <div class="mission-actions">
-                <button id="resetToolsPreviewButton" type="button" class="ghost">Reset podglądu</button>
-                <button id="applyToolsSettingsButton" type="button">Zapisz narzędzia</button>
-              </div>
-            </div>
+            </summary>
             <div id="toolsControlGrid" class="settings-control-grid">
               <label class="inline-toggle">
                 <input id="toolsEnabledToggle" type="checkbox" disabled />
@@ -518,64 +463,22 @@
                 <span>Wymagaj zgody na zapis plików</span>
               </label>
             </div>
-            <dl id="toolsSummaryDetails" class="kv-list">
-              <dt>Internet</dt>
-              <dd id="toolsInternetSummary">unknown</dd>
-              <dt>Polityka sieci</dt>
-              <dd id="toolsNetworkPolicySummary">unknown</dd>
-              <dt>Rejestr</dt>
-              <dd id="toolsRegistrySummary">unknown</dd>
-            </dl>
-            <div id="toolsInternetStatusList" class="list compact-list"></div>
             <p id="toolsApplyStatus" class="muted apply-status" aria-live="polite"></p>
-          </div>
+          </details>
 
-          <div class="sys-section active-settings-section" aria-labelledby="activePersonalitySettingsHeading">
-            <div class="section-head">
+          <details class="sys-section active-settings-section collapsible-card" aria-labelledby="activePersonalitySettingsHeading">
+            <summary class="section-head">
               <div>
                 <h2 id="activePersonalitySettingsHeading">Osobowość</h2>
-                <p class="muted section-desc">
-                  Stan persony i profilu, jeśli bezpieczny store ustawień go udostępnia.
-                </p>
               </div>
-              <button id="applyPersonaSettingsButton" type="button">Zastosuj osobowość</button>
-            </div>
+            </summary>
             <label class="field-label">
               <span>Profil persony</span>
               <select id="personaProfileSelect" aria-label="Profil persony"></select>
             </label>
-            <div id="personalityStatusList" class="list compact-list"></div>
             <p id="personaApplyStatus" class="muted apply-status" aria-live="polite"></p>
-          </div>
-
-          <details class="sys-section system-diagnostics-section" aria-labelledby="systemDiagnosticsHeading">
-            <summary>
-              <h2 id="systemDiagnosticsHeading">Diagnostyka</h2>
-              <span class="summary-hint muted">domyślnie zwinięte</span>
-            </summary>
-            <div id="systemDiagnosticsSummaryList" class="list compact-list"></div>
           </details>
 
-          <div class="system-section-label" aria-hidden="true">Kontrola misji</div>
-          <div class="sys-section mission-control" aria-labelledby="missionControlHeading">
-            <div class="section-head mission-head">
-              <div>
-                <h2 id="missionControlHeading">Kontrola misji</h2>
-                <p class="muted section-desc">
-                  Backend, mózg, głos, narzędzia i jedna następna akcja.
-                </p>
-              </div>
-              <div class="mission-actions">
-                <span class="production-badge">produkcja</span>
-                <button id="refreshMissionControlButton" type="button" class="ghost">
-                  Odśwież
-                </button>
-              </div>
-            </div>
-            <div id="missionControlSummary" class="mission-summary"></div>
-            <p id="missionControlRefreshStatus" class="muted mission-refresh-status" aria-live="polite"></p>
-            <div id="missionControlModules" class="module-grid"></div>
-          </div>
 
         </section>
       </div>

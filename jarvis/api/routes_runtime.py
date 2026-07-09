@@ -104,11 +104,82 @@ CLAUDE_CLI_EFFORT_LEVELS = CLAUDE_CLI_EFFORTS
 GROQ_EFFORT_LEVELS: tuple[str, ...] = ()
 
 KNOWN_PROVIDER_EFFORT_LEVELS = CLAUDE_CLI_EFFORT_LEVELS
+
+# Per-model effort support. xhigh is model-dependent: the 4.6 generation
+# (sonnet-4-6 / opus-4-6) tops out at "high"/"max" with no xhigh, and haiku
+# takes no effort flag at all. Unknown models fall through to the full ladder
+# so a newly-shipped model is never accidentally restricted. The frontend uses
+# this to filter the effort picker to the currently-selected model; the
+# provider-wide allowed_effort_values stays the full ladder untouched.
+_FULL_EFFORT_LADDER: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+_EFFORT_LADDER_NO_XHIGH: tuple[str, ...] = ("low", "medium", "high", "max")
+
+
+def _model_effort_support(
+    model_ids: list[str],
+    provider_efforts: list[str],
+) -> dict[str, list[str]]:
+    """Map each model id -> the effort levels that model actually accepts.
+
+    Intersected with the provider's own effort ladder (so a provider that
+    reports no efforts, e.g. groq, yields [] for every model). Unknown models
+    get the full ladder."""
+
+    provider_order = [str(effort) for effort in provider_efforts]
+    support: dict[str, list[str]] = {}
+    for raw_model in model_ids:
+        model = str(raw_model)
+        if not model:
+            continue
+        if "haiku-4-5" in model:
+            allowed: tuple[str, ...] = ()
+        elif "sonnet-4-6" in model or "opus-4-6" in model:
+            allowed = _EFFORT_LADDER_NO_XHIGH
+        else:
+            allowed = _FULL_EFFORT_LADDER
+        support[model] = [effort for effort in provider_order if effort in allowed]
+    return support
+
+
 KNOWN_PROVIDER_SUPPORT_UNKNOWN = ProviderSupportState.UNKNOWN
 KNOWN_PROVIDER_SUPPORT_YES = ProviderSupportState.YES
 KNOWN_PROVIDER_SUPPORT_NO = ProviderSupportState.NO
 CLAUDE_CLI_PROVIDER_IDS = frozenset({"claude_cli", "claude_cli_warm"})
 SUPERTONIC_VOICE_MANUAL_DIAGNOSTIC_WARNING = "Supertonic voice list requires manual diagnostic."
+
+# Canonical Whisper language codes (the exact set the Whisper/mlx-whisper
+# tokenizer accepts for --language). This is Whisper's real contract, not a
+# mock — every code here is a valid STT language selector.
+WHISPER_LANGUAGE_CODES: tuple[str, ...] = (
+    "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr",
+    "pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi",
+    "he", "uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no",
+    "th", "ur", "hr", "bg", "lt", "la", "mi", "ml", "cy", "sk",
+    "te", "fa", "lv", "bn", "sr", "az", "sl", "kn", "et", "mk",
+    "br", "eu", "is", "hy", "ne", "mn", "bs", "kk", "sq", "sw",
+    "gl", "mr", "pa", "si", "km", "sn", "yo", "so", "af", "oc",
+    "ka", "be", "tg", "sd", "gu", "am", "yi", "lo", "uz", "fo",
+    "ht", "ps", "tk", "nn", "mt", "sa", "lb", "my", "bo", "tl",
+    "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su", "yue",
+)
+
+# Real, commonly-installed Whisper / mlx-whisper model ids usable as
+# voice.stt_model. These are genuine model identifiers (HF repo ids and the
+# openai-whisper size aliases), not placeholders.
+WHISPER_STT_MODEL_IDS: tuple[str, ...] = (
+    "mlx-community/whisper-large-v3-mlx",
+    "mlx-community/whisper-large-v3-turbo",
+    "mlx-community/whisper-medium-mlx",
+    "mlx-community/whisper-small-mlx",
+    "mlx-community/whisper-base-mlx",
+    "mlx-community/whisper-tiny-mlx",
+    "whisper-large-v3",
+    "large-v3",
+    "medium",
+    "small",
+    "base",
+    "tiny",
+)
 VOICE_ENGINE_RELOAD_BLOCKER = "voice engine reload requires daemon restart"
 VOICE_GATEWAY_RELOAD_BLOCKER = "voice gateway reload requires daemon restart"
 TOOLS_POLICY_RESTART_BLOCKER = "tool/network policy reload requires daemon restart"
@@ -221,14 +292,10 @@ PROVIDER_PRESET: dict[str, dict[str, Any]] = {
         "streaming_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
         "tools_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
     },
-    "codex_cli": {
-        "display_name": "Codex CLI",
-        "kind": "Provider",
-        "supported_efforts": [],
-        "fast_support": _enum_value(KNOWN_PROVIDER_SUPPORT_NO),
-        "streaming_support": _enum_value(KNOWN_PROVIDER_SUPPORT_NO),
-        "tools_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
-    },
+    # Codex CLI intentionally removed as a brain provider (owner decree): Jarvis
+    # runs on Claude Code only. Removed from PROVIDER_PRESET AND from the
+    # BrainManager registration/priority (jarvis/brain/manager.py) so it cannot
+    # return via config `enabled=true`.
     "groq": {
         "display_name": "Groq API",
         "kind": "cloud",
@@ -1109,9 +1176,13 @@ def _claude_cli_contract(
     elif command_contract.permission_mode == "auto":
         apply_semantics = "not_apply_capable"
         blocker = "Claude CLI permission mode auto is not apply-capable until Jarvis can prove Claude Code auto-mode eligibility."
-    elif command_contract.permission_mode == "bypassPermissions":
-        apply_semantics = "not_apply_capable"
-        blocker = "Claude CLI permission mode bypassPermissions is not apply-capable from the panel."
+    # NB: permission_mode == "bypassPermissions" is deliberately NOT a blocker.
+    # brain.model / brain.effort are pure `--model` / `--effort` argument swaps
+    # (already on the runtime flag allowlist) — they never trigger a permission
+    # prompt, so bypassPermissions must not gate their next-turn apply. The
+    # owner's config runs bypassPermissions and expects the panel model/effort
+    # pickers to work. Only model/effort are next-turn apply fields here
+    # (brain.fast is always rejected separately), so this stays precisely scoped.
 
     warnings = [
         warning
@@ -5211,6 +5282,7 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
         "models": models,
         "current_model": _runtime_projection_value(current_model_projection),
         "allowed_effort_values": allowed_efforts,
+        "model_effort_support": _model_effort_support(supported_models, allowed_efforts),
         "fast_supported": _support_bool(raw.get("fast_supported")) is True,
         "context_info": {
             "budget_chars": _runtime_projection_value(raw.get("context_window_chars")),
@@ -5460,6 +5532,26 @@ def _build_voice_capabilities(
                 "status": "ok",
             }
         )
+    # Real model + language lists for MLX Whisper. The configured model (which
+    # may be a local path or a not-in-catalog id) is always offered first so the
+    # current selection is never dropped; the rest are genuine Whisper model ids.
+    configured_stt_model = str(app.config.voice.stt_model or "").strip()
+    stt_model_ids = list(
+        dict.fromkeys(
+            model_id
+            for model_id in [configured_stt_model, *WHISPER_STT_MODEL_IDS]
+            if model_id
+        )
+    )
+    # The configured language wins first place so a non-standard code still shows.
+    configured_stt_language = str(app.config.voice.stt_language or "").strip()
+    stt_language_codes = list(
+        dict.fromkeys(
+            code
+            for code in [configured_stt_language, *WHISPER_LANGUAGE_CODES]
+            if code
+        )
+    )
     stt_providers.append(
         {
             "id": "mlx_whisper",
@@ -5468,13 +5560,14 @@ def _build_voice_capabilities(
             "available": stt_package_status == KNOWN_PROVIDER_SUPPORT_YES,
             "models": [
                 {
-                    "id": app.config.voice.stt_model,
-                    "label": app.config.voice.stt_model,
-                    "available": bool(app.config.voice.stt_model),
+                    "id": model_id,
+                    "label": model_id,
+                    "available": True,
+                    "configured": model_id == configured_stt_model,
                 }
-            ]
-            if app.config.voice.stt_model
-            else [],
+                for model_id in stt_model_ids
+            ],
+            "languages": stt_language_codes,
             "endpointing_support": True,
             "developer_only": False,
             "status": "ok" if stt_package_status == KNOWN_PROVIDER_SUPPORT_YES else "missing",
@@ -5526,6 +5619,13 @@ def _build_voice_capabilities(
             for provider in stt_providers
             for model in provider.get("models", [])
         ],
+        "stt_languages": list(
+            dict.fromkeys(
+                code
+                for provider in stt_providers
+                for code in provider.get("languages", [])
+            )
+        ),
         "endpointing_support": app.config.voice.ptt_mode in CANONICAL_PTT_MODES,
         "ptt_support": True,
         "playback_support": playback_status == "ok",

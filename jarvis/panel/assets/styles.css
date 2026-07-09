@@ -798,6 +798,45 @@ details.card.collapsible[open] summary::after {
   margin-left: auto;
 }
 
+/* Karty-akordeony w zakładce System: cała karta jest <details>, nagłówek to <summary>.
+   Chevron = statyczny wskaźnik stanu (bez animacji dekoracyjnej); ruch tylko dla procesów. */
+.sys-section.collapsible-card > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sys-section.collapsible-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sys-section.collapsible-card > summary > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sys-section.collapsible-card > summary .mission-actions {
+  flex: 0 0 auto;
+}
+
+.sys-section.collapsible-card > summary::after {
+  /* \203A = › ; escape zamiast surowego znaku, bo statyczny serwer bez charsetu
+     zamienia chevron w mojibake. */
+  content: "\203A";
+  flex: 0 0 auto;
+  align-self: center;
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.sys-section.collapsible-card[open] > summary::after {
+  transform: rotate(90deg);
+}
+
 .subsection {
   display: grid;
   gap: 6px;
@@ -1634,6 +1673,22 @@ details.card.collapsible[open] summary::after {
   color: var(--text-faint);
 }
 
+/* Opcjonalny wpis ręczny obok selecta (model, effort, głos, model/język STT).
+   Wpisana wartość nadpisuje wybór z listy i trafia do tego samego draftu. */
+.manual-input {
+  font-size: 12px;
+}
+
+.manual-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* Jawne display:grid na .field-label nadpisuje user-agentowe [hidden] — przywróć
+   ukrywanie, gdy JS chowa jednoopcyjne/niedostępne pole. */
+.field-label[hidden] {
+  display: none;
+}
+
 .settings-control-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 158px), 1fr));
@@ -1643,11 +1698,8 @@ details.card.collapsible[open] summary::after {
 
 #view-system .field-label,
 #view-system .inline-toggle {
-  min-height: 48px;
-  padding: 7px;
-  border: 1px solid var(--system-row-border);
-  border-radius: 7px;
-  background: var(--system-row-bg);
+  min-height: 0;
+  padding: 2px 0;
 }
 
 #view-system .field-label > span,

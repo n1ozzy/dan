@@ -3854,272 +3854,6 @@ def test_runtime_settings_marks_invalid_stale_effort_and_fast_state_for_current_
     assert brain_field["apply_capable"] is False
 
 
-def test_runtime_settings_shows_configured_provider_capabilities_for_claude_and_codex(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
-    config_path = write_config(
-        tmp_path / "jarvis.toml",
-        db_path,
-        brain_default_adapter="claude_cli",
-        extra_toml='\n[brain.codex_cli]\nenabled = true\n',
-    )
-    daemon_app = create_daemon_app(config_path)
-    try:
-        with running_server(daemon_app) as base_url:
-            status, payload = request_json("GET", f"{base_url}/runtime/settings")
-
-        assert status == 200
-        providers = payload["brain"]["providers"]["value"]
-        names = {provider["name"] for provider in providers}
-        assert "mock" not in names
-        assert {"claude_cli", "codex_cli"}.issubset(names)
-
-        claude = next(
-            provider for provider in providers if provider["name"] == "claude_cli"
-        )
-        codex = next(
-            provider for provider in providers if provider["name"] == "codex_cli"
-        )
-        assert claude["display_name"] == "Claude CLI"
-        assert codex["display_name"] == "Codex CLI"
-        assert claude["fast_supported"]["value"] in {"yes", "no", "unknown"}
-        assert codex["streaming_support"]["value"] in {"yes", "no", "unknown"}
-        assert claude["tools_support"]["value"] in {"yes", "no", "unknown"}
-    finally:
-        daemon_app.close()
-
-
-def test_runtime_settings_codex_model_next_turn_apply_updates_command_preview(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mock_codex_cli: None,
-) -> None:
-    config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
-        brain_default_adapter="codex_cli",
-        extra_toml=(
-            "\n[brain.codex_cli]\n"
-            "enabled = true\n"
-            "command = \"fake-codex\"\n"
-            "args = [\"exec\", \"--model\", \"stale-model\"]\n"
-            "model = \"codex-old\"\n"
-        ),
-    )
-    app = create_daemon_app(config_path)
-    try:
-        assert app.brain_manager is not None
-        adapter = app.brain_manager.get_adapter("codex_cli")
-        adapter.available_models = lambda: ["codex-old", "codex-new"]  # type: ignore[method-assign]
-        with running_server(app) as base_url:
-            status, before = request_json("GET", f"{base_url}/runtime/settings")
-            assert status == 200
-            provider = _brain_capability_provider(before, "codex_cli")
-            brain_section = before["settings_preview"]["sections"]["brain_provider"]
-            assert before["capability_graph"]["brain_capabilities"]["current_provider"] == "codex_cli"
-            assert provider["command_status"] == "found"
-            assert provider["auth_status"] == "logged_in"
-            assert provider["apply_semantics"] == "next_turn"
-            assert provider["apply_capable"] is True
-            assert brain_section["apply_capable"] is True
-            assert brain_section["apply_disabled_reason"] is None
-            # Codex CLI doesn't support effort - only model is a valid next-turn change
-            assert brain_section["valid_next_turn_changes"] == ["brain.model"]
-            assert brain_section["fields"]["model"]["apply_capable"] is True
-            assert brain_section["fields"]["effort"]["apply_capable"] is False
-
-            status, payload = request_json(
-                "POST",
-                f"{base_url}/runtime/settings/apply",
-                {"settings": {"brain.model": "codex-new"}},
-            )
-    finally:
-        app.close()
-
-    assert status == 200, payload
-    assert payload["applied"] == ["brain.model"]
-    refreshed = payload["runtime_settings"]
-    command_preview = _settings_preview_field(refreshed, "brain_provider", "command_preview")
-    assert "fake-codex exec --model codex-new" in command_preview["current"]
-    assert "stale-model" not in command_preview["current"]
-
-
-def test_runtime_settings_codex_missing_command_disables_brain_apply_without_mock_fallback(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
-
-    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("logged_in", None))
-    config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
-        brain_default_adapter="codex_cli",
-        extra_toml=(
-            "\n[brain.codex_cli]\n"
-            "enabled = true\n"
-            "command = \"definitely-missing-codex\"\n"
-            "model = \"codex-old\"\n"
-        ),
-    )
-    app = create_daemon_app(config_path)
-    try:
-        with running_server(app) as base_url:
-            status, runtime = request_json("GET", f"{base_url}/runtime/settings")
-            assert status == 200
-            status, payload = request_json(
-                "POST",
-                f"{base_url}/runtime/settings/apply",
-                {"settings": {"brain.model": "codex-old"}},
-            )
-    finally:
-        app.close()
-
-    provider = _brain_capability_provider(runtime, "codex_cli")
-    brain_section = runtime["settings_preview"]["sections"]["brain_provider"]
-    assert runtime["capability_graph"]["brain_capabilities"]["current_provider"] == "codex_cli"
-    assert provider["available"] is False
-    assert provider["command_status"] == "missing"
-    assert provider["apply_semantics"] == "not_apply_capable"
-    assert brain_section["apply_capable"] is False
-    assert brain_section["apply_disabled_reason"] == "missing_command"
-    assert brain_section["valid_next_turn_changes"] == []
-    assert status == 422
-    assert "missing" in payload["error"].lower()
-    assert "mock" not in payload["error"].lower()
-
-
-def test_runtime_settings_codex_missing_auth_disables_brain_apply(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mock_codex_cli: None,
-) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
-    import jarvis.brain.auto_detect as auto_detect
-
-    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("codex fake 1.0.0", "ok", None))
-    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("missing", None))
-    config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
-        brain_default_adapter="codex_cli",
-        extra_toml=(
-            "\n[brain.codex_cli]\n"
-            "enabled = true\n"
-            "command = \"fake-codex\"\n"
-            "model = \"codex-old\"\n"
-        ),
-    )
-    app = create_daemon_app(config_path)
-    try:
-        with running_server(app) as base_url:
-            status, runtime = request_json("GET", f"{base_url}/runtime/settings")
-            assert status == 200
-            status, payload = request_json(
-                "POST",
-                f"{base_url}/runtime/settings/apply",
-                {"settings": {"brain.model": "codex-old"}},
-            )
-    finally:
-        app.close()
-        auto_detect.set_which_fn(None)
-
-    provider = _brain_capability_provider(runtime, "codex_cli")
-    brain_section = runtime["settings_preview"]["sections"]["brain_provider"]
-    assert provider["auth_status"] == "missing"
-    assert provider["apply_semantics"] == "not_apply_capable"
-    assert brain_section["apply_capable"] is False
-    assert brain_section["apply_disabled_reason"] == "missing_auth"
-    assert status == 422
-    assert "auth" in payload["error"].lower()
-
-
-def test_runtime_settings_codex_unknown_auth_is_not_apply_capable(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mock_codex_cli: None,
-) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
-
-    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("codex fake 1.0.0", "ok", None))
-    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("unknown", "Codex auth readiness is unknown."))
-    config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
-        brain_default_adapter="codex_cli",
-        extra_toml=(
-            "\n[brain.codex_cli]\n"
-            "enabled = true\n"
-            "command = \"fake-codex\"\n"
-            "model = \"codex-old\"\n"
-        ),
-    )
-    app = create_daemon_app(config_path)
-    try:
-        with running_server(app) as base_url:
-            status, runtime = request_json("GET", f"{base_url}/runtime/settings")
-    finally:
-        app.close()
-
-    assert status == 200
-    provider = _brain_capability_provider(runtime, "codex_cli")
-    brain_section = runtime["settings_preview"]["sections"]["brain_provider"]
-    assert provider["auth_status"] == "unknown"
-    # Unknown auth should not block - it's allowed to proceed
-    assert provider["apply_semantics"] == "next_turn"
-    assert brain_section["apply_capable"] is True
-    assert brain_section["apply_disabled_reason"] is None
-
-
-def test_runtime_settings_codex_effort_is_rejected_without_pending_applyable_value(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
-    import jarvis.brain.auto_detect as auto_detect
-
-    monkeypatch.setattr(
-        routes_runtime.shutil,
-        "which",
-        lambda command: "/usr/bin/fake-codex" if command == "fake-codex" else None,
-    )
-    auto_detect.set_which_fn(lambda cmd: "/usr/bin/fake-codex" if cmd == "codex" else None)
-    monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("codex fake 1.0.0", "ok", None))
-    monkeypatch.setattr(routes_runtime, "_safe_probe_codex_auth_status", lambda: ("logged_in", None))
-    config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
-        brain_default_adapter="codex_cli",
-        extra_toml=(
-            "\n[brain.codex_cli]\n"
-            "enabled = true\n"
-            "command = \"fake-codex\"\n"
-            "model = \"codex-old\"\n"
-        ),
-    )
-    app = create_daemon_app(config_path)
-    try:
-        with running_server(app) as base_url:
-            status, payload = request_json(
-                "POST",
-                f"{base_url}/runtime/settings/apply",
-                {"settings": {"brain.effort": "high"}},
-            )
-            _, refreshed = request_json("GET", f"{base_url}/runtime/settings")
-    finally:
-        app.close()
-        auto_detect.set_which_fn(None)
-
-    assert status == 422
-    assert "brain.effort" in payload["rejected_keys"]
-    assert "not_apply_capable" in payload["error"]
-    brain_section = refreshed["settings_preview"]["sections"]["brain_provider"]
-    assert brain_section["valid_next_turn_changes"] == ["brain.model"]
-    assert brain_section["fields"]["effort"]["apply_capable"] is False
-    assert brain_section["fields"]["effort"]["validation"]["target_valid"] is False
-
-
 def _install_fake_claude_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4236,10 +3970,14 @@ def test_runtime_settings_claude_cli_contract_command_preview_and_probes(
     assert provider["selected_model"] == "claude-sonnet-4"
     assert provider["effective_model"] == "claude-sonnet-4"
     assert provider["model_source"] == "jarvis_explicit"
-    assert provider["allowed_models"] == ["claude-configured"]
-    assert not {"sonnet", "opus", "haiku", "fable", "claude-sonnet-4"} & set(
-        provider["allowed_models"]
-    )
+    # Model list is now live-resolved from Claude Code (stubbed deterministically
+    # in tests) and always unions the adapter's configured model first.
+    assert provider["allowed_models"][0] == "claude-configured"
+    assert "claude-opus-4-8" in provider["allowed_models"]
+    # The runtime-selected model (not the adapter's known set) must not leak into
+    # allowed_models, and the bare-word aliases must not appear.
+    assert "claude-sonnet-4" not in provider["allowed_models"]
+    assert not {"sonnet", "opus", "haiku", "fable"} & set(provider["allowed_models"])
     assert provider["selected_effort"] == "xhigh"
     assert provider["effective_effort"] == "xhigh"
     assert provider["effort_source"] == "jarvis_explicit"
@@ -4382,7 +4120,7 @@ def test_runtime_settings_claude_cli_auto_permission_mode_blocks_next_turn_apply
     assert "auto" in provider["apply_semantics_reason"]
 
 
-def test_runtime_settings_claude_cli_bypass_permission_mode_blocks_next_turn_apply(
+def test_runtime_settings_claude_cli_bypass_permission_mode_allows_model_effort_apply(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4403,20 +4141,35 @@ def test_runtime_settings_claude_cli_bypass_permission_mode_blocks_next_turn_app
     try:
         with running_server(daemon_app) as base_url:
             status, payload = request_json("GET", f"{base_url}/runtime/settings")
+            assert status == 200
+            provider = next(
+                item
+                for item in payload["capability_graph"]["brain_capabilities"]["providers"]
+                if item["id"] == "claude_cli"
+            )
+            assert provider["auth_status"] == "logged_in"
+            assert provider["permission_mode"] == "bypassPermissions"
+            # bypassPermissions no longer blocks next-turn apply of model/effort —
+            # those are pure argument swaps and must be settable from the panel.
+            assert provider["apply_semantics"] == "next_turn"
+            assert provider["apply_capable"] is True
+            assert provider["apply_semantics_reason"] is None
+
+            # And the apply actually goes through (200) and changes the CLI command.
+            apply_status, apply_payload = request_json(
+                "POST",
+                f"{base_url}/runtime/settings/apply",
+                {"settings": {"brain.model": "claude-opus-4-8", "brain.effort": "medium"}},
+            )
+            assert apply_status == 200, apply_payload
+            assert set(apply_payload["applied"]) == {"brain.model", "brain.effort"}
+            command_preview = _settings_preview_field(
+                apply_payload["runtime_settings"], "brain_provider", "command_preview"
+            )
+            assert "--model claude-opus-4-8" in command_preview["current"]
+            assert "--effort medium" in command_preview["current"]
     finally:
         daemon_app.close()
-
-    assert status == 200
-    provider = next(
-        item
-        for item in payload["capability_graph"]["brain_capabilities"]["providers"]
-        if item["id"] == "claude_cli"
-    )
-    assert provider["auth_status"] == "logged_in"
-    assert provider["permission_mode"] == "bypassPermissions"
-    assert provider["apply_semantics"] == "not_apply_capable"
-    assert provider["apply_capable"] is False
-    assert "bypassPermissions" in provider["apply_semantics_reason"]
 
 
 def test_runtime_settings_claude_cli_unknown_effort_does_not_enter_command_preview(
@@ -4610,3 +4363,96 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
                     offenders.append((str(path.relative_to(ROOT)), snippet))
 
     assert offenders == []
+
+
+# ---------------------------------------------------------------------------
+# System-tab backend: per-model effort support + live Whisper STT option lists.
+# These cover the capability_graph fields the panel's System tab consumes:
+#   brain_capabilities.providers[].model_effort_support (owner decree: the
+#     effort picker must reflect what the *selected model* actually accepts —
+#     haiku takes none, the 4.6 generation tops out below xhigh) and
+#   voice_capabilities.stt_languages / stt_providers[].models (real Whisper
+#     language codes + model ids, not one-option echoes).
+# ---------------------------------------------------------------------------
+
+
+def test_model_effort_support_maps_efforts_per_model() -> None:
+    from jarvis.api.routes_runtime import CLAUDE_CLI_EFFORTS, _model_effort_support
+
+    provider_efforts = [str(effort) for effort in CLAUDE_CLI_EFFORTS]
+    support = _model_effort_support(
+        [
+            "claude-opus-4-8",
+            "claude-sonnet-4-6",
+            "claude-opus-4-6",
+            "claude-haiku-4-5-20251001",
+            "claude-brand-new-99",
+        ],
+        provider_efforts,
+    )
+
+    # Unknown / newest models get the full ladder so nothing is accidentally
+    # restricted before we know better.
+    assert support["claude-opus-4-8"] == ["low", "medium", "high", "xhigh", "max"]
+    assert support["claude-brand-new-99"] == ["low", "medium", "high", "xhigh", "max"]
+    # The 4.6 generation tops out at max with no xhigh.
+    assert support["claude-sonnet-4-6"] == ["low", "medium", "high", "max"]
+    assert support["claude-opus-4-6"] == ["low", "medium", "high", "max"]
+    # Haiku takes no effort flag at all.
+    assert support["claude-haiku-4-5-20251001"] == []
+
+
+def test_model_effort_support_intersects_with_empty_provider_ladder() -> None:
+    from jarvis.api.routes_runtime import _model_effort_support
+
+    # A provider that reports no effort ladder (e.g. groq) yields [] for every
+    # model, regardless of what the model itself would otherwise accept.
+    support = _model_effort_support(["claude-opus-4-8", "claude-haiku-4-5"], [])
+    assert support == {"claude-opus-4-8": [], "claude-haiku-4-5": []}
+    # Blank ids are skipped entirely.
+    assert _model_effort_support(["", "claude-opus-4-8"], ["low"]) == {
+        "claude-opus-4-8": ["low"]
+    }
+
+
+def test_brain_capabilities_expose_model_effort_support(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    providers = payload["capability_graph"]["brain_capabilities"]["providers"]
+    # The test provider is a normal brain provider and must carry the field as a
+    # dict keyed by its model id (it supports no efforts -> empty list).
+    test_provider = next(item for item in providers if item["id"] == "test")
+    support = test_provider["model_effort_support"]
+    assert isinstance(support, dict)
+    assert all(isinstance(efforts, list) for efforts in support.values())
+    assert "test-model" in support
+    assert support["test-model"] == []
+
+
+def test_voice_capabilities_expose_whisper_languages_and_models(app: DaemonApp) -> None:
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    voice = payload["capability_graph"]["voice_capabilities"]
+
+    # STT language list is the real Whisper contract (~99 codes), not a single
+    # echoed value.
+    languages = voice["stt_languages"]
+    assert isinstance(languages, list)
+    assert {"pl", "en", "de", "fr"}.issubset(set(languages))
+    assert len(languages) > 50
+
+    # The mlx_whisper provider offers genuine Whisper model ids plus its own
+    # language list (not a lone configured-model echo).
+    mlx = next(
+        provider
+        for provider in voice["stt_providers"]
+        if provider["id"] == "mlx_whisper"
+    )
+    model_ids = {model["id"] for model in mlx["models"]}
+    assert "mlx-community/whisper-large-v3-mlx" in model_ids
+    assert len(model_ids) > 1
+    assert {"pl", "en"}.issubset(set(mlx["languages"]))

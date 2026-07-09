@@ -33,6 +33,7 @@ from jarvis.brain.base import (
     BrainResponse,
     BrainUsage,
 )
+from jarvis.brain.claude_models import resolve_available_models
 from jarvis.brain.claude_cli_contract import (
     DEFAULT_STREAM_ARGS as CONTRACT_DEFAULT_STREAM_ARGS,
     ClaudeCliEffortLevel,
@@ -575,7 +576,17 @@ class ClaudeCliAdapter:
         self._generation_registry = generation_registry
 
     def available_models(self) -> list[str]:
-        return [self.default_model]
+        # Live-resolved from Claude Code (cached), unioned with the currently
+        # active model so the running model is ALWAYS offered even if discovery
+        # lags or the account carries a private/pinned id. The sentinel
+        # "claude-cli" (no model configured) is never surfaced as a real id.
+        resolved = resolve_available_models(self.command)
+        models: list[str] = list(resolved)
+        active = self.default_model
+        if active and active != "claude-cli" and active not in models:
+            models.insert(0, active)
+        # Dedup preserving order (active-first if it was inserted).
+        return list(dict.fromkeys(models))
 
     def command_settings(self) -> ClaudeCliCommandSettings:
         return ClaudeCliCommandSettings(

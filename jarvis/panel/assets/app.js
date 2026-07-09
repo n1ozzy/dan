@@ -79,6 +79,8 @@ const MAX_LIVE_EVENT_ROWS = 50;
 // finished booting), re-poll health on this interval so the panel recovers on
 // its own instead of getting stuck on "unknown"/"offline" until a manual click.
 const HEALTH_RETRY_MS = 2000;
+// Full Claude CLI effort ladder; fallback when the backend does not scope efforts per model.
+const FULL_EFFORT_VALUES = Object.freeze(["low", "medium", "high", "xhigh", "max"]);
 // Steady status heartbeat: re-check health/state on this interval so the pill
 // is never stuck on a stale "unknown" after a startup race or a daemon restart
 // under a live panel. On a fresh reconnect it triggers a full refreshAll().
@@ -414,7 +416,6 @@ function bindElements() {
     "missionControlModules",
     "missionControlChecklist",
     "voiceDoctorList",
-    "providerDoctorList",
     "missionControlRefreshStatus",
     "refreshActiveSettingsButton",
     "activeSettingsList",
@@ -425,23 +426,24 @@ function bindElements() {
     "resetBrainPreviewButton",
     "activeBrainProviderSelect",
     "activeBrainModelSelect",
+    "activeBrainModelManual",
     "activeBrainEffortSelect",
-    "activeBrainFastToggle",
+    "activeBrainEffortManual",
     "applyBrainSettingsButton",
     "brainApplyStatus",
-    "brainSettingsSummaryList",
     "voiceSpeakResponsesToggle",
     "voiceBrokerEnabledToggle",
     "voiceTtsSelect",
     "voiceTtsModelSelect",
     "voiceSttSelect",
     "voiceSttModelSelect",
+    "voiceSttModelManual",
     "voiceSttLanguageSelect",
+    "voiceSttLanguageManual",
     "voiceVoiceIdSelect",
+    "voiceVoiceIdManual",
     "voiceProfileSelect",
     "voiceSpeedInput",
-    "voiceTtsStatusList",
-    "voiceSttStatusList",
     "resetTtsPreviewButton",
     "resetSttPreviewButton",
     "applyTtsSettingsButton",
@@ -454,10 +456,6 @@ function bindElements() {
     "pttRecordShortcutButton",
     "pttShortcutValidation",
     "pttMergeWindowInput",
-    "pttListeningSummary",
-    "pttBargeInSummary",
-    "pttHotkeySummary",
-    "pttVadSummary",
     "applyPttSettingsButton",
     "pttApplyStatus",
     "testPttButton",
@@ -469,21 +467,15 @@ function bindElements() {
     "activeToolsSettingsSection",
     "toolsSectionDescription",
     "toolsControlGrid",
-    "toolsSummaryDetails",
     "toolsEnabledToggle",
     "toolsNetworkEnabledToggle",
     "toolsNetworkApprovalToggle",
     "toolsShellApprovalToggle",
     "toolsFileWriteApprovalToggle",
-    "toolsInternetSummary",
-    "toolsNetworkPolicySummary",
-    "toolsRegistrySummary",
-    "toolsInternetStatusList",
     "resetToolsPreviewButton",
     "applyToolsSettingsButton",
     "toolsApplyStatus",
     "personaProfileSelect",
-    "personalityStatusList",
     "applyPersonaSettingsButton",
     "personaApplyStatus",
     "refreshMemoryApprovalsButton",
@@ -491,7 +483,6 @@ function bindElements() {
     "latestTurnTraceList",
     "refreshRuntimeLogsSummaryButton",
     "runtimeLogsSummaryList",
-    "systemDiagnosticsSummaryList",
     "refreshSettingsPreviewButton",
     "resetSettingsPreviewButton",
     "settingsPreviewList",
@@ -537,7 +528,12 @@ function bindEvents() {
   bindIf(el.activeBrainProviderSelect, "change", updateBrainControlOptions);
   bindIf(el.activeBrainModelSelect, "change", updateBrainControlOptions);
   bindIf(el.activeBrainEffortSelect, "change", updateBrainControlOptions);
-  bindIf(el.activeBrainFastToggle, "change", updateBrainControlOptions);
+  bindManualSelectInput(el.activeBrainModelManual, el.activeBrainModelSelect);
+  bindManualSelectInput(el.activeBrainEffortManual, el.activeBrainEffortSelect);
+  bindManualSelectInput(el.voiceVoiceIdManual, el.voiceVoiceIdSelect);
+  bindManualSelectInput(el.voiceSttModelManual, el.voiceSttModelSelect);
+  bindManualSelectInput(el.voiceSttLanguageManual, el.voiceSttLanguageSelect);
+  bindSummaryToggleGuards();
   bindIf(el.voiceSpeakResponsesToggle, "change", updateTtsControlOptions);
   bindIf(el.voiceTtsSelect, "change", updateTtsControlOptions);
   bindIf(el.voiceTtsModelSelect, "change", updateTtsControlOptions);
@@ -560,12 +556,28 @@ function bindEvents() {
   bindIf(el.toolsShellApprovalToggle, "change", updateToolsControlOptions);
   bindIf(el.toolsFileWriteApprovalToggle, "change", updateToolsControlOptions);
   bindIf(el.personaProfileSelect, "change", updatePersonaControlOptions);
-  bindIf(el.applyBrainSettingsButton, "click", () => applyRuntimeSettingsGroup("brain"));
-  bindIf(el.applyTtsSettingsButton, "click", () => applyRuntimeSettingsGroup("tts"));
-  bindIf(el.applySttSettingsButton, "click", () => applyRuntimeSettingsGroup("stt"));
-  bindIf(el.applyPttSettingsButton, "click", () => applyRuntimeSettingsGroup("ptt"));
-  bindIf(el.applyToolsSettingsButton, "click", () => applyRuntimeSettingsGroup("tools"));
-  bindIf(el.applyPersonaSettingsButton, "click", () => applyRuntimeSettingsGroup("persona"));
+  // Instant auto-apply: every settings control persists immediately on change — no Apply/Reset buttons.
+  const instantApplyTimers = {};
+  const instantApply = (group) => {
+    if (instantApplyTimers[group]) clearTimeout(instantApplyTimers[group]);
+    instantApplyTimers[group] = setTimeout(() => {
+      instantApplyTimers[group] = null;
+      applyRuntimeSettingsGroup(group);
+    }, 40);
+  };
+  const instantApplyGroups = {
+    brain: [el.activeBrainProviderSelect, el.activeBrainModelSelect, el.activeBrainEffortSelect],
+    tts: [el.voiceSpeakResponsesToggle, el.voiceTtsSelect, el.voiceTtsModelSelect, el.voiceVoiceIdSelect, el.voiceProfileSelect, el.voiceSpeedInput],
+    stt: [el.voiceSttSelect, el.voiceSttModelSelect, el.voiceSttLanguageSelect],
+    ptt: [el.pttModeSelect, el.pttHotkeyInput, el.pttMergeWindowInput],
+    tools: [el.toolsEnabledToggle, el.toolsNetworkApprovalToggle, el.toolsShellApprovalToggle, el.toolsFileWriteApprovalToggle],
+    persona: [el.personaProfileSelect],
+  };
+  for (const [group, elems] of Object.entries(instantApplyGroups)) {
+    for (const elem of elems) {
+      bindIf(elem, "change", () => instantApply(group));
+    }
+  }
   bindIf(el.restartJarvisButton, "click", () => {
     setText(el.activeSettingsStatus, "Zrestartuj Jarvisa z terminala: scripts/jarvis restart");
   });
@@ -1077,7 +1089,7 @@ const SETTINGS_PREVIEW_CONTROL_FIELDS = new Set([
 ]);
 
 const RUNTIME_SETTINGS_GROUP_FIELDS = Object.freeze({
-  brain: Object.freeze(["brain.provider", "brain.model", "brain.effort", "brain.fast"]),
+  brain: Object.freeze(["brain.provider", "brain.model", "brain.effort"]),
   tts: Object.freeze([
     "voice.speak_responses",
     "voice.default_tts",
@@ -1515,7 +1527,7 @@ function runtimeSettingsUnknownDisabledMessage(group, settings, payload) {
 }
 
 function runtimeSettingsBrainUnknownControlMessage(payload) {
-  for (const key of ["brain.model", "brain.effort", "brain.fast"]) {
+  for (const key of ["brain.model", "brain.effort"]) {
     const field = runtimeSettingsPreviewFieldForKey(payload, key);
     if (field.editable_now === true) {
       const reason = runtimeSettingsUnknownDisabledReason(payload, key);
@@ -1784,7 +1796,6 @@ function renderRuntimeSettingsControls(payload) {
     renderToolsApplyControls(payload);
     renderPersonaApplyControls(payload);
     renderAuxiliaryCockpitSectionsFromPayload(payload);
-    renderSystemDiagnosticsSummary(payload);
     updateRestartRequiredBanner();
   } finally {
     cockpit.runtimeSettingsApply.renderingControls = false;
@@ -1806,13 +1817,11 @@ function clearRuntimeSettingsControls() {
     el.voiceVoiceIdSelect,
     el.voiceProfileSelect,
     el.pttModeSelect,
-    el.toolsInternetStatusList,
     el.personaProfileSelect,
   ]) {
     clearNode(node);
   }
   updateRestartRequiredBanner();
-  renderSystemDiagnosticsSummary({});
 }
 
 function renderActiveSettingsSummary(payload) {
@@ -1878,34 +1887,6 @@ function updateRestartRequiredBanner() {
   );
 }
 
-function renderSystemDiagnosticsSummary(payload) {
-  clearNode(el.systemDiagnosticsSummaryList);
-  if (!el.systemDiagnosticsSummaryList) {
-    return;
-  }
-  const warnings = Array.isArray(safeObject(payload).compatibility_warnings)
-    ? payload.compatibility_warnings
-    : [];
-  const graph = safeObject(safeObject(payload).capability_graph);
-  const brain = safeObject(graph.brain_capabilities);
-  const voice = safeObject(graph.voice_capabilities);
-  const tools = safeObject(graph.tools_capabilities);
-  const row = document.createElement("article");
-  row.className = "list-row cockpit-summary-card";
-  appendLine(row, "Diagnostyka systemu", "input-line");
-  const values = document.createElement("dl");
-  values.className = "kv-list";
-  renderKeyValues(values, [
-    ["Ostrzeżenia", warnings.length],
-    ["Dostawcy mózgu", Array.isArray(brain.providers) ? brain.providers.length : "nieznane"],
-    ["Dostawcy TTS", Array.isArray(voice.tts_providers) ? voice.tts_providers.length : "nieznane"],
-    ["Dostawcy STT", Array.isArray(voice.stt_providers) ? voice.stt_providers.length : "nieznane"],
-    ["Narzędzie sieci/szukania", tools.network_search_tool || "nieznane"],
-  ]);
-  row.appendChild(values);
-  el.systemDiagnosticsSummaryList.appendChild(row);
-}
-
 function renderSettingsSectionSummary(node, payload, sectionId, limit = 12) {
   clearNode(node);
   if (!node) {
@@ -1949,11 +1930,30 @@ function renderSettingsSectionSummary(node, payload, sectionId, limit = 12) {
   node.appendChild(row);
 }
 
+// Ładne, spójne podpisy modeli w dropdownie — surowe id (np. "claude-haiku-4-5-20251001",
+// z datą, gdy reszta bez) wyglądają niespójnie. Wartość selecta zostaje realnym id.
+function prettyModelLabel(id) {
+  const raw = String(id == null ? "" : id).trim();
+  if (!raw) return raw;
+  const s = raw.replace(/^claude-/, "").replace(/-\d{6,}$/, "");
+  const m = s.match(/^([a-z]+)-(.+)$/i);
+  if (!m) return raw;
+  const family = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+  return family + " " + m[2].replace(/-/g, ".");
+}
+
 function renderBrainApplyControls(payload) {
   const graph = safeObject(payload.capability_graph);
   const brain = safeObject(graph.brain_capabilities);
   const providers = Array.isArray(brain.providers) ? brain.providers : [];
-  const normalProviders = providers.filter((provider) => !provider.developer_only);
+  // Pokaż tylko dostawców realnie DOSTĘPNYCH — ukryj niezainstalowane lokalne runtime'y
+  // (ollama/mlx/llama.cpp/bielik/mistral), żeby lista nie była zaśmiecona martwymi opcjami.
+  // Aktywnego dostawcę trzymamy zawsze, nawet gdyby chwilowo raportował available=false.
+  const normalProviders = providers.filter(
+    (provider) =>
+      !provider.developer_only &&
+      (provider.available !== false || String(provider.id) === String(brain.current_provider || "")),
+  );
   const currentProvider = String(brain.current_provider || "");
   const previewProvider = runtimeSettingsPreviewValue("brain", "brain.provider", currentProvider);
   const currentProviderObject = runtimeSettingsBrainProvider(payload, currentProvider);
@@ -1990,41 +1990,9 @@ function renderBrainApplyControls(payload) {
       : "";
     el.activeBrainProviderSelect.disabled = keepDeveloperProviderActive && providerOptions.length === 1;
   }
-  renderBrainProviderContractSummary(el.brainSettingsSummaryList, payload);
+  // Only one real provider (Claude CLI) → hide the single-choice dropdown entirely.
+  setFieldVisibleForSelect(el.activeBrainProviderSelect, normalProviders.length);
   updateBrainControlOptions();
-}
-
-function renderBrainProviderContractSummary(node, payload) {
-  if (!node) {
-    return;
-  }
-  const provider = runtimeSettingsBrainProvider(payload, runtimeSettingsCurrentProvider(payload));
-  if (!provider || provider.provider_id !== "claude_cli") {
-    renderSettingsSectionSummary(node, payload, "brain_provider");
-    return;
-  }
-  clearNode(node);
-  const row = document.createElement("article");
-  row.className = "list-row cockpit-summary-card";
-  appendLine(row, "Kontrakt dostawcy Claude CLI", "input-line");
-  const values = document.createElement("dl");
-  values.className = "kv-list";
-  renderKeyValues(values, [
-    ["Dostępność", provider.available ? "Dostępne" : "Brak"],
-    ["Auth", humanDisplayValue(provider.auth_status)],
-    ["Model", `${humanDisplayValue(provider.effective_model || provider.selected_model)} (${humanDisplayValue(provider.model_source)})`],
-    ["Poziom wysiłku", `${humanDisplayValue(provider.effective_effort || provider.selected_effort)} (${humanDisplayValue(provider.effort_source)})`],
-    ["Uprawnienia", humanDisplayValue(provider.permission_mode)],
-    ["Narzędzia", `dostępne: ${humanDisplayValue(provider.tools)}; dozwolone: ${humanDisplayValue(provider.allowed_tools)}; zablokowane: ${humanDisplayValue(provider.disallowed_tools)}`],
-    ["MCP", `${humanDisplayValue(provider.mcp_config_status)}; strict: ${humanDisplayValue(provider.strict_mcp_config)}`],
-    ["Streaming", `${humanDisplayValue(provider.streaming_supported_state)}; output: ${humanDisplayValue(provider.output_format)}; partials: ${humanDisplayValue(provider.partial_messages_supported)}`],
-    ["Zastosowanie", humanDisplayValue(provider.apply_semantics)],
-  ]);
-  row.appendChild(values);
-  if (provider.command_preview) {
-    appendLine(row, provider.command_preview, "payload-line");
-  }
-  node.appendChild(row);
 }
 
 function updateBrainControlOptions() {
@@ -2049,7 +2017,7 @@ function updateBrainControlOptions() {
     el.activeBrainModelSelect,
     models.map((item) => ({
       value: item.id,
-      label: item.label || item.id,
+      label: prettyModelLabel(item.id),
       disabled: item.available === false,
       title: item.available === false ? "Backend raportuje model jako niedostępny." : "",
     })),
@@ -2059,9 +2027,21 @@ function updateBrainControlOptions() {
     el.activeBrainModelSelect.disabled = models.length === 0 || lockedToDeveloperProvider || Boolean(modelDisabledReason);
     el.activeBrainModelSelect.title = modelDisabledReason || "";
   }
-  const efforts = Array.isArray(safeObject(provider).allowed_effort_values)
+  // Effort options: prefer a per-model list (brain_capabilities.providers[].model_effort_support),
+  // fall back to the provider-wide allowed set, then to the full CLI effort ladder.
+  const selectedModelId = el.activeBrainModelSelect ? String(el.activeBrainModelSelect.value || "") : "";
+  const modelEffortSupport = safeObject(safeObject(provider).model_effort_support);
+  const perModelEfforts = Array.isArray(modelEffortSupport[selectedModelId])
+    ? modelEffortSupport[selectedModelId]
+    : null;
+  const providerEfforts = Array.isArray(safeObject(provider).allowed_effort_values)
     ? provider.allowed_effort_values
     : [];
+  const efforts = perModelEfforts && perModelEfforts.length > 0
+    ? perModelEfforts
+    : providerEfforts.length > 0
+      ? providerEfforts
+      : FULL_EFFORT_VALUES;
   const effortUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "brain.effort");
   const currentEffortControlValue = el.activeBrainEffortSelect ? String(el.activeBrainEffortSelect.value || "") : "";
   const effectiveEffort = runtimeSettingsCurrentValueForKey(payload, "brain.effort");
@@ -2079,12 +2059,6 @@ function updateBrainControlOptions() {
   if (el.activeBrainEffortSelect) {
     el.activeBrainEffortSelect.disabled = efforts.length === 0 || lockedToDeveloperProvider || Boolean(effortUnknownReason);
     el.activeBrainEffortSelect.title = effortUnknownReason || "";
-  }
-  const fastUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "brain.fast");
-  if (el.activeBrainFastToggle) {
-    el.activeBrainFastToggle.checked = Boolean(runtimeSettingsPreviewValue("brain", "brain.fast", false));
-    el.activeBrainFastToggle.disabled = !safeObject(provider).fast_supported || lockedToDeveloperProvider || Boolean(fastUnknownReason);
-    el.activeBrainFastToggle.title = fastUnknownReason || "";
   }
   runtimeSettingsSetPreview("brain", runtimeSettingsDraftForGroup("brain"));
   updateRestartRequiredBanner();
@@ -2174,12 +2148,15 @@ function renderTtsApplyControls(payload) {
   if (el.voiceTtsModelSelect) el.voiceTtsModelSelect.disabled = settingsFieldAllowedValuesWithCurrent(ttsModelField).length === 0;
   if (el.voiceVoiceIdSelect) el.voiceVoiceIdSelect.disabled = settingsFieldAllowedValuesWithCurrent(voiceIdField).length === 0;
   if (el.voiceProfileSelect) el.voiceProfileSelect.disabled = settingsFieldAllowedValuesWithCurrent(voiceProfileField).length === 0;
+  // Single-option engine/model/profile dropdowns are hidden; ID głosu keeps its manual entry.
+  setFieldVisibleForSelect(el.voiceTtsSelect, ttsProviders.length);
+  setFieldVisibleForSelect(el.voiceTtsModelSelect, settingsFieldAllowedValuesWithCurrent(ttsModelField).length);
+  setFieldVisibleForSelect(el.voiceProfileSelect, settingsFieldAllowedValuesWithCurrent(voiceProfileField).length);
   if (el.voiceSpeedInput) {
     el.voiceSpeedInput.disabled = false;
     const currentSpeed = settingsPreviewFieldValue(payload, "voice_tts", "speed_or_rate");
     el.voiceSpeedInput.value = currentSpeed === null || currentSpeed === undefined ? "" : currentSpeed;
   }
-  renderSettingsSectionSummary(el.voiceTtsStatusList, payload, "voice_tts");
   updateTtsControlOptions();
   if (ttsField.requires_restart || ttsModelField.requires_restart || voiceIdField.requires_restart) {
     setText(el.voiceApplyStatus, "Wymaga restartu. Zrestartuj Jarvisa, żeby to zmienić.");
@@ -2225,7 +2202,8 @@ function renderSttApplyControls(payload) {
   if (el.voiceSttSelect) el.voiceSttSelect.disabled = sttProviders.length === 0;
   if (el.voiceSttModelSelect) el.voiceSttModelSelect.disabled = settingsFieldAllowedValuesWithCurrent(sttModelField).length === 0;
   if (el.voiceSttLanguageSelect) el.voiceSttLanguageSelect.disabled = settingsFieldAllowedValuesWithCurrent(languageField).length === 0;
-  renderSettingsSectionSummary(el.voiceSttStatusList, payload, "voice_stt");
+  // Single-option STT provider is hidden; model + language keep their manual entry fields.
+  setFieldVisibleForSelect(el.voiceSttSelect, sttProviders.length);
   updateSttControlOptions();
   if (sttField.requires_restart || sttModelField.requires_restart || languageField.requires_restart) {
     setText(el.sttApplyStatus, "Wymaga restartu. Zrestartuj Jarvisa, żeby to zmienić.");
@@ -2341,10 +2319,6 @@ function renderPttApplyControls(payload) {
     el.pttMergeWindowInput.value = settingsPreviewFieldValue(payload, "endpointing_ptt", "merge_window") || "";
     el.pttMergeWindowInput.disabled = false;
   }
-  setText(el.pttListeningSummary, runtimeSettingsCompactUnknownStatus(settingsPreviewFieldValue(payload, "endpointing_ptt", "listening_lease_state")));
-  setText(el.pttBargeInSummary, runtimeSettingsCompactUnknownStatus(settingsPreviewFieldValue(payload, "endpointing_ptt", "interrupt_policy")));
-  setText(el.pttHotkeySummary, runtimeSettingsCompactUnknownStatus(settingsPreviewFieldValue(payload, "endpointing_ptt", "ptt_hotkey")));
-  setText(el.pttVadSummary, pttVadModeSummary(payload));
   renderPttTestStatusList();
   updatePttControlOptions();
 }
@@ -2580,16 +2554,8 @@ function renderToolsApplyControls(payload) {
     applyCapabilities,
     missingInternetReason,
   );
-  setText(el.toolsInternetSummary, toolsInternetSummaryText(payload, tools));
-  setText(el.toolsNetworkPolicySummary, settingsPreviewValue(projectionValue(tools.network_policy)));
-  setText(el.toolsRegistrySummary, settingsPreviewValue(projectionValue(tools.tool_registry_status)));
   const compactBlocked = operator.applyStatus !== "Dostępne" || !hasLiveApplyControl;
   setToolsSectionCompactMode(compactBlocked);
-  if (!compactBlocked) {
-    renderToolsInternetStatusList(payload, tools, applyCapabilities);
-  } else {
-    renderToolsInternetCompactStatusList(payload, tools, applyCapabilities);
-  }
   updateToolsControlOptions();
 }
 
@@ -2773,10 +2739,8 @@ function setToolsSectionCompactMode(compact) {
   if (el.toolsSectionDescription) {
     el.toolsSectionDescription.hidden = false;
   }
-  for (const node of [el.toolsControlGrid, el.toolsSummaryDetails]) {
-    if (node) {
-      node.hidden = false;
-    }
+  if (el.toolsControlGrid) {
+    el.toolsControlGrid.hidden = false;
   }
   if (el.resetToolsPreviewButton) {
     el.resetToolsPreviewButton.disabled = false;
@@ -2926,7 +2890,6 @@ function renderPersonaApplyControls(payload) {
     profiles.map((value) => ({ value, label: personaProfileDisplayLabel(value) })),
     selectedProfile,
   );
-  renderPersonalityStatusList(payload, selectedProfile);
   setText(
     el.personaApplyStatus,
     profiles.length > 0 ? runtimeSettingsGroupNoChangesMessage("persona") : "No persona profiles available.",
@@ -2958,46 +2921,7 @@ function updatePersonaControlOptions() {
   updateRestartRequiredBanner();
 }
 
-function renderPersonalityStatusList(payload, selectedProfile = null) {
-  clearNode(el.personalityStatusList);
-  if (!el.personalityStatusList) {
-    return;
-  }
-  const field = settingsPreviewField(payload, "personality", "active_persona");
-  const activeProfile = field.current || field.effective || "unknown";
-  const selected = selectedProfile || runtimeSettingsPreviewValue(
-    "persona",
-    "persona.profile",
-    field.effective || field.current || "unknown",
-  );
-  const reason = humanShortReason(field.blocker || field.warning);
-  const status = reason
-    ? "Blocked"
-    : humanStatusLabel(field.status, {
-      requiresRestart: Boolean(field.requires_restart),
-      blocked: Boolean(field.blocker),
-    });
-  const row = document.createElement("article");
-  row.className = "list-row cockpit-summary-card";
-  appendLine(row, "Personality", "input-line");
-  const values = document.createElement("dl");
-  values.className = "kv-list";
-  const rows = [
-    ["Active profile", humanDisplayValue(activeProfile)],
-    ["Selected profile", humanDisplayValue(selected)],
-    ["Status", status],
-  ];
-  if (reason) {
-    rows.push(["Reason", reason]);
-    rows.push(["Action", humanActionForReason(reason)]);
-  }
-  renderKeyValues(values, rows);
-  row.appendChild(values);
-  el.personalityStatusList.appendChild(row);
-}
-
 function renderAuxiliaryCockpitSectionsFromPayload(payload) {
-  renderPersonalityStatusList(payload);
   renderQueueBargeInSummary(payload);
   renderMemoryApprovalsSummary(payload);
   renderLatestTurnTraceSummary(payload);
@@ -3252,9 +3176,6 @@ function runtimeSettingsDraftForGroup(group) {
         ? el.activeBrainEffortSelect.value
         : undefined,
     };
-    if (el.activeBrainFastToggle && !el.activeBrainFastToggle.disabled) {
-      draft["brain.fast"] = Boolean(el.activeBrainFastToggle.checked);
-    }
     return draft;
   }
   if (group === "tts") {
@@ -3506,6 +3427,85 @@ function setSelectOptions(select, options, selectedValue) {
   if (selectedValue !== undefined && selectedValue !== null) {
     select.value = String(selectedValue);
   }
+  // A manually typed value (input "lub wpisz ręcznie") wins over the built options
+  // so a fresh model-id can be applied before the backend/oracle knows it.
+  applyManualSelectOverride(select);
+}
+
+// Manual per-select overrides keyed by the select's element id. setSelectOptions is
+// the single funnel that rebuilds every settings select, so re-applying the override
+// there keeps a hand-typed value selected across every re-render.
+const manualSelectOverrides = new Map();
+
+function applyManualSelectOverride(select) {
+  if (!select || !select.id) {
+    return;
+  }
+  const override = manualSelectOverrides.get(select.id);
+  if (override === undefined || override === null || override === "") {
+    return;
+  }
+  const value = String(override);
+  let present = false;
+  for (const option of Array.from(select.options)) {
+    if (option.value === value) {
+      present = true;
+      break;
+    }
+  }
+  if (!present) {
+    const option = document.createElement("option");
+    option.value = value;
+    setText(option, `${value} (ręcznie)`);
+    select.appendChild(option);
+  }
+  select.value = value;
+}
+
+function bindManualSelectInput(manualInput, select) {
+  if (!manualInput || !select || !select.id) {
+    return;
+  }
+  bindIf(manualInput, "input", () => {
+    const raw = manualInput.value.trim();
+    if (raw) {
+      manualSelectOverrides.set(select.id, raw);
+    } else {
+      manualSelectOverrides.delete(select.id);
+    }
+    // Rebuild every control from the last payload: setSelectOptions re-applies the
+    // override when set, and drops back to the computed value when the field is cleared.
+    renderRuntimeSettingsControls(
+      cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {},
+    );
+  });
+}
+
+// Buttons live inside the collapsible-card <summary>; a click on them must run the
+// button action without also toggling the accordion. stopPropagation keeps the click
+// from reaching the summary, so the disclosure never toggles on Reset/Apply.
+function bindSummaryToggleGuards() {
+  const controls = document.querySelectorAll(
+    ".collapsible-card > summary button, .collapsible-card > summary .mission-actions",
+  );
+  for (const node of Array.from(controls)) {
+    node.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+  }
+}
+
+// Hide a whole field (label + select + optional manual input) when the backend offers
+// at most one real option — a single-choice select is noise, not a control.
+function setFieldVisibleForSelect(select, realOptionCount) {
+  if (!select || typeof select.closest !== "function") {
+    return;
+  }
+  const field = select.closest(".field-label");
+  if (!field) {
+    return;
+  }
+  field.hidden = realOptionCount <= 1;
 }
 
 function setButtonEnabled(button, enabled) {
@@ -4285,7 +4285,6 @@ function renderMissionControl(snapshot) {
   renderMissionModules(safeSnapshot, summary);
   renderOperationalChecklist(safeSnapshot);
   renderVoiceDoctor(safeSnapshot);
-  renderProviderDoctor(safeSnapshot);
   renderMissionAuxiliarySummaries(safeSnapshot);
 }
 
@@ -4670,16 +4669,6 @@ function renderVoiceDoctor(snapshot) {
   el.voiceDoctorList.appendChild(doctorKvCard("Diagnoza", [
     ["reguły", voiceDoctorDiagnoses(context).join("; ") || "brak"],
     ["znaczenie", voiceDoctorMeaning(context)],
-  ]));
-}
-
-function renderProviderDoctor(snapshot) {
-  clearNode(el.providerDoctorList);
-  const context = runtimeOverviewContext(snapshot || {});
-  el.providerDoctorList.appendChild(doctorKvCard("Diagnostyka dostawcy", providerDoctorRows(context)));
-  el.providerDoctorList.appendChild(doctorKvCard("Diagnoza", [
-    ["reguły", providerDoctorDiagnoses(context).join("; ") || "brak"],
-    ["znaczenie", providerDoctorMeaning(context)],
   ]));
 }
 
@@ -5407,7 +5396,6 @@ const RUNTIME_OVERVIEW_SECTIONS = [
       field("Claude config", "brain", (ctx) =>
         adapterRegistration(ctx.adapters, ["claude_cli", "claude_cli_warm"]),
       ),
-      field("Codex config", "brain", (ctx) => adapterRegistration(ctx.adapters, ["codex_cli"])),
     ],
   },
   {
@@ -8782,7 +8770,6 @@ function setInteractiveEnabled(enabled) {
     el.activeBrainProviderSelect,
     el.activeBrainModelSelect,
     el.activeBrainEffortSelect,
-    el.activeBrainFastToggle,
     el.applyBrainSettingsButton,
     el.voiceSpeakResponsesToggle,
     el.voiceTtsSelect,
@@ -8880,15 +8867,10 @@ function clearDynamicSections() {
   clearNode(el.missionControlModules);
   clearNode(el.missionControlChecklist);
   clearNode(el.voiceDoctorList);
-  clearNode(el.providerDoctorList);
-  clearNode(el.brainSettingsSummaryList);
-  clearNode(el.voiceTtsStatusList);
-  clearNode(el.voiceSttStatusList);
   clearNode(el.queueBargeInList);
   clearNode(el.memoryApprovalsList);
   clearNode(el.latestTurnTraceList);
   clearNode(el.runtimeLogsSummaryList);
-  clearNode(el.personalityStatusList);
   clearNode(el.settingsPreviewList);
   clearNode(el.settingsList);
   clearNode(el.runtimeOverviewList);

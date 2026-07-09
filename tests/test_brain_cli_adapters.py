@@ -1040,8 +1040,10 @@ def test_brain_manager_from_config_registers_production_adapters_by_default() ->
 
     manager = BrainManager.from_config(config)
 
-    # Production adapters only: claude_cli, codex_cli (mock removed from production)
-    assert manager.adapter_names() == ["claude_cli", "codex_cli"]
+    # Production adapter only: claude_cli. Codex CLI is intentionally never
+    # registered (owner decree: Jarvis runs on Claude Code only), even though the
+    # example config still carries a [brain.codex_cli] block.
+    assert manager.adapter_names() == ["claude_cli"]
     assert manager.current_adapter_name == "claude_cli"
 
 
@@ -1054,13 +1056,20 @@ def test_brain_manager_from_config_registers_claude_cli_when_enabled(tmp_path: P
     assert manager.current_adapter_name == "claude_cli"
 
 
-def test_brain_manager_from_config_registers_codex_cli_when_enabled(tmp_path: Path) -> None:
-    config = load_config(write_config(tmp_path, codex_enabled=True, test_enabled=False))
+def test_brain_manager_from_config_never_registers_codex_cli_even_when_enabled(
+    tmp_path: Path,
+) -> None:
+    # Owner decree: Codex CLI must not return as a brain provider even with
+    # [brain.codex_cli] enabled=true. Claude is enabled here so the manager has a
+    # valid adapter; codex must be absent regardless.
+    config = load_config(
+        write_config(tmp_path, claude_enabled=True, codex_enabled=True, test_enabled=False)
+    )
 
     manager = BrainManager.from_config(config)
 
-    assert manager.adapter_names() == ["codex_cli"]
-    assert manager.current_adapter_name == "codex_cli"
+    assert "codex_cli" not in manager.adapter_names()
+    assert manager.adapter_names() == ["claude_cli"]
 
 
 def test_brain_manager_from_config_can_use_claude_cli_as_default(tmp_path: Path) -> None:
@@ -1072,13 +1081,17 @@ def test_brain_manager_from_config_can_use_claude_cli_as_default(tmp_path: Path)
     assert manager.get_adapter().name == "claude_cli"
 
 
-def test_brain_manager_from_config_can_use_codex_cli_as_default(tmp_path: Path) -> None:
-    config = load_config(write_config(tmp_path, default_adapter="codex_cli"))
+def test_brain_manager_from_config_cannot_use_codex_cli_as_default(tmp_path: Path) -> None:
+    # Even asking for codex_cli as the default adapter must not surface it: it is
+    # never registered, so selection falls back to another available adapter.
+    config = load_config(
+        write_config(tmp_path, default_adapter="codex_cli", codex_enabled=True)
+    )
 
     manager = BrainManager.from_config(config)
 
-    assert manager.current_adapter_name == "codex_cli"
-    assert manager.get_adapter().name == "codex_cli"
+    assert "codex_cli" not in manager.adapter_names()
+    assert manager.current_adapter_name != "codex_cli"
 
 
 def test_text_turn_pipeline_still_works_with_mock_default() -> None:

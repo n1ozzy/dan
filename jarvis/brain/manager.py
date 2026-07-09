@@ -9,7 +9,6 @@ from jarvis.brain.auto_detect import detect_all_providers, get_default_adapter
 from jarvis.brain.base import BrainAdapter, BrainRequest, BrainResponse
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
 from jarvis.brain.claude_cli_warm_adapter import ClaudeCliWarmAdapter
-from jarvis.brain.codex_cli_adapter import CodexCliAdapter
 from jarvis.brain.groq_adapter import create_groq_adapter
 from jarvis.brain.sync_adapter import wrap_async_adapter
 from jarvis.brain.test_adapter import create_test_adapter
@@ -22,7 +21,8 @@ class BrainManagerError(Exception):
 class BrainManager:
     """Selects a stateless brain adapter without owning provider session state.
     
-    Production adapters only: claude_cli, codex_cli, groq.
+    Production adapters only: claude_cli, groq. (Codex CLI intentionally not
+    registered — Jarvis runs on Claude Code only, owner decree.)
     """
 
     def __init__(self, adapters: Iterable[BrainAdapter], default_adapter: str) -> None:
@@ -52,8 +52,8 @@ class BrainManager:
         detected = detect_all_providers()
         adapters: list[BrainAdapter] = []
 
-        # Priority order for default adapter
-        priority = ["claude_cli", "codex_cli", "groq", "claude_cli_warm"]
+        # Priority order for default adapter (codex_cli intentionally excluded)
+        priority = ["claude_cli", "groq", "claude_cli_warm"]
 
         # Register Claude CLI adapter
         if detected["claude_cli"].available:
@@ -132,27 +132,9 @@ class BrainManager:
                     )
                 )
 
-        # Register Codex CLI adapter
-        if detected["codex_cli"].available:
-            codex_config = getattr(brain_config, "codex_cli", None)
-            if codex_config is None:
-                from types import SimpleNamespace
-                codex_config = SimpleNamespace(
-                    command="codex",
-                    args=[],
-                    model="",
-                    timeout_seconds=120,
-                    enabled=True,
-                )
-            if _should_register_cli_adapter(codex_config, config_default, "codex_cli"):
-                adapters.append(
-                    CodexCliAdapter(
-                        command=getattr(codex_config, "command", "codex"),
-                        args=getattr(codex_config, "args", []),
-                        model=getattr(codex_config, "model", ""),
-                        timeout_seconds=getattr(codex_config, "timeout_seconds", 120),
-                    )
-                )
+        # Codex CLI adapter intentionally NOT registered (owner decree: Jarvis
+        # runs on Claude Code only). Even if the binary is present and
+        # [brain.codex_cli] enabled=true, it will not enter brain.providers.
 
         # Register Groq API adapter - auto-register if API key available OR explicitly enabled in config
         groq_config = getattr(brain_config, "groq", None)
@@ -171,7 +153,7 @@ class BrainManager:
 
         if not adapters:
             raise BrainManagerError(
-                "No brain adapters available. Install Claude CLI, Codex CLI, or set GROQ_API_KEY."
+                "No brain adapters available. Install Claude CLI or set GROQ_API_KEY."
             )
 
         # Determine default adapter: config default > first available in priority order

@@ -21,7 +21,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jarvis.config import JarvisConfig, load_config
-from jarvis.panel.hotkey import HotkeyEdgeDetector, PttHotkeyClient, parse_hotkey
+from jarvis.panel.hotkey import (
+    HotkeyEdgeDetector,
+    HotkeySpecError,
+    PttHotkeyClient,
+    accessibility_trust_state,
+    fetch_effective_hotkey,
+    parse_hotkey,
+)
 from jarvis.paths import resolve_runtime_paths
 from jarvis.security.transport import load_api_token
 
@@ -216,9 +223,28 @@ class MenuBarApp:
         edge detector. Needs macOS Accessibility permission; without it the
         global monitor silently sees nothing (the local one still works while
         the panel is focused). A blank/zero hotkey installs nothing.
+
+        The combo is the daemon's *effective* `voice.ptt_hotkey` (the DB value
+        the panel UI writes to), falling back to the static TOML only when the
+        daemon can't be reached — otherwise the monitor would watch the config
+        default while the user pressed the combo they set in the panel.
         """
 
-        mask = parse_hotkey(self._settings.ptt_hotkey)
+        spec = (
+            fetch_effective_hotkey(
+                self._settings.api_base_url, self._settings.api_token
+            )
+            or self._settings.ptt_hotkey
+        )
+        try:
+            mask = parse_hotkey(spec)
+        except HotkeySpecError as exc:
+            print(
+                f"panel: nieprawidlowy skrot PTT {spec!r}: {exc} "
+                "Globalny hotkey wylaczony — ustaw poprawny skrot w panelu.",
+                file=sys.stderr,
+            )
+            return
         if mask == 0:
             return
         detector = HotkeyEdgeDetector(mask)
@@ -242,13 +268,36 @@ class MenuBarApp:
                 flags_changed, handler
             )
         )
-        print(
-            f"panel: globalny PTT hotkey aktywny ({self._settings.ptt_hotkey}). "
-            "Jesli trzymanie skrotu nie wlacza nasluchu: Ustawienia systemowe > "
-            "Prywatnosc i ochrona > Dostepnosc — wlacz aplikacje uruchamiajaca "
-            "panel (Terminal/Python), potem zrestartuj panel.",
-            file=sys.stderr,
-        )
+        # Globalny monitor flagsChanged dostaje zdarzenia TYLKO gdy proces
+        # panelu ma uprawnienie Dostepnosc. Bez niego monitor jest wpiety, ale
+        # handler nigdy sie nie odpala — skrot milczy, choc przycisk PRZYTRZYMAJ
+        # (WebView→HTTP, bez uprawnien) dziala. Wykrywamy to i mowimy wprost,
+        # zamiast udawac, ze hotkey jest aktywny.
+        trust = accessibility_trust_state()
+        if trust == "untrusted":
+            print(
+                f"panel: skrot PTT {spec!r} zarejestrowany, ale globalny hotkey "
+                "NIE ZADZIALA — proces panelu nie ma uprawnienia Dostepnosc. "
+                "Ustawienia systemowe > Prywatnosc i ochrona > Dostepnosc — "
+                "wlacz aplikacje uruchamiajaca panel (Terminal/Python), potem "
+                "zrestartuj panel. (Przycisk PRZYTRZYMAJ w panelu dziala bez "
+                "tego uprawnienia.)",
+                file=sys.stderr,
+            )
+        elif trust == "trusted":
+            print(
+                f"panel: globalny PTT hotkey aktywny ({spec}) — Dostepnosc "
+                "przyznana.",
+                file=sys.stderr,
+            )
+        else:  # unknown — nie potrafimy sprawdzic uprawnienia, damy hint
+            print(
+                f"panel: globalny PTT hotkey zarejestrowany ({spec}). Jesli "
+                "trzymanie skrotu nie wlacza nasluchu: Ustawienia systemowe > "
+                "Prywatnosc i ochrona > Dostepnosc — wlacz aplikacje "
+                "uruchamiajaca panel (Terminal/Python), potem zrestartuj panel.",
+                file=sys.stderr,
+            )
 
     def _install_edit_menu(self, AppKit, app):  # noqa: N803 - ObjC module name
         """Standardowe skróty edycji (⌘A/⌘C/⌘V/⌘X/⌘Z) w polach webview.

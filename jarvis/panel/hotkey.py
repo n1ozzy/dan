@@ -139,6 +139,80 @@ def _urllib_health_checker(base_url: str) -> bool:
         return False
 
 
+def _urllib_settings_getter(base_url: str, token: str | None) -> Any:
+    headers: dict[str, str] = {}
+    if token:
+        headers["X-Jarvis-Token"] = token
+    request = urllib.request.Request(
+        f"{base_url.rstrip('/')}/settings", headers=headers, method="GET"
+    )
+    with urllib.request.urlopen(request, timeout=2) as response:  # noqa: S310 - localhost
+        return json.loads(response.read().decode("utf-8"))
+
+
+def fetch_effective_hotkey(
+    base_url: str,
+    token: str | None,
+    *,
+    getter: Callable[[str, str | None], Any] = _urllib_settings_getter,
+) -> str | None:
+    """Return the live `voice.ptt_hotkey` the daemon actually holds, or None.
+
+    The panel UI writes the hotkey to the daemon's DB-backed settings (GET
+    /settings, source "api"), NOT to the static TOML the shell loads at boot.
+    Reading only the TOML would bind the native monitor to a stale/default
+    combo while the user pressed the one they configured — the button (a
+    WebView→HTTP call, combo-agnostic) would still work, the global hotkey
+    would silently never fire. So we ask the daemon for the effective value
+    and fall back to the config only when it is unreachable, missing, or the
+    stored value is not a usable string.
+    """
+
+    try:
+        payload = getter(base_url, token)
+    except Exception as exc:  # noqa: BLE001 - a dead daemon must not crash panel boot
+        logger.warning("Could not read effective PTT hotkey from daemon: %s", exc)
+        return None
+    settings = payload.get("settings") if isinstance(payload, dict) else None
+    if not isinstance(settings, dict):
+        return None
+    value = settings.get("voice.ptt_hotkey")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def accessibility_trust_state(
+    *,
+    checker: Callable[[], bool] | None = None,
+) -> str:
+    """Return "trusted" | "untrusted" | "unknown" for macOS Accessibility.
+
+    A global NSEvent monitor for key/flagsChanged events only receives events
+    when the running process is trusted for Accessibility. Without that trust
+    the global hotkey monitor is still installed but its handler is *never*
+    called — the exact "the PTT button works, the global hotkey stays silent"
+    failure: the button is a WebView→HTTP call and needs no permission, the
+    hotkey rides the OS event stream and does.
+
+    We surface that state instead of hiding it. "unknown" means the AX API is
+    unavailable (non-macOS, or the ApplicationServices framework isn't
+    installed) so callers can print a generic hint rather than a false claim
+    of being trusted or untrusted.
+    """
+
+    if checker is None:
+        try:
+            from ApplicationServices import AXIsProcessTrusted  # type: ignore
+        except Exception:  # noqa: BLE001 - missing framework / non-macOS -> unknown
+            return "unknown"
+        checker = AXIsProcessTrusted
+    try:
+        return "trusted" if checker() else "untrusted"
+    except Exception:  # noqa: BLE001 - a probe failure must not crash panel boot
+        return "unknown"
+
+
 def _close_http_error(exc: urllib.error.HTTPError) -> None:
     close = getattr(exc, "close", None)
     if callable(close):
@@ -222,5 +296,7 @@ __all__ = [
     "HotkeySpecError",
     "PttHotkeyClient",
     "PTT_SOURCE",
+    "accessibility_trust_state",
+    "fetch_effective_hotkey",
     "parse_hotkey",
 ]

@@ -15,6 +15,26 @@ def reset_auto_detect() -> Generator[None, None, None]:
     auto_detect.set_which_fn(None)
 
 
+@pytest.fixture(autouse=True)
+def stub_claude_model_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep live Claude model discovery deterministic and hermetic in tests.
+
+    ``ClaudeCliAdapter.available_models`` resolves the real model list from the
+    Claude Code CLI (cached in ~/.jarvis). Tests must never spawn ``claude`` nor
+    write to the real ~/.jarvis, so we replace the resolver the adapter imported
+    with a fixed list. Tests that exercise the resolver itself
+    (test_claude_models.py) call ``resolve_available_models`` directly with an
+    injected runner + tmp cache, so they are unaffected by this stub.
+    """
+
+    import jarvis.brain.claude_cli_adapter as cli_adapter
+
+    def _fixed_models(command: str = "claude", **_kwargs: object) -> list[str]:
+        return ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+
+    monkeypatch.setattr(cli_adapter, "resolve_available_models", _fixed_models)
+
+
 @pytest.fixture
 def mock_codex_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mock codex CLI as available."""
