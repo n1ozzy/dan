@@ -498,8 +498,17 @@ class SupertonicEngine:
             return
         try:
             proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # Server ignored SIGTERM — escalate to SIGKILL so no orphan is
+                # left holding the serve port for the next autostart.
+                proc.kill()
+                proc.wait(timeout=5)
         except Exception:
             pass
+        finally:
+            self._serve_proc = None
 
     def stop_playback(self) -> None:
         """Barge-in leg 3: kill the current player process (and only it)."""

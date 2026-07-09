@@ -98,6 +98,10 @@ class SoxRecorder:
         self._proc: subprocess.Popen[bytes] | None = None
         self._capture_path: Path | None = None
         self._discard_current_capture = False
+        # True between start() and stop(): a listening session is meant to be
+        # capturing. rotate() uses it to recover from a device flap (respawn)
+        # without turning into a "start recording" on a stopped recorder.
+        self._active = False
         self._rotation_stop = threading.Event()
         self._rotation_thread: threading.Thread | None = None
         workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
@@ -111,14 +115,20 @@ class SoxRecorder:
         return proc is not None and proc.poll() is None
 
     def start(self) -> None:
+        detached = None
         with self._lock:
             if self._proc is not None:
                 if self._proc.poll() is None:
                     return
                 # The previous session died on its own (device yanked, sox
-                # crash): finalize what it captured, then start fresh.
-                self._finalize_locked()
+                # crash): detach what it captured (deliver below, off-lock, so
+                # whisper does not run under the lock), then start fresh.
+                detached = self._detach_current_locked()
             self._start_locked()
+            self._active = True
+        if detached is not None:
+            proc, path, discard = detached
+            self._deliver_segment(proc, path, discard=discard)
         self._arm_rotation()
 
     def _start_locked(self) -> None:
@@ -162,24 +172,41 @@ class SoxRecorder:
         Capture-first: the new sox is spawned under the lock so the mic gap is
         minimal, and the closed segment is delivered OUTSIDE the lock (on_capture
         runs whisper — it must not block a concurrent stop()). No-op when
-        segmentation is disabled or nothing is recording."""
+        segmentation is disabled.
+
+        Recovery: if the capture is not currently running (a previous rotation
+        hit a device flap and could not spawn), still attempt _start_locked so a
+        transient device loss does not silently kill listening for the rest of
+        the lease — the rotation thread retries every segment interval."""
 
         if self._segment_seconds <= 0:
             return
+        detached = None
         with self._lock:
             proc, path = self._proc, self._capture_path
-            if proc is None or proc.poll() is not None:
-                return
-            discard = self._discard_current_capture
-            self._proc, self._capture_path = None, None
-            self._discard_current_capture = False
-            self._start_locked()
-        self._deliver_segment(proc, path, discard=discard)
+            if proc is not None or path is not None:
+                # Healthy or dead capture with bytes to salvage — detach it for
+                # delivery below (off-lock). A None proc with a set path means a
+                # crashed sox; either way we hand its bytes to on_capture.
+                detached = self._detach_current_locked()
+            # (Re)start within an active session only: a healthy rotation, a
+            # crashed sox, or a prior device-flap that couldn't spawn. On a
+            # stopped/never-started recorder rotate stays a no-op.
+            if detached is not None or self._active:
+                self._start_locked()
+        if detached is not None:
+            proc, path, discard = detached
+            self._deliver_segment(proc, path, discard=discard)
 
     def stop(self) -> None:
         self._disarm_rotation()
         with self._lock:
-            self._finalize_locked()
+            self._active = False
+            detached = self._detach_current_locked()
+        # Deliver OUTSIDE the lock: on_capture runs whisper and must not hold the
+        # recorder lock (would serialize a concurrent start()/rotate()).
+        proc, path, discard = detached
+        self._deliver_segment(proc, path, discard=discard)
 
     def discard_current_capture(self) -> None:
         """Drop the current segment when it closes."""
@@ -217,12 +244,18 @@ class SoxRecorder:
 
     # -- internals ---------------------------------------------------------
 
-    def _finalize_locked(self) -> None:
+    def _detach_current_locked(
+        self,
+    ) -> tuple[subprocess.Popen[bytes] | None, Path | None, bool]:
+        """Take ownership of the current capture and clear the shared slot, under
+        the lock. The caller delivers the returned segment OUTSIDE the lock so
+        whisper (on_capture) never runs while the recorder lock is held."""
+
         proc, path = self._proc, self._capture_path
         discard = self._discard_current_capture
         self._proc, self._capture_path = None, None
         self._discard_current_capture = False
-        self._deliver_segment(proc, path, discard=discard)
+        return proc, path, discard
 
     def _deliver_segment(
         self,

@@ -13,6 +13,7 @@ worth transcribing; that is the CaptureGate's job (jarvis/voice/vad.py).
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import threading
 import uuid
@@ -21,11 +22,15 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Any
 
+_LOGGER = logging.getLogger(__name__)
 
 DEFAULT_STT_MODEL = "mlx-community/whisper-large-v3-turbo"
 # 16 kHz / 16-bit / mono is the recorder's native shape; used to size the
 # transcription timeout to how much audio was actually captured.
 _BYTES_PER_AUDIO_SECOND = 16000 * 2
+# Warn once the abandoned (Metal-stuck) STT workers reach this many — each still
+# pins the whisper model in memory, so a rising count is a real leak.
+_ABANDONED_WORKER_WARN = 3
 DEFAULT_STT_TIMEOUT_SECONDS = 30.0
 DEFAULT_STT_TIMEOUT_PER_AUDIO_SECOND = 10.0
 
@@ -108,6 +113,10 @@ class MlxWhisperEngine:
         self.workdir = str(workdir)
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-stt-mlx")
         self._executor_lock = threading.Lock()
+        # Workers abandoned mid-timeout (stuck in a native MLX/Metal call we can't
+        # interrupt). Tracked so we can prune those that eventually drained and
+        # warn if genuinely-stuck ones pile up — see _recycle_executor.
+        self._abandoned: list[ThreadPoolExecutor] = []
 
     def transcribe(self, audio: bytes) -> str:
         timeout = self._timeout_for(audio)
@@ -130,24 +139,37 @@ class MlxWhisperEngine:
         return self._base_timeout + audio_seconds * self._timeout_per_second
 
     def _recycle_executor(self) -> None:
-        """Replace the executor, ensuring the old worker thread is terminated.
+        """Swap in a fresh executor and hand the poisoned one off for tracking.
 
-        The old executor's thread is stuck in a Metal/MLX call that cannot be
-        interrupted from Python. We must shutdown the executor and force the
-        thread to exit by setting a sentinel that the thread checks, or by
-        using a more aggressive shutdown. Since we can't interrupt the native
-        call, we rely on the thread eventually returning and the executor
-        shutting down. The key is to NOT leave the old executor's thread
-        running indefinitely.
+        The old worker is blocked in a native MLX/Metal call that cannot be
+        interrupted or cancelled from Python — ``shutdown(wait=False)`` returns
+        immediately and the thread keeps running until the native call returns
+        on its own. Most timeouts are transient, so that thread usually exits
+        soon after and its executor finishes shutting down (self-healing). We
+        keep references to abandoned executors only to (a) prune those that have
+        drained and (b) warn if genuinely-stuck workers accumulate — each one
+        still holds the whisper model in memory, so a rising count is a real
+        (unavoidable, but now visible) leak rather than a silent one.
         """
         with self._executor_lock:
             old = self._executor
             self._executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="jarvis-stt-mlx"
             )
-            # Shutdown with wait=False allows the thread to continue running
-            # but we track it to ensure it eventually exits.
             old.shutdown(wait=False, cancel_futures=True)
+            self._abandoned.append(old)
+            # Drop executors whose worker thread has finally exited.
+            self._abandoned = [
+                ex
+                for ex in self._abandoned
+                if any(t.is_alive() for t in getattr(ex, "_threads", ()))
+            ]
+            if len(self._abandoned) >= _ABANDONED_WORKER_WARN:
+                _LOGGER.warning(
+                    "STT: %d abandoned mlx-whisper workers still stuck in Metal; "
+                    "each holds the model in memory (repeated capture timeouts).",
+                    len(self._abandoned),
+                )
 
     def stop(self) -> None:
         with self._executor_lock:

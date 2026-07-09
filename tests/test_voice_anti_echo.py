@@ -109,6 +109,43 @@ def test_transcript_with_mostly_new_tokens_is_accepted(db_path: Path) -> None:
     assert decision.accepted is True
 
 
+def test_long_tts_history_does_not_falsely_reject_original_sentence(db_path: Path) -> None:
+    # FIX-#8: with a long TTS history the union of spoken tokens covers most
+    # words, so union overlap alone would falsely reject an original user
+    # sentence that merely reuses one word from each of many sentences. The
+    # best-row guard (no single spoken row overlaps enough) keeps it accepted.
+    for sentence in (
+        "lampa świeci bardzo jasno dzisiaj wieczorem",
+        "stół jest okrągły oraz drewniany naprawdę",
+        "okno wychodzi na zielony spory ogród",
+        "krzesło stoi sobie w rogu pokoju",
+        "ściana ma kolor jasnoniebieski właśnie teraz",
+        "podłoga została zrobiona z solidnego dębu",
+    ):
+        speak_and_finish(db_path, sentence)
+
+    # One word from each spoken sentence: union overlap ~1.0, but no single row
+    # overlaps more than 1/6 (~0.17), below min_row_overlap.
+    decision = build_gate(db_path).accepts_transcript(
+        "lampa stół okno krzesło ściana podłoga"
+    )
+
+    assert decision.accepted is True
+
+
+def test_verbatim_echo_of_one_sentence_is_still_rejected(db_path: Path) -> None:
+    # The best-row guard must NOT let a genuine echo through: a near-verbatim
+    # copy of a single spoken sentence lands high overlap on that row.
+    speak_and_finish(db_path, "Sprawdziłem kalendarz i nie masz dzisiaj żadnych spotkań")
+
+    decision = build_gate(db_path).accepts_transcript(
+        "sprawdziłem kalendarz i nie masz dzisiaj żadnych spotkań"
+    )
+
+    assert decision.accepted is False
+    assert decision.reason == "echo"
+
+
 # --- echo rejection ----------------------------------------------------------
 
 

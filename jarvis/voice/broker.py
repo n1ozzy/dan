@@ -67,7 +67,13 @@ class VoiceBroker:
             if self._thread.is_alive():
                 _LOGGER.warning("Voice broker thread did not stop within timeout.")
             self._thread = None
-        self._executor.shutdown(cancel_futures=True)
+        # Do NOT wait on a synthesis that's mid-flight: _engine.synthesize can be
+        # a subprocess with a timeout up to voice.tts_timeout (~120s), and
+        # _stop_playback only kills the PLAYER, not the synth. wait=True here made
+        # daemon shutdown hang for that whole timeout. cancel_futures drops the
+        # queued prefetch; a running one finishes on its own worker thread while
+        # shutdown returns immediately.
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _run(self) -> None:
         # A non-TTS exception (sqlite "database is locked", vanished binary)

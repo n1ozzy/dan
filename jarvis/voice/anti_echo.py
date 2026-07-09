@@ -9,13 +9,18 @@ independent of final status. A 'queued' row a barge-in flipped to 'cancelled'
 never played (spoken_at NULL) and is excluded; a 'failed' row killed mid-play
 (spoken_at set) did put audio in the air and is included (FIX-09).
 
-The comparison is deterministic token overlap on normalized text, computed
-row-by-row (not union) against each sentence Jarvis spoke in the window. The
-best row overlap is used. To avoid rejecting conversational follow-ups that
-reference Jarvis's key terms (short phrases like "file_read tool" hitting 1.0
-overlap against the introducing sentence), a minimum token count is required
-before rejection: echoes are typically longer sentences, follow-ups are short.
-Threshold and min_echo_tokens are config data, calibrated at the G4 live gate.
+The comparison is deterministic token overlap on normalized text. A PTT capture
+spans several consecutive TTS sentences, so the primary signal is UNION overlap
+(the incoming tokens against the union of every sentence Jarvis spoke in the
+window) — measured live 2026-07-02: pure echo ~1.0 union vs a real interjection
+0.31. Rejection additionally requires that some SINGLE spoken row overlaps too
+(best-row >= min_row_overlap): the union of a long TTS history covers most common
+words, so union alone would falsely reject an original user sentence that merely
+reuses scattered words; a genuine echo, being a copy, always lands high overlap
+on the specific rows it echoes. A minimum token count is also required so short
+follow-ups referencing Jarvis's key terms ("file_read tool") are not dropped.
+Threshold, min_echo_tokens and min_row_overlap are config data, calibrated at
+the G4 live gate.
 """
 
 from __future__ import annotations
@@ -32,6 +37,10 @@ from jarvis.voice.transcription import normalize_phrase
 DEFAULT_WINDOW_SECONDS = 30
 DEFAULT_OVERLAP_THRESHOLD = 0.75
 DEFAULT_MIN_ECHO_TOKENS = 5
+# A single spoken row must clear this to confirm echo, guarding against a bloated
+# union (long TTS history) falsely rejecting an original user turn. Kept below the
+# measured per-row echo overlap (~0.52) so real echoes still trip it.
+DEFAULT_MIN_ROW_OVERLAP = 0.4
 
 # Corpus membership is decided by spoken_at, not status (FIX-09): the broker
 # stamps spoken_at the moment a chunk reaches the speaker, so a NULL means the
@@ -66,6 +75,10 @@ class AntiEchoGate:
             getattr(config, "anti_echo_min_echo_tokens", DEFAULT_MIN_ECHO_TOKENS)
             or DEFAULT_MIN_ECHO_TOKENS
         )
+        self._min_row_overlap = float(
+            getattr(config, "anti_echo_min_row_overlap", DEFAULT_MIN_ROW_OVERLAP)
+            or DEFAULT_MIN_ROW_OVERLAP
+        )
 
     def accepts_transcript(self, transcript: str) -> EchoDecision:
         tokens = set(normalize_phrase(transcript).split())
@@ -89,10 +102,18 @@ class AntiEchoGate:
         # user interjection over playing TTS 0.31 union. Fail-closed for turn
         # creation: dropping a user sentence that duplicates Jarvis's own words is
         # acceptable; an echo that becomes a turn is a violation by construction.
-        # Require BOTH: high union overlap AND minimum token count to reject.
+        # Reject only when ALL hold: high union overlap, minimum token count, AND
+        # some single spoken row clears min_row_overlap. The last guard stops a
+        # bloated union (long TTS history covering most common words) from falsely
+        # rejecting an original user sentence — a real echo, being a copy, always
+        # lands high on the specific rows it repeats.
         if union:
             union_overlap = len(tokens & union) / len(tokens)
-            if union_overlap >= self._threshold and len(tokens) >= self._min_echo_tokens:
+            if (
+                union_overlap >= self._threshold
+                and len(tokens) >= self._min_echo_tokens
+                and best_overlap >= self._min_row_overlap
+            ):
                 return EchoDecision(accepted=False, reason="echo", matched_text=best_row)
 
         return EchoDecision(accepted=True, reason="ok")

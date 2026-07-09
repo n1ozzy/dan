@@ -347,6 +347,32 @@ def test_rotate_delivers_the_segment_and_keeps_recording(tmp_path: Path) -> None
     assert len(captures) == 2
 
 
+def test_rotate_recovers_after_a_device_flap(tmp_path: Path) -> None:
+    # FIX-#10: if the input device vanishes exactly when a rotation tries to
+    # respawn, the capture must not stay dead for the rest of the lease — the
+    # next rotation re-attempts the spawn once the device is back.
+    captures: list[bytes] = []
+    recorder, argv_file = build_sox(
+        tmp_path, on_capture=captures.append, recorder_segment_seconds=60
+    )
+    try:
+        recorder.start()
+        assert wait_for(lambda: len(spawn_lines(argv_file)) == 1)
+
+        # Device disappears; the rotation that fires now cannot spawn a capture.
+        recorder._device_provider = lambda: None
+        recorder.rotate()
+        assert not recorder.recording  # capture went cold, session still active
+
+        # Device returns; the next rotation recovers the capture.
+        recorder._device_provider = lambda: "FakeMic"
+        recorder.rotate()
+        assert wait_for(lambda: recorder.recording)
+        assert wait_for(lambda: len(spawn_lines(argv_file)) == 2)  # start + recovery
+    finally:
+        recorder.stop()
+
+
 def test_rotate_is_a_noop_when_not_recording(tmp_path: Path) -> None:
     captures: list[bytes] = []
     recorder, argv_file = build_sox(

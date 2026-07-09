@@ -111,8 +111,12 @@ KNOWN_PROVIDER_EFFORT_LEVELS = CLAUDE_CLI_EFFORT_LEVELS
 # so a newly-shipped model is never accidentally restricted. The frontend uses
 # this to filter the effort picker to the currently-selected model; the
 # provider-wide allowed_effort_values stays the full ladder untouched.
-_FULL_EFFORT_LADDER: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
-_EFFORT_LADDER_NO_XHIGH: tuple[str, ...] = ("low", "medium", "high", "max")
+# Derived from the canonical effort enum, not a parallel literal — a level added
+# to / removed from ClaudeCliEffortLevel flows here automatically (no drift).
+_FULL_EFFORT_LADDER: tuple[str, ...] = tuple(e.value for e in CLAUDE_CLI_EFFORTS)
+_EFFORT_LADDER_NO_XHIGH: tuple[str, ...] = tuple(
+    e for e in _FULL_EFFORT_LADDER if e != "xhigh"
+)
 
 
 def _model_effort_support(
@@ -123,7 +127,13 @@ def _model_effort_support(
 
     Intersected with the provider's own effort ladder (so a provider that
     reports no efforts, e.g. groq, yields [] for every model). Unknown models
-    get the full ladder."""
+    get the full ladder.
+
+    NOTE (known altitude debt): capability is matched by substring on the model
+    id (``"haiku-4-5" in model`` etc). The deeper form is to carry effort
+    capability as model metadata resolved next to resolve_available_models, so a
+    new generation needs no edit here. Kept as-is for now — unknown models fall
+    through to the full ladder, so a new model is never accidentally restricted."""
 
     provider_order = [str(effort) for effort in provider_efforts]
     support: dict[str, list[str]] = {}
