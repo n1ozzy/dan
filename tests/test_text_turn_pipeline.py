@@ -556,7 +556,12 @@ def test_fake_claude_cli_turn_uses_selected_adapter_model_metadata(
     finished = event_payload_for_turn(conn, result.turn_id, "turn.finished")
 
     assert len(runner.calls) == 1
-    assert runner.calls[0]["command"] == ["fake-claude", "-p"]
+    command = runner.calls[0]["command"]
+    assert command[:2] == ["fake-claude", "-p"]
+    # Persona rides the real system prompt; the session is isolated from the
+    # operator's Claude Code settings (2026-07-09 persona-break fix).
+    assert "--system-prompt" in command
+    assert "--setting-sources" in command
     assert runner.calls[0]["timeout"] == 120.0
     assert requested["adapter"] == "claude_cli"
     assert requested["model"] == "claude-cli"

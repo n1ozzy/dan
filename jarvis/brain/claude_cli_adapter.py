@@ -40,7 +40,7 @@ from jarvis.brain.claude_cli_contract import (
     ClaudeCliCommandSettings,
     build_claude_cli_command,
 )
-from jarvis.brain.speech_text import generate_speech_text
+from jarvis.brain.speech_text import resolve_display_and_speech
 from jarvis.brain.tool_call_parser import parse_tool_call_blocks
 from jarvis.logging import get_logger, redact_secrets
 
@@ -57,19 +57,38 @@ DEFAULT_STREAM_ARGS = tuple(CONTRACT_DEFAULT_STREAM_ARGS)
 
 
 def format_cli_prompt(request: BrainRequest) -> str:
-    """Build a deterministic, stateless prompt for provider CLI stdin."""
+    """Build a deterministic, stateless prompt for provider CLI stdin.
+
+    Single-blob form for CLIs without a system-prompt flag (codex, warm
+    session). The Claude CLI path splits the same content into a real system
+    prompt (`format_cli_system_prompt`) plus a conversation-only stdin
+    (`format_cli_user_prompt`) — pasted-as-input persona made the model answer
+    as "Claude Code w terminalu" and refuse the Jarvis frame."""
+
+    return (
+        format_cli_system_prompt(request).rstrip("\n")
+        + "\n\n"
+        + format_cli_user_prompt(request)
+    )
+
+
+def format_cli_system_prompt(request: BrainRequest) -> str:
+    """Identity, persona, memory and tools — the model's actual SYSTEM prompt."""
 
     lines = [
-        "Jarvis",
+        "You are Jarvis — the live Jarvis runtime (jarvisd) speaking with its "
+        "operator RIGHT NOW. This request comes from the running daemon, "
+        "not a pasted transcript, not an old harness, and you are NOT Claude "
+        "Code in a terminal here.",
         "",
         "Rules:",
         "- Answer as Jarvis using only the context in this request.",
-     
         '- If you need a tool, request it using exactly: <jarvis_tool_call>{"name":"tool_name","arguments":{...}}</jarvis_tool_call>',
+        "- The ONLY tools that exist are the ones listed under \"Available "
+        "tools\" below; the runtime executes them for you. Claude Code tools, "
+        "MCP servers and their permission states do not exist in this session "
+        "— never claim a listed tool is unavailable or pending approval.",
         "- Do not claim a requested tool has already been executed.",
-        "",
-        f"Conversation: {request.conversation_id}",
-        f"Turn: {request.turn_id}",
         "",
         "System context:",
     ]
@@ -79,12 +98,22 @@ def format_cli_prompt(request: BrainRequest) -> str:
     lines.extend(["", "Memory blocks:"])
     lines.extend(_format_memory_blocks(request))
 
-    lines.extend(["", "Recent context:"])
-    recent_messages = [message for message in request.context_messages if message.role != "system"]
-    lines.extend(_format_messages(recent_messages))
-
     lines.extend(["", "Available tools:"])
     lines.extend(_format_tools(request))
+    return "\n".join(lines).strip() + "\n"
+
+
+def format_cli_user_prompt(request: BrainRequest) -> str:
+    """The conversation itself — recent turns plus the current input."""
+
+    lines = [
+        f"Conversation: {request.conversation_id}",
+        f"Turn: {request.turn_id}",
+        "",
+        "Recent context:",
+    ]
+    recent_messages = [message for message in request.context_messages if message.role != "system"]
+    lines.extend(_format_messages(recent_messages))
 
     lines.extend(
         [
@@ -96,6 +125,24 @@ def format_cli_prompt(request: BrainRequest) -> str:
         ]
     )
     return "\n".join(lines).strip() + "\n"
+
+
+def apply_claude_system_prompt(
+    command: Sequence[str], request: BrainRequest
+) -> tuple[list[str], str]:
+    """Return (argv carrying the system prompt, conversation-only stdin).
+
+    Adds ``--system-prompt`` (persona/context as the real system prompt) and
+    ``--setting-sources ""`` (the brain session must not inherit the operator's
+    Claude Code settings/CLAUDE.md — the global memory leaked in and argued
+    against the Jarvis persona). Existing flags are respected."""
+
+    argv = [str(token) for token in command]
+    if not _arg_present(argv, "--system-prompt"):
+        argv.extend(["--system-prompt", format_cli_system_prompt(request)])
+    if not _arg_present(argv, "--setting-sources"):
+        argv.extend(["--setting-sources", ""])
+    return argv, format_cli_user_prompt(request)
 
 
 def default_subprocess_runner(
@@ -262,8 +309,8 @@ def stream_cli_response(
         )
         command = command_contract.argv
         response_model = command_contract.effective_model or default_model
+    command, prompt = apply_claude_system_prompt(command, request)
     _reject_unsafe_args(command)
-    prompt = format_cli_prompt(request)
     try:
         proc = process_factory(command, prompt)
     except FileNotFoundError as exc:
@@ -351,11 +398,12 @@ def stream_cli_response(
     if parsed.parse_errors:
         raw_metadata["tool_call_parse_errors"] = list(parsed.parse_errors)
 
-    # Generate speech_text from result (stripped of tool calls, shorter)
-    speech_text = _generate_speech_text(parsed.text, parsed.tool_calls)
+    # The spoken form is the model's redacted [[GŁOS]] block (natural, listen-
+    # ready); the display keeps the rich text with the block stripped.
+    display_text, speech_text = resolve_display_and_speech(parsed.text, parsed.tool_calls)
 
     return BrainResponse(
-        text=parsed.text,
+        text=display_text,
         speech_text=speech_text,
         tool_calls=parsed.tool_calls,
         model=response_model,
@@ -427,6 +475,7 @@ def generate_cli_response(
     runner: CliRunner,
     request: BrainRequest,
     command_settings: ClaudeCliCommandSettings | None = None,
+    use_system_prompt: bool = False,
 ) -> BrainResponse:
     response_model = default_model
     if command_settings is None:
@@ -445,8 +494,13 @@ def generate_cli_response(
         )
         command = command_contract.argv
         response_model = command_contract.effective_model or default_model
+    if use_system_prompt:
+        # Claude CLI only: persona/context as the real system prompt. Other
+        # CLIs (codex) have no such flag and keep the single-blob prompt.
+        command, prompt = apply_claude_system_prompt(command, request)
+    else:
+        command, prompt = list(command), format_cli_prompt(request)
     _reject_unsafe_args(command)
-    prompt = format_cli_prompt(request)
     try:
         result = runner(command, prompt, timeout_seconds)
     except subprocess.TimeoutExpired as exc:
@@ -480,11 +534,12 @@ def generate_cli_response(
     if parsed.parse_errors:
         raw_metadata["tool_call_parse_errors"] = list(parsed.parse_errors)
 
-    # Generate speech_text from result (stripped of tool calls, shorter)
-    speech_text = _generate_speech_text(parsed.text, parsed.tool_calls)
+    # The spoken form is the model's redacted [[GŁOS]] block (natural, listen-
+    # ready); the display keeps the rich text with the block stripped.
+    display_text, speech_text = resolve_display_and_speech(parsed.text, parsed.tool_calls)
 
     return BrainResponse(
-        text=parsed.text,
+        text=display_text,
         speech_text=speech_text,
         tool_calls=parsed.tool_calls,
         model=response_model,
@@ -625,6 +680,7 @@ class ClaudeCliAdapter:
                 runner=self._runner,
                 request=request,
                 command_settings=self.command_settings(),
+                use_system_prompt=True,
             )
         return stream_cli_response(
             adapter_name=self.name,
@@ -765,6 +821,11 @@ _ALLOWED_CLI_FLAGS = frozenset(
         "--profile",
         "--cd",
         "--search",
+        # Persona/context ride the real system prompt; the brain session is
+        # isolated from the operator's Claude Code settings (live incident
+        # 2026-07-09: global CLAUDE.md leaked in and broke the Jarvis frame).
+        "--system-prompt",
+        "--setting-sources",
     }
 )
 
@@ -789,35 +850,3 @@ def _normalize_optional_cli_list(
     if preserve_single_empty and normalized == [""]:
         return [""]
     return [item for item in normalized if item]
-
-
-def _generate_speech_text(text: str, tool_calls: list) -> str:
-    """Generate a concise speech version from display text and tool calls."""
-    # If there are tool calls, just announce what we're doing
-    if tool_calls:
-        # Handle both dict and object tool calls
-        names = []
-        for tc in tool_calls:
-            if hasattr(tc, 'name'):
-                names.append(tc.name)
-            elif isinstance(tc, dict) and 'name' in tc:
-                names.append(tc['name'])
-        if len(names) == 1:
-            return f"Używam narzędzia {names[0]}."
-        return f"Uruchamiam narzędzia: {', '.join(names)}."
-    
-    # Strip markdown and keep it short
-    speech = text
-    # Remove code blocks
-    import re
-    speech = re.sub(r'```[\s\S]*?```', '[kod]', speech)
-    # Remove inline code
-    speech = re.sub(r'`[^`]+`', '', speech)
-    # Remove markdown formatting
-    speech = re.sub(r'[#*_~`]', '', speech)
-    # Collapse whitespace
-    speech = ' '.join(speech.split())
-    # Truncate
-    if len(speech) > 200:
-        speech = speech[:197] + '...'
-    return speech if speech else 'Gotowe.'

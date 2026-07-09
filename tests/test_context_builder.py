@@ -186,6 +186,67 @@ def test_build_request_returns_brain_request(
     assert result.context_snapshot["turn_id"] == "turn-new"
 
 
+def _voice_config(speak: bool) -> SimpleNamespace:
+    cfg = config()
+    cfg.voice = SimpleNamespace(enabled=True, speak_responses=speak)
+    return cfg
+
+
+def _system_text(request: BrainRequest) -> str:
+    return "\n".join(m.content for m in request.context_messages if m.role == "system")
+
+
+def test_voice_form_instruction_present_when_speaking(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    # Piece 4: the stream router is wired into the orchestrator, so the model
+    # is asked for the [[GŁOS]] block again — and it must OPEN the answer
+    # (first-sound: speech starts before the chat text finishes streaming).
+    insert_conversation(conn)
+    builder = ContextBuilder(
+        conn, config=_voice_config(True), persona_path=persona_path, now=fixed_now()
+    )
+
+    result = builder.build_request(
+        turn_id="t", conversation_id="conversation-1", input_text="hej"
+    )
+
+    system_text = _system_text(result.request)
+    assert "[[GŁOS]]" in system_text
+    assert "Zacznij" in system_text
+
+
+def test_voice_form_instruction_absent_without_voice_config(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
+
+    result = builder.build_request(
+        turn_id="t", conversation_id="conversation-1", input_text="hej"
+    )
+
+    assert "[[GŁOS]]" not in _system_text(result.request)
+
+
+def test_voice_form_instruction_absent_when_not_speaking(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    builder = ContextBuilder(
+        conn, config=_voice_config(False), persona_path=persona_path, now=fixed_now()
+    )
+
+    result = builder.build_request(
+        turn_id="t", conversation_id="conversation-1", input_text="hej"
+    )
+
+    assert "[[GŁOS]]" not in _system_text(result.request)
+
+
 def test_available_tools_are_exposed_from_the_registry(
     conn: sqlite3.Connection,
     persona_path: Path,

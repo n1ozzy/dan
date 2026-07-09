@@ -28,6 +28,7 @@ from jarvis.tools.registry import (
 )
 from jarvis.turns.models import Turn, TurnSource, TurnStatus
 from jarvis.turns.repository import ConversationRepository, TurnRepository
+from jarvis.voice.speech_form_stream import SpeechFormStreamRouter
 
 
 class TurnOrchestratorError(Exception):
@@ -156,6 +157,26 @@ class TurnOrchestrator:
             return self._speech.start_stream(turn_id=turn_id, filler_timer=filler_timer)
         except Exception:  # speech must never fail generation
             return None
+
+    def _speech_on_delta(self, speech_session: Any) -> Any:
+        """This turn's delta consumer for live speech, or None when speech is off.
+
+        When the context builder asked the model for the [[GŁOS]] voice form,
+        the raw stream goes through a per-turn SpeechFormStreamRouter so only
+        the block's inner text reaches TTS — the markers and the rich chat
+        text must never be spoken. Without the instruction the deltas ARE the
+        spoken text, so they feed the session directly (routing them would
+        silence live speech until finalize)."""
+
+        if speech_session is None:
+            return None
+        try:
+            speech_form = bool(self._context_builder.speech_form_enabled())
+        except Exception:  # speech must never fail generation
+            speech_form = False
+        if speech_form:
+            return SpeechFormStreamRouter(speech_session.feed).feed
+        return speech_session.feed
 
     def _finish_speech(self, session: Any, turn_id: str, display_text: str, speech_text: str | None = None) -> None:
         """Close the stream against the speech text (best effort).
@@ -326,7 +347,7 @@ class TurnOrchestrator:
             try:
                 response = self._brain_manager.generate(
                     context_result.request,
-                    on_delta=speech_session.feed if speech_session is not None else None,
+                    on_delta=self._speech_on_delta(speech_session),
                 )
             except BrainGenerationCancelled as exc:
                 # Barge-in killed the generation (FIX-09): this is a CANCELLED
@@ -607,7 +628,7 @@ class TurnOrchestrator:
             )
             response = self._brain_manager.generate(
                 request,
-                on_delta=speech_session.feed if speech_session is not None else None,
+                on_delta=self._speech_on_delta(speech_session),
             )
             continuation_text = _continuation_answer_text(response)
         except BrainGenerationCancelled as exc:

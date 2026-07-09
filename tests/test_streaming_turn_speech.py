@@ -126,7 +126,13 @@ def connect(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path)
 
 
-def make_orchestrator(conn: sqlite3.Connection, adapter, db_path: Path) -> TurnOrchestrator:
+def make_orchestrator(
+    conn: sqlite3.Connection,
+    adapter,
+    db_path: Path,
+    *,
+    context_builder: ContextBuilder | None = None,
+) -> TurnOrchestrator:
     event_store = create_event_store(conn)
     state_machine = RuntimeStateMachine(
         event_store, event_bus=None, initial_state=RuntimeState.IDLE
@@ -137,8 +143,17 @@ def make_orchestrator(conn: sqlite3.Connection, adapter, db_path: Path) -> TurnO
         event_bus=None,
         state_machine=state_machine,
         brain_manager=BrainManager([adapter], default_adapter=adapter.name),
-        context_builder=ContextBuilder(conn),
+        context_builder=context_builder or ContextBuilder(conn),
         speech_pipeline=SpeechPipeline(lambda: connect(db_path), config=voice_config()),
+    )
+
+
+def speech_form_context_builder(conn: sqlite3.Connection) -> ContextBuilder:
+    """A builder whose config voices responses, so the [[GŁOS]] form is active."""
+
+    return ContextBuilder(
+        conn,
+        config=SimpleNamespace(voice=SimpleNamespace(enabled=True, speak_responses=True)),
     )
 
 
@@ -248,6 +263,67 @@ def test_failed_streaming_turn_cancels_its_queued_speech(db_path: Path) -> None:
         "SELECT COUNT(*) FROM events WHERE type = 'voice.speak.cancelled'"
     ).fetchone()[0]
     assert cancelled_events == len(rows)
+    close_quietly(conn)
+
+
+def test_speech_form_turn_speaks_only_the_glos_block(db_path: Path) -> None:
+    # Piece 4: with the voice form active, only the [[GŁOS]] inner text may
+    # reach TTS — live (first sentence queued mid-generation) and without the
+    # markers or the chat text ever hitting the queue.
+    conn = connect(db_path)
+    mid_generation: list[list[tuple[str, str]]] = []
+    full_text = (
+        "[[GŁOS]]Pierwsze zdanie do mowy. Drugie zdanie do mowy.[[/GŁOS]]"
+        "Pełna **odpowiedź** na czat ze `ścieżkami/plików.py`."
+    )
+    adapter = StreamingFakeAdapter(
+        deltas=[
+            "[[GŁOS]]Pierwsze zdanie do mowy. Drugie zda",
+            "nie do mowy.[[/GŁOS]]Pełna **odpowiedź** na czat ze `ścieżkami/plików.py`.",
+        ],
+        final_text=full_text,
+        probe=lambda: mid_generation.append(queue_snapshot(db_path)),
+    )
+    orchestrator = make_orchestrator(
+        conn, adapter, db_path, context_builder=speech_form_context_builder(conn)
+    )
+
+    orchestrator.handle_text(text="Opowiedz mi coś ciekawego.")
+
+    assert adapter.saw_on_delta
+    # First spoken sentence was queued BEFORE the adapter returned (first-sound).
+    assert mid_generation == [[("Pierwsze zdanie do mowy.", "queued")]]
+    assert [text for text, _ in queue_snapshot(db_path)] == [
+        "Pierwsze zdanie do mowy.",
+        "Drugie zdanie do mowy.",
+    ]
+    close_quietly(conn)
+
+
+def test_speech_form_turn_without_block_degrades_to_final_text(db_path: Path) -> None:
+    # The model ignored the [[GŁOS]] instruction: nothing streams to TTS live,
+    # but finalize still speaks the canonical text — never silence.
+    conn = connect(db_path)
+    mid_generation: list[list[tuple[str, str]]] = []
+    full_text = "Zwykłe pierwsze zdanie bez bloku. Drugie zdanie też bez bloku."
+    adapter = StreamingFakeAdapter(
+        deltas=["Zwykłe pierwsze zdanie bez bloku. Drugie zda", "nie też bez bloku."],
+        final_text=full_text,
+        probe=lambda: mid_generation.append(queue_snapshot(db_path)),
+    )
+    orchestrator = make_orchestrator(
+        conn, adapter, db_path, context_builder=speech_form_context_builder(conn)
+    )
+
+    orchestrator.handle_text(text="Pytanie testowe.")
+
+    # The router held everything back (no [[GŁOS]] ever opened)…
+    assert mid_generation == [[]]
+    # …so the canonical text is sentence-cut after the fact instead.
+    assert [text for text, _ in queue_snapshot(db_path)] == [
+        "Zwykłe pierwsze zdanie bez bloku.",
+        "Drugie zdanie też bez bloku.",
+    ]
     close_quietly(conn)
 
 

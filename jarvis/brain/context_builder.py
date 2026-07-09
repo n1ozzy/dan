@@ -28,6 +28,23 @@ DEFAULT_CONTEXT_BUDGET_CHARS = 24000
 JOB_PROMPT_PREVIEW_CHARS = 120
 
 PERSONA_PROFILE_SETTING_KEY = "persona.profile"
+
+# Added only when responses are voiced: the model returns a rich answer for the
+# chat plus a separate, redacted form for TTS so the speaker hears natural
+# speech instead of raw markdown/paths/code read out like a robot.
+_VOICE_FORM_INSTRUCTION = (
+    "Twoja odpowiedź jest czytana na głos przez syntezator. Zacznij odpowiedź "
+    "od bloku:\n"
+    "[[GŁOS]]\n"
+    "tu krótka, naturalna forma do odsłuchu\n"
+    "[[/GŁOS]]\n"
+    "a dopiero po nim napisz pełną odpowiedź na czat (blok musi być pierwszy, "
+    "żeby mowa ruszyła od razu). W bloku streść odpowiedź jednym lub dwoma "
+    "zdaniami mowy potocznej — bez markdownu, ścieżek, nazw plików, kodu, "
+    "identyfikatorów i symboli, tak jak powiedziałbyś to drugiemu człowiekowi. "
+    "Użyj dokładnie jednego bloku i nie odwołuj się do niego w treści "
+    "przeznaczonej na czat."
+)
 DEFAULT_PERSONA_PROFILE = "jarvis"
 # Conservative file names only: the profile is a settings-supplied value, so
 # anything that could escape the persona directory is rejected outright.
@@ -473,7 +490,29 @@ class ContextBuilder:
                     metadata={"kind": "runtime_state"},
                 )
             )
+        if self.speech_form_enabled():
+            messages.append(
+                BrainMessage(
+                    role="system",
+                    content=_VOICE_FORM_INSTRUCTION,
+                    metadata={"kind": "voice_form"},
+                )
+            )
         return messages
+
+    def speech_form_enabled(self) -> bool:
+        """Ask for a redacted spoken form only when responses are voiced.
+
+        Public because the orchestrator uses the same gate to decide whether
+        streamed deltas must pass through the [[GŁOS]] stream router — the
+        instruction and the router are only safe together (instruction without
+        router = TTS reads markers aloud; router without instruction = live
+        speech goes silent until finalize)."""
+
+        return _config_bool(self._config, ("voice", "enabled"), False) and _config_bool(
+            self._config, ("voice", "speak_responses"), False
+        )
+
 
     def _resolve_persona_profile(self, request_settings: Mapping[str, Any]) -> str:
         """Validate the settings-selected persona profile, fail-closed.

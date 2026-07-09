@@ -10,6 +10,43 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# The model marks a listen-friendly rendering of its answer with this block.
+# The chat keeps the rich text; only the inner text is sent to TTS.
+_SPEECH_BLOCK = re.compile(r"\[\[GŁOS\]\](.*?)\[\[/GŁOS\]\]", re.DOTALL)
+
+
+def split_display_and_speech(text: str) -> tuple[str, str | None]:
+    """Split a model answer into ``(display_text, speech_text)``.
+
+    The model appends a ``[[GŁOS]]…[[/GŁOS]]`` block holding a short, natural
+    form for listening. That block is stripped from the display (so the chat
+    shows only the rich answer) and its inner text — whitespace collapsed —
+    becomes the spoken form. No block, or an empty one, yields
+    ``(text, None)`` so callers fall back to their own rendering.
+    """
+
+    match = _SPEECH_BLOCK.search(text)
+    if match is None:
+        return text, None
+    speech = " ".join(match.group(1).split())
+    display = _SPEECH_BLOCK.sub("", text)
+    # The removed block leaves blank lines behind; collapse them.
+    display = re.sub(r"\n{3,}", "\n\n", display).strip()
+    return display, (speech or None)
+
+
+def resolve_display_and_speech(text: str, tool_calls: list[Any]) -> tuple[str, str]:
+    """Return ``(display_text, speech_text)`` for a model answer.
+
+    Prefers the model's own redacted ``[[GŁOS]]`` form (natural, listen-ready);
+    falls back to the derived strip when the model did not provide one. The
+    display text always has the block removed.
+    """
+
+    display, redacted = split_display_and_speech(text)
+    speech = redacted or generate_speech_text(display, tool_calls)
+    return display, speech
+
 
 def generate_speech_text(text: str, tool_calls: list[Any]) -> str:
     """Generate a concise speech version from display text and tool calls.

@@ -15,6 +15,7 @@ import pytest
 
 from jarvis.brain.claude_models import (
     _FALLBACK_MODELS,
+    _PINNED_MODELS,
     filter_model_ids,
     resolve_available_models,
 )
@@ -80,7 +81,21 @@ class TestResolveLiveDiscovery:
             )
 
         result = resolve_available_models(runner=runner, cache_path=_cache(tmp_path))
-        assert result == ["claude-opus-4-8", "claude-sonnet-5"]
+        assert result == ["claude-opus-4-8", "claude-sonnet-5", *_PINNED_MODELS]
+
+    def test_pinned_models_survive_even_when_discovery_omits_them(self, tmp_path: Path) -> None:
+        """The discovery prompt routinely omits older-but-accepted ids (live
+        incident: claude-sonnet-4-6 missing from the panel picker). Empirically
+        verified ids are pinned into every returned list — discovery order
+        first, pinned appended, no duplicates."""
+
+        def runner(argv: list[str], timeout: float) -> str:
+            return '["claude-opus-4-8", "claude-sonnet-4-6"]'
+
+        result = resolve_available_models(runner=runner, cache_path=_cache(tmp_path))
+        assert "claude-sonnet-4-6" in result
+        assert result.count("claude-sonnet-4-6") == 1
+        assert result[0] == "claude-opus-4-8"
 
     def test_writes_cache_after_success(self, tmp_path: Path) -> None:
         cache = _cache(tmp_path)
@@ -105,7 +120,7 @@ class TestCacheTtl:
         result = resolve_available_models(
             runner=runner, cache_path=cache, ttl=3600.0, now=200.0
         )
-        assert result == ["claude-cached-9"]
+        assert result == ["claude-cached-9", *_PINNED_MODELS]
 
     def test_expired_cache_triggers_fresh_discovery(self, tmp_path: Path) -> None:
         cache = _cache(tmp_path)
@@ -120,7 +135,7 @@ class TestCacheTtl:
             runner=runner, cache_path=cache, ttl=3600.0, now=100_000.0
         )
         assert calls, "expired cache should trigger the runner"
-        assert result == ["claude-fresh-2"]
+        assert result == ["claude-fresh-2", *_PINNED_MODELS]
 
 
 class TestFallback:
@@ -136,28 +151,28 @@ class TestFallback:
         result = resolve_available_models(
             runner=runner, cache_path=cache, ttl=1.0, now=100_000.0
         )
-        assert result == ["claude-lastgood-3"]
+        assert result == ["claude-lastgood-3", *_PINNED_MODELS]
 
     def test_runner_raises_no_cache_falls_back_to_safety_net(self, tmp_path: Path) -> None:
         def runner(argv: list[str], timeout: float) -> str:
             raise RuntimeError("claude missing")
 
         result = resolve_available_models(runner=runner, cache_path=_cache(tmp_path))
-        assert result == list(_FALLBACK_MODELS)
+        assert result == [*_FALLBACK_MODELS, *_PINNED_MODELS]
 
     def test_empty_output_no_cache_falls_back_to_safety_net(self, tmp_path: Path) -> None:
         def runner(argv: list[str], timeout: float) -> str:
             return "no array here"
 
         result = resolve_available_models(runner=runner, cache_path=_cache(tmp_path))
-        assert result == list(_FALLBACK_MODELS)
+        assert result == [*_FALLBACK_MODELS, *_PINNED_MODELS]
 
     def test_all_junk_output_no_cache_falls_back_to_safety_net(self, tmp_path: Path) -> None:
         def runner(argv: list[str], timeout: float) -> str:
             return '["claude-code-setup", "claude-3-haiku"]'
 
         result = resolve_available_models(runner=runner, cache_path=_cache(tmp_path))
-        assert result == list(_FALLBACK_MODELS)
+        assert result == [*_FALLBACK_MODELS, *_PINNED_MODELS]
 
 
 class TestNonBlocking:
@@ -187,7 +202,7 @@ class TestNonBlocking:
         result = resolve_available_models(
             runner=runner, cache_path=cache, ttl=3600.0, now=1000.0, block=False
         )
-        assert result == list(_FALLBACK_MODELS)
+        assert result == [*_FALLBACK_MODELS, *_PINNED_MODELS]
         assert not cache.exists()  # background probe still gated → no write yet
 
         gate.set()
@@ -204,7 +219,7 @@ class TestNonBlocking:
         result = resolve_available_models(
             runner=runner, cache_path=cache, ttl=1.0, now=100_000.0, block=False
         )
-        assert result == ["claude-old-1"]  # stale served instantly
+        assert result == ["claude-old-1", *_PINNED_MODELS]  # stale served instantly
 
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:

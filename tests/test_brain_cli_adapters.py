@@ -15,7 +15,12 @@ from jarvis.brain import (
     BrainRequest,
     BrainToolSpec,
 )
-from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter, format_cli_prompt
+from jarvis.brain.claude_cli_adapter import (
+    ClaudeCliAdapter,
+    format_cli_prompt,
+    format_cli_system_prompt,
+    format_cli_user_prompt,
+)
 from jarvis.brain.claude_cli_contract import (
     ClaudeCliCommandSettings,
     build_claude_cli_command,
@@ -346,14 +351,14 @@ def test_prompt_formatter_includes_persona_system_messages() -> None:
 
 
 def test_prompt_formatter_is_a_bare_header_not_a_legacy_instruction_wall() -> None:
-    # cbba6f4 trimmed the prompt to a bare Jarvis header: the old instruction
-    # wall (persona-echo / chain-of-thought / provider-session / tool-execution
-    # warnings) was removed because the real guarantees live in code — the
-    # approval registry and the parser risk fail-safe — not in prompt text the
-    # model can ignore. The prompt keeps only its operational core.
+    # cbba6f4 trimmed the prompt to a bare header; the 2026-07-09 live incident
+    # (model answering as "Claude Code w terminalu") brought back exactly ONE
+    # instruction block: the live-runtime identity frame. Security guarantees
+    # still live in code (approval registry, parser risk fail-safe) — the frame
+    # only anchors WHO is speaking, so the rest of the wall stays gone.
     prompt = format_cli_prompt(make_request())
 
-    assert prompt.startswith("Jarvis")
+    assert prompt.startswith("You are Jarvis")
     assert "Answer as Jarvis using only the context in this request." in prompt
     # The removed legacy instruction wall must not creep back verbatim.
     assert "roleplay the persona" not in prompt
@@ -463,7 +468,57 @@ def test_claude_cli_adapter_uses_injected_fake_runner() -> None:
     response = adapter.generate(make_request())
 
     assert response.text == "claude says hi"
-    assert runner.calls[0]["command"] == ["fake-claude", "-p"]
+    assert runner.calls[0]["command"][:2] == ["fake-claude", "-p"]
+    assert "Kim jesteś?" in runner.calls[0]["input_text"]
+
+
+def test_claude_cli_persona_rides_the_system_prompt_not_stdin() -> None:
+    """The persona/context must be the CLI's actual SYSTEM prompt, not pasted
+    user input — pasted-as-input made the model answer as 'Claude Code w
+    terminalu' and refuse the Jarvis frame (live incident 2026-07-09)."""
+
+    system = format_cli_system_prompt(make_request())
+    user = format_cli_user_prompt(make_request())
+
+    # System prompt: identity, persona, memory, tools — but NOT the user turn.
+    assert "You are Jarvis, a concise local runtime." in system
+    assert "Prefer short direct replies." in system
+    assert "Available tools:" in system
+    assert "Kim jesteś?" not in system
+    # User prompt: the conversation — but NOT the persona/memory wall.
+    assert "Kim jesteś?" in user
+    assert "Previous question" in user
+    assert "You are Jarvis, a concise local runtime." not in user
+    assert "Prefer short direct replies." not in user
+
+
+def test_claude_cli_system_prompt_frames_the_live_runtime() -> None:
+    # The brain must know it IS the live daemon runtime — not an old pasted
+    # transcript/harness (the exact misread that broke persona on 2026-07-09).
+    system = format_cli_system_prompt(make_request())
+
+    assert "live Jarvis runtime" in system
+    assert "not a pasted transcript" in system
+    # Claude Code's own tool sense must be explicitly overridden.
+    assert "Claude Code" in system
+
+
+def test_claude_cli_command_carries_system_prompt_and_isolated_settings() -> None:
+    runner = FakeRunner(stdout="ok\n")
+    adapter = ClaudeCliAdapter(command="fake-claude", args=["-p"], runner=runner)
+
+    adapter.generate(make_request())
+
+    command = runner.calls[0]["command"]
+    assert "--system-prompt" in command
+    system_value = command[command.index("--system-prompt") + 1]
+    assert "You are Jarvis, a concise local runtime." in system_value
+    # The brain session must not inherit the operator's Claude Code settings
+    # (global CLAUDE.md leaked in and argued against the Jarvis persona).
+    assert "--setting-sources" in command
+    assert command[command.index("--setting-sources") + 1] == ""
+    # stdin carries only the conversation, not the persona wall.
+    assert "You are Jarvis, a concise local runtime." not in runner.calls[0]["input_text"]
     assert "Kim jesteś?" in runner.calls[0]["input_text"]
 
 
@@ -896,6 +951,10 @@ def test_claude_adapter_argv_uses_first_class_contract_fields(tmp_path: Path) ->
         "text",
         "--input-format",
         "text",
+        "--system-prompt",
+        format_cli_system_prompt(make_request()),
+        "--setting-sources",
+        "",
     ]
 
 

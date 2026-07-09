@@ -69,6 +69,18 @@ _FALLBACK_MODELS: tuple[str, ...] = (
     "claude-opus-4-7",
 )
 
+# Empirically verified ids the discovery prompt routinely OMITS even though the
+# CLI accepts them (checked live: `claude -p --model claude-sonnet-4-6` answers).
+# Appended to every returned list so the panel picker always offers them —
+# discovery order first, pinned after, deduped.
+_PINNED_MODELS: tuple[str, ...] = ("claude-sonnet-4-6",)
+
+
+def _with_pinned(models: list[str]) -> list[str]:
+    merged = list(models)
+    merged.extend(model for model in _PINNED_MODELS if model not in merged)
+    return merged
+
 _DEFAULT_TTL = 3600.0
 
 # Runner contract: (argv, timeout) -> stdout. Injected in tests so the real
@@ -314,24 +326,24 @@ def resolve_available_models(
     if use_memo:
         hit = _memo_get(memo_key, clock, ttl)
         if hit is not None:
-            return hit
+            return _with_pinned(hit)
 
     cached = _read_cache(resolved_cache)
     if cached is not None and ttl > 0 and (clock - cached[0]) < ttl:
         if use_memo:
             _memo_put(memo_key, cached[1], cached[0])
-        return list(cached[1])
+        return _with_pinned(list(cached[1]))
 
     if not block:
         _spawn_background_refresh(command, runner, resolved_cache, memo_key, use_memo)
         if cached is not None:
-            return list(cached[1])
-        return list(_FALLBACK_MODELS)
+            return _with_pinned(list(cached[1]))
+        return _with_pinned(list(_FALLBACK_MODELS))
 
     models = _probe_live(command, runner, resolved_cache, cached, clock)
     if use_memo:
         _memo_put(memo_key, models, clock)
-    return models
+    return _with_pinned(models)
 
 
 __all__ = [
