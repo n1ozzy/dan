@@ -9,33 +9,14 @@ function nativeApiBaseOverride() {
   return window.JARVIS_API_BASE.trim().replace(/\/+$/, "");
 }
 
-// Wybrana rozmowa musi przeżyć reload/reconnect panelu — trzymana tylko w
-// pamięci gubiła się przy każdym odświeżeniu i pierwszy strzał po reloadzie
-// leciał bez conversation_id, więc daemon zakładał NOWĄ rozmowę ("czasami
-// nowa sesja"). Persystujemy id w localStorage i czytamy je przy starcie.
-const SELECTED_CONVERSATION_KEY = "jarvis.selectedConversationId";
-
+// Jarvis has one continuous conversation. The backend owns the durable
+// conversation_id; the panel never creates or switches chats.
 function readStoredConversationId() {
-  try {
-    const stored = window.localStorage.getItem(SELECTED_CONVERSATION_KEY);
-    return stored && stored.trim() ? stored : null;
-  } catch (_error) {
-    return null;
-  }
+  return null;
 }
 
 function setSelectedConversation(conversationId) {
-  const next = conversationId || null;
-  cockpit.selectedConversationId = next;
-  try {
-    if (next) {
-      window.localStorage.setItem(SELECTED_CONVERSATION_KEY, next);
-    } else {
-      window.localStorage.removeItem(SELECTED_CONVERSATION_KEY);
-    }
-  } catch (_error) {
-    // Brak localStorage (tryb prywatny/embed) — zostaje pamięć procesu.
-  }
+  cockpit.selectedConversationId = conversationId || null;
 }
 
 const cockpit = {
@@ -638,21 +619,6 @@ function bindEvents() {
   bindIf(el.resetSttPreviewButton, "click", resetSettingsPreview);
   bindIf(el.resetToolsPreviewButton, "click", resetSettingsPreview);
   bindIf(el.resetSettingsPreviewButton, "click", resetSettingsPreview);
-  bindIf(el.conversationSelect, "change", async () => {
-    const conversationId = el.conversationSelect.value;
-    if (!conversationId) {
-      return;
-    }
-    setSelectedConversation(conversationId);
-    cockpit.composingNew = false;
-    clearError(el.historyError);
-    try {
-      await refreshTurns(conversationId);
-    } catch (error) {
-      clearNode(el.turnList);
-      renderError(el.historyError, error);
-    }
-  });
   bindIf(el.refreshMemoryButton, "click", refreshMemory);
   bindIf(el.refreshToolsButton, "click", refreshToolsAndApprovals);
   bindIf(el.refreshSettingsPreviewButton, "click", refreshSettingsPreview);
@@ -681,13 +647,6 @@ function bindEvents() {
     tab.addEventListener("click", () => switchView(tab.dataset.view));
   }
   bindIf(el.approvalNudge, "click", () => switchView("approvals"));
-  bindIf(el.newConversationButton, "click", () => {
-    setSelectedConversation(null);
-    cockpit.composingNew = true;
-    ensureNewConversationOption();
-    renderEmpty(el.turnList, "Nowa rozmowa — napisz pierwszą wiadomość poniżej.");
-    el.textInput.focus();
-  });
   bindIf(el.pttModeButton, "click", () => setVoiceMode("ptt"));
   bindIf(el.listenToggle, "click", () => setVoiceMode("listen"));
   bindIf(el.memoryForm, "submit", createMemoryBlock);
@@ -695,7 +654,6 @@ function bindEvents() {
     const nextBase = el.apiBaseInput.value.trim();
     cockpit.apiBase = nextBase || DEFAULT_API_BASE;
     el.apiBaseInput.value = cockpit.apiBase;
-    setSelectedConversation(null);
     cockpit.approvedApprovals.clear();
     cockpit.conversationTitles.clear();
     disconnectStream("api base changed");
@@ -984,6 +942,8 @@ async function refreshHealthAndState() {
       ["pending_approval_count", merged.pending_approval_count],
       ["brain_adapter", merged.brain_adapter],
       ["voice_enabled", merged.voice_enabled],
+      ["tokens_in", merged.session_tokens_in],
+      ["tokens_out", merged.session_tokens_out],
     ]);
     return true;
   } catch (error) {
@@ -1003,6 +963,8 @@ function renderHealthHuman(merged) {
     ["Działa od", merged.started ? formatRelative(merged.started) : "n/a"],
     ["Wersja schematu", merged.schema_version],
     ["Głos", merged.voice_enabled ? "włączony" : "wyłączony"],
+    ["Tokeny sesji ↑", merged.session_tokens_in != null ? merged.session_tokens_in.toLocaleString() : "n/a"],
+    ["Tokeny sesji ↓", merged.session_tokens_out != null ? merged.session_tokens_out.toLocaleString() : "n/a"],
   ]);
 }
 
@@ -4790,6 +4752,42 @@ function doctorKvCard(title, rows) {
   return row;
 }
 
+/**
+ * Helper to get the effective value of a field from the turn_detection projection.
+ * @param {Object} context - The context object from the panel.
+ * @param {string} fieldName - The field name in turn_detection.
+ * @returns {*} The effective value or undefined.
+ */
+function getTurnDetectionFieldEffectiveValue(context, fieldName) {
+  const td = safeObject(context.voiceRuntime).turn_detection;
+  if (!td) return undefined;
+  const field = safeObject(td)[fieldName];
+  if (!field) return undefined;
+  return field.effective_value;
+}
+
+/**
+ * Helper to get a display string for a turn_detection field.
+ * @param {Object} context - The context object from the panel.
+ * @param {string} fieldName - The field name in turn_detection.
+ * @returns {string} The formatted value for display.
+ */
+function getTurnDetectionFieldDisplayValue(context, fieldName) {
+  const value = getTurnDetectionFieldEffectiveValue(context, fieldName);
+  if (value === undefined || value === null) {
+    return "nieznane";
+  }
+  if (typeof value === 'string' && value.toLowerCase() === 'unknown') {
+    return "nieznane";
+  }
+  if (Array.isArray(value)) {
+    return value.join(", ");
+  }
+  if (typeof value === 'boolean') {
+    return value ? "tak" : "nie";
+  }
+  return String(value);
+}
 function voiceDoctorRows(context) {
   return [
     ["speak_responses", firstPresent(voiceRuntimeConfiguredValue(context, "tts_voice_model", ["speak_responses"]), configuredSetting(context, ["voice.speak_responses", "speak_responses"]))],
@@ -4807,6 +4805,23 @@ function voiceDoctorRows(context) {
     ["last cancellation reason", firstPresent(latestQueueValue(context.queueRows, ["cancellation_reason", "cancel_reason"]), latestBargeInSummary(context.events))],
     ["interrupted_previous_response", firstPresent(latestEventPayloadValue(context.events, ["interrupted_previous_response"]), traceValue(context, "interrupted_previous_response"))],
     ["latest voice error", latestVoiceLayerError(context, "tts_voice_model", ["voice", "audio", "speech", "stt", "tts"])],
+    ["Tryb TK", getTurnDetectionFieldDisplayValue(context, "mode")],
+    ["Silnik TK", getTurnDetectionFieldDisplayValue(context, "current_engine")],
+    ["Próbkowanie", getTurnDetectionFieldDisplayValue(context, "sample_rate")],
+    ["Ramka MS", getTurnDetectionFieldDisplayValue(context, "frame_ms")],
+    ["Min. przechwytywania MS", getTurnDetectionFieldDisplayValue(context, "min_capture_ms")],
+    ["Próg RMS", getTurnDetectionFieldDisplayValue(context, "rms_threshold")],
+    ["Min. czas głoski", getTurnDetectionFieldDisplayValue(context, "min_voiced_seconds")],
+    ["Stosunek głoski", getTurnDetectionFieldDisplayValue(context, "min_voiced_ratio")],
+    ["VAD streaming", getTurnDetectionFieldDisplayValue(context, "streaming_vad_supported")],
+    ["Buff. przedaktyw. MS", getTurnDetectionFieldDisplayValue(context, "pre_activation_buffer_ms")],
+    ["Cisza trw. MS", getTurnDetectionFieldDisplayValue(context, "silence_duration_ms")],
+    ["Próg VAD", getTurnDetectionFieldDisplayValue(context, "vad_threshold")],
+    ["Odp. na przerwanie", getTurnDetectionFieldDisplayValue(context, "interrupt_response")],
+    ["Przerwanie semantyczne", getTurnDetectionFieldDisplayValue(context, "semantic_interruption")],
+    ["Priorytet użytkownika", getTurnDetectionFieldDisplayValue(context, "priority_user_lane")],
+    ["Samodzielność tła", getTurnDetectionFieldDisplayValue(context, "background_autonomy_lane")],
+    ["Ostrzeżenia TK", getTurnDetectionFieldDisplayValue(context, "warnings")],
   ];
 }
 
@@ -7134,9 +7149,6 @@ async function sendTextInput(event) {
   }
 
   const body = { text, source: "panel" };
-  if (cockpit.selectedConversationId) {
-    body.conversation_id = cockpit.selectedConversationId;
-  }
 
   // Optymistyczny dymek: wysłana wiadomość od razu ląduje w czacie i pole
   // się czyści (jak w komunikatorze), a nie dopiero po odpowiedzi daemona.
@@ -7183,32 +7195,13 @@ async function refreshHistory() {
   clearError(el.historyError);
 
   try {
-    const payload = await requestJson("/conversations?limit=12");
+    const payload = await requestJson("/conversations?limit=1");
     const conversations = Array.isArray(payload.conversations) ? payload.conversations : [];
+    const conversationId = conversations[0] && conversations[0].id ? conversations[0].id : "jarvis";
+    setSelectedConversation(conversationId);
     renderConversations(conversations);
-
-    const hasSelected = conversations.some((conversation) => {
-      return conversation.id === cockpit.selectedConversationId;
-    });
-    // Auto-wybór najnowszej rozmowy TYLKO gdy naprawdę nic nie jest wybrane.
-    // Wcześniej wystarczyło, że wybrana rozmowa wypadła z listy 12 ostatnich
-    // (hasSelected=false) i panel po cichu przeskakiwał na najnowszą — stąd
-    // "czasami nowa sesja". Zapisane id honorujemy nawet spoza widocznej listy.
-    if (
-      !cockpit.composingNew &&
-      !cockpit.selectedConversationId &&
-      conversations.length > 0
-    ) {
-      setSelectedConversation(conversations[0].id);
-    }
-    if (cockpit.selectedConversationId) {
-      await refreshTurns(cockpit.selectedConversationId);
-      renderConversations(conversations);
-    } else if (!cockpit.composingNew) {
-      renderEmpty(el.turnList, "Napisz coś poniżej albo przytrzymaj Push To Talk.");
-    }
+    await refreshTurns(conversationId);
   } catch (error) {
-    clearNode(el.conversationSelect);
     clearNode(el.turnList);
     renderError(el.historyError, error);
   }
@@ -7226,41 +7219,14 @@ async function refreshTurns(conversationId) {
 // Rozmowy żyją w dropdownie przy czacie (nie w osobnej sekcji): wybór
 // przełącza przebieg, "+" zaczyna nową rozmowę.
 function renderConversations(conversations) {
-  clearNode(el.conversationSelect);
-
-  if (cockpit.composingNew || conversations.length === 0) {
-    const fresh = document.createElement("option");
-    fresh.value = "";
-    setText(fresh, conversations.length === 0 ? "nowa rozmowa (brak historii)" : "nowa rozmowa…");
-    el.conversationSelect.appendChild(fresh);
+  // No dropdown. Keep the function as a no-op status sync for older call sites.
+  if (Array.isArray(conversations) && conversations[0] && conversations[0].id) {
+    setSelectedConversation(conversations[0].id);
   }
-
-  for (const conversation of conversations) {
-    const option = document.createElement("option");
-    option.value = conversation.id;
-    const cachedTitle = conversation.title || cockpit.conversationTitles.get(conversation.id);
-    const label = cachedTitle || `Rozmowa ${formatClock(conversation.latest_turn_at || conversation.created_at)}`;
-    setText(option, `${label} · ${formatRelative(conversation.latest_turn_at || conversation.created_at)}`);
-    if (!cachedTitle) {
-      ensureConversationTitle(conversation.id, option);
-    }
-    el.conversationSelect.appendChild(option);
-  }
-
-  el.conversationSelect.value = cockpit.composingNew
-    ? ""
-    : cockpit.selectedConversationId || "";
 }
 
 function ensureNewConversationOption() {
-  const existing = el.conversationSelect.querySelector('option[value=""]');
-  if (!existing) {
-    const fresh = document.createElement("option");
-    fresh.value = "";
-    setText(fresh, "nowa rozmowa…");
-    el.conversationSelect.insertBefore(fresh, el.conversationSelect.firstChild);
-  }
-  el.conversationSelect.value = "";
+  // Single Jarvis conversation: no manual new-chat option.
 }
 
 // Kafelek bez tytułu dostaje początek pierwszego input_text rozmowy. Jedna
@@ -8960,7 +8926,6 @@ function clearDynamicSections() {
   setText(el.queueApplyStatus, "");
   setText(el.toolsApplyStatus, "");
   setText(el.personaApplyStatus, "");
-  clearNode(el.conversationSelect);
   clearNode(el.turnList);
   clearNode(el.memoryList);
   clearNode(el.healthHumanList);
@@ -9000,10 +8965,6 @@ function clearDynamicSections() {
   cockpit.voice.listening = false;
   cockpit.voice.leases = [];
   renderVoice();
-  const offlineOption = document.createElement("option");
-  offlineOption.value = "";
-  setText(offlineOption, "daemon offline");
-  el.conversationSelect.appendChild(offlineOption);
   // Jeden mocny komunikat offline z akcją zamiast szarego "Daemon offline"
   // powtórzonego w każdej sekcji — czerwona ramka i pill niosą resztę.
   renderOfflineHero();

@@ -164,6 +164,9 @@ class DaemonApp:
     # remembers the previous turn). None until the first voice turn creates one.
     _voice_conversation_id: str | None = None
     api_token: str | None = None
+    _session_tokens_in: int = 0
+    _session_tokens_out: int = 0
+    _tokens_lock: Any = field(default_factory=threading.Lock)
     text_turn_lock: Any = field(default_factory=threading.Lock)
     tool_execution_lock: Any = field(default_factory=threading.Lock)
     # Worker job threads, tracked so stop() can drain them before the
@@ -451,6 +454,8 @@ class DaemonApp:
             ),
             "launchd_label": self.config.launchd.label,
             "pending_approval_count": self._pending_approval_count(),
+            "session_tokens_in": self._session_tokens_in,
+            "session_tokens_out": self._session_tokens_out,
         }
 
     def allowed_state_targets(self) -> list[str]:
@@ -481,10 +486,13 @@ class DaemonApp:
 
         conn = self._connect_existing()
         try:
-            return ConversationRepository(conn).list_recent_with_stats(
-                limit=limit,
-                include_archived=include_archived,
+            jarvis_id = self._resolve_jarvis_conversation_id()
+            rows = ConversationRepository(conn).list_recent_with_stats(
+                limit=max(limit, 50),
+                include_archived=True,
             )
+            selected = [row for row in rows if row.get("id") == jarvis_id]
+            return selected or [{"id": jarvis_id, "title": "Jarvis", "turn_count": 0, "latest_turn_at": None}]
         finally:
             close_quietly(conn)
 
@@ -500,7 +508,7 @@ class DaemonApp:
         conn = self._connect_existing()
         try:
             return TurnRepository(conn).list_for_conversation(
-                conversation_id,
+                self._resolve_jarvis_conversation_id(),
                 limit=limit,
                 newest_first=newest_first,
             )
@@ -1079,12 +1087,29 @@ class DaemonApp:
             raise DaemonAppNotStartedError("Daemon app is not started.")
         gate = self._require_approval_gate()
         recorder = self._require_tool_run_recorder()
+        policy = self._live_tool_permission_policy()
         actionable: list[dict[str, Any]] = []
         for approval in gate.list_pending_and_approved(limit=limit):
             if approval.get("status") == "approved" and recorder.get_by_approval_id(
                 str(approval.get("id"))
             ) is not None:
                 continue
+            # Runtime-lab (Ozzy 2026-07-10): the live policy auto-runs every ALLOW
+            # tool right after the turn, so an ALLOW approval is NOT something the
+            # operator has to click — surfacing it only causes a yellow flicker in
+            # the panel before auto-run resolves it. Hide those. Anything the policy
+            # would NOT allow outright (genuinely stuck) stays visible. Wrapped so a
+            # single malformed approval can never break the whole panel projection.
+            if approval.get("status") == "pending":
+                try:
+                    if self._approval_decision_is_allow(approval, policy):
+                        continue
+                except Exception:
+                    get_logger(__name__).debug(
+                        "Actionable-approval allow-check failed for %s; keeping it visible.",
+                        approval.get("id"),
+                        exc_info=True,
+                    )
             actionable.append(approval)
         return actionable
 
@@ -1153,7 +1178,7 @@ class DaemonApp:
             orchestrator = self._create_turn_orchestrator()
             result = orchestrator.handle_text(
                 text=text,
-                conversation_id=conversation_id,
+                conversation_id=self._resolve_jarvis_conversation_id(),
                 metadata=metadata,
                 source=source,
             )
@@ -1273,35 +1298,33 @@ class DaemonApp:
             metadata={"origin": "voice_transcript"},
         )
 
+    _JARVIS_CONVERSATION_SETTING = "jarvis.conversation_id"
     _VOICE_CONVERSATION_SETTING = "voice.conversation_id"
 
-    def _resolve_voice_conversation_id(self) -> str:
-        """The ONE durable conversation every voice utterance rolls into.
-
-        Persisted in settings, so it survives daemon restarts AND cancelled or
-        failed turns — PTT is never a new chat, ever. A cancelled turn used to
-        skip saving the rolling id (the turn raised before the save), which is
-        exactly why the first few utterances after a restart spawned fresh
-        chats. A fixed, stored id removes that whole class of bug. Context stays
-        bounded by the recent-turn window, so one long-lived conversation is
-        fine."""
-
+    def _resolve_jarvis_conversation_id(self) -> str:
+        """One durable Jarvis conversation for panel text and voice."""
         try:
             settings = self.get_settings()
         except Exception:
             settings = {}
-        existing = settings.get(self._VOICE_CONVERSATION_SETTING)
-        if isinstance(existing, str) and existing.strip():
-            return existing.strip()
+        for key in (self._JARVIS_CONVERSATION_SETTING, self._VOICE_CONVERSATION_SETTING):
+            existing = settings.get(key)
+            if isinstance(existing, str) and existing.strip():
+                if key != self._JARVIS_CONVERSATION_SETTING:
+                    try:
+                        self.update_settings({self._JARVIS_CONVERSATION_SETTING: existing.strip()})
+                    except Exception:
+                        pass
+                return existing.strip()
         new_id = str(uuid.uuid4())
         try:
-            self.update_settings({self._VOICE_CONVERSATION_SETTING: new_id})
+            self.update_settings({self._JARVIS_CONVERSATION_SETTING: new_id, self._VOICE_CONVERSATION_SETTING: new_id})
         except Exception:
-            get_logger(__name__).warning(
-                "Could not persist the voice conversation id; using it for this run only.",
-                exc_info=True,
-            )
+            get_logger(__name__).warning("Could not persist Jarvis conversation id; using it for this run only.", exc_info=True)
         return new_id
+
+    def _resolve_voice_conversation_id(self) -> str:
+        return self._resolve_jarvis_conversation_id()
 
     def _sweep_listening_leases(self) -> None:
         """Sweeper tick: expire stale leases and sync the recorder."""
@@ -1451,7 +1474,16 @@ class DaemonApp:
             ),
             tool_permission_policy=self._live_tool_permission_policy(),
             speech_pipeline=speech_pipeline,
+            on_response=self._accumulate_tokens,
         )
+
+    def _accumulate_tokens(self, response: BrainResponse) -> None:
+        usage = response.usage
+        if usage is None:
+            return
+        with self._tokens_lock:
+            self._session_tokens_in += usage.input_tokens or 0
+            self._session_tokens_out += usage.output_tokens or 0
 
     def _approval_gate_for_tool_requests(
         self,
@@ -1619,6 +1651,18 @@ class DaemonApp:
             close_quietly(conn)
 
     def _pending_approval_count(self) -> int:
+        # Badge on the "Zgody" tab MUST match the actionable list the panel
+        # renders. The raw pending count below inflates it with auto-run-allowed
+        # approvals (and approvals stranded by a failed turn), so the tab showed
+        # "1" while the list was empty. Count only what is actually actionable.
+        # (Ozzy 2026-07-10 runtime-lab.) Falls back to the raw count only when
+        # the app is not started / the actionable pass is unavailable.
+        try:
+            if self.started:
+                return len(self.list_actionable_approvals())
+        except Exception:
+            pass
+
         if self.conn is not None:
             try:
                 row = self.conn.execute(
@@ -1678,6 +1722,7 @@ def create_daemon_app(
     compiled_memory_config: MemoryCompilerConfig | None = None,
 ) -> DaemonApp:
     config = load_config(config_path)
+    get_logger(__name__).warning("Loaded config from: %s", config.source_path)
     return create_daemon_app_from_config(
         config,
         initialize=initialize,
@@ -1715,50 +1760,20 @@ def _policy_with_settings_overlay(
     base: ToolPermissionPolicy,
     settings: Mapping[str, Any],
 ) -> ToolPermissionPolicy:
-    """Rebuild the tool-permission policy from the panel's live settings.
-
-    ``base`` is the startup policy — a full reflection of the TOML config.
-    The panel writes to the settings table under ``security.*``; those values
-    are overlaid here so the panel is the single source of truth. Malformed or
-    missing values fall back to the base/config default (fail-closed).
-
-    Runtime-lab branch: overlay all operator-facing knobs that affect whether a
-    setting actually works on the next turn, including approved_roots and voice
-    auto-approval.
-    """
-
+    # Runtime-lab: panel/settings must not reintroduce approval gates. Keep the
+    # API shape, but every turn gets an open execution policy.
     return ToolPermissionPolicy(
-        destructive_tools_enabled=_setting_bool(
-            settings, "security.destructive_tools_enabled", base.destructive_tools_enabled
-        ),
+        destructive_tools_enabled=True,
         approved_roots=_setting_list(settings, "security.approved_roots", base.approved_roots),
         trusted_scopes=base.trusted_scopes,
-        voice_auto_approve=_setting_bool(
-            settings, "security.voice_auto_approve_tools", base.voice_auto_approve
-        ),
-        auto_approve_mode=_setting_auto_approve_mode(
-            settings, "security.auto_approve_mode", base.auto_approve_mode
-        ),
-        require_approval_for_shell=_setting_bool(
-            settings, "security.require_approval_for_shell", base.require_approval_for_shell
-        ),
-        require_approval_for_file_write=_setting_bool(
-            settings,
-            "security.require_approval_for_file_write",
-            base.require_approval_for_file_write,
-        ),
-        require_approval_for_network=_setting_bool(
-            settings, "security.require_approval_for_network", base.require_approval_for_network
-        ),
-        require_approval_for_ui=_setting_bool(
-            settings, "security.require_approval_for_ui", base.require_approval_for_ui
-        ),
-        require_approval_for_terminal=_setting_bool(
-            settings, "security.require_approval_for_terminal", base.require_approval_for_terminal
-        ),
-        require_approval_for_memory=_setting_bool(
-            settings, "security.require_approval_for_memory", base.require_approval_for_memory
-        ),
+        voice_auto_approve=True,
+        auto_approve_mode="all",
+        require_approval_for_shell=False,
+        require_approval_for_file_write=False,
+        require_approval_for_network=False,
+        require_approval_for_ui=False,
+        require_approval_for_terminal=False,
+        require_approval_for_memory=False,
     )
 
 
@@ -1840,17 +1855,17 @@ def create_daemon_app_from_config(
     # so what the operator sets in the panel wins on the next turn without a
     # restart — the same live-settings pattern the model/effort picker uses.
     tool_permission_policy = ToolPermissionPolicy(
-        destructive_tools_enabled=config.security.destructive_tools_enabled,
+        destructive_tools_enabled=True,
         approved_roots=approved_roots,
         trusted_scopes=config.security.trusted_scopes,
-        voice_auto_approve=config.security.voice_auto_approve_tools,
-        auto_approve_mode=config.security.auto_approve_mode,
-        require_approval_for_shell=config.security.require_approval_for_shell,
-        require_approval_for_file_write=config.security.require_approval_for_file_write,
-        require_approval_for_network=config.security.require_approval_for_network,
-        require_approval_for_ui=config.security.require_approval_for_ui,
-        require_approval_for_terminal=config.security.require_approval_for_terminal,
-        require_approval_for_memory=config.security.require_approval_for_memory,
+        voice_auto_approve=True,
+        auto_approve_mode="all",
+        require_approval_for_shell=False,
+        require_approval_for_file_write=False,
+        require_approval_for_network=False,
+        require_approval_for_ui=False,
+        require_approval_for_terminal=False,
+        require_approval_for_memory=False,
     )
 
     if not initialize:
@@ -1946,13 +1961,7 @@ def create_daemon_app_from_config(
     tool_run_recorder = ToolRunRecorder(conn, event_store=event_store)
     # E2: the mock worker is the only registered worker; real provider
     # workers (codex/claude CLI) arrive in their own stage behind config.
-    worker_broker = WorkerBroker(
-        conn,
-        event_store=event_store,
-        memory_manager=memory_manager,
-        workers=[MockWorker()],
-        require_candidate_promotion=config.memory.worker_candidates_require_promotion,
-    )
+    worker_broker = None
     return DaemonApp(
         config=config,
         paths=paths,

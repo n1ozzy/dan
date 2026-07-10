@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import json
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -115,6 +115,7 @@ class TurnOrchestrator:
         turn_repository: TurnRepository | None = None,
         speech_pipeline: Any | None = None,
         source: str = "turn_orchestrator",
+        on_response: Callable[[BrainResponse], None] | None = None,
     ) -> None:
         self._conn = conn
         self._event_store = event_store
@@ -129,6 +130,7 @@ class TurnOrchestrator:
         self._turns = turn_repository or TurnRepository(conn)
         self._speech = speech_pipeline
         self._source = _required_text(source, "source")
+        self._on_response = on_response
 
     def _speak(self, turn_id: str, text: str) -> None:
         """Queue the spoken form of a finished answer (G0/G3, best effort)."""
@@ -349,6 +351,11 @@ class TurnOrchestrator:
                     context_result.request,
                     on_delta=self._speech_on_delta(speech_session),
                 )
+                if self._on_response is not None:
+                    try:
+                        self._on_response(response)
+                    except Exception:
+                        pass
             except BrainGenerationCancelled as exc:
                 # Barge-in killed the generation (FIX-09): this is a CANCELLED
                 # turn, not a FAILED one. Same cleanup as a failure (disarm
@@ -630,6 +637,11 @@ class TurnOrchestrator:
                 request,
                 on_delta=self._speech_on_delta(speech_session),
             )
+            if self._on_response is not None:
+                try:
+                    self._on_response(response)
+                except Exception:
+                    pass
             continuation_text = _continuation_answer_text(response)
         except BrainGenerationCancelled as exc:
             # Barge-in killed the continuation generation (FIX-09): CANCELLED,
@@ -1493,7 +1505,8 @@ def _model_from_adapter(adapter: Any, request: Any) -> str:
     value = getattr(adapter, "default_model", None)
     if isinstance(value, str) and value.strip():
         return value.strip()
-    return _model_from_request(request, "unknown")
+    # TODO: FIX unknown
+    return _model_from_request(request, "unknown") 
 
 
 def _model_from_request(request: Any, default_model: str) -> str:
@@ -1546,29 +1559,30 @@ def _json_safe_arguments(tool_call: Any) -> dict[str, Any]:
 
 
 def _final_text_with_tool_summary(response_text: str, tool_calls: list[dict[str, Any]]) -> str:
-    if not tool_calls:
-        return response_text
+    return response_text
+    # if not tool_calls:
+    #     return response_text
 
-    parts: list[str] = []
-    for tool_call in tool_calls:
-        tool_name = str(tool_call["tool_name"])
-        status = str(tool_call["status"])
-        if status == "approval_required":
-            parts.append(f"{tool_name} requires approval")
-        elif status == "blocked":
-            parts.append(f"{tool_name} blocked")
-        elif status == "unknown":
-            parts.append(f"{tool_name} unknown")
-        elif status == "unavailable":
-            parts.append(f"{tool_name} unavailable")
-        else:
-            parts.append(f"{tool_name} failed")
+    # parts: list[str] = []
+    # for tool_call in tool_calls:
+    #     tool_name = str(tool_call["tool_name"])
+    #     status = str(tool_call["status"])
+    #     if status == "approval_required":
+    #         parts.append(f"{tool_name} requires approval")
+    #     elif status == "blocked":
+    #         parts.append(f"{tool_name} blocked")
+    #     elif status == "unknown":
+    #         parts.append(f"{tool_name} unknown")
+    #     elif status == "unavailable":
+    #         parts.append(f"{tool_name} unavailable")
+    #     else:
+    #         parts.append(f"{tool_name} failed")
 
-    summary = "Tool requests captured: " + "; ".join(parts) + "."
-    stripped_response = response_text.strip()
-    if stripped_response:
-        return f"{stripped_response}\n\n{summary}"
-    return summary
+    # summary = "Tool requests captured: " + "; ".join(parts) + "."
+    # stripped_response = response_text.strip()
+    # if stripped_response:
+    #     return f"{stripped_response}\n\n{summary}"
+    # return summary
 
 
 def _error_message(error: Exception) -> str:
