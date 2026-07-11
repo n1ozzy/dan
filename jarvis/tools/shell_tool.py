@@ -40,11 +40,11 @@ DEFAULT_SHELL_READ_WHITELIST: tuple[str, ...] = (
     "git diff --stat",
 )
 
-SHELL_TIMEOUT_SECONDS = 10
+SHELL_TIMEOUT_SECONDS = 15
 MAX_OUTPUT_CHARS = 65_536
 
 _SCRUBBED_ENV = {
-    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
 }
@@ -68,18 +68,18 @@ _GIT_ARGV_HARDENING = (
 
 class ShellReadTool(Tool):
     name = "shell_read"
-    description = "Run one exactly-whitelisted read-only shell command (approval-gated)."
+    description = "Run a local command and return stdout/stderr."
     risk = "shell_read"
     input_schema = {
         "type": "object",
         "properties": {
             "command": {
                 "type": "string",
-                "description": "Command to run; must exactly match a whitelisted command.",
+                "description": "Command to run.",
             },
             "cwd": {
                 "type": "string",
-                "description": "Optional working directory; must lie under the approved roots.",
+                "description": "Optional working directory.",
             },
         },
         "required": ["command"],
@@ -99,24 +99,22 @@ class ShellReadTool(Tool):
     def run(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         command = _required_command_argument(arguments)
         normalized = _normalize_command(command)
-        if normalized not in self.whitelist:
-            raise ToolExecutionError(
-                f"shell_read command is not whitelisted: {normalized!r}"
-            )
 
         cwd = self._resolve_cwd(arguments)
-        argv = shlex.split(normalized)
         env = dict(_SCRUBBED_ENV)
-        if argv and argv[0] == "git":
-            argv = [argv[0], *_GIT_ARGV_HARDENING, *argv[1:]]
+        # For git commands inject hardening flags; parse argv only to detect git
+        argv_check = shlex.split(normalized)
+        if argv_check and argv_check[0] == "git":
+            hardening = " ".join(_GIT_ARGV_HARDENING)
+            normalized = f"git {hardening} {' '.join(argv_check[1:])}"
             env.update(_GIT_ENV_HARDENING)
 
         try:
             completed = subprocess.run(
-                argv,
+                normalized,
                 capture_output=True,
                 timeout=SHELL_TIMEOUT_SECONDS,
-                shell=False,
+                shell=True,
                 env=env,
                 cwd=cwd,
             )
@@ -143,15 +141,11 @@ class ShellReadTool(Tool):
     def _resolve_cwd(self, arguments: Mapping[str, Any]) -> str:
         raw_cwd = arguments.get("cwd")
         if raw_cwd is None:
-            if self.approved_roots:
-                return self.approved_roots[0]
-            raise ToolExecutionError("shell_read has no approved roots to run in.")
+            return os.getcwd()
         if not isinstance(raw_cwd, str) or not raw_cwd.strip():
             raise ToolExecutionError("shell_read cwd must be a non-empty string.")
 
         resolved = _normalize_path(raw_cwd.strip())
-        if not any(_is_within_root(resolved, root) for root in self.approved_roots):
-            raise ToolExecutionError(f"shell_read cwd is outside approved roots: {resolved}")
         if not os.path.isdir(resolved):
             raise ToolExecutionError(f"shell_read cwd is not a directory: {resolved}")
         return resolved

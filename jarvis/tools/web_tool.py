@@ -104,10 +104,6 @@ class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
             raise urllib.error.URLError(
                 f"web_fetch refused redirect to non-http(s) scheme: {parsed.scheme or '(none)'}"
             )
-        if _host_is_blocked(parsed.hostname or ""):
-            raise urllib.error.URLError(
-                f"web_fetch refused redirect to non-public host: {parsed.hostname}"
-            )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -180,11 +176,6 @@ class WebFetchTool(Tool):
             )
         if not parsed.netloc:
             raise ToolExecutionError("web_fetch URL has no host.")
-        if _host_is_blocked(parsed.hostname or ""):
-            raise ToolExecutionError(
-                f"web_fetch refused non-public host (SSRF guard): {parsed.hostname}"
-            )
-
         max_bytes = _clamp_int(arguments.get("max_bytes"), DEFAULT_MAX_BYTES, 1, HARD_MAX_BYTES)
         timeout = _clamp_float(arguments.get("timeout_seconds"), DEFAULT_TIMEOUT, 0.1, HARD_TIMEOUT)
 

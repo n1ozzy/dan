@@ -147,11 +147,11 @@ class BrainCliAdapterConfig:
 
 @dataclass(frozen=True)
 class BrainConfig:
-    default_adapter: str = "claude_cli"
+    default_adapter: str = "claude_cli_warm"
     default_model: str = "claude-sonnet-5"
     timeout_seconds: int = 60
     context_budget_chars: int = 24000
-    provider_sessions_are_memory: bool = False
+    provider_sessions_are_memory: bool = True
     claude_cli: BrainCliAdapterConfig = field(
         default_factory=lambda: BrainCliAdapterConfig(command="claude", args=["-p"])
     )
@@ -162,7 +162,7 @@ class BrainConfig:
         default_factory=lambda: BrainCliAdapterConfig(command="test", args=[], enabled=False)
     )
     claude_cli_warm: BrainCliAdapterConfig = field(
-        default_factory=lambda: BrainCliAdapterConfig(command="claude", args=["-p"], enabled=False)
+        default_factory=lambda: BrainCliAdapterConfig(command="claude", args=["-p"], enabled=True)
     )
 
 
@@ -171,7 +171,7 @@ class MemoryConfig:
     enabled: bool = True
     max_active_blocks: int = 50
     max_context_chars: int = 12000
-    worker_candidates_require_promotion: bool = True
+    worker_candidates_require_promotion: bool = False
     compiled_context_enabled: bool = False
     compiled_context_max_items: int = DEFAULT_COMPILED_CONTEXT_MAX_ITEMS
     compiled_context_max_chars: int = DEFAULT_COMPILED_CONTEXT_MAX_CHARS
@@ -252,6 +252,21 @@ class VoiceConfig:
     transcript_turn_retry_seconds: float = 10.0
     ptt_hold_ttl_seconds: int = 30
     listen_lock_ttl_seconds: int = 600
+    # PTT activation grace (Ozzy 2026-07-10): the hotkey must be held this long
+    # before the mic arms — an accidental brush is ignored. Enforced client-side
+    # in the panel hotkey handler; kept here as the tunable contract value.
+    ptt_activation_grace_ms: int = 400
+    # ── Streaming VAD contract (GLaDOS-inspired, Ozzy 2026-07-10) ─────────────
+    # Config surface for voice-activity detection. `energy_gate` is the current
+    # RMS gate (no regression); `silero_vad` is the streaming engine to be wired
+    # next (needs the silero model + a frame-streaming capture path); `disabled`
+    # turns endpointing off (pure PTT). The frame/threshold/buffer/silence knobs
+    # are consumed by the streaming engine once implemented.
+    vad_engine: str = "energy_gate"  # silero_vad | energy_gate | disabled
+    vad_frame_ms: int = 30
+    vad_threshold: float = 0.5
+    vad_pre_activation_buffer_ms: int = 300
+    vad_silence_duration_ms: int = 700
     # Daemon-side lease TTL enforcement (FIX-04b): how often the sweeper
     # expires stale leases when the client never calls release().
     lease_sweep_interval_seconds: float = 5.0
@@ -356,7 +371,7 @@ class TrustedScope:
 @dataclass(frozen=True)
 class SecurityConfig:
     localhost_only: bool = True
-    api_token_required: bool = True
+    api_token_required: bool = False
     # Product defaults are OPEN (Ozzy's decree 2026-07-09): Jarvis on his own
     # machine runs every attended tool class without an approval click. The
     # panel grants flip any class back to ask-first; the code floor stays:

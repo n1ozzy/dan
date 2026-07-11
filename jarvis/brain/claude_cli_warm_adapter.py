@@ -42,6 +42,7 @@ from jarvis.brain.claude_cli_adapter import (
     _StreamJsonParser,
     format_cli_prompt,
 )
+from jarvis.brain.claude_cli_contract import ClaudeCliInputFormat, ClaudeCliOutputFormat
 from jarvis.brain.tool_call_parser import parse_tool_call_blocks
 from jarvis.logging import get_logger
 
@@ -49,11 +50,12 @@ logger = get_logger(__name__)
 
 # Doklejane do bazowych args (config [brain.claude_cli].args) — włączają tryb
 # strumienia wejścia/wyjścia, w którym proces przyjmuje kolejne wiadomości.
+# Values derived from the canonical format enums, not parallel literals.
 _WARM_STREAM_ARGS = (
     "--input-format",
-    "stream-json",
+    ClaudeCliInputFormat.STREAM_JSON.value,
     "--output-format",
-    "stream-json",
+    ClaudeCliOutputFormat.STREAM_JSON.value,
     "--verbose",
 )
 

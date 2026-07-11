@@ -12,15 +12,15 @@
 
 [jarvis]
 voice = "M2"          # Ozzy A/B 2026-07-08: „numer 2" = M2
-mastering = "clean"   # „wariant 2" = clean, bez sztucznych pauz
+mastering = "bastard"   # „wariant 2" = clean, bez sztucznych pauz
 speed = 1.35
 
 [dan]
 voice = "M3"
-mastering = "raw"     # Ozzy: „DAN jak było" — surowy, bez masteringu
+mastering = "bastard"     # Ozzy: „DAN jak było" — surowy, bez masteringu
 speed = 1.25
 
 [danusia]
-voice = "F4"
-mastering = "clean"
+voice = "F3"
+mastering = "bastard"
 speed = 1.3

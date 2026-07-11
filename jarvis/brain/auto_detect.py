@@ -8,6 +8,12 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from jarvis.brain.claude_cli_contract import ClaudeCliEffortLevel
+from jarvis.brain.groq_adapter import GROQ_MODELS
+
+_CLAUDE_CLI_EFFORTS = [e.value for e in ClaudeCliEffortLevel]
+_CODEX_CLI_EFFORTS = [e.value for e in ClaudeCliEffortLevel if e != ClaudeCliEffortLevel.MAX]
+
 
 @dataclass(frozen=True)
 class ProviderInfo:
@@ -67,7 +73,7 @@ def detect_claude_cli() -> ProviderInfo:
             display_name="Claude CLI",
             available=False,
             models=[],
-            efforts=["low", "medium", "high", "xhigh", "max"],
+            efforts=_CLAUDE_CLI_EFFORTS,
             streaming=True,
             tools=True,
             config_hint="Install Claude CLI: npm install -g @anthropic-ai/claude-code",
@@ -78,7 +84,7 @@ def detect_claude_cli() -> ProviderInfo:
         display_name="Claude CLI",
         available=True,
         models=["sonnet", "opus", "haiku", "fable"],
-        efforts=["low", "medium", "high", "xhigh", "max"],
+        efforts=_CLAUDE_CLI_EFFORTS,
         streaming=True,
         tools=True,
     )
@@ -93,7 +99,7 @@ def detect_codex_cli() -> ProviderInfo:
             display_name="Codex CLI",
             available=False,
             models=[],
-            efforts=["low", "medium", "high", "xhigh"],
+            efforts=_CODEX_CLI_EFFORTS,
             streaming=False,
             tools=True,
             config_hint="Install Codex CLI: https://github.com/openai/codex",
@@ -104,7 +110,7 @@ def detect_codex_cli() -> ProviderInfo:
         display_name="Codex CLI",
         available=True,
         models=["gpt-5", "gpt-5.5", "gpt-4o", "o3", "o3-mini", "o4-mini"],
-        efforts=["low", "medium", "high", "xhigh"],
+        efforts=_CODEX_CLI_EFFORTS,
         streaming=False,
         tools=True,
     )
@@ -129,15 +135,7 @@ def detect_groq() -> ProviderInfo:
         name="groq",
         display_name="Groq API",
         available=True,
-        models=[
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-            "llama-3.1-70b-versatile",
-            "llama3-70b-8192",
-            "llama3-8b-8192",
-            "mixtral-8x7b-32768",
-            "gemma2-9b-it",
-        ],
+        models=list(GROQ_MODELS),
         efforts=[],
         streaming=True,
         tools=False,
@@ -157,16 +155,3 @@ def get_available_adapter_names() -> list[str]:
     """Get list of adapter names that are available on this system."""
     providers = detect_all_providers()
     return [name for name, info in providers.items() if info.available]
-
-
-def get_default_adapter() -> str:
-    """Get the best default adapter based on availability.
-    
-    Priority order: claude_cli > codex_cli > groq
-    """
-    priority = ["claude_cli", "codex_cli", "groq"]
-    available = get_available_adapter_names()
-    for name in priority:
-        if name in available:
-            return name
-    return "none"

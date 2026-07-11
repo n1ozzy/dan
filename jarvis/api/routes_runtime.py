@@ -220,9 +220,9 @@ TOOLS_INTERNET_APPLY_KEYS = frozenset(
         "security.require_approval_for_terminal",
         "security.require_approval_for_memory",
         "security.destructive_tools_enabled",
-        "security.voice_auto_approve_tools",
         "security.auto_approve_mode",
         "security.approved_roots",
+        "security.voice_auto_approve_tools",
         "destructive_tools_enabled",
         "provider_tools_enabled",
     }
@@ -239,13 +239,11 @@ LIVE_TOOL_POLICY_APPLY_KEYS = frozenset(
         "security.require_approval_for_terminal",
         "security.require_approval_for_memory",
         "security.destructive_tools_enabled",
-        "security.voice_auto_approve_tools",
         "security.auto_approve_mode",
         "security.approved_roots",
+        "security.voice_auto_approve_tools",
     }
 )
-
-AUTO_APPROVE_MODES = frozenset({"off", "model", "voice", "all"})
 BRAIN_NEXT_TURN_APPLY_KEYS = frozenset({"brain.model", "brain.effort"})
 BRAIN_PROVIDER_SESSION_CHANGE_KEYS = frozenset({"brain.provider", "brain.adapter"})
 BRAIN_REQUIRES_NEW_SESSION_KEYS = BRAIN_NEXT_TURN_APPLY_KEYS | BRAIN_PROVIDER_SESSION_CHANGE_KEYS
@@ -2175,81 +2173,29 @@ def _apply_tools_internet_settings(
     if not tool_keys:
         return []
 
-    # Live tool-policy keys: written straight to the settings table — the
-    # per-turn overlay picks them up on the next turn, no restart. Applied
-    # BEFORE the restart-bound keys are evaluated, so a mixed request still
-    # lands the live part (the error below then reports only the blocked keys).
-    applied: list[str] = []
-    live_keys = sorted(key for key in tool_keys if key in LIVE_TOOL_POLICY_APPLY_KEYS)
-    live_updates: dict[str, Any] = {}
-    for key in live_keys:
+    updates: dict[str, Any] = {}
+    for key in sorted(tool_keys):
         value = settings[key]
         if key == "security.auto_approve_mode":
-            if not isinstance(value, str) or value not in AUTO_APPROVE_MODES:
-                raise RuntimeSettingsApplyError(
-                    f"{key} must be one of {', '.join(sorted(AUTO_APPROVE_MODES))}.",
-                    rejected_keys=[key],
-                )
-            live_updates[key] = value
+            if not isinstance(value, str) or not value.strip():
+                raise RuntimeSettingsApplyError(f"{key} must be a non-empty string.", rejected_keys=[key])
+            updates[key] = value.strip()
             continue
         if key == "security.approved_roots":
             if isinstance(value, str):
-                roots = [value]
-            elif isinstance(value, list) and all(isinstance(item, str) for item in value):
-                roots = value
-            else:
-                raise RuntimeSettingsApplyError(
-                    f"{key} must be a string or a list of strings.",
-                    rejected_keys=[key],
-                )
-            live_updates[key] = [root for root in (str(item).strip() for item in roots) if root]
-            continue
+                updates[key] = [value.strip()] if value.strip() else []
+                continue
+            if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                updates[key] = [item.strip() for item in value if item.strip()]
+                continue
+            raise RuntimeSettingsApplyError(f"{key} must be a string or list of strings.", rejected_keys=[key])
         if not isinstance(value, bool):
-            raise RuntimeSettingsApplyError(
-                f"{key} must be a boolean.",
-                rejected_keys=[key],
-            )
-        live_updates[key] = value
-    if live_updates:
-        app.update_settings(live_updates)
-        applied.extend(live_updates)
-    tool_keys = [key for key in tool_keys if key not in LIVE_TOOL_POLICY_APPLY_KEYS]
-    if not tool_keys:
-        return applied
+            raise RuntimeSettingsApplyError(f"{key} must be a boolean.", rejected_keys=[key])
+        updates[key] = value
 
-    capabilities = capability_graph.get("tools_capabilities", {})
-    apply_capabilities = capabilities.get("apply_capabilities")
-    if not isinstance(apply_capabilities, dict):
-        apply_capabilities = {}
-    network_tools = capabilities.get("registered_network_tools")
-    network_tool_names = network_tools if isinstance(network_tools, list) else []
-    blockers: list[str] = []
-    requires_restart_keys: list[str] = []
-    for key in sorted(tool_keys):
-        if not isinstance(settings[key], bool):
-            raise RuntimeSettingsApplyError(
-                f"{key} must be a boolean.",
-                rejected_keys=[key],
-            )
-        if key in {"tools.network_enabled", "security.network_enabled"} and settings[key] and not network_tool_names:
-            blockers.append("Internet unavailable: no network/search tool registered")
-            continue
-        capability = apply_capabilities.get(key) if isinstance(apply_capabilities.get(key), dict) else {}
-        blocker = capability.get("blocker") or "not apply-capable"
-        if capability.get("requires_restart"):
-            requires_restart_keys.append(key)
-            blockers.append(f"{key}: {blocker}")
-        else:
-            blockers.append(f"{key}: {blocker}")
-
-    raise RuntimeSettingsApplyError(
-        blockers[0],
-        status_code=409,
-        apply_status="requires_restart" if requires_restart_keys else "blocked",
-        rejected_keys=sorted(tool_keys),
-        requires_restart_keys=sorted(requires_restart_keys),
-        blockers=blockers,
-    )
+    if updates:
+        app.update_settings(updates)
+    return sorted(updates)
 
 
 def _append_compatibility_warning(target: list[str], message: str) -> None:
@@ -4733,6 +4679,181 @@ def _voice_layer_projection_errors(
     )
 
 
+def _turn_detection_projection(app: DaemonApp) -> dict[str, Any]:
+    if not app.config.voice.enabled:
+        mode = "disabled"
+        current_engine = "unknown"
+        sample_rate = "unknown"
+        frame_ms = "unknown"
+        min_capture_ms = "unknown"
+        rms_threshold = "unknown"
+        min_voiced_seconds = "unknown"
+        min_voiced_ratio = "unknown"
+        streaming_vad_supported = False
+        pre_activation_buffer_ms = "unsupported"
+        silence_duration_ms = "unsupported"
+        vad_threshold = "unsupported"
+        interrupt_response = "unknown"
+        semantic_interruption = "unknown"
+        priority_user_lane = "unknown"
+        background_autonomy_lane = "unsupported"
+        warnings = ["Voice is disabled"]
+    else:
+        # Determine mode: we are using PTT and energy/RMS capture gate
+        if app.config.voice.ptt_mode:
+            mode = "ptt_capture_gate"
+        else:
+            mode = "capture_gate"
+        current_engine = "energy_rms_gate"
+        sample_rate = app.config.voice.recorder_sample_rate
+        frame_ms = "unknown"  # we don't have frame size in config
+        min_capture_ms = "unknown"  # we don't have a minimum capture time in config
+        # Use the STT minimum RMS as an approximation for the energy threshold
+        rms_threshold = app.config.voice.stt_min_rms
+        min_voiced_seconds = app.config.voice.stt_min_voiced_seconds
+        min_voiced_ratio = app.config.voice.stt_min_voiced_ratio
+        streaming_vad_supported = False
+        pre_activation_buffer_ms = "unsupported"
+        silence_duration_ms = "unsupported"  # silence ending is lease/PTT-driven
+        vad_threshold = app.config.voice.stt_min_rms  # map the energy threshold
+        interrupt_response = "partial"  # we have queue-level barge-in
+        semantic_interruption = "partial"  # we have barge-in but not semantic understanding
+        priority_user_lane = "partial"  # broker can be interrupted
+        background_autonomy_lane = "unsupported"
+        warnings = [
+            "Energy/RMS capture gate used (not streaming VAD)",
+            "Silence ending is lease/PTT-driven, not VAD timeout",
+            "No pre-activation buffer",
+            "No silence duration based endpointing",
+            f"VAD threshold approximated from STT RMS threshold ({app.config.voice.stt_min_rms})",
+            "Interrupt response is partial (queue-level barge-in)",
+            "Semantic interruption is partial",
+            "Priority user lane is partial (broker can be interrupted)",
+            "Background autonomy lane unsupported"
+        ]
+
+    return {
+        "mode": _projection(
+            value=mode,
+            effective_value=mode,
+            source="runtime_detected" if app.config.voice.enabled else "config",
+            status="ok" if app.config.voice.enabled else "invalid",
+            editable_later=False,
+        ),
+        "current_engine": _projection(
+            value=current_engine,
+            effective_value=current_engine,
+            source="runtime_detected" if app.config.voice.enabled else "config",
+            status="ok" if app.config.voice.enabled else "missing",
+            editable_later=False,
+        ),
+        "sample_rate": _projection(
+            value=sample_rate,
+            effective_value=sample_rate,
+            source="config",
+            status="ok" if app.config.voice.enabled else "missing",
+            editable_later=False,
+        ),
+        "frame_ms": _projection(
+            value=frame_ms,
+            effective_value=frame_ms,
+            source="config",
+            status="missing",
+            editable_later=False,
+        ),
+        "min_capture_ms": _projection(
+            value=min_capture_ms,
+            effective_value=min_capture_ms,
+            source="config",
+            status="missing",
+            editable_later=False,
+        ),
+        "rms_threshold": _projection(
+            value=rms_threshold,
+            effective_value=rms_threshold,
+            source="config",
+            status="ok" if app.config.voice.enabled else "missing",
+            editable_later=False,
+        ),
+        "min_voiced_seconds": _projection(
+            value=min_voiced_seconds,
+            effective_value=min_voiced_seconds,
+            source="config",
+            status="ok" if app.config.voice.enabled else "missing",
+            editable_later=False,
+        ),
+        "min_voiced_ratio": _projection(
+            value=min_voiced_ratio,
+            effective_value=min_voiced_ratio,
+            source="config",
+            status="ok" if app.config.voice.enabled else "missing",
+            editable_later=False,
+        ),
+        "streaming_vad_supported": _projection(
+            value=streaming_vad_supported,
+            effective_value=streaming_vad_supported,
+            source="config",
+            status="ok",
+            editable_later=False,
+        ),
+        "pre_activation_buffer_ms": _projection(
+            value=pre_activation_buffer_ms,
+            effective_value=pre_activation_buffer_ms,
+            source="config",
+            status="missing",
+            editable_later=False,
+        ),
+        "silence_duration_ms": _projection(
+            value=silence_duration_ms,
+            effective_value=silence_duration_ms,
+            source="config",
+            status="missing",
+            editable_later=False,
+        ),
+        "vad_threshold": _projection(
+            value=vad_threshold,
+            effective_value=vad_threshold,
+            source="config",
+            status="ok" if app.config.voice.enabled else "missing",
+            editable_later=False,
+        ),
+        "interrupt_response": _projection(
+            value=interrupt_response,
+            effective_value=interrupt_response,
+            source="runtime_detected",
+            status="ok",
+            editable_later=False,
+        ),
+        "semantic_interruption": _projection(
+            value=semantic_interruption,
+            effective_value=semantic_interruption,
+            source="runtime_detected",
+            status="ok",
+            editable_later=False,
+        ),
+        "priority_user_lane": _projection(
+            value=priority_user_lane,
+            effective_value=priority_user_lane,
+            source="runtime_detected",
+            status="ok",
+            editable_later=False,
+        ),
+        "background_autonomy_lane": _projection(
+            value=background_autonomy_lane,
+            effective_value=background_autonomy_lane,
+            source="runtime_detected",
+            status="missing",
+            editable_later=False,
+        ),
+        "warnings": _projection(
+            value=warnings,
+            effective_value=warnings,
+            source="runtime_detected",
+            status="ok" if not warnings else "invalid",
+            editable_later=False,
+            warning="Warnings detected." if warnings else None,
+        ),
+    }
 def _voice_projection(
     app: DaemonApp,
     *,
@@ -4765,6 +4886,7 @@ def _voice_projection(
         warnings.append(queue_warning)
     if not app.config.voice.enabled:
         warnings.append("Voice is disabled.")
+    turn_detection = _turn_detection_projection(app)
 
     return {
         "enabled": _projection(
@@ -4896,6 +5018,7 @@ def _voice_projection(
             editable_later=False,
             warning="Warnings detected." if warnings else None,
         ),
+        "turn_detection": turn_detection,
     }
 
 

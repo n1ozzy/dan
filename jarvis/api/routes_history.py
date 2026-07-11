@@ -40,8 +40,9 @@ def get_turns(
         limit=limit,
         newest_first=newest_first,
     )
+    effective_id = turns[0].conversation_id if turns else conversation_id
     return {
-        "conversation_id": conversation_id,
+        "conversation_id": effective_id,
         "turns": [turn_to_dict(turn) for turn in turns],
         "limit": limit,
         "newest_first": newest_first,

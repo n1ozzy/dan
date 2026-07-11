@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from jarvis.api.routes_runtime import CANONICAL_PTT_MODES
 from jarvis.daemon.app import DaemonApp
 from jarvis.security.redaction import redact_secrets
 from jarvis.voice.listening import ALLOWED_SOURCES
@@ -229,10 +230,10 @@ def _voice_runtime_groups(
                 "lease_modes": sorted({lease.mode for lease in active_leases}),
                 "lease_sources": sorted({lease.source for lease in active_leases}),
             },
-            readiness=READINESS_OK if voice.ptt_mode in {"hold", "toggle", "locked"} else READINESS_INVALID,
+            readiness=READINESS_OK if voice.ptt_mode in CANONICAL_PTT_MODES else READINESS_INVALID,
             dependency_status="daemon lease state only; no microphone activation",
             latest_safe_error=voice_error,
-            warnings=[] if voice.ptt_mode in {"hold", "toggle", "locked"} else ["invalid PTT mode"],
+            warnings=[] if voice.ptt_mode in CANONICAL_PTT_MODES else ["invalid PTT mode"],
         ),
         "turn_manager": _runtime_group(
             "Turn Manager",

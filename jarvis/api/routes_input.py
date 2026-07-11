@@ -22,7 +22,7 @@ def post_text_input(app: DaemonApp, request_payload: Any) -> dict[str, object]:
     payload = _validate_request_payload(request_payload)
     result = app.handle_text_input(
         text=payload["text"],
-        conversation_id=payload.get("conversation_id"),
+        conversation_id=None,
         metadata=payload.get("metadata"),
         source=payload["source"],
     )
@@ -70,11 +70,8 @@ def _validate_request_payload(request_payload: Any) -> dict[str, Any]:
         raise TextInputValidationError(f"source must be one of: {allowed}.")
     payload["source"] = raw_source
 
-    if "conversation_id" in request_payload and request_payload["conversation_id"] is not None:
-        conversation_id = request_payload["conversation_id"]
-        if not isinstance(conversation_id, str) or not conversation_id.strip():
-            raise TextInputValidationError("conversation_id must be a non-empty string.")
-        payload["conversation_id"] = conversation_id.strip()
+    # conversation_id is intentionally ignored: Jarvis has one continuous
+    # conversation. Workers/sessions are not product concepts in the chat UI.
 
     if "metadata" in request_payload and request_payload["metadata"] is not None:
         metadata = request_payload["metadata"]

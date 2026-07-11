@@ -14,11 +14,11 @@ log_backup_count = 5
 path = "~/.jarvis/jarvis.db"
 
 [brain]
-default_adapter = "claude_cli"
+default_adapter = "claude_cli_warm"
 default_model = "claude-sonnet-5"
 timeout_seconds = 60
 context_budget_chars = 24000
-provider_sessions_are_memory = false
+provider_sessions_are_memory = true
 
 [brain.claude_cli]
 enabled = true
@@ -32,20 +32,23 @@ stream_args = [
 model = "claude-sonnet-5"
 timeout_seconds = 180
 
-
-# Uncomment to use Claude CLI Warm (persistent process, requires new session for changes):
-# [brain.claude_cli_warm]
-# enabled = true
-# command = "claude"
-# args = ["-p"]
-# model = "claude-sonnet-5"
-# timeout_seconds = 180
+[brain.claude_cli_warm]
+enabled = true
+command = "claude"
+args = ["-p"]
+model = "claude-sonnet-5"
+timeout_seconds = 180
+stream_args = [
+  "--output-format", "stream-json",
+  "--verbose",
+  "--include-partial-messages",
+]
 
 [memory]
-enabled = false
+enabled = true
 max_active_blocks = 50
 max_context_chars = 12000
-worker_candidates_require_promotion = true
+worker_candidates_require_promotion = false
 # Dev/local explicit enablement only. Keep compiled memory context disabled in
 # shared/default configs; [memory].enabled must also remain true for it to run.
 compiled_context_enabled = false
@@ -55,12 +58,12 @@ compiled_context_include_procedural = false
 
 [voice]
 enabled = true
-speak_responses = false
-broker_enabled = false
+speak_responses = true
+broker_enabled = true
 default_tts = "supertonic"
 default_stt = "mlx_whisper"
 ptt_mode = "hold"
-ptt_hotkey = "right_cmd+right_shift"
+ptt_hotkey = "left_cmd+left_shift"
 queue_persisted = true
 recorder = "sox"
 
@@ -76,7 +79,7 @@ supertonic_serve_max_chunk_length = 400
 # Per-persona mastering (ffmpeg timbre chain, ported from DAN). Empty = raw
 # supertonic. "bastard" = Jarvis (the ziomek voice, less bass); also "gritty",
 # "clean". Fail-safe: any ffmpeg error plays the raw chunk.
-mastering_profile = ""               # e.g. "clean" (warm default) or "bastard"
+mastering_profile = "bastard"               # e.g. "clean" (warm default) or "bastard"
 mastering_binary = "ffmpeg"
 
 # Optional per-persona voice + mastering override (persona.profile -> voice /

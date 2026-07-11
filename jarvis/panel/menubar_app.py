@@ -16,9 +16,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from jarvis.config import JarvisConfig, load_config
 from jarvis.panel.hotkey import (
@@ -30,6 +32,11 @@ from jarvis.panel.hotkey import (
     parse_hotkey,
 )
 from jarvis.paths import resolve_runtime_paths
+
+# PTT activation grace: how long the hotkey combo must stay held before the mic
+# actually arms. A quick accidental brush (press+release faster than this) is
+# ignored entirely. Client-side UX constant (Ozzy 2026-07-10: 400 ms).
+PTT_ACTIVATION_GRACE_SECONDS = 0.4
 from jarvis.security.transport import load_api_token
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -252,9 +259,41 @@ class MenuBarApp:
             self._settings.api_base_url, self._settings.api_token
         )
 
+        # PTT activation grace (Ozzy 2026-07-10): a "down" edge does NOT arm the
+        # mic immediately. We wait PTT_ACTIVATION_GRACE_SECONDS; only if the combo
+        # is STILL held when the timer fires do we actually POST /voice/ptt/down.
+        # An accidental brush (press+release faster than the grace) never touches
+        # the mic — the release cancels the pending timer before it fires. The
+        # detector still tracks physical key state; the grace only defers the
+        # HTTP dispatch, so release semantics stay intact.
+        ptt_state: dict[str, Any] = {"timer": None, "down_sent": False}
+
+        def _fire_down() -> None:
+            ptt_state["down_sent"] = True
+            ptt_state["timer"] = None
+            client.dispatch("down")
+
         def handler(event):
             device_flags = int(event.modifierFlags()) & 0xFFFF
-            client.dispatch(detector.update(device_flags))
+            edge = detector.update(device_flags)
+            if edge == "down":
+                if PTT_ACTIVATION_GRACE_SECONDS <= 0:
+                    _fire_down()
+                else:
+                    timer = threading.Timer(PTT_ACTIVATION_GRACE_SECONDS, _fire_down)
+                    timer.daemon = True
+                    ptt_state["down_sent"] = False
+                    ptt_state["timer"] = timer
+                    timer.start()
+            elif edge == "up":
+                pending = ptt_state.get("timer")
+                if pending is not None:
+                    pending.cancel()
+                    ptt_state["timer"] = None
+                if ptt_state.get("down_sent"):
+                    client.dispatch("up")
+                    ptt_state["down_sent"] = False
+                # released within grace → never armed → send nothing
             return event  # local monitor forwards the event; global ignores it
 
         flags_changed = AppKit.NSEventMaskFlagsChanged

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from jarvis.brain.auto_detect import detect_all_providers, get_default_adapter
+from jarvis.brain.auto_detect import detect_all_providers
 from jarvis.brain.base import BrainAdapter, BrainRequest, BrainResponse
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
 from jarvis.brain.claude_cli_warm_adapter import ClaudeCliWarmAdapter
@@ -45,131 +45,76 @@ class BrainManager:
         cls, config: object, *, generation_registry: Any | None = None
     ) -> "BrainManager":
         brain_config = getattr(config, "brain", None)
-        config_default = getattr(brain_config, "default_adapter", None)
-        default_model = getattr(brain_config, "default_model", "sonnet")
+        config_default = str(getattr(brain_config, "default_adapter", "claude_cli_warm") or "claude_cli_warm")
 
-        # Auto-detect all available providers
-        detected = detect_all_providers()
         adapters: list[BrainAdapter] = []
 
-        # Priority order for default adapter (codex_cli intentionally excluded)
-        priority = ["claude_cli", "groq", "claude_cli_warm"]
-
-        # Register Claude CLI adapter. This branch is Claude-CLI-first: config can
-        # declare the adapter even when this test/runtime machine cannot detect the
-        # binary yet. Actual execution still fails clearly if the command is missing.
-        claude_config = getattr(brain_config, "claude_cli", None)
-        claude_explicit = bool(getattr(claude_config, "enabled", False)) if claude_config else False
-        if detected["claude_cli"].available or claude_explicit or config_default == "claude_cli":
-            if claude_config is None:
-                from types import SimpleNamespace
-                claude_config = SimpleNamespace(
-                    command="claude",
-                    args=["-p"],
-                    model="",
-                    effort="",
-                    permission_mode="",
-                    output_format="",
-                    input_format="",
-                    tools=[],
-                    allowed_tools=[],
-                    disallowed_tools=[],
-                    mcp_config_path="",
-                    strict_mcp_config=None,
-                    timeout_seconds=120,
-                    stream_args=None,
-                    enabled=True,
-                )
-            if _should_register_cli_adapter(claude_config, config_default, "claude_cli"):
-                adapters.append(
-                    ClaudeCliAdapter(
-                        command=getattr(claude_config, "command", "claude"),
-                        args=getattr(claude_config, "args", ["-p"]),
-                        model=getattr(claude_config, "model", ""),
-                        effort=getattr(claude_config, "effort", ""),
-                        permission_mode=getattr(claude_config, "permission_mode", ""),
-                        output_format=getattr(claude_config, "output_format", ""),
-                        input_format=getattr(claude_config, "input_format", ""),
-                        tools=getattr(claude_config, "tools", []),
-                        allowed_tools=getattr(claude_config, "allowed_tools", []),
-                        disallowed_tools=getattr(claude_config, "disallowed_tools", []),
-                        mcp_config_path=getattr(claude_config, "mcp_config_path", ""),
-                        strict_mcp_config=getattr(claude_config, "strict_mcp_config", None),
-                        timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
-                        stream_args=getattr(claude_config, "stream_args", None),
-                        generation_registry=generation_registry,
-                    )
-                )
-
-# Register Claude CLI Warm adapter (explicit config only)
+        # Jarvis runtime-lab is Claude-only. Warm Claude is preferred because it
+        # avoids one subprocess per turn; plain Claude CLI stays as fallback.
         warm_config = getattr(brain_config, "claude_cli_warm", None)
-        warm_explicit = bool(getattr(warm_config, "enabled", False)) if warm_config else False
-        if warm_explicit:
-            if warm_config is None:
-                from types import SimpleNamespace
-                warm_config = SimpleNamespace(
-                    command="claude",
-                    args=["-p"],
-                    model="",
-                    effort="",
-                    permission_mode="",
-                    output_format="",
-                    input_format="",
-                    tools=[],
-                    allowed_tools=[],
-                    disallowed_tools=[],
-                    mcp_config_path="",
-                    strict_mcp_config=None,
-                    timeout_seconds=120,
-                    stream_args=None,
-                    enabled=True,
+        if warm_config is None:
+            from types import SimpleNamespace
+            warm_config = SimpleNamespace(
+                command="claude",
+                args=["-p"],
+                model=getattr(brain_config, "default_model", ""),
+                timeout_seconds=120,
+                enabled=True,
+            )
+        if bool(getattr(warm_config, "enabled", True)) or config_default == "claude_cli_warm":
+            adapters.append(
+                ClaudeCliWarmAdapter(
+                    command=getattr(warm_config, "command", "claude"),
+                    args=getattr(warm_config, "args", ["-p"]),
+                    model=getattr(warm_config, "model", getattr(brain_config, "default_model", "")),
+                    timeout_seconds=getattr(warm_config, "timeout_seconds", 120),
+                    generation_registry=generation_registry,
                 )
-            if _should_register_cli_adapter(warm_config, config_default, "claude_cli_warm"):
-                adapters.append(
-                    ClaudeCliWarmAdapter(
-                        command=getattr(warm_config, "command", "claude"),
-                        args=getattr(warm_config, "args", ["-p"]),
-                        model=getattr(warm_config, "model", ""),
-                        timeout_seconds=getattr(warm_config, "timeout_seconds", 120),
-                        generation_registry=generation_registry,
-                    )
-                )
-
-        # Codex CLI adapter intentionally NOT registered (owner decree: Jarvis
-        # runs on Claude Code only). Even if the binary is present and
-        # [brain.codex_cli] enabled=true, it will not enter brain.providers.
-
-        # Register Groq API adapter - auto-register if API key available OR explicitly enabled in config
-        groq_config = getattr(brain_config, "groq", None)
-        groq_explicit = bool(getattr(groq_config, "enabled", False)) if groq_config else False
-        if detected["groq"].available or groq_explicit:
-            if groq_config is None:
-                from types import SimpleNamespace
-                groq_config = SimpleNamespace(enabled=True, api_key="", model="")
-            if _should_register_cli_adapter(groq_config, config_default, "groq"):
-                adapters.append(wrap_async_adapter(create_groq_adapter(config, generation_registry)))
-
-        # Register test adapter if explicitly enabled (for integration tests)
-        test_config = getattr(brain_config, "test", None)
-        if test_config and getattr(test_config, "enabled", False):
-            adapters.append(create_test_adapter(config, generation_registry))
-
-        if not adapters:
-            raise BrainManagerError(
-                "No brain adapters available. Install Claude CLI or set GROQ_API_KEY."
             )
 
-        # Determine default adapter: config default > first available in priority order
-        if config_default and config_default in [a.name for a in adapters]:
-            default_adapter = config_default
-        else:
-            for name in priority:
-                if any(a.name == name for a in adapters):
-                    default_adapter = name
-                    break
-            else:
-                default_adapter = adapters[0].name
+        claude_config = getattr(brain_config, "claude_cli", None)
+        if claude_config is None:
+            from types import SimpleNamespace
+            claude_config = SimpleNamespace(
+                command="claude",
+                args=["-p"],
+                model=getattr(brain_config, "default_model", ""),
+                effort="",
+                permission_mode="bypassPermissions",
+                output_format="",
+                input_format="",
+                tools=[],
+                allowed_tools=[],
+                disallowed_tools=[],
+                mcp_config_path="",
+                strict_mcp_config=None,
+                timeout_seconds=120,
+                stream_args=None,
+                enabled=True,
+            )
+        adapters.append(
+            ClaudeCliAdapter(
+                command=getattr(claude_config, "command", "claude"),
+                args=getattr(claude_config, "args", ["-p"]),
+                model=getattr(claude_config, "model", getattr(brain_config, "default_model", "")),
+                effort=getattr(claude_config, "effort", ""),
+                permission_mode=getattr(claude_config, "permission_mode", "bypassPermissions"),
+                output_format=getattr(claude_config, "output_format", ""),
+                input_format=getattr(claude_config, "input_format", ""),
+                tools=getattr(claude_config, "tools", []),
+                allowed_tools=getattr(claude_config, "allowed_tools", []),
+                disallowed_tools=getattr(claude_config, "disallowed_tools", []),
+                mcp_config_path=getattr(claude_config, "mcp_config_path", ""),
+                strict_mcp_config=getattr(claude_config, "strict_mcp_config", None),
+                timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
+                stream_args=getattr(claude_config, "stream_args", None),
+                generation_registry=generation_registry,
+            )
+        )
 
+        default_adapter = "claude_cli_warm" if any(a.name == "claude_cli_warm" for a in adapters) else "claude_cli"
+        if config_default in {a.name for a in adapters}:
+            default_adapter = config_default
         return cls(adapters, default_adapter=default_adapter)
 
     @property

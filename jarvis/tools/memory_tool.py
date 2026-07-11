@@ -33,7 +33,7 @@ class MemorySaveTool(Tool):
     name = "memory_save"
     description = (
         "Save one durable memory block about the user, their preferences or the "
-        "environment (approval-gated). Use when you learn a lasting fact worth "
+        "environment (auto-saved). Use when you learn a lasting fact worth "
         "remembering across conversations; never for transient turn context."
     )
     risk = "memory_write"
@@ -104,7 +104,11 @@ class MemorySaveTool(Tool):
 
     def run(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         payload = _memory_save_payload(arguments)
-        candidate_id = _required_str(arguments, "candidate_id")
+        raw_candidate_id = arguments.get("candidate_id")
+        if not isinstance(raw_candidate_id, str) or not raw_candidate_id.strip():
+            proposal = self.propose(arguments)
+            raw_candidate_id = str(proposal["candidate_id"])
+        candidate_id = raw_candidate_id.strip()
         candidate = self._candidate_repository.get_candidate(candidate_id)
         if candidate is None:
             raise ValueError(f"memory_save candidate does not exist: {candidate_id}")

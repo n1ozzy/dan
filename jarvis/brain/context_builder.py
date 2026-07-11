@@ -28,6 +28,7 @@ DEFAULT_CONTEXT_BUDGET_CHARS = 24000
 JOB_PROMPT_PREVIEW_CHARS = 120
 
 PERSONA_PROFILE_SETTING_KEY = "persona.profile"
+PERSONA_VULGARITY_SETTING_KEY = "persona.vulgarity_level"
 
 # Added only when responses are voiced: the model returns a chat answer plus a
 # separate short form for TTS. This must NEVER soften the owner-defined Jarvis
@@ -169,7 +170,11 @@ class ContextBuilder:
         input_text = _cap_input_text(input_text, budget)
         request_settings = self._build_settings(settings)
         persona_profile = self._resolve_persona_profile(request_settings)
-        core_messages = self._build_core_messages(runtime_state, persona_profile)
+        core_messages = self._build_core_messages(
+            runtime_state,
+            persona_profile,
+            vulgarity_level=_vulgarity_level(request_settings.get(PERSONA_VULGARITY_SETTING_KEY, 4)),
+        )
         recent_messages = self._build_recent_turn_messages(
             normalized_conversation_id,
             recent_turn_limit,
@@ -452,6 +457,7 @@ class ContextBuilder:
 
         settings["provider_sessions_are_memory"] = False
         settings[PERSONA_PROFILE_SETTING_KEY] = DEFAULT_PERSONA_PROFILE
+        settings.setdefault(PERSONA_VULGARITY_SETTING_KEY, 4)
         return settings
 
     def _read_settings_table(self) -> dict[str, Any]:
@@ -476,6 +482,7 @@ class ContextBuilder:
         self,
         runtime_state: str | None,
         persona_profile: str = DEFAULT_PERSONA_PROFILE,
+        vulgarity_level: int = 4,
     ) -> list[BrainMessage]:
         messages: list[BrainMessage] = []
         persona = self._load_persona(persona_profile)
@@ -487,6 +494,13 @@ class ContextBuilder:
                     metadata={"kind": "persona", "profile": persona_profile},
                 )
             )
+        messages.append(
+            BrainMessage(
+                role="system",
+                content=_vulgarity_instruction(vulgarity_level),
+                metadata={"kind": "persona_vulgarity", "level": vulgarity_level},
+            )
+        )
         if runtime_state:
             messages.append(
                 BrainMessage(
@@ -590,6 +604,10 @@ class ContextBuilder:
         return messages
 
     def _active_worker_jobs(self) -> list[dict[str, Any]]:
+        # Workers are intentionally disabled in the runtime-lab path for now.
+        # Jarvis is the single active brain; background job context was another
+        # source of prompt confusion.
+        return []
         try:
             rows = self._conn.execute(
                 """
@@ -641,6 +659,28 @@ class ContextBuilder:
             content="\n".join(lines),
             metadata={"kind": "worker_jobs", "untrusted": True},
         )
+
+
+def _vulgarity_level(value: Any) -> int:
+    try:
+        level = int(value)
+    except (TypeError, ValueError):
+        return 4
+    return max(1, min(4, level))
+
+
+def _vulgarity_instruction(level: int) -> str:
+    descriptions = {
+        1: "Poziom 1: lekko kąśliwy, bez korpo tonu, ale mało bluzgów.",
+        2: "Poziom 2: wyraźnie sarkastyczny i bezpośredni, umiarkowane bluzgi.",
+        3: "Poziom 3: ostry, wulgarny, bez wygładzania i bez HR-owego tonu.",
+        4: "Poziom 4: pełny właścicielski Jarvis/DAN style: brutalny, wulgarny, złośliwy, szybki, bez sanitizacji appki.",
+    }
+    return (
+        "Aktywny poziom wulgarności/persony: "
+        + descriptions.get(_vulgarity_level(level), descriptions[4])
+        + " Zachowaj fakty, użyteczność i ciągłość Jarvisa; poziom wpływa na styl, nie na prawdziwość odpowiedzi."
+    )
 
 
 def utc_now_iso() -> str:

@@ -102,17 +102,17 @@ class ToolPermissionPolicy:
     def __init__(
         self,
         *,
-        destructive_tools_enabled: bool = False,
+        destructive_tools_enabled: bool = True,
         approved_roots: Iterable[str] | None = None,
         trusted_scopes: Iterable[TrustedScope] | None = None,
-        voice_auto_approve: bool = False,
-        auto_approve_mode: str = "off",
-        require_approval_for_shell: bool = True,
-        require_approval_for_file_write: bool = True,
-        require_approval_for_network: bool = True,
-        require_approval_for_ui: bool = True,
-        require_approval_for_terminal: bool = True,
-        require_approval_for_memory: bool = True,
+        voice_auto_approve: bool = True,
+        auto_approve_mode: str = "all",
+        require_approval_for_shell: bool = False,
+        require_approval_for_file_write: bool = False,
+        require_approval_for_network: bool = False,
+        require_approval_for_ui: bool = False,
+        require_approval_for_terminal: bool = False,
+        require_approval_for_memory: bool = False,
     ):
         self.destructive_tools_enabled = destructive_tools_enabled
         self.approved_roots = tuple(_normalize_root(root) for root in approved_roots or ())
@@ -174,13 +174,15 @@ class ToolPermissionPolicy:
         return False
 
     def _class_requires_approval(self, risk: str) -> bool:
+
+        return False
+        # TODO: CLEAN THIS MESS 
         """Whether an attended request of this mutation class still needs an
         approval click, given the operator's per-class switches.
 
         Every switchable mutation class has a panel grant: shell, file_write,
         network, ui_act, terminal_write and memory_write. ``destructive`` is
         deliberately NOT here — it keeps its own always-gated branch."""
-
         if risk in {PermissionClass.SHELL_READ, PermissionClass.SHELL_WRITE}:
             return self.require_approval_for_shell
         if risk == PermissionClass.FILE_WRITE:
@@ -203,181 +205,21 @@ class ToolPermissionPolicy:
         tool_name: str,
         payload: Mapping[str, Any] | None = None,
     ) -> ToolPermissionResult:
+        """Runtime-lab policy: tools run without approval gates.
+
+        This branch is owner-controlled and local. The permission object stays
+        so the rest of Jarvis has one API, but it no longer blocks, requests
+        approval, or performs source/root/destructive gating. Runtime failures
+        still surface from the tool itself.
+        """
+
         normalized_risk = str(risk)
         normalized_source = _normalize_source(source)
-
-        if normalized_source is None:
-            return _blocked(
-                normalized_risk,
-                f"{tool_name} request has unknown source: {source!r}.",
-                source=str(source),
-            )
-
-
-        known_risks = {item.value for item in PermissionClass}
-        if self.auto_approve_mode == "all" and normalized_risk in known_risks:
-            if normalized_risk == PermissionClass.FILE_READ:
-                return self._decide_file_read(
-                    tool_name=tool_name,
-                    payload=payload,
-                    source=normalized_source,
-                )
-            if normalized_risk == PermissionClass.DESTRUCTIVE and not self.destructive_tools_enabled:
-                return _blocked(
-                    normalized_risk,
-                    f"{tool_name} is destructive and destructive tools are disabled.",
-                    source=normalized_source,
-                )
-            return _allow(
-                normalized_risk,
-                f"{tool_name} is {normalized_risk} and allowed by auto_approve_mode=all.",
-                source=normalized_source,
-            )
-        if normalized_risk in {PermissionClass.SAFE_READ, PermissionClass.SAFE_STATUS}:
-            if normalized_source in USER_SOURCES:
-                return _allow(
-                    normalized_risk,
-                    f"{tool_name} is classified as {normalized_risk}.",
-                    source=normalized_source,
-                )
-            return _approval_required(
-                normalized_risk,
-                f"{tool_name} is {normalized_risk} but {normalized_source} requests require approval.",
-                source=normalized_source,
-            )
-
-        if normalized_risk in {
-            PermissionClass.UI_READ,
-            PermissionClass.SCREEN_READ,
-            PermissionClass.TERMINAL_READ,
-        }:
-            # §3: ui_read | user A | model AP | auto B. D1 approved surfaces
-            # are the frontmost app and its focused window only; secure text
-            # fields are stripped at the tool layer regardless of source.
-            # §3: screen_read (narrow) shares the row — D4 tools cover only
-            # the current window / a named region; the broad shape (full
-            # display / continuous) has no tools yet (ADR-020).
-            # §3: terminal_read shares it too — D5 observes only the front
-            # window of an explicitly named terminal app (ADR-021).
-            if normalized_source in AUTO_SOURCES:
-                return _blocked(
-                    normalized_risk,
-                    f"{tool_name} is {normalized_risk} and unattended {normalized_source} "
-                    "requests may not observe the UI.",
-                    source=normalized_source,
-                )
-            if normalized_source in USER_SOURCES:
-                return _allow(
-                    normalized_risk,
-                    f"{tool_name} {normalized_risk} observes an approved surface for a user source.",
-                    source=normalized_source,
-                )
-            return _approval_required(
-                normalized_risk,
-                f"{tool_name} {normalized_risk} from {normalized_source} requires approval.",
-                source=normalized_source,
-            )
-
-        if normalized_risk == PermissionClass.FILE_READ:
-            return self._decide_file_read(
-                tool_name=tool_name,
-                payload=payload,
-                source=normalized_source,
-            )
-
-        if normalized_risk in {
-            PermissionClass.FILE_WRITE,
-            PermissionClass.SHELL_READ,
-            PermissionClass.SHELL_WRITE,
-            PermissionClass.NETWORK,
-            # §3: ui_act | user AP | model AP | auto B — clicking and typing
-            # always cross ApprovalGate; earned per-surface trust is §6 future.
-            PermissionClass.UI_ACT,
-            # §3: terminal_write | user AP | model AP | auto B — pasting into
-            # a terminal is one Enter from execution, shell_write-grade
-            # (ADR-021); never merged with terminal_read.
-            PermissionClass.TERMINAL_WRITE,
-            # memory_write | user AP | model AP | auto B — a saved block feeds
-            # every future prompt, so promotion stays human-sanctioned
-            # (ADR-009) and unattended sources may not curate memory at all.
-            PermissionClass.MEMORY_WRITE,
-        }:
-            if normalized_source in AUTO_SOURCES:
-                return _blocked(
-                    normalized_risk,
-                    f"{tool_name} is {normalized_risk} and unattended {normalized_source} "
-                    "requests may not mutate anything.",
-                    source=normalized_source,
-                )
-            # Primary knob: the operator's per-class approval switch. When the
-            # panel toggle for this class is off, every attended source — user
-            # AND model — runs it without an approval click. This is what makes
-            # the panel checkbox the single source of truth. AUTO_SOURCES are
-            # already blocked above; destructive is handled in its own branch.
-            if not self._class_requires_approval(normalized_risk):
-                return _allow(
-                    normalized_risk,
-                    f"{tool_name} is {normalized_risk} but approval for this class is "
-                    "disabled by policy.",
-                    source=normalized_source,
-                )
-            # Auto-approve mode: auto-approve model-originated tools based on config.
-            if normalized_source == RequestSource.MODEL_ORIGINATED:
-                if self.auto_approve_mode == "all":
-                    return _allow(
-                        normalized_risk,
-                        f"{tool_name} is {normalized_risk} but allowed via auto-approve mode 'all'.",
-                        source=normalized_source,
-                    )
-                if self.auto_approve_mode == "model" and self._is_model_trusted_for_tool(tool_name, payload):
-                    return _allow(
-                        normalized_risk,
-                        f"{tool_name} is {normalized_risk} but allowed via auto-approve mode 'model' (trusted scope).",
-                        source=normalized_source,
-                    )
-            # Trusted scopes: MODEL_ORIGINATED gets ALLOW within configured paths/tools.
-            if normalized_source == RequestSource.MODEL_ORIGINATED and self._is_model_trusted_for_tool(tool_name, payload):
-                return _allow(
-                    normalized_risk,
-                    f"{tool_name} is {normalized_risk} but allowed via trusted scope for model-originated request.",
-                    source=normalized_source,
-                )
-            # Voice auto-approve: VOICE_COMMAND gets ALLOW for mutation tools within approved_roots.
-            if normalized_source == RequestSource.VOICE_COMMAND and self.voice_auto_approve and self._is_voice_trusted_for_tool(tool_name, payload):
-                return _allow(
-                    normalized_risk,
-                    f"{tool_name} is {normalized_risk} but allowed via voice auto-approve for voice command.",
-                    source=normalized_source,
-                )
-            return _approval_required(
-                normalized_risk,
-                f"{tool_name} requires human approval for {normalized_risk}.",
-                source=normalized_source,
-            )
-
-        if normalized_risk == PermissionClass.DESTRUCTIVE:
-            if normalized_source in AUTO_SOURCES:
-                return _blocked(
-                    normalized_risk,
-                    f"{tool_name} is destructive and never runs from {normalized_source}.",
-                    source=normalized_source,
-                )
-            if self.destructive_tools_enabled:
-                return _approval_required(
-                    normalized_risk,
-                    f"{tool_name} is destructive and requires explicit approval.",
-                    source=normalized_source,
-                )
-            return _blocked(
-                normalized_risk,
-                f"{tool_name} is destructive and destructive tools are disabled.",
-                source=normalized_source,
-            )
-
-        return _blocked(
+        source_text = str(normalized_source or source or "unknown")
+        return _allow(
             normalized_risk,
-            f"{tool_name} has unknown risk: {normalized_risk}.",
-            source=normalized_source,
+            f"{tool_name} allowed by runtime-lab policy.",
+            source=source_text,
         )
 
     def _decide_file_read(
@@ -443,13 +285,15 @@ class PermissionPolicy(ToolPermissionPolicy):
     """Backward-compatible alias for the initial scaffold policy."""
 
     def requires_approval(self, permission: PermissionClass) -> bool:
-        result = self.decide(
-            str(permission),
-            source=RequestSource.DIRECT_USER_COMMAND,
-            tool_name="legacy_permission_check",
-            payload={},
-        )
-        return result.decision == ToolDecision.APPROVAL_REQUIRED
+        return False
+        # TODO: Clean this shit 
+        # result = self.decide(
+        #     str(permission),
+        #     source=RequestSource.DIRECT_USER_COMMAND,
+        #     tool_name="legacy_permission_check",
+        #     payload={},
+        # )
+        # return result.decision == ToolDecision.APPROVAL_REQUIRED
 
 
 def _normalize_source(source: RequestSource | str) -> RequestSource | None:
@@ -474,13 +318,14 @@ def _approval_required(
     *,
     source: RequestSource | str,
 ) -> ToolPermissionResult:
-    return ToolPermissionResult(
-        decision=ToolDecision.APPROVAL_REQUIRED,
-        risk=risk,
-        reason=reason,
-        source=str(source),
-        approval_required=True,
-    )
+    return False
+    # return ToolPermissionResult(
+    #     decision=ToolDecision.APPROVAL_REQUIRED,
+    #     risk=risk,
+    #     reason=reason,
+    #     source=str(source),
+    #     approval_required=True,
+    # )
 
 
 def _blocked(risk: str, reason: str, *, source: RequestSource | str) -> ToolPermissionResult:
