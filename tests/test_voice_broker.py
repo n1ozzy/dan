@@ -49,7 +49,7 @@ def voice_config(**overrides) -> SimpleNamespace:
     values = {
         "enabled": True,
         "speak_responses": True,
-        "broker_enabled": True,
+        "broker_enabled": False,
         "default_tts": "mock",
         "fillers": ["A spierdalaj cwelu", "Wiesz, że myślałem o Tobie jak szczałem przed sraniem?"],
         "filler_after_ms": 50,
@@ -469,48 +469,43 @@ def test_filler_does_not_fire_when_disarmed_in_time(db_path: Path) -> None:
 # --- daemon integration -------------------------------------------------------
 
 
-def test_finished_turn_is_spoken_through_the_broker(tmp_path: Path) -> None:
-    from jarvis.daemon.app import create_daemon_app
-    from tests.test_api_smoke import config_text, request_json, running_server
+def test_finished_speech_is_published_once_to_isolated_shared_broker(
+    db_path: Path,
+    tmp_path: Path,
+) -> None:
+    from jarvis.voice.shared_broker import SharedBrokerClient
 
-    config_path = tmp_path / "jarvis.toml"
-    config_path.write_text(
-        config_text(tmp_path / "home" / "jarvis.db")
-        .replace("[voice]\nenabled = false", "[voice]\nenabled = true")
-        .replace("speak_responses = false", "speak_responses = true")
-        .replace("broker_enabled = false", "broker_enabled = true"),
-        encoding="utf-8",
+    request_dir = tmp_path / "isolated-shared-broker" / "req"
+    config = voice_config(
+        broker_enabled=True,
+        default_tts="supertonic",
+        supertonic_lang="pl",
+        supertonic_voice="M3",
+        supertonic_speed=1.35,
+        mastering_profile="clean",
+        persona_voices={"jarvis": "M3"},
+        persona_speeds={"jarvis": 1.35},
+        persona_mastering={"jarvis": "clean"},
     )
-    daemon_app = create_daemon_app(config_path)
-    daemon_app.start()
-    try:
-        with running_server(daemon_app) as base_url:
-            status, turn = request_json(
-                "POST",
-                f"{base_url}/input/text",
-                {"text": "Powiedz pierwsze zdanie. Powiedz drugie zdanie."},
-            )
-            assert status == 200, turn
+    client = SharedBrokerClient(config, request_dir=request_dir)
+    pipeline = SpeechPipeline(
+        lambda: connect(db_path),
+        config=config,
+        shared_broker=client,
+    )
 
-            db = tmp_path / "home" / "jarvis.db"
-            deadline = time.monotonic() + 10
-            statuses: list[str] = []
-            while time.monotonic() < deadline:
-                conn = sqlite3.connect(db)
-                statuses = [
-                    row[0]
-                    for row in conn.execute(
-                        "SELECT status FROM voice_queue ORDER BY rowid"
-                    ).fetchall()
-                ]
-                close_quietly(conn)
-                if statuses and all(s == "done" for s in statuses):
-                    break
-                time.sleep(0.1)
-            assert statuses, "no voice requests were enqueued for the finished turn"
-            assert all(s == "done" for s in statuses), statuses
+    count = pipeline.speak_text(
+        turn_id="turn-isolated",
+        text="Pierwsze zdanie. Drugie zdanie.",
+    )
+
+    assert count == 1
+    assert len(list(request_dir.glob("*.json"))) == 1
+    conn = connect(db_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM voice_queue").fetchone()[0] == 0
     finally:
-        daemon_app.close()
+        close_quietly(conn)
 
 
 def test_banned_engine_in_config_kills_daemon_at_startup(tmp_path: Path) -> None:

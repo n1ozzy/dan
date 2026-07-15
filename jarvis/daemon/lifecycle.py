@@ -9,14 +9,6 @@ from typing import Any, Protocol
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.parse import unquote
 
-from jarvis.api.routes_approvals import (
-    ApprovalRequestValidationError,
-    approve_and_execute_approval,
-    approve_approval,
-    execute_approval,
-    get_approvals,
-    reject_approval,
-)
 from jarvis.api.routes_brain import (
     BrainRequestValidationError,
     get_brain_adapters,
@@ -45,6 +37,7 @@ from jarvis.api.routes_memory import (
     get_memory_items,
     patch_memory,
     post_memory,
+    post_memory_recall,
     post_memory_compile_preview,
     post_memory_candidate,
     post_memory_candidate_evidence,
@@ -123,17 +116,13 @@ MAX_STREAM_SESSIONS = 8
 # removing CORS null and validating Host, an untokened GET of conversations,
 # memory or settings was the remaining "any local process reads your data"
 # vector. Status/mechanism reads (/health, /state, /events, /tools) stay open
-# for monitoring and panel bootstrap. /approvals is token-gated too: its
-# payloads carry tool arguments — file paths + up to 4096 chars of file content,
-# fetch URLs, memory claims — i.e. exactly the private data that /memory and
-# /conversations guard; leaving it open was an inconsistency in the hardening.
+# for monitoring and panel bootstrap.
 TOKEN_PROTECTED_GET_PATHS = {
     "/conversations",
     "/turns",
     "/memory",
     "/memory/candidates",
     "/memory/items",
-    "/approvals",
     "/workers/jobs",
     "/runtime/legacy",
     "/runtime/processes",
@@ -489,6 +478,11 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, post_memory_compile_preview(app, request_payload))
             return
 
+        if method == "POST" and path == "/memory/recall":
+            request_payload = _read_json_body(handler)
+            _write_json(handler, 200, post_memory_recall(app, request_payload))
+            return
+
         if method == "GET" and path == "/memory/candidates":
             status_filter = query["status"][0] if "status" in query else None
             _write_json(
@@ -565,32 +559,6 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
                 _write_json(handler, 200, delete_memory(app, memory_id))
                 return
 
-        if method == "GET" and path == "/approvals":
-            limit = _query_int(query, "limit", default=50)
-            _write_json(handler, 200, get_approvals(app, limit=limit))
-            return
-
-        approval_action = _approval_action(path)
-        if method == "POST" and approval_action is not None:
-            approval_id, action = approval_action
-            request_payload = _read_optional_json_body(handler)
-            if action == "approve":
-                _write_json(handler, 200, approve_approval(app, approval_id, request_payload))
-                return
-            if action == "reject":
-                _write_json(handler, 200, reject_approval(app, approval_id, request_payload))
-                return
-            if action == "execute":
-                _write_json(handler, 200, execute_approval(app, approval_id, request_payload))
-                return
-            if action == "approve-and-execute":
-                _write_json(
-                    handler,
-                    200,
-                    approve_and_execute_approval(app, approval_id, request_payload),
-                )
-                return
-
         if method == "POST" and path == "/settings":
             request_payload = _read_json_body(handler)
             if not isinstance(request_payload, dict):
@@ -646,7 +614,6 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
 
         _write_json(handler, 404, {"error": "Not found", "status": 404})
     except (
-        ApprovalRequestValidationError,
         BrainRequestValidationError,
         MemoryRequestValidationError,
         TextInputValidationError,
@@ -900,18 +867,6 @@ def _memory_candidate_action(path: str) -> tuple[str, str] | None:
     if not candidate_id or action not in {"approve", "reject", "activate"}:
         return None
     return candidate_id, action
-
-
-def _approval_action(path: str) -> tuple[str, str] | None:
-    parts = [part for part in path.split("/") if part]
-    if len(parts) != 3 or parts[0] != "approvals":
-        return None
-    approval_id, action = parts[1], parts[2]
-    if action not in {"approve", "reject", "execute", "approve-and-execute"}:
-        return None
-    if not approval_id:
-        return None
-    return approval_id, action
 
 
 def _read_json_body(handler: BaseHTTPRequestHandler) -> Any:

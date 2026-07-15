@@ -147,11 +147,15 @@ class BrainCliAdapterConfig:
 
 @dataclass(frozen=True)
 class BrainConfig:
-    default_adapter: str = "claude_cli_warm"
+    default_adapter: str = "claude_cli"
     default_model: str = "claude-sonnet-5"
     timeout_seconds: int = 60
     context_budget_chars: int = 24000
-    provider_sessions_are_memory: bool = True
+    context_window_tokens: int = 200_000
+    context_checkpoint_percent: float = 70.0
+    context_compact_percent: float = 80.0
+    context_recycle_percent: float = 90.0
+    provider_sessions_are_memory: bool = False
     claude_cli: BrainCliAdapterConfig = field(
         default_factory=lambda: BrainCliAdapterConfig(command="claude", args=["-p"])
     )
@@ -160,9 +164,6 @@ class BrainConfig:
     )
     test: BrainCliAdapterConfig = field(
         default_factory=lambda: BrainCliAdapterConfig(command="test", args=[], enabled=False)
-    )
-    claude_cli_warm: BrainCliAdapterConfig = field(
-        default_factory=lambda: BrainCliAdapterConfig(command="claude", args=["-p"], enabled=True)
     )
 
 
@@ -332,6 +333,7 @@ class VoiceConfig:
     # never cause silence or the wrong voice.
     persona_voices: dict[str, str] = field(default_factory=dict)
     persona_mastering: dict[str, str] = field(default_factory=dict)
+    persona_speeds: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -657,9 +659,40 @@ def _build_brain_config(raw: dict[str, Any]) -> BrainConfig:
             "default_model",
             "timeout_seconds",
             "context_budget_chars",
+            "context_window_tokens",
+            "context_checkpoint_percent",
+            "context_compact_percent",
+            "context_recycle_percent",
             "provider_sessions_are_memory",
         }
     }
+    # Owner runtime has one stable brain route. Stale config may mention the
+    # old persistent adapter, but effective config must never resurrect it.
+    selected["default_adapter"] = "claude_cli"
+    selected["provider_sessions_are_memory"] = False
+    context_window_tokens = selected.get("context_window_tokens", 200_000)
+    if (
+        not isinstance(context_window_tokens, int)
+        or isinstance(context_window_tokens, bool)
+        or context_window_tokens <= 0
+    ):
+        raise ConfigError("brain.context_window_tokens must be a positive int")
+    threshold_values = (
+        selected.get("context_checkpoint_percent", 70.0),
+        selected.get("context_compact_percent", 80.0),
+        selected.get("context_recycle_percent", 90.0),
+    )
+    if any(
+        not isinstance(value, (int, float)) or isinstance(value, bool)
+        for value in threshold_values
+    ):
+        raise ConfigError("brain context thresholds must be numbers")
+    checkpoint, compact, recycle = (float(value) for value in threshold_values)
+    if not 0 < checkpoint < compact < recycle <= 100:
+        raise ConfigError(
+            "brain context thresholds must satisfy "
+            "0 < checkpoint < compact < recycle <= 100"
+        )
     try:
         return BrainConfig(
             **selected,
@@ -680,12 +713,6 @@ def _build_brain_config(raw: dict[str, Any]) -> BrainConfig:
                 raw.get("test"),
                 default_command="test",
                 default_args=[],
-            ),
-            claude_cli_warm=_build_brain_cli_config(
-                "brain.claude_cli_warm",
-                raw.get("claude_cli_warm"),
-                default_command="claude",
-                default_args=["-p"],
             ),
         )
     except TypeError as exc:

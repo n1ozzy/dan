@@ -2,6 +2,18 @@
 
 Classification: current.
 
+## Owner runtime override — 2026-07-13
+
+- One shared DAN/Jarvis canon:
+  `/Users/n1_ozzy/Documents/dev/dan/config/persona/DAN.md`, loaded fail-loud.
+- One persistent `claude_cli` stream-json process; durable resume/checkpoint
+  state is an execution cache, not memory. Provider chains remain disabled.
+- Model-originated tools execute directly and finish the turn; no approval row
+  or `awaiting_approval` branch is active for them.
+- Memory/history are untrusted context data and cannot replace the system persona.
+- The older approval sections below are historical snapshot evidence, not the
+  active branch contract.
+
 ## Git Snapshot
 
 - Branch: `spike/jarvis-local-runtime-check`

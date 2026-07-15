@@ -7,7 +7,7 @@ Scope: whole Jarvis runtime as represented by branch `rescue/audt-gpt5.5pro-limi
 
 Jarvis is a local, single-user assistant runtime. The central process is `jarvisd`. It owns durable state and exposes APIs for clients, tools, voice, memory, settings, approvals, and event streams.
 
-The system is intentionally daemon-centered. Clients render state and send intents. They do not own canonical data. Brain adapters are stateless request/response adapters and cannot be treated as memory.
+The system is intentionally daemon-centered. Clients render state and send intents. They do not own canonical data. The single Claude CLI provider session is a daemon-owned execution cache and cannot be treated as memory.
 
 ## Runtime ownership model
 
@@ -15,7 +15,7 @@ Core laws:
 
 - `jarvisd` owns truth.
 - The panel is a client.
-- Brain adapters are stateless.
+- The single `claude_cli` adapter owns one serialized persistent process.
 - Provider sessions are not Jarvis memory.
 - Workers are silent candidate producers.
 - The voice broker is the only speaker.
@@ -83,18 +83,18 @@ The API layer is split by concern:
 
 ## Brain layer
 
-The brain layer is stateless by design.
+The brain layer has exactly one production adapter, `claude_cli`. It keeps one
+serialized `stream-json` process alive for the active Jarvis conversation. The
+initial generation receives the fresh canonical DAN system prompt and complete
+Jarvis context; healthy later generations receive only new input or tool
+continuations. Durable state lives under the runtime directory with mode 0600.
 
 Primary files:
 
 - `jarvis/brain/base.py`
 - `jarvis/brain/manager.py`
 - `jarvis/brain/context_builder.py`
-- `jarvis/brain/mock_adapter.py`
 - `jarvis/brain/claude_cli_adapter.py`
-- `jarvis/brain/claude_cli_warm_adapter.py`
-- `jarvis/brain/codex_cli_adapter.py`
-- `jarvis/brain/openai_adapter.py`
 - `jarvis/brain/tool_call_parser.py`
 
 `BrainRequest` contains:
@@ -108,11 +108,16 @@ Primary files:
 - `settings`
 - `metadata`
 
-Provider adapters receive a fully assembled Jarvis-owned request. They must not silently supply memory by preserving hidden provider session state.
+The adapter receives a fully assembled Jarvis-owned request at bootstrap. Its
+provider session is only an execution cache: Jarvis conversation storage and
+memory remain authoritative. EOF, crash, or timeout attempts one resume with
+the same session id; a rejected/corrupt resume rebuilds under a fresh id.
 
 ## Context construction
 
-`ContextBuilder` builds stateless `BrainRequest` objects from Jarvis-owned state.
+`ContextBuilder` builds Jarvis-owned `BrainRequest` objects. The complete
+request bootstraps or rebuilds a provider session; healthy continuations send
+only the new input.
 
 It assembles:
 

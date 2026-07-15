@@ -114,7 +114,8 @@ class _StopOnFinalizeSpeech:
             def feed(self, *args: object, **kwargs: object) -> None:
                 return None
 
-            def finalize(self, text: str) -> None:
+            def finalize(self, text: str, *, lane: str = "final") -> None:
+                del text, lane
                 sm.transition(RuntimeState.STOPPING, reason="stop() race")
 
         return _Session()

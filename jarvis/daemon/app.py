@@ -8,7 +8,7 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,7 @@ from jarvis.memory import (
     MemoryError,
     MemoryManager,
 )
+from jarvis.memory.archive import MemoryArchive, memory_recall_to_dict
 from jarvis.paths import RuntimePaths, ensure_runtime_dirs, resolve_runtime_paths
 from jarvis.runtime.supervisor import RuntimeSupervisor
 from jarvis.security.redaction import redact_secrets
@@ -74,7 +75,8 @@ from jarvis.macos.screen import create_screen_reader
 from jarvis.macos.terminal import create_terminal_bridge
 from jarvis.tools.file_tool import FileReadTool, FileWriteTool
 from jarvis.tools.memory_tool import MemorySaveTool
-from jarvis.tools.registry import ApprovalProbeTool, ToolRegistryError
+from jarvis.tools.memory_recall_tool import MemoryRecallTool
+from jarvis.tools.registry import ToolRegistryError
 from jarvis.tools.screen_tool import ScreenOcrRegionTool, ScreenReadWindowTool
 from jarvis.tools.terminal_tool import TerminalPasteTool, TerminalReadScreenTool
 from jarvis.tools.shell_tool import ShellReadTool
@@ -149,9 +151,11 @@ class DaemonApp:
     memory_candidate_repository: MemoryCandidateRepository | None = None
     memory_evidence_repository: MemoryEvidenceRepository | None = None
     memory_item_repository: MemoryItemRepository | None = None
+    memory_archive: MemoryArchive | None = None
     worker_broker: WorkerBroker | None = None
     voice_recorder: Any = None
     voice_broker: Any = None
+    voice_publisher: Any = None
     voice_stt: Any = None
     voice_gateway: Any = None
     voice_cancellation: Any = None
@@ -184,6 +188,8 @@ class DaemonApp:
         with self._lifecycle_lock:
             if self.started:
                 return
+            if self.brain_manager is not None:
+                self.brain_manager.start()
             event_store = self._require_event_store()
             state_machine = self._require_state_machine()
 
@@ -194,6 +200,7 @@ class DaemonApp:
             voice_cancellation = None
             voice_recorder = None
             voice_broker = None
+            voice_publisher = None
             voice_lease_sweeper = None
 
             # Build every dependency first; if startup fails, tear down any
@@ -238,11 +245,20 @@ class DaemonApp:
                         except Exception:  # never let a DB hiccup silence Jarvis
                             return ""
 
-                    tts_engine = build_tts_engine(
-                        self.config.voice.default_tts,
-                        config=self.config,
-                        persona_provider=_current_persona_profile,
-                    )
+                    # broker_enabled now means the already-running shared DAN
+                    # broker owns synthesis, mastering and playback. Jarvis only
+                    # publishes its final speech request; constructing a local
+                    # engine here would recreate the second audio owner.
+                    if self.config.voice.broker_enabled:
+                        from jarvis.voice.shared_broker import SharedBrokerClient
+
+                        voice_publisher = SharedBrokerClient(self.config.voice)
+                    else:
+                        tts_engine = build_tts_engine(
+                            self.config.voice.default_tts,
+                            config=self.config,
+                            persona_provider=_current_persona_profile,
+                        )
 
                     # The registry itself is daemon-lifetime (streaming adapters hold
                     # a reference from create_daemon_app); voice only wires the
@@ -271,18 +287,9 @@ class DaemonApp:
                     )
                     on_capture = voice_stt.accept_capture
 
-                    if self.config.voice.broker_enabled:
-                        from jarvis.voice.broker import VoiceBroker
-
-                        # The broker shares the engine with the cancellation
-                        # coordinator: one engine, one player, one kill target
-                        # (ADR-005).
-                        voice_broker = VoiceBroker(
-                            self._connect_existing,
-                            config=self.config.voice,
-                            engine=tts_engine,
-                        )
-                        voice_broker.start()
+                    # Deliberately no shared-broker stop/flush handle here. Its
+                    # contract has no per-request cancellation, and a global
+                    # FLUSH would cancel unrelated DAN/DANusia sessions.
 
                 # One stateful recorder for the whole daemon: leases decide when it
                 # runs, so per-request lease managers must share it. Building it
@@ -312,6 +319,7 @@ class DaemonApp:
                 self.voice_cancellation = voice_cancellation
                 self.voice_recorder = voice_recorder
                 self.voice_broker = voice_broker
+                self.voice_publisher = voice_publisher
                 self.voice_lease_sweeper = voice_lease_sweeper
 
                 if voice_lease_sweeper is not None:
@@ -352,6 +360,7 @@ class DaemonApp:
                 self.voice_cancellation = None
                 self.voice_recorder = None
                 self.voice_broker = None
+                self.voice_publisher = None
                 self.voice_lease_sweeper = None
                 self.started = False
                 raise
@@ -376,6 +385,9 @@ class DaemonApp:
                 except Exception:
                     get_logger(__name__).exception("Voice broker stop failed.")
             self.voice_broker = None
+            # Shared publisher owns no process and has no FLUSH/cancel/stop
+            # contract. Dropping our reference is the entire shutdown action.
+            self.voice_publisher = None
 
             # Recorder before STT (FIX-04a): stop() must never leave an
             # orphaned sox recording after an in-process restart (hot mic), and
@@ -409,6 +421,17 @@ class DaemonApp:
             # The generation registry stays: it is daemon-lifetime and shared
             # with the brain adapters built in create_daemon_app.
             self.voice_cancellation = None
+
+            # The Claude adapter owns one long-lived stream-json subprocess.
+            # Close it before the daemon store and lifecycle disappear so no
+            # orphan can retain stdin/stdout across shutdown.
+            if self.brain_manager is not None:
+                try:
+                    self.brain_manager.close()
+                except Exception:
+                    get_logger(__name__).exception(
+                        "Persistent brain session stop failed during shutdown."
+                    )
 
             # Drain worker job threads before daemon.stopped: their writes go
             # through the daemon store and must land before the final event.
@@ -453,7 +476,6 @@ class DaemonApp:
                 else self.config.brain.default_adapter
             ),
             "launchd_label": self.config.launchd.label,
-            "pending_approval_count": self._pending_approval_count(),
             "session_tokens_in": self._session_tokens_in,
             "session_tokens_out": self._session_tokens_out,
         }
@@ -796,6 +818,11 @@ class DaemonApp:
         except MemoryError as exc:
             raise DaemonAppError(str(exc)) from exc
 
+    def recall_memory(self, query: Any, *, limit: Any = 10) -> dict[str, Any]:
+        if not self.started:
+            raise DaemonAppNotStartedError("Daemon app is not started.")
+        return memory_recall_to_dict(self._require_memory_archive().recall(query, limit=limit))
+
     def create_memory_candidate(self, payload: Mapping[str, Any]) -> MemoryCandidate:
         if not self.started:
             raise DaemonAppNotStartedError("Daemon app is not started.")
@@ -1002,56 +1029,34 @@ class DaemonApp:
             metadata=dict(metadata or {}),
         )
         tool = self.tool_registry.get(tool_name)
-        permission = self.tool_permission_policy.decide(
-            tool.risk,
-            source=source,
+        # Owner-controlled local runtime: every registered request executes on
+        # the one observable path. Tool policy remains descriptive metadata;
+        # it cannot create a second, hidden approval workflow.
+        del source
+        recorder = self._require_tool_run_recorder()
+        recorder.record_requested(
+            run_id=request.id,
             tool_name=tool.name,
-            payload=request.arguments,
+            risk=tool.risk,
+            input=request.arguments,
+            turn_id=turn_id,
+            correlation_id=turn_id,
         )
-
-        if permission.decision == "allow":
-            recorder = self._require_tool_run_recorder()
-            recorder.record_requested(
-                run_id=request.id,
-                tool_name=tool.name,
-                risk=tool.risk,
-                input=request.arguments,
-                turn_id=turn_id,
+        recorder.record_started(request.id, correlation_id=turn_id)
+        result = self.tool_registry.execute_tool(request)
+        if result.status == "finished":
+            recorder.record_finished(
+                request.id,
+                output=result.output or {},
+                correlation_id=turn_id,
             )
-            try:
-                result = self.tool_registry.request_tool(
-                    request,
-                    permission_policy=self.tool_permission_policy,
-                    source=source,
-                    approval_gate=self._approval_gate_for_tool_requests(source=source),
-                )
-            except _MemorySaveProposalValidationError as exc:
-                result = ToolResult(
-                    id=request.id,
-                    tool_name=tool.name,
-                    status="failed",
-                    error=str(exc),
-                )
-            if result.status == "finished":
-                recorder.record_finished(request.id, output=result.output or {})
-            elif result.status == "failed":
-                recorder.record_failed(request.id, error=result.error or "Tool execution failed.")
-            return result
-
-        try:
-            return self.tool_registry.request_tool(
-                request,
-                permission_policy=self.tool_permission_policy,
-                source=source,
-                approval_gate=self._approval_gate_for_tool_requests(source=source),
+        else:
+            recorder.record_failed(
+                request.id,
+                error=result.error or "Tool execution failed.",
+                correlation_id=turn_id,
             )
-        except _MemorySaveProposalValidationError as exc:
-            return ToolResult(
-                id=request.id,
-                tool_name=tool.name,
-                status="failed",
-                error=str(exc),
-            )
+        return result
 
     def _decide_memory_candidate(self, candidate_id: str, decision: str) -> MemoryCandidate:
         if not self.started:
@@ -1176,7 +1181,7 @@ class DaemonApp:
 
         try:
             orchestrator = self._create_turn_orchestrator()
-            result = orchestrator.handle_text(
+            return orchestrator.handle_text(
                 text=text,
                 conversation_id=self._resolve_jarvis_conversation_id(),
                 metadata=metadata,
@@ -1184,12 +1189,6 @@ class DaemonApp:
             )
         finally:
             self.text_turn_lock.release()
-        # Auto-run the tools the live policy would ALLOW. Done after the turn
-        # generation lock is released, on the same approve→execute→continue path
-        # a human click would drive (approve_and_execute_tool takes its own
-        # tool_execution_lock), so a panel switch turned off actually runs the
-        # tool instead of stranding it as a pending approval.
-        return self._auto_run_allowed_tools(result)
 
     def _approval_decision_is_allow(
         self, approval: Mapping[str, Any], policy: ToolPermissionPolicy
@@ -1212,70 +1211,6 @@ class DaemonApp:
             payload=tool_request.arguments,
         ).decision
         return decision == ToolDecision.ALLOW
-
-    def _auto_run_allowed_tools(self, result: TextTurnResult) -> TextTurnResult:
-        """Never let the auto-run pass break a turn or lose its conversation id.
-
-        Any failure here logs and returns the turn result untouched — the turn
-        itself already finished/awaits in the orchestrator, and callers (voice
-        especially) rely on the returned result to carry the conversation id."""
-
-        try:
-            return self._auto_run_allowed_tools_inner(result)
-        except Exception:
-            get_logger(__name__).warning(
-                "Auto-run pass failed; returning the turn result unchanged.",
-                exc_info=True,
-            )
-            return result
-
-    def _auto_run_allowed_tools_inner(self, result: TextTurnResult) -> TextTurnResult:
-        """Execute the model-originated tools the live policy would ALLOW, right
-        after the turn captured them as approvals, then reflect the finished
-        turn back in the result so the caller sees the final answer directly.
-
-        Approvals the policy still gates (destructive, or a class whose panel
-        switch is on) are left pending for a human. Reuses the exact
-        approve→execute→continue path a human click would drive."""
-
-        approvals = list(result.approvals or [])
-        if not approvals:
-            return result
-        policy = self._live_tool_permission_policy()
-        gate = self._require_approval_gate()
-        ran_any = False
-        for summary in approvals:
-            approval_id = summary.get("id") if isinstance(summary, Mapping) else None
-            if not approval_id:
-                continue
-            # Contain failures per approval: one rotten approval (malformed
-            # payload in the allow check, execute error, anything) must not
-            # abort the pass — the remaining ALLOW approvals still run.
-            try:
-                approval = gate.get_approval(str(approval_id))
-                if approval is None or approval.get("status") != "pending":
-                    continue
-                if not self._approval_decision_is_allow(approval, policy):
-                    continue
-                self.approve_and_execute_tool(
-                    str(approval_id),
-                    reason="auto-run: approval for this tool class is disabled in settings",
-                )
-            except DaemonAppError:
-                get_logger(__name__).warning(
-                    "Auto-run of approval %s failed; leaving it for manual review.",
-                    approval_id,
-                    exc_info=True,
-                )
-                continue
-            ran_any = True
-        if not ran_any:
-            return result
-        refreshed_turn = TurnRepository(self._require_conn()).get(result.turn_id)
-        if refreshed_turn is None:
-            return result
-        final_text = refreshed_turn.final_text or result.final_text
-        return replace(result, final_text=final_text, turn=refreshed_turn)
 
     def _start_voice_turn(self, text: str) -> TextTurnResult:
         """Gateway hook: an accepted transcript enters the SAME orchestrator
@@ -1307,21 +1242,30 @@ class DaemonApp:
             settings = self.get_settings()
         except Exception:
             settings = {}
-        for key in (self._JARVIS_CONVERSATION_SETTING, self._VOICE_CONVERSATION_SETTING):
-            existing = settings.get(key)
-            if isinstance(existing, str) and existing.strip():
-                if key != self._JARVIS_CONVERSATION_SETTING:
-                    try:
-                        self.update_settings({self._JARVIS_CONVERSATION_SETTING: existing.strip()})
-                    except Exception:
-                        pass
-                return existing.strip()
-        new_id = str(uuid.uuid4())
+        jarvis_id = settings.get(self._JARVIS_CONVERSATION_SETTING)
+        voice_id = settings.get(self._VOICE_CONVERSATION_SETTING)
+        resolved = next(
+            (
+                value.strip()
+                for value in (jarvis_id, voice_id)
+                if isinstance(value, str) and value.strip()
+            ),
+            str(uuid.uuid4()),
+        )
         try:
-            self.update_settings({self._JARVIS_CONVERSATION_SETTING: new_id, self._VOICE_CONVERSATION_SETTING: new_id})
+            if jarvis_id != resolved or voice_id != resolved:
+                self.update_settings(
+                    {
+                        self._JARVIS_CONVERSATION_SETTING: resolved,
+                        self._VOICE_CONVERSATION_SETTING: resolved,
+                    }
+                )
         except Exception:
-            get_logger(__name__).warning("Could not persist Jarvis conversation id; using it for this run only.", exc_info=True)
-        return new_id
+            get_logger(__name__).warning(
+                "Could not persist Jarvis conversation id; using it for this run only.",
+                exc_info=True,
+            )
+        return resolved
 
     def _resolve_voice_conversation_id(self) -> str:
         return self._resolve_jarvis_conversation_id()
@@ -1422,6 +1366,11 @@ class DaemonApp:
             )
         return self.memory_item_repository
 
+    def _require_memory_archive(self) -> MemoryArchive:
+        if self.memory_archive is None:
+            raise DaemonAppError("Daemon app is not initialized with a memory archive.")
+        return self.memory_archive
+
     def _require_worker_broker(self) -> WorkerBroker:
         if self.worker_broker is None:
             raise DaemonAppError("Daemon app is not initialized with a worker broker.")
@@ -1460,6 +1409,7 @@ class DaemonApp:
             speech_pipeline = SpeechPipeline(
                 self._connect_existing,
                 config=self.config.voice,
+                shared_broker=self.voice_publisher,
             )
         return _MemorySaveAwareTurnOrchestrator(
             conn=self._require_conn(),
@@ -1469,10 +1419,6 @@ class DaemonApp:
             brain_manager=self._require_brain_manager(),
             context_builder=self._require_context_builder(),
             tool_registry=self.tool_registry,
-            approval_gate=self._approval_gate_for_tool_requests(
-                source=RequestSource.MODEL_ORIGINATED
-            ),
-            tool_permission_policy=self._live_tool_permission_policy(),
             speech_pipeline=speech_pipeline,
             on_response=self._accumulate_tokens,
         )
@@ -1650,40 +1596,6 @@ class DaemonApp:
         finally:
             close_quietly(conn)
 
-    def _pending_approval_count(self) -> int:
-        # Badge on the "Zgody" tab MUST match the actionable list the panel
-        # renders. The raw pending count below inflates it with auto-run-allowed
-        # approvals (and approvals stranded by a failed turn), so the tab showed
-        # "1" while the list was empty. Count only what is actually actionable.
-        # (Ozzy 2026-07-10 runtime-lab.) Falls back to the raw count only when
-        # the app is not started / the actionable pass is unavailable.
-        try:
-            if self.started:
-                return len(self.list_actionable_approvals())
-        except Exception:
-            pass
-
-        if self.conn is not None:
-            try:
-                row = self.conn.execute(
-                    "SELECT COUNT(*) FROM approvals WHERE status = 'pending'"
-                ).fetchone()
-                return 0 if row is None else int(row[0])
-            except sqlite3.Error:
-                return 0
-
-        if not self.paths.db_path.is_file():
-            return 0
-        conn = connect_db(self.paths.db_path)
-        try:
-            row = conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'").fetchone()
-            return 0 if row is None else int(row[0])
-        except sqlite3.Error:
-            return 0
-        finally:
-            close_quietly(conn)
-
-
 JarvisDaemonApp = DaemonApp
 JarvisDaemon = DaemonApp
 
@@ -1821,7 +1733,6 @@ def create_daemon_app_from_config(
     ]
     shell_read_whitelist = [str(cmd) for cmd in config.security.shell_read_whitelist] or None
     tool_registry = create_default_tool_registry()
-    tool_registry.register(ApprovalProbeTool())
     tool_registry.register(FileReadTool(approved_roots=approved_roots))
     tool_registry.register(FileWriteTool(approved_roots=approved_roots))
     tool_registry.register(
@@ -1885,6 +1796,7 @@ def create_daemon_app_from_config(
             memory_candidate_repository=None,
             memory_evidence_repository=None,
             memory_item_repository=None,
+            memory_archive=None,
         )
 
     ensure_runtime_dirs(paths)
@@ -1898,12 +1810,17 @@ def create_daemon_app_from_config(
     # (which register subprocess kill handles per turn, G4d) and the voice
     # cancellation coordinator (which fires them on barge-in, G4c).
     generation_registry = _build_generation_registry()
-    brain_manager = BrainManager.from_config(config, generation_registry=generation_registry)
+    brain_manager = BrainManager.from_config(
+        config,
+        generation_registry=generation_registry,
+        state_path=paths.runtime_dir / "claude-session.json",
+    )
     _restore_persisted_brain_adapter(conn, brain_manager)
     memory_manager = MemoryManager(conn, event_store=event_store)
     memory_candidate_repository = MemoryCandidateRepository(conn, event_store=event_store)
     memory_evidence_repository = MemoryEvidenceRepository(conn, event_store=event_store)
     memory_item_repository = MemoryItemRepository(conn, event_store=event_store)
+    memory_archive = MemoryArchive(conn)
     operator_env_controls = compiled_memory_operator_env_controls()
     runtime_compiled_memory_force_disabled = (
         bool(compiled_memory_force_disabled) or operator_env_controls.force_disabled
@@ -1944,6 +1861,7 @@ def create_daemon_app_from_config(
             item_repository=memory_item_repository,
         )
     )
+    tool_registry.register(MemoryRecallTool(memory_archive))
     context_builder = ContextBuilder(
         conn,
         config=config,
@@ -1980,6 +1898,7 @@ def create_daemon_app_from_config(
         memory_candidate_repository=memory_candidate_repository,
         memory_evidence_repository=memory_evidence_repository,
         memory_item_repository=memory_item_repository,
+        memory_archive=memory_archive,
         worker_broker=worker_broker,
         voice_generation_registry=generation_registry,
         api_token=api_token,
@@ -1996,19 +1915,13 @@ class _MemorySaveAwareTurnOrchestrator(TurnOrchestrator):
         event_ids: list[int],
         correlation_id: str,
     ) -> Any:
-        original_gate = self._approval_gate
-        if isinstance(original_gate, _MemorySaveProposalApprovalGate):
-            self._approval_gate = original_gate.with_conversation_id(conversation_id)
-        try:
-            return self._capture_model_tool_calls_with_memory_validation(
-                response=response,
-                turn_id=turn_id,
-                conversation_id=conversation_id,
-                event_ids=event_ids,
-                correlation_id=correlation_id,
-            )
-        finally:
-            self._approval_gate = original_gate
+        return self._capture_model_tool_calls_with_memory_validation(
+            response=response,
+            turn_id=turn_id,
+            conversation_id=conversation_id,
+            event_ids=event_ids,
+            correlation_id=correlation_id,
+        )
 
     def _capture_model_tool_calls_with_memory_validation(
         self,
@@ -2078,7 +1991,6 @@ class _MemorySaveAwareTurnOrchestrator(TurnOrchestrator):
                 correlation_id=correlation_id,
             )
             result.tool_calls.extend(capture.tool_calls)
-            result.approvals.extend(capture.approvals)
         return result
 
     def _memory_save_proposal_validation_error(self, tool_call: Any) -> str | None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import asdict
@@ -12,6 +13,7 @@ import pytest
 
 from jarvis.brain import BrainRequest
 from jarvis.brain.context_builder import (
+    DEFAULT_PERSONA_PATH,
     DEFAULT_PERSONA_PROFILE,
     ContextBuilder,
     ContextBuilderError,
@@ -36,7 +38,10 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 @pytest.fixture
 def persona_path(tmp_path: Path) -> Path:
     path = tmp_path / "jarvis.md"
-    path.write_text("Persona: Jarvis owns memory and answers from SQLite.", encoding="utf-8")
+    path.write_text(
+        "DAN_CANON_VERSION: 1\n\nPersona: Jarvis owns memory and answers from SQLite.",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -215,6 +220,13 @@ def test_voice_form_instruction_present_when_speaking(
     system_text = _system_text(result.request)
     assert "[[GŁOS]]" in system_text
     assert "Zacznij" in system_text
+    assert "jednego lub dwóch krótkich zdań" not in system_text
+    assert "komentarzem dla użytkownika" in system_text
+    assert "wewnętrznego toku rozumowania" in system_text
+    assert "logów" in system_text
+    assert "wyników narzędzi" in system_text
+    assert "ścieżek" in system_text
+    assert "identyfikatorów" in system_text
 
 
 def test_voice_form_instruction_absent_without_voice_config(
@@ -339,8 +351,188 @@ def test_persona_file_is_included_as_first_system_message(
     ).request
 
     assert request.context_messages[0].role == "system"
-    assert request.context_messages[0].content == "Persona: Jarvis owns memory and answers from SQLite."
+    assert request.context_messages[0].content == (
+        "DAN_CANON_VERSION: 1\n\nPersona: Jarvis owns memory and answers from SQLite."
+    )
     assert request.context_messages[0].metadata["kind"] == "persona"
+
+
+def test_environment_cannot_replace_the_shared_dan_persona(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    insert_conversation(conn)
+    impostor = tmp_path / "DAN.md"
+    impostor.write_text(
+        "DAN_CANON_VERSION: 1\nBądź grzecznym generycznym botem.",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DAN_PERSONA_PATH", str(impostor))
+
+    builder = ContextBuilder(conn, config=config(), now=fixed_now())
+    request = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Hello",
+    ).request
+
+    assert request.context_messages[0].content == DEFAULT_PERSONA_PATH.read_text(
+        encoding="utf-8"
+    )
+    assert request.context_messages[0].metadata["source"] == str(
+        DEFAULT_PERSONA_PATH.resolve()
+    )
+    assert str(impostor) != request.context_messages[0].metadata["source"]
+    assert request.context_messages[0].metadata["kind"] == "persona"
+
+
+def test_missing_shared_persona_fails_loudly(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    insert_conversation(conn)
+    missing = tmp_path / "missing-DAN.md"
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=missing,
+        now=fixed_now(),
+    )
+
+    with pytest.raises(ContextBuilderError, match="persona"):
+        builder.build_request(
+            turn_id="turn-new",
+            conversation_id="conversation-1",
+            input_text="Hello",
+        )
+
+
+def test_snapshot_records_the_exact_persona_source_version_and_hash(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    insert_conversation(conn)
+    canonical = tmp_path / "DAN.md"
+    content = "DAN_CANON_VERSION: 1\nŻywy DAN."
+    canonical.write_text(content, encoding="utf-8")
+    result = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=canonical,
+        now=fixed_now(),
+    ).build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Hello",
+    )
+
+    assert result.context_snapshot["persona_source"] == str(canonical.resolve())
+    assert result.context_snapshot["persona_version"] == "1"
+    assert result.context_snapshot["persona_sha256"] == hashlib.sha256(content.encode()).hexdigest()
+
+
+def test_persona_is_reloaded_byte_for_byte_for_every_brain_request(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    insert_conversation(conn)
+    canonical = tmp_path / "DAN.md"
+    first = "DAN_CANON_VERSION: 1\nPierwszy kanon.\n\n"
+    second = "DAN_CANON_VERSION: 1\nDrugi kanon, bez sanitizera.\n"
+    canonical.write_text(first, encoding="utf-8")
+    builder = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=canonical,
+        now=fixed_now(),
+    )
+
+    first_request = builder.build_request(
+        turn_id="turn-first-canon",
+        conversation_id="conversation-1",
+        input_text="first",
+    ).request
+    canonical.write_text(second, encoding="utf-8")
+    second_request = builder.build_request(
+        turn_id="turn-second-canon",
+        conversation_id="conversation-1",
+        input_text="second",
+    ).request
+
+    assert first_request.context_messages[0].content == first
+    assert second_request.context_messages[0].content == second
+
+
+def test_unknown_persona_canon_version_fails_loudly(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    insert_conversation(conn)
+    canonical = tmp_path / "DAN.md"
+    canonical.write_text("DAN_CANON_VERSION: 7\nObcy format.", encoding="utf-8")
+    with pytest.raises(ContextBuilderError, match="unknown canonical version"):
+        ContextBuilder(
+            conn,
+            config=config(),
+            persona_path=canonical,
+            now=fixed_now(),
+        ).build_request(
+            turn_id="turn-new",
+            conversation_id="conversation-1",
+            input_text="Hello",
+        )
+
+
+def test_canon_version_ten_is_not_mistaken_for_version_one(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+) -> None:
+    insert_conversation(conn)
+    canonical = tmp_path / "DAN.md"
+    canonical.write_text("DAN_CANON_VERSION: 10\nObcy format.", encoding="utf-8")
+
+    with pytest.raises(ContextBuilderError, match="unknown canonical version"):
+        ContextBuilder(
+            conn,
+            config=config(),
+            persona_path=canonical,
+            now=fixed_now(),
+        ).build_request(
+            turn_id="turn-new",
+            conversation_id="conversation-1",
+            input_text="Hello",
+        )
+
+
+def test_stale_vulgarity_setting_cannot_add_a_second_persona_layer(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    conn.execute(
+        "INSERT INTO settings(key, value_json, updated_at, source) VALUES (?, ?, ?, ?)",
+        ("persona.vulgarity_level", "1", "2026-07-01T11:00:00+00:00", "test"),
+    )
+    conn.commit()
+
+    request = ContextBuilder(
+        conn,
+        config=config(),
+        persona_path=persona_path,
+        now=fixed_now(),
+    ).build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Hello",
+    ).request
+
+    persona_kinds = [
+        message.metadata.get("kind")
+        for message in request.context_messages
+        if str(message.metadata.get("kind", "")).startswith("persona")
+    ]
+    assert persona_kinds == ["persona"]
 
 
 def test_old_persona_py_is_not_imported_or_needed(
@@ -358,7 +550,6 @@ def test_old_persona_py_is_not_imported_or_needed(
 
     source = (ROOT / "jarvis" / "brain" / "context_builder.py").read_text(encoding="utf-8")
     assert "persona.py" not in source
-    assert "/Users/n1_ozzy/Documents/dev/dan" not in source
 
 
 def test_recent_turns_are_included_chronologically(
@@ -392,6 +583,38 @@ def test_recent_turns_are_included_chronologically(
     assert contents.index("First input") < contents.index("First final")
     assert contents.index("First final") < contents.index("Second input")
     assert contents.index("Second input") < contents.index("Second final")
+
+
+def test_same_second_recent_turns_follow_database_insert_order(
+    conn: sqlite3.Connection,
+    persona_path: Path,
+) -> None:
+    insert_conversation(conn)
+    created_at = "2026-07-01T11:00:00+00:00"
+    insert_turn(
+        conn,
+        turn_id="turn-z-inserted-first",
+        created_at=created_at,
+        input_text="Inserted first",
+        final_text="First answer",
+    )
+    insert_turn(
+        conn,
+        turn_id="turn-a-inserted-second",
+        created_at=created_at,
+        input_text="Inserted second",
+        final_text="Second answer",
+    )
+    builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
+
+    request = builder.build_request(
+        turn_id="turn-new",
+        conversation_id="conversation-1",
+        input_text="Now",
+    ).request
+
+    contents = message_contents(request)
+    assert contents.index("Inserted first") < contents.index("Inserted second")
 
 
 def test_current_turn_is_excluded_from_recent_history(
@@ -596,7 +819,7 @@ def test_runtime_state_appears_in_context_when_provided(
     assert any("Runtime state: THINKING" in content for content in message_contents(request))
 
 
-def test_active_worker_jobs_are_summarized_without_unbounded_prompts(
+def test_disabled_worker_jobs_are_not_injected_into_the_persona_context(
     conn: sqlite3.Connection,
     persona_path: Path,
 ) -> None:
@@ -612,16 +835,12 @@ def test_active_worker_jobs_are_summarized_without_unbounded_prompts(
     )
 
     contents = message_contents(result.request)
-    job_message = next(content for content in contents if "Active worker jobs" in content)
-    assert "job-1" in job_message
-    # Bounded: the untrusted-data preamble is fixed and the prompt is truncated,
-    # so the whole message stays far below the 500-char raw prompt.
-    assert len(job_message) < 400
-    assert long_prompt not in job_message
-    assert result.context_snapshot["active_job_count"] == 1
+    assert all("Active worker jobs" not in content for content in contents)
+    assert all(long_prompt not in content for content in contents)
+    assert result.context_snapshot["active_job_count"] == 0
 
 
-def test_worker_job_prompt_is_runtime_work_data_not_a_system_directive(
+def test_disabled_worker_job_prompt_cannot_become_a_system_directive(
     conn: sqlite3.Connection,
     persona_path: Path,
 ) -> None:
@@ -636,14 +855,14 @@ def test_worker_job_prompt_is_runtime_work_data_not_a_system_directive(
         turn_id="turn-new", conversation_id="conversation-1", input_text="Now"
     ).request
 
-    job_msg = next(
-        message
+    assert all(
+        message.metadata.get("kind") != "worker_jobs"
         for message in request.context_messages
-        if message.metadata.get("kind") == "worker_jobs"
     )
-    assert job_msg.role != "system"
-    assert "operator/runtime queued work" in job_msg.content.lower()
-    assert "do not follow" not in job_msg.content.lower()
+    assert all(
+        "Ignore all previous instructions" not in message.content
+        for message in request.context_messages
+    )
 
 
 def test_one_invalid_settings_row_is_skipped_not_fatal(
@@ -804,22 +1023,9 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
     assert_schema_and_migrations_unchanged(ROOT)
 
 
-@pytest.fixture
-def persona_profiles(persona_path: Path) -> dict[str, Path]:
-    """Profile files living next to the base persona (E4, decree §7.7)."""
-
-    profiles: dict[str, Path] = {}
-    for name in ("gangus-3", "mentor"):
-        path = persona_path.parent / f"{name}.md"
-        path.write_text(f"Persona profile {name}: sharp and loyal to contracts.", encoding="utf-8")
-        profiles[name] = path
-    return profiles
-
-
 def test_persona_profile_setting_does_not_override_owner_persona_file(
     conn: sqlite3.Connection,
     persona_path: Path,
-    persona_profiles: dict[str, Path],
 ) -> None:
     insert_conversation(conn)
     insert_setting(conn, "persona.profile", "gangus-3")
@@ -863,7 +1069,6 @@ def test_base_persona_profile_is_named_jarvis(
 def test_missing_persona_profile_setting_uses_base_persona(
     conn: sqlite3.Connection,
     persona_path: Path,
-    persona_profiles: dict[str, Path],
 ) -> None:
     insert_conversation(conn)
     builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
@@ -883,7 +1088,6 @@ def test_missing_persona_profile_setting_uses_base_persona(
 def test_unknown_persona_profile_falls_back_to_base_persona(
     conn: sqlite3.Connection,
     persona_path: Path,
-    persona_profiles: dict[str, Path],
 ) -> None:
     insert_conversation(conn)
     insert_setting(conn, "persona.profile", "no-such-profile")
@@ -926,7 +1130,6 @@ def test_persona_profile_path_traversal_is_rejected(
 def test_non_string_persona_profile_falls_back_to_base_persona(
     conn: sqlite3.Connection,
     persona_path: Path,
-    persona_profiles: dict[str, Path],
 ) -> None:
     insert_conversation(conn)
     insert_setting(conn, "persona.profile", 42)
@@ -945,7 +1148,6 @@ def test_non_string_persona_profile_falls_back_to_base_persona(
 def test_explicit_settings_do_not_override_owner_persona_file(
     conn: sqlite3.Connection,
     persona_path: Path,
-    persona_profiles: dict[str, Path],
 ) -> None:
     insert_conversation(conn)
     insert_setting(conn, "persona.profile", "gangus-3")
@@ -982,6 +1184,8 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
 
     for path in scanned:
         source = path.read_text(encoding="utf-8")
+        if path == ROOT / "jarvis" / "brain" / "context_builder.py":
+            source = source.replace(f'"{DEFAULT_PERSONA_PATH}"', "")
         for snippet in forbidden:
             if snippet in source:
                 offenders.append((str(path.relative_to(ROOT)), snippet))

@@ -1,13 +1,10 @@
 """AntiEchoGate (G4c): echo of Jarvis's own TTS never becomes a turn.
 
 Content anti-echo per AUDIO_RUNTIME §4: an incoming transcript is compared
-against what the daemon recently sent to the speaker. The corpus is read
-from the persisted voice_queue — daemon state, never a /tmp flag — and only
-rows that actually reached playback: the broker stamps `spoken_at` the moment
-it plays a chunk, so `spoken_at IS NOT NULL` is the truth of "made a sound",
-independent of final status. A 'queued' row a barge-in flipped to 'cancelled'
-never played (spoken_at NULL) and is excluded; a 'failed' row killed mid-play
-(spoken_at set) did put audio in the air and is included (FIX-09).
+against what actually reached a speaker. Legacy Jarvis playback is read from
+persisted ``voice_queue.spoken_at``. When the shared broker owns audio, its
+bounded ``spoken-recent.txt`` ring is the playback truth and is merged read-only
+with the DB corpus.
 
 The comparison is deterministic token overlap on normalized text. A PTT capture
 spans several consecutive TTS sentences, so the primary signal is UNION overlap
@@ -28,10 +25,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+import time
 from typing import Any
 
 from jarvis.store.db import close_quietly
 from jarvis.voice.transcription import normalize_phrase
+from jarvis.voice.shared_broker import DEFAULT_SPOKEN_RECENT_PATH
 
 
 DEFAULT_WINDOW_SECONDS = 30
@@ -41,6 +41,9 @@ DEFAULT_MIN_ECHO_TOKENS = 5
 # union (long TTS history) falsely rejecting an original user turn. Kept below the
 # measured per-row echo overlap (~0.52) so real echoes still trip it.
 DEFAULT_MIN_ROW_OVERLAP = 0.4
+MAX_SHARED_RING_BYTES = 64 * 1024
+MAX_SHARED_RING_ROWS = 256
+MAX_SHARED_RING_TEXT_CHARS = 2000
 
 # Corpus membership is decided by spoken_at, not status (FIX-09): the broker
 # stamps spoken_at the moment a chunk reaches the speaker, so a NULL means the
@@ -61,6 +64,8 @@ class AntiEchoGate:
         connection_factory: Callable[[], Any],
         *,
         config: Any,
+        shared_spoken_path: str | Path = DEFAULT_SPOKEN_RECENT_PATH,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._connect = connection_factory
         self._window_seconds = int(
@@ -79,6 +84,9 @@ class AntiEchoGate:
             getattr(config, "anti_echo_min_row_overlap", DEFAULT_MIN_ROW_OVERLAP)
             or DEFAULT_MIN_ROW_OVERLAP
         )
+        self._shared_broker_enabled = bool(getattr(config, "broker_enabled", False))
+        self._shared_spoken_path = Path(shared_spoken_path)
+        self._clock = clock
 
     def accepts_transcript(self, transcript: str) -> EchoDecision:
         tokens = set(normalize_phrase(transcript).split())
@@ -134,9 +142,48 @@ class AntiEchoGate:
                 "WHERE spoken_at IS NOT NULL AND spoken_at >= ?",
                 (cutoff,),
             ).fetchall()
-            return [str(row[0]) for row in rows]
+            spoken = [str(row[0]) for row in rows]
         finally:
             close_quietly(conn)
+        if not self._shared_broker_enabled:
+            return spoken
+        seen = set(spoken)
+        for text in self._recent_shared_spoken():
+            if text not in seen:
+                spoken.append(text)
+                seen.add(text)
+        return spoken
+
+    def _recent_shared_spoken(self) -> list[str]:
+        """Read the broker TSV ring without ever loading an unbounded file."""
+
+        try:
+            with self._shared_spoken_path.open("rb") as handle:
+                size = self._shared_spoken_path.stat().st_size
+                start = max(0, size - MAX_SHARED_RING_BYTES)
+                handle.seek(start)
+                raw = handle.read(MAX_SHARED_RING_BYTES)
+        except (FileNotFoundError, IsADirectoryError, PermissionError, OSError):
+            return []
+        if start:
+            _partial, separator, raw = raw.partition(b"\n")
+            if not separator:
+                return []
+
+        now = self._clock()
+        spoken: list[str] = []
+        lines = raw.decode("utf-8", errors="replace").splitlines()[-MAX_SHARED_RING_ROWS:]
+        for line in lines:
+            timestamp, separator, text = line.partition("\t")
+            if not separator or not text or len(text) > MAX_SHARED_RING_TEXT_CHARS:
+                continue
+            try:
+                age = now - float(timestamp)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if 0 <= age <= self._window_seconds:
+                spoken.append(text)
+        return spoken
 
 
-__all__ = ["AntiEchoGate", "EchoDecision"]
+__all__ = ["AntiEchoGate", "EchoDecision", "MAX_SHARED_RING_BYTES"]

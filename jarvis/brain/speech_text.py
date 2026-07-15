@@ -10,9 +10,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from jarvis.security.redaction import redact_secret_text
+
 # The model marks a listen-friendly rendering of its answer with this block.
 # The chat keeps the rich text; only the inner text is sent to TTS.
 _SPEECH_BLOCK = re.compile(r"\[\[GŁOS\]\](.*?)\[\[/GŁOS\]\]", re.DOTALL)
+_TOOL_BLOCK = re.compile(
+    r"<(?:jarvis_)?tool_(?:call|result)\b[^>]*>.*?</(?:jarvis_)?tool_(?:call|result)>",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 def split_display_and_speech(text: str) -> tuple[str, str | None]:
@@ -28,7 +34,7 @@ def split_display_and_speech(text: str) -> tuple[str, str | None]:
     match = _SPEECH_BLOCK.search(text)
     if match is None:
         return text, None
-    speech = " ".join(match.group(1).split())
+    speech = match.group(1).strip()
     display = _SPEECH_BLOCK.sub("", text)
     # The removed block leaves blank lines behind; collapse them.
     display = re.sub(r"\n{3,}", "\n\n", display).strip()
@@ -43,47 +49,35 @@ def resolve_display_and_speech(text: str, tool_calls: list[Any]) -> tuple[str, s
     display text always has the block removed.
     """
 
-    display, redacted = split_display_and_speech(text)
-    speech = redacted or generate_speech_text(display, tool_calls)
+    display, model_speech = split_display_and_speech(text)
+    speech = (
+        _prepare_speech_text(model_speech)
+        if model_speech is not None
+        else generate_speech_text(display, tool_calls)
+    )
     return display, speech
 
 
+def _prepare_speech_text(text: str) -> str:
+    """Strip Jarvis protocol blocks and redact secrets without rewriting tone."""
+
+    without_protocol = _TOOL_BLOCK.sub("", str(text or ""))
+    return redact_secret_text(without_protocol)
+
+
 def generate_speech_text(text: str, tool_calls: list[Any]) -> str:
-    """Generate a concise speech version from display text and tool calls.
+    """Use the model answer when it omitted ``[[GŁOS]]``.
 
     Args:
         text: The full display text (may contain markdown, code blocks, etc.)
         tool_calls: List of tool calls (dict or object with 'name' attribute/key)
 
     Returns:
-        A short, natural Polish sentence suitable for TTS.
+        The model-authored text with protocol blocks removed and secrets redacted.
     """
-    # If there are tool calls, announce what we're doing
-    if tool_calls:
-        names = []
-        for tc in tool_calls:
-            if hasattr(tc, 'name'):
-                names.append(tc.name)
-            elif isinstance(tc, dict) and 'name' in tc:
-                names.append(tc['name'])
-        if len(names) == 1:
-            return f"Używam narzędzia {names[0]}."
-        return f"Uruchamiam narzędzia: {', '.join(names)}."
-
-    # Strip markdown and keep it short
-    speech = text
-    # Remove code blocks
-    speech = re.sub(r'```[\s\S]*?```', '[kod]', speech)
-    # Remove inline code
-    speech = re.sub(r'`[^`]+`', '', speech)
-    # Remove markdown formatting
-    speech = re.sub(r'[#*_~`]', '', speech)
-    # Collapse whitespace
-    speech = ' '.join(speech.split())
-    # Truncate
-    if len(speech) > 200:
-        speech = speech[:197] + '...'
-    return speech if speech else 'Gotowe.'
+    # Tool execution must not replace the model's actual spoken answer.
+    del tool_calls
+    return _prepare_speech_text(text)
 
 
 def extract_tool_names(tool_calls: list[Any]) -> list[str]:

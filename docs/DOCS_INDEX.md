@@ -15,8 +15,10 @@ win over old handoffs/roadmaps.
   authoritative rule.
 - `docs/adr/ADR-001-memory-os-data-model.md` - authoritative/current Memory OS
   data model and migration direction.
-- `docs/CONTRACTS.md` - runtime contracts and invariants.
-- `docs/SECURITY_MODEL.md` - security boundaries and approval model.
+- `docs/CONTRACTS.md` - legacy schema/API compatibility plus runtime contracts;
+  its approval lifecycle does not govern model-originated tools on this branch.
+- `docs/SECURITY_MODEL.md` - legacy restrictive permission design retained as
+  historical/API reference, superseded by direct execution for model tools.
 - `docs/PANEL_CONTRACT.md` - thin-client panel contract.
 - `docs/MACOS_OPERATOR_CONTRACT.md` - local macOS operator boundaries.
 - `docs/MEMORY_CONTRACT.md` - Memory OS contract and future memory guardrails.
@@ -31,7 +33,8 @@ win over old handoffs/roadmaps.
 - `docs/runbooks/PANEL_MENUBAR.md`
 - `docs/runbooks/PROVIDER_SMOKE.md`
 - `docs/runbooks/TEXT_RUNTIME_SMOKE.md`
-- `docs/runbooks/TOOLS_AND_APPROVALS.md`
+- `docs/runbooks/TOOLS_AND_APPROVALS.md` - legacy approval API reference; do not
+  use it to restore approval capture to model-originated calls.
 - `docs/runbooks/ACCESSIBILITY_TCC.md`
 - `docs/runbooks/G4_LIVE_GATE.md`
 - `docs/runbooks/SCREEN_RECORDING_TCC.md`

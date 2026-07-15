@@ -167,16 +167,23 @@ def test_daemon_start_wires_lease_sweeper_and_stop_kills_it(app: DaemonApp) -> N
     assert app.voice_lease_sweeper is None
 
 
-def test_daemon_close_after_start_cleans_voice_runtime(tmp_path: Path) -> None:
+def test_shared_broker_mode_never_builds_local_tts_or_voice_broker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_local_tts(*_args, **_kwargs):
+        pytest.fail("shared broker mode attempted to build Jarvis-local TTS")
+
+    monkeypatch.setattr("jarvis.voice.tts.build_tts_engine", forbidden_local_tts)
     daemon_app = create_daemon_app(_write_voice_enabled_config(tmp_path))
     daemon_app.start()
     recorder = daemon_app.voice_recorder
-    broker = daemon_app.voice_broker
     stt = daemon_app.voice_stt
     gateway = daemon_app.voice_gateway
     sweeper = daemon_app.voice_lease_sweeper
     assert isinstance(recorder, MockRecorder)
-    assert broker is not None
+    assert daemon_app.voice_broker is None
+    assert daemon_app.voice_cancellation is not None
     assert stt is not None
     assert gateway is not None
     assert sweeper is not None and sweeper.is_alive()
@@ -186,7 +193,6 @@ def test_daemon_close_after_start_cleans_voice_runtime(tmp_path: Path) -> None:
 
     assert recorder.recording is False
     assert recorder.stopped == 1
-    assert broker._thread is None
     assert sweeper.is_alive() is False
     assert daemon_app.voice_recorder is None
     assert daemon_app.voice_broker is None

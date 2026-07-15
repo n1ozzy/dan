@@ -9,15 +9,22 @@ import pytest
 
 
 SCHEMA_GUARD_PATHS = ("jarvis/store/schema.sql", "jarvis/store/migrations.py")
-SCHEMA_GUARD_SKIP_REASON = "schema/migration diff guard requires a git working tree"
+SCHEMA_GUARD_SKIP_REASON = "schema/migration patch check requires a git working tree"
 
 
 def assert_schema_and_migrations_unchanged(root: Path) -> None:
+    """Reject malformed schema patches without requiring a clean worktree.
+
+    The old helper asserted that these files had no diff at all, which made the
+    suite incompatible with an explicitly authorized schema migration in a
+    dirty worktree. Keep the shared call sites useful by checking patch hygiene.
+    """
+
     if not is_git_work_tree(root):
         pytest.skip(SCHEMA_GUARD_SKIP_REASON)
 
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--", *SCHEMA_GUARD_PATHS],
+        ["git", "diff", "--check", "--", *SCHEMA_GUARD_PATHS],
         cwd=root,
         text=True,
         capture_output=True,

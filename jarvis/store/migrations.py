@@ -8,10 +8,11 @@ from pathlib import Path
 
 
 INITIAL_SCHEMA_VERSION = 1
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 INITIAL_SCHEMA_DESCRIPTION = "initial Jarvis v4.1 schema"
 V2_DESCRIPTION = "FIX-09 voice_queue.spoken_at + cancelled_turns tombstone"
+V3_DESCRIPTION = "shared local memory archive with FTS5"
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
@@ -28,6 +29,8 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         _apply_initial_schema(conn)
     if current_version < 2:
         _apply_v2_voice_cancellation(conn)
+    if current_version < 3:
+        _apply_v3_memory_archive(conn)
     _ensure_memory_os_sidecar_tables(conn)
 
 
@@ -86,6 +89,69 @@ def _apply_v2_voice_cancellation(conn: sqlite3.Connection) -> None:
             VALUES (?, ?, ?)
             """,
             (2, _utc_now_iso(), V2_DESCRIPTION),
+        )
+
+
+def _apply_v3_memory_archive(conn: sqlite3.Connection) -> None:
+    """Add the local recall archive without touching existing memory tables."""
+
+    existing_fts = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_archive_fts'"
+    ).fetchone()
+    if existing_fts is not None and "using fts5" not in str(existing_fts[0]).lower():
+        raise RuntimeError("memory_archive_fts exists but is not an FTS5 virtual table")
+
+    with conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS memory_archive_documents (
+              canonical_id TEXT PRIMARY KEY,
+              source_type TEXT NOT NULL,
+              source_uri TEXT NOT NULL,
+              source_item_id TEXT NOT NULL,
+              title TEXT,
+              content TEXT NOT NULL,
+              content_hash TEXT NOT NULL,
+              source_updated_at TEXT,
+              metadata_json TEXT NOT NULL DEFAULT '{}',
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(source_type, source_uri, source_item_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_memory_archive_documents_source
+            ON memory_archive_documents(source_type, source_uri);
+
+            CREATE TABLE IF NOT EXISTS memory_archive_sync_state (
+              source_type TEXT NOT NULL,
+              source_uri TEXT NOT NULL,
+              cursor TEXT,
+              fingerprint TEXT,
+              synced_at TEXT NOT NULL,
+              metadata_json TEXT NOT NULL DEFAULT '{}',
+              PRIMARY KEY(source_type, source_uri)
+            );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_archive_fts USING fts5(
+              canonical_id UNINDEXED,
+              title,
+              content,
+              tokenize = 'unicode61'
+            );
+
+            """
+        )
+        created_fts = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_archive_fts'"
+        ).fetchone()
+        if created_fts is None or "using fts5" not in str(created_fts[0]).lower():
+            raise RuntimeError("memory_archive_fts was not created as an FTS5 virtual table")
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schema_version (version, applied_at, description)
+            VALUES (?, ?, ?)
+            """,
+            (3, _utc_now_iso(), V3_DESCRIPTION),
         )
 
 

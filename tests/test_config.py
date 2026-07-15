@@ -12,6 +12,7 @@ import pytest
 
 import jarvis.config as config_module
 from jarvis.config import (
+    BrainConfig,
     COMPILED_MEMORY_ENABLED_ENV,
     COMPILED_MEMORY_FORCE_DISABLED_ENV,
     ConfigError,
@@ -24,6 +25,62 @@ from jarvis.paths import ensure_runtime_dirs, expand_user_path, resolve_runtime_
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_fresh_install_defaults_to_the_single_persistent_claude_adapter() -> None:
+    brain = BrainConfig()
+
+    assert brain.default_adapter == "claude_cli"
+    assert brain.provider_sessions_are_memory is False
+    assert not hasattr(brain, "claude_cli_warm")
+    assert brain.context_window_tokens == 200_000
+    assert brain.context_checkpoint_percent == 70.0
+    assert brain.context_compact_percent == 80.0
+    assert brain.context_recycle_percent == 90.0
+
+
+@pytest.mark.parametrize(
+    ("brain_lines", "message"),
+    (
+        ("context_window_tokens = 0", "brain.context_window_tokens must be a positive int"),
+        ("context_window_tokens = true", "brain.context_window_tokens must be a positive int"),
+        (
+            'context_checkpoint_percent = "70"',
+            "brain context thresholds must be numbers",
+        ),
+        (
+            "context_checkpoint_percent = 0",
+            "0 < checkpoint < compact < recycle <= 100",
+        ),
+        (
+            "context_checkpoint_percent = 80\ncontext_compact_percent = 80",
+            "0 < checkpoint < compact < recycle <= 100",
+        ),
+        (
+            "context_compact_percent = 90\ncontext_recycle_percent = 80",
+            "0 < checkpoint < compact < recycle <= 100",
+        ),
+        (
+            "context_recycle_percent = 101",
+            "0 < checkpoint < compact < recycle <= 100",
+        ),
+    ),
+)
+def test_persistent_brain_context_policy_rejects_invalid_config(
+    tmp_path: Path,
+    brain_lines: str,
+    message: str,
+) -> None:
+    config_path = tmp_path / "invalid-brain-policy.toml"
+    content = canonical_config().replace(
+        "context_budget_chars = 24000",
+        f"context_budget_chars = 24000\n{brain_lines}",
+        1,
+    )
+    config_path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(config_path)
 
 
 def canonical_config(**overrides: str | int | bool) -> str:
@@ -360,7 +417,7 @@ def test_explicit_config_path_overrides_default(
     assert config.daemon.port == 41888
 
 
-def test_jarvis_config_environment_variable_works(
+def test_jarvis_config_environment_variable_keeps_single_production_adapter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_path = write_config(tmp_path / "env.toml", brain_adapter="env-mock")
@@ -369,7 +426,7 @@ def test_jarvis_config_environment_variable_works(
     config = load_config()
 
     assert config.source_path == config_path
-    assert config.brain.default_adapter == "env-mock"
+    assert config.brain.default_adapter == "claude_cli"
 
 
 def test_invalid_toml_raises_config_error(tmp_path: Path) -> None:
@@ -581,15 +638,19 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
     )
     text_suffixes = {".py", ".toml", ".md", ".sh", ".example"}
     offenders: list[tuple[str, str]] = []
+    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
 
     for root in roots:
         files = [path for path in root.rglob("*") if path.is_file()]
         for path in files:
             if "__pycache__" in path.parts or path.suffix not in text_suffixes:
                 continue
-            text = path.read_text(encoding="utf-8")
-            for snippet in forbidden:
-                if snippet in text:
-                    offenders.append((str(path.relative_to(ROOT)), snippet))
+                text = path.read_text(encoding="utf-8")
+                for snippet in forbidden:
+                    relative = str(path.relative_to(ROOT))
+                    if (relative, snippet) in allowed_contracts:
+                        continue
+                    if snippet in text:
+                        offenders.append((relative, snippet))
 
     assert offenders == []

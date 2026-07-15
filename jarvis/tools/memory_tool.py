@@ -1,7 +1,7 @@
-"""memory_save: explicit durable memory through the approval gate.
+"""memory_save: explicit durable memory with candidate/evidence provenance.
 
-The proposal path creates a Memory OS candidate plus evidence. The approved
-execution path activates that candidate into ``memory_items``. It deliberately
+The proposal path creates a Memory OS candidate plus evidence. Direct model
+execution activates that same candidate into ``memory_items``. It deliberately
 does not create ``memory_blocks``; ContextBuilder still reads legacy blocks
 until the later MemoryCompiler cutover.
 """
@@ -32,9 +32,10 @@ MAX_BODY_CHARS = 2000
 class MemorySaveTool(Tool):
     name = "memory_save"
     description = (
-        "Save one durable memory block about the user, their preferences or the "
-        "environment (auto-saved). Use when you learn a lasting fact worth "
-        "remembering across conversations; never for transient turn context."
+        "Save one durable fact about the user, their preferences, identity, or a "
+        "stable project/environment convention. Never save transient state such "
+        "as the current screen, active app, running process, temporary file state, "
+        "or one-turn status; inspect those with live tools when needed."
     )
     risk = "memory_write"
     input_schema = {
@@ -43,7 +44,6 @@ class MemorySaveTool(Tool):
             "kind": {"type": "string", "enum": sorted(MEMORY_KINDS)},
             "title": {"type": "string", "maxLength": MAX_TITLE_CHARS},
             "body": {"type": "string", "maxLength": MAX_BODY_CHARS},
-            "priority": {"type": "integer", "minimum": 0, "maximum": 10},
         },
         "required": ["kind", "title", "body"],
     }
@@ -113,7 +113,7 @@ class MemorySaveTool(Tool):
         if candidate is None:
             raise ValueError(f"memory_save candidate does not exist: {candidate_id}")
         # create_candidate stored claim/title through redact_secret_text, so the
-        # approved payload must be compared through the SAME redaction. Comparing
+        # requested payload must be compared through the SAME redaction. Comparing
         # the redacted stored value against the raw payload made any secret-shaped
         # content (API keys, connection strings, PEM) fail this guard and strand
         # the candidate — memory_save could then NEVER persist it. Payload text is
@@ -123,7 +123,7 @@ class MemorySaveTool(Tool):
             or candidate.title != redact_secret_text(payload.title)
             or candidate.claim != redact_secret_text(payload.body)
         ):
-            raise ValueError("memory_save candidate_id does not match the approved payload.")
+            raise ValueError("memory_save candidate_id does not match the requested payload.")
         if candidate.status == NEEDS_REVIEW:
             candidate = self._candidate_repository.approve_candidate(candidate.id)
         elif candidate.status != APPROVED:
@@ -144,15 +144,13 @@ class _MemorySavePayload:
     kind: str
     title: str
     body: str
-    priority: int
 
 
 def _memory_save_payload(arguments: Mapping[str, Any]) -> _MemorySavePayload:
     kind = validate_memory_kind(_required_str(arguments, "kind"))
     title = _capped_str(arguments, "title", MAX_TITLE_CHARS)
     body = _capped_str(arguments, "body", MAX_BODY_CHARS)
-    priority = _priority(arguments.get("priority", 0))
-    return _MemorySavePayload(kind=kind, title=title, body=body, priority=priority)
+    return _MemorySavePayload(kind=kind, title=title, body=body)
 
 
 def _required_str(arguments: Mapping[str, Any], key: str) -> str:
@@ -166,12 +164,6 @@ def _capped_str(arguments: Mapping[str, Any], key: str, max_chars: int) -> str:
     value = _required_str(arguments, key)
     if len(value) > max_chars:
         raise ValueError(f"memory_save {key} must be at most {max_chars} characters.")
-    return value
-
-
-def _priority(value: Any) -> int:
-    if type(value) is not int or not 0 <= value <= 10:
-        raise ValueError("memory_save priority must be an integer between 0 and 10.")
     return value
 
 

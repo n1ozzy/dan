@@ -302,3 +302,79 @@ def test_decision_is_deterministic_for_identical_inputs(db_path: Path) -> None:
     second = gate.accepts_transcript("Sprawdziłem kalendarz i nie masz dziś spotkań.")
 
     assert (first.accepted, first.reason) == (second.accepted, second.reason)
+
+
+# --- shared broker spoken ring ----------------------------------------------
+
+
+def test_shared_broker_ring_rejects_echo_when_db_has_no_spoken_rows(
+    db_path: Path,
+    tmp_path: Path,
+) -> None:
+    now = 1_720_000_000.0
+    ring = tmp_path / "spoken-recent.txt"
+    ring.write_text(
+        f"{now - 5}\tWspólny broker właśnie wypowiedział to pełne zdanie.\n",
+        encoding="utf-8",
+    )
+    gate = AntiEchoGate(
+        factory_for(db_path),
+        config=gate_config(broker_enabled=True),
+        shared_spoken_path=ring,
+        clock=lambda: now,
+    )
+
+    decision = gate.accepts_transcript(
+        "Wspólny broker właśnie wypowiedział to pełne zdanie."
+    )
+
+    assert decision.accepted is False
+    assert decision.reason == "echo"
+
+
+def test_shared_broker_ring_parser_is_bounded_and_ignores_bad_or_stale_rows(
+    db_path: Path,
+    tmp_path: Path,
+) -> None:
+    from jarvis.voice.anti_echo import MAX_SHARED_RING_BYTES
+
+    now = 1_720_000_000.0
+    ring = tmp_path / "spoken-recent.txt"
+    ring.write_text(
+        ("x" * (MAX_SHARED_RING_BYTES + 1024))
+        + "\nbez-timestampu\n"
+        + f"{now - 120}\tTo zdanie jest już stare i nie powinno blokować.\n"
+        + f"{now - 2}\tTo świeże zdanie wspólnego brokera ma zatrzymać echo.\n",
+        encoding="utf-8",
+    )
+    gate = AntiEchoGate(
+        factory_for(db_path),
+        config=gate_config(broker_enabled=True, anti_echo_window_seconds=30),
+        shared_spoken_path=ring,
+        clock=lambda: now,
+    )
+
+    assert gate.accepts_transcript(
+        "To zdanie jest już stare i nie powinno blokować."
+    ).accepted is True
+    assert gate.accepts_transcript(
+        "To świeże zdanie wspólnego brokera ma zatrzymać echo."
+    ).accepted is False
+
+
+def test_shared_ring_is_ignored_when_shared_broker_mode_is_off(
+    db_path: Path,
+    tmp_path: Path,
+) -> None:
+    now = 1_720_000_000.0
+    ring = tmp_path / "spoken-recent.txt"
+    spoken = "Ten tekst istnieje wyłącznie w zewnętrznym ringu brokera."
+    ring.write_text(f"{now - 1}\t{spoken}\n", encoding="utf-8")
+    gate = AntiEchoGate(
+        factory_for(db_path),
+        config=gate_config(broker_enabled=False),
+        shared_spoken_path=ring,
+        clock=lambda: now,
+    )
+
+    assert gate.accepts_transcript(spoken).accepted is True

@@ -1,5 +1,10 @@
 # Tools and Approvals
 
+> **Legacy compatibility runbook.** On the active owner-controlled branch,
+> model-originated tools execute directly and never create an approval row or an
+> `awaiting_approval` turn. Keep this file only for old manual API/schema
+> investigation; do not follow it to change the active model path.
+
 Prompt 19D-mini keeps the Prompt 15 safety model, the Prompt 15A provider
 tool-call parser, the explicit execute-approved endpoint, and the Prompt 19A
 approval decision events. It applies `ToolPermissionPolicy` to

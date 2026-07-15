@@ -16,12 +16,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.brain import BrainAdapterError, BrainRequest, BrainResponse
+from jarvis.brain import (
+    BrainAdapterError,
+    BrainRequest,
+    BrainResponse,
+    BrainToolCall,
+)
 from jarvis.brain.context_builder import ContextBuilder
 from jarvis.brain.manager import BrainManager
 from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
 from jarvis.store.db import close_quietly, initialize_database
 from jarvis.store.event_store import create_event_store
+from jarvis.tools.registry import Tool, ToolRegistry
 from jarvis.turns.orchestrator import TurnOrchestrator, TurnOrchestratorError
 from jarvis.voice.speech import SpeechPipeline
 
@@ -71,15 +77,18 @@ class SpyFillerTimer:
 
 
 class SpySpeechSession:
-    def __init__(self) -> None:
+    def __init__(self, timeline: list[tuple[str, str]], index: int) -> None:
+        self._timeline = timeline
+        self._index = index
         self.deltas: list[str] = []
         self.final_texts: list[str] = []
 
     def feed(self, delta: str) -> None:
         self.deltas.append(delta)
 
-    def finalize(self, final_text: str) -> int:
+    def finalize(self, final_text: str, *, lane: str = "final") -> int:
         self.final_texts.append(final_text)
+        self._timeline.append((f"speech:{lane}:{self._index}", final_text))
         return 0
 
 
@@ -87,7 +96,12 @@ class SpySpeechPipeline:
     def __init__(self) -> None:
         self.armed_fillers = 0
         self.started_streams = 0
-        self.session = SpySpeechSession()
+        self.timeline: list[tuple[str, str]] = []
+        self.sessions: list[SpySpeechSession] = []
+
+    @property
+    def session(self) -> SpySpeechSession:
+        return self.sessions[-1]
 
     def arm_filler(self, *, turn_id: str) -> SpyFillerTimer:
         self.armed_fillers += 1
@@ -95,11 +109,51 @@ class SpySpeechPipeline:
 
     def start_stream(self, *, turn_id: str, filler_timer=None) -> SpySpeechSession:
         self.started_streams += 1
-        return self.session
+        session = SpySpeechSession(self.timeline, len(self.sessions))
+        self.sessions.append(session)
+        return session
 
-    def speak_text(self, *, turn_id: str, text: str) -> int:
-        self.session.finalize(text)
+    def speak_text(self, *, turn_id: str, text: str, lane: str = "final") -> int:
+        self.session.finalize(text, lane=lane)
         return 0
+
+
+class ToolRoundStreamingAdapter:
+    """Scripted streaming responses for a multi-tool turn."""
+
+    name = "tool-round-streaming"
+    default_model = "tool-round-model"
+    supports_streaming = True
+
+    def __init__(self, *responses: BrainResponse) -> None:
+        self._responses = list(responses)
+        self.on_delta_seen: list[bool] = []
+
+    def available_models(self) -> list[str]:
+        return [self.default_model]
+
+    def generate(self, request: BrainRequest, *, on_delta=None) -> BrainResponse:
+        del request
+        response = self._responses.pop(0)
+        self.on_delta_seen.append(on_delta is not None)
+        if on_delta is not None:
+            on_delta(response.speech_text or response.text)
+        return response
+
+
+class TimelineTool(Tool):
+    description = "records execution order"
+    risk = "shell_read"
+    input_schema = {"type": "object"}
+
+    def __init__(self, name: str, timeline: list[tuple[str, str]]) -> None:
+        self.name = name
+        self._timeline = timeline
+
+    def run(self, arguments):
+        del arguments
+        self._timeline.append(("tool", self.name))
+        return {"tool": self.name, "ok": True}
 
 
 def voice_config(**overrides) -> SimpleNamespace:
@@ -221,6 +275,63 @@ def test_panel_text_turn_streams_without_arming_filler(db_path: Path) -> None:
     assert speech.started_streams == 1
     assert speech.armed_fillers == 0
     assert speech.session.deltas == ["Pierwsze zdanie odpowiedzi."]
+    close_quietly(conn)
+
+
+def test_each_tool_round_speaks_commentary_before_execution_then_speaks_one_final(
+    db_path: Path,
+) -> None:
+    conn = connect(db_path)
+    speech = SpySpeechPipeline()
+    adapter = ToolRoundStreamingAdapter(
+        BrainResponse(
+            text="Plan pierwszego sprawdzenia, nie final czatu.",
+            speech_text="Sprawdzam pierwszy trop.",
+            model="tool-round-model",
+            tool_calls=[BrainToolCall(id="call-one", name="probe_one", arguments={})],
+        ),
+        BrainResponse(
+            text="Plan drugiego sprawdzenia, też nie final czatu.",
+            speech_text="Mam pierwszy wynik, sprawdzam drugi trop.",
+            model="tool-round-model",
+            tool_calls=[BrainToolCall(id="call-two", name="probe_two", arguments={})],
+        ),
+        BrainResponse(
+            text="Pełny trwały final czatu.",
+            speech_text="Gotowe, wynik jest potwierdzony.",
+            model="tool-round-model",
+        ),
+    )
+    registry = ToolRegistry()
+    registry.register(TimelineTool("probe_one", speech.timeline))
+    registry.register(TimelineTool("probe_two", speech.timeline))
+    event_store = create_event_store(conn)
+    orchestrator = TurnOrchestrator(
+        conn=conn,
+        event_store=event_store,
+        event_bus=None,
+        state_machine=RuntimeStateMachine(
+            event_store, event_bus=None, initial_state=RuntimeState.IDLE
+        ),
+        brain_manager=BrainManager([adapter], default_adapter=adapter.name),
+        context_builder=ContextBuilder(conn),
+        tool_registry=registry,
+        speech_pipeline=speech,
+    )
+
+    result = orchestrator.handle_text(text="Sprawdź oba tropy i podaj final.")
+
+    assert result.final_text == "Pełny trwały final czatu."
+    assert result.turn.final_text == "Pełny trwały final czatu."
+    assert speech.started_streams == 3
+    assert adapter.on_delta_seen == [True, True, True]
+    assert speech.timeline == [
+        ("speech:commentary:0", "Sprawdzam pierwszy trop."),
+        ("tool", "probe_one"),
+        ("speech:commentary:1", "Mam pierwszy wynik, sprawdzam drugi trop."),
+        ("tool", "probe_two"),
+        ("speech:final:2", "Gotowe, wynik jest potwierdzony."),
+    ]
     close_quietly(conn)
 
 

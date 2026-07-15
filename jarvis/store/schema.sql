@@ -66,6 +66,41 @@ CREATE INDEX IF NOT EXISTS idx_memory_blocks_kind ON memory_blocks(kind);
 CREATE INDEX IF NOT EXISTS idx_memory_blocks_active ON memory_blocks(active);
 CREATE INDEX IF NOT EXISTS idx_memory_blocks_priority ON memory_blocks(priority);
 
+CREATE TABLE IF NOT EXISTS memory_archive_documents (
+  canonical_id TEXT PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  source_uri TEXT NOT NULL,
+  source_item_id TEXT NOT NULL,
+  title TEXT,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  source_updated_at TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(source_type, source_uri, source_item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_archive_documents_source
+ON memory_archive_documents(source_type, source_uri);
+
+CREATE TABLE IF NOT EXISTS memory_archive_sync_state (
+  source_type TEXT NOT NULL,
+  source_uri TEXT NOT NULL,
+  cursor TEXT,
+  fingerprint TEXT,
+  synced_at TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY(source_type, source_uri)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_archive_fts USING fts5(
+  canonical_id UNINDEXED,
+  title,
+  content,
+  tokenize = 'unicode61'
+);
+
 CREATE TABLE IF NOT EXISTS memory_observations (
   id TEXT PRIMARY KEY,
   source_type TEXT NOT NULL,

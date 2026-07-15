@@ -12,9 +12,9 @@ daemon, they do NOT restrict where Jarvis may go:
 - a response size cap (read max_bytes+1, report truncation),
 - urllib's default redirect cap.
 
-Risk class is NETWORK, so ToolPermissionPolicy still gates the call; it is
-auto-approved only when the operator sets security.auto_approve_mode. The
-(redacted) body reaches the model via the transient tool result; the durable
+Risk class is NETWORK for diagnostics; the owner-controlled runtime executes
+model-originated calls directly and records the real result. The (redacted)
+body reaches the model via the transient tool result; the durable
 store caps long strings (registry.PERSIST_MAX_STRING_CHARS) as elsewhere.
 """
 

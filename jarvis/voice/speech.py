@@ -1,4 +1,4 @@
-"""Speech pipeline: turn text -> sentence chunks -> VoiceQueue (G3/G4d).
+"""Speech routing: legacy VoiceQueue or one utterance per model response.
 
 Implements the G0 contract legs the orchestrator needs: sentence-cut the
 canonical answer into VoiceRequests (tool-call blocks never spoken), arm
@@ -18,17 +18,58 @@ from collections.abc import Callable
 from typing import Any
 
 from jarvis.config import DEFAULT_VOICE_FILLERS
+from jarvis.events.types import EventType
 from jarvis.logging import get_logger
 from jarvis.store.db import close_quietly
 from jarvis.store.event_store import create_event_store
 from jarvis.voice.chunker import SentenceChunker
 from jarvis.voice.queue import VoiceQueue
+from jarvis.voice.shared_broker import SharedBrokerClient
 
 
 _LOGGER = get_logger("voice.speech")
 
 DEFAULT_FILLER_AFTER_MS = 800
 DEFAULT_FILLERS = DEFAULT_VOICE_FILLERS
+
+
+def _record_shared_publish(
+    connection_factory: Callable[[], Any],
+    *,
+    request_path: Any,
+    turn_id: str,
+    lane: str,
+) -> None:
+    """Persist only the lifecycle fact Jarvis owns: external publication.
+
+    The shared broker exposes no per-request acknowledgement or cancellation,
+    so this deliberately emits no started/finished/cancelled fiction.
+    """
+
+    conn = connection_factory()
+    try:
+        create_event_store(conn).append(
+            EventType.VOICE_SPEAK_QUEUED,
+            "voice.shared_publisher",
+            {
+                "request_id": str(getattr(request_path, "stem", "") or "external"),
+                "turn_id": turn_id,
+                "kind": lane,
+                "lane": lane,
+                "seq": 0,
+                "transport": "external_shared_broker",
+                "delivery_state": "published",
+                "interrupt_policy": "uninterruptible",
+                "acknowledgement": "unavailable",
+                "cancel_supported": False,
+            },
+            correlation_id=turn_id,
+            turn_id=turn_id,
+        )
+    except Exception:  # noqa: BLE001 — observability must not silence speech
+        _LOGGER.exception("shared speech publish event could not be persisted")
+    finally:
+        close_quietly(conn)
 
 
 class FillerTimer:
@@ -82,15 +123,18 @@ class SpeechStreamSession:
         min_chars: int,
         filler_timer: Any | None = None,
         enabled: bool = True,
+        shared_broker: Any | None = None,
     ) -> None:
         self._connect = connection_factory
         self._turn_id = turn_id
         self._chunker = SentenceChunker(min_chars=min_chars)
         self._filler_timer = filler_timer
         self._enabled = enabled
+        self._shared_broker = shared_broker
         self._fed_any = False
         self._filler_disarmed = False
         self._seq = 0
+        self._finalized = False
 
     def feed(self, delta: str) -> None:
         if not self._enabled or not isinstance(delta, str) or not delta:
@@ -98,16 +142,41 @@ class SpeechStreamSession:
         if delta.strip():
             self._disarm_filler()
         self._fed_any = True
+        if self._shared_broker is not None:
+            # The shared broker needs one whole request so it can group sentences
+            # for natural inter-sentence prosody. The canonical speech_text passed
+            # to finalize is authoritative; transport deltas are never published.
+            return
         try:
             self._enqueue(self._chunker.feed(delta))
         except Exception:  # noqa: BLE001 — speech must never fail generation
             _LOGGER.exception("streamed sentence enqueue failed; muting this turn.")
             self._enabled = False
 
-    def finalize(self, final_text: str) -> int:
-        if not self._enabled:
+    def finalize(self, final_text: str, *, lane: str = "final") -> int:
+        if not self._enabled or self._finalized:
             return 0
+        self._finalized = True
         try:
+            if self._shared_broker is not None:
+                text = str(final_text or "").strip()
+                if not text:
+                    return 0
+                request_path = self._shared_broker.enqueue(
+                    text=text,
+                    session=self._turn_id,
+                    priority=0,
+                    lane=lane,
+                )
+                _record_shared_publish(
+                    self._connect,
+                    request_path=request_path,
+                    turn_id=self._turn_id,
+                    lane=lane,
+                )
+                self._seq = 1
+                self._disarm_filler()
+                return self._seq
             if self._fed_any:
                 chunks = self._chunker.flush()
             else:
@@ -155,9 +224,15 @@ class SpeechPipeline:
         connection_factory: Callable[[], Any],
         *,
         config: Any,
+        shared_broker: Any | None = None,
     ) -> None:
         self._connect = connection_factory
         self._config = config
+        self._shared_broker = (
+            shared_broker or SharedBrokerClient(config)
+            if bool(getattr(config, "broker_enabled", False))
+            else None
+        )
         self._filler_rotation = itertools.count()
 
     @property
@@ -166,11 +241,25 @@ class SpeechPipeline:
             getattr(self._config, "speak_responses", False)
         )
 
-    def speak_text(self, *, turn_id: str, text: str) -> int:
+    def speak_text(self, *, turn_id: str, text: str, lane: str = "final") -> int:
         """Sentence-cut the canonical text and enqueue one request per chunk."""
 
         if not self.enabled or not isinstance(text, str) or not text.strip():
             return 0
+        if self._shared_broker is not None:
+            request_path = self._shared_broker.enqueue(
+                text=text.strip(),
+                session=turn_id,
+                priority=0,
+                lane=lane,
+            )
+            _record_shared_publish(
+                self._connect,
+                request_path=request_path,
+                turn_id=turn_id,
+                lane=lane,
+            )
+            return 1
         chunker = SentenceChunker(
             min_chars=int(getattr(self._config, "min_sentence_chars", 12))
         )
@@ -203,12 +292,13 @@ class SpeechPipeline:
             min_chars=int(getattr(self._config, "min_sentence_chars", 12)),
             filler_timer=filler_timer,
             enabled=self.enabled,
+            shared_broker=self._shared_broker,
         )
 
     def arm_filler(self, *, turn_id: str):
         """Arm the one-shot filler for a turn about to hit the brain."""
 
-        if not self.enabled:
+        if not self.enabled or self._shared_broker is not None:
             return _NullTimer()
         fillers = tuple(getattr(self._config, "fillers", DEFAULT_FILLERS)) or DEFAULT_FILLERS
         delay_ms = int(getattr(self._config, "filler_after_ms", DEFAULT_FILLER_AFTER_MS))

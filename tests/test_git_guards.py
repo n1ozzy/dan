@@ -32,7 +32,7 @@ def test_schema_guard_skips_outside_git_work_tree(
     assert calls == [["git", "rev-parse", "--is-inside-work-tree"]]
 
 
-def test_schema_guard_fails_inside_git_work_tree_when_schema_is_modified(
+def test_schema_guard_fails_inside_git_work_tree_when_schema_patch_is_malformed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -42,7 +42,7 @@ def test_schema_guard_fails_inside_git_work_tree_when_schema_is_modified(
         calls.append(args)
         if args[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
             return completed(args, 0, stdout="true\n")
-        return completed(args, 0, stdout="jarvis/store/schema.sql\n")
+        return completed(args, 1, stdout="jarvis/store/schema.sql:10: trailing whitespace.\n")
 
     monkeypatch.setattr("tests.git_guards.subprocess.run", fake_run)
 
@@ -51,5 +51,5 @@ def test_schema_guard_fails_inside_git_work_tree_when_schema_is_modified(
 
     assert calls == [
         ["git", "rev-parse", "--is-inside-work-tree"],
-        ["git", "diff", "--name-only", "--", "jarvis/store/schema.sql", "jarvis/store/migrations.py"],
+        ["git", "diff", "--check", "--", "jarvis/store/schema.sql", "jarvis/store/migrations.py"],
     ]

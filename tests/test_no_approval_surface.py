@@ -1,0 +1,55 @@
+"""The local runtime has one direct, observable tool path and no approval API."""
+
+from pathlib import Path
+
+from jarvis.api.routes_input import post_text_input
+from jarvis.api.routes_runtime import get_runtime_settings
+from jarvis.api.routes_tools import post_tool_request
+from jarvis.daemon.app import create_daemon_app
+from tests.test_api_smoke import request_json, running_server, write_config
+
+
+def test_approval_routes_are_not_exposed(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    app = create_daemon_app(config_path)
+    try:
+        app.start()
+        with running_server(app) as base_url:
+            get_status, _ = request_json("GET", f"{base_url}/approvals")
+            post_status, _ = request_json(
+                "POST",
+                f"{base_url}/approvals/obsolete/approve",
+            )
+
+        assert get_status == 404
+        assert post_status == 404
+    finally:
+        app.close()
+
+
+def test_active_runtime_payloads_do_not_advertise_approvals(tmp_path: Path) -> None:
+    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    app = create_daemon_app(config_path)
+    try:
+        app.start()
+
+        payload = post_text_input(app, {"text": "ping", "source": "panel"})
+        snapshot = app.snapshot_state()
+        runtime_settings = get_runtime_settings(app)
+        tool_result = post_tool_request(
+            app,
+            {
+                "tool_name": "echo",
+                "arguments": {"text": "direct"},
+                "requested_by": "panel",
+            },
+        )
+
+        assert "approvals" not in payload
+        assert "pending_approval_count" not in snapshot
+        assert "approvals" not in runtime_settings
+        assert tool_result["status"] == "finished"
+        assert tool_result["output"] == {"arguments": {"text": "direct"}}
+        assert "approval_id" not in tool_result
+    finally:
+        app.close()

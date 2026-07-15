@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
 
-from jarvis.brain.auto_detect import detect_all_providers
 from jarvis.brain.base import BrainAdapter, BrainRequest, BrainResponse
 from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
-from jarvis.brain.claude_cli_warm_adapter import ClaudeCliWarmAdapter
-from jarvis.brain.groq_adapter import create_groq_adapter
-from jarvis.brain.sync_adapter import wrap_async_adapter
-from jarvis.brain.test_adapter import create_test_adapter
 
 
 class BrainManagerError(Exception):
@@ -19,11 +15,7 @@ class BrainManagerError(Exception):
 
 
 class BrainManager:
-    """Selects a stateless brain adapter without owning provider session state.
-    
-    Production adapters only: claude_cli, groq. (Codex CLI intentionally not
-    registered — Jarvis runs on Claude Code only, owner decree.)
-    """
+    """Own the single configured brain adapter and its daemon lifecycle."""
 
     def __init__(self, adapters: Iterable[BrainAdapter], default_adapter: str) -> None:
         self._adapters: dict[str, BrainAdapter] = {}
@@ -42,35 +34,14 @@ class BrainManager:
 
     @classmethod
     def from_config(
-        cls, config: object, *, generation_registry: Any | None = None
+        cls,
+        config: object,
+        *,
+        generation_registry: Any | None = None,
+        state_path: Path | str | None = None,
     ) -> "BrainManager":
         brain_config = getattr(config, "brain", None)
-        config_default = str(getattr(brain_config, "default_adapter", "claude_cli_warm") or "claude_cli_warm")
-
         adapters: list[BrainAdapter] = []
-
-        # Jarvis runtime-lab is Claude-only. Warm Claude is preferred because it
-        # avoids one subprocess per turn; plain Claude CLI stays as fallback.
-        warm_config = getattr(brain_config, "claude_cli_warm", None)
-        if warm_config is None:
-            from types import SimpleNamespace
-            warm_config = SimpleNamespace(
-                command="claude",
-                args=["-p"],
-                model=getattr(brain_config, "default_model", ""),
-                timeout_seconds=120,
-                enabled=True,
-            )
-        if bool(getattr(warm_config, "enabled", True)) or config_default == "claude_cli_warm":
-            adapters.append(
-                ClaudeCliWarmAdapter(
-                    command=getattr(warm_config, "command", "claude"),
-                    args=getattr(warm_config, "args", ["-p"]),
-                    model=getattr(warm_config, "model", getattr(brain_config, "default_model", "")),
-                    timeout_seconds=getattr(warm_config, "timeout_seconds", 120),
-                    generation_registry=generation_registry,
-                )
-            )
 
         claude_config = getattr(brain_config, "claude_cli", None)
         if claude_config is None:
@@ -109,13 +80,15 @@ class BrainManager:
                 timeout_seconds=getattr(claude_config, "timeout_seconds", 120),
                 stream_args=getattr(claude_config, "stream_args", None),
                 generation_registry=generation_registry,
+                state_path=state_path,
+                context_window_tokens=getattr(brain_config, "context_window_tokens", 200_000),
+                checkpoint_percent=getattr(brain_config, "context_checkpoint_percent", 70.0),
+                compact_percent=getattr(brain_config, "context_compact_percent", 80.0),
+                recycle_percent=getattr(brain_config, "context_recycle_percent", 90.0),
             )
         )
 
-        default_adapter = "claude_cli_warm" if any(a.name == "claude_cli_warm" for a in adapters) else "claude_cli"
-        if config_default in {a.name for a in adapters}:
-            default_adapter = config_default
-        return cls(adapters, default_adapter=default_adapter)
+        return cls(adapters, default_adapter="claude_cli")
 
     @property
     def current_adapter_name(self) -> str:
@@ -151,6 +124,19 @@ class BrainManager:
         adapter = self.get_adapter(adapter_name)
         return getattr(adapter, "supports_streaming", False)
 
+    def session_snapshot(self, adapter_name: str | None = None) -> dict[str, Any]:
+        adapter = self.get_adapter(adapter_name)
+        snapshot = getattr(adapter, "session_snapshot", None)
+        return dict(snapshot()) if callable(snapshot) else {}
 
-def _should_register_cli_adapter(config: object, default_adapter: str, adapter_name: str) -> bool:
-    return bool(getattr(config, "enabled", False)) or default_adapter == adapter_name
+    def close(self) -> None:
+        for adapter in self._adapters.values():
+            close = getattr(adapter, "close", None)
+            if callable(close):
+                close()
+
+    def start(self) -> None:
+        for adapter in self._adapters.values():
+            start = getattr(adapter, "start", None)
+            if callable(start):
+                start()

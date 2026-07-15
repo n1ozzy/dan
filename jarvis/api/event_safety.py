@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -16,6 +17,7 @@ _UNSAFE_CLIENT_PAYLOAD_KEYS = {
     "auth",
     "cookie",
     "cookies",
+    "content",
     "credentials",
     "credential",
     "env",
@@ -24,6 +26,8 @@ _UNSAFE_CLIENT_PAYLOAD_KEYS = {
     "header",
     "input",
     "input_json",
+    "log",
+    "logs",
     "output",
     "output_json",
     "raw_args",
@@ -32,10 +36,13 @@ _UNSAFE_CLIENT_PAYLOAD_KEYS = {
     "raw_result",
     "request",
     "result",
+    "result_summary",
+    "screen",
     "stderr",
     "stdout",
     "token",
     "tokens",
+    "window",
 }
 
 _UNSAFE_CLIENT_PAYLOAD_KEY_FRAGMENTS = (
@@ -51,6 +58,25 @@ _UNSAFE_CLIENT_PAYLOAD_KEY_FRAGMENTS = (
     "token",
 )
 
+_SAFE_TOOL_RESULT_SUMMARY_KEYS = (
+    "ok",
+    "clicked",
+    "focused",
+    "pasted",
+    "truncated",
+    "replaced_existing",
+    "element_count",
+    "line_count",
+    "chars_typed",
+    "chars_pasted",
+    "bytes_written",
+    "size_bytes",
+    "returned_bytes",
+    "returncode",
+    "status",
+)
+_MAX_TOOL_RESULT_SUMMARY_CHARS = 160
+
 
 def safe_event_payload_for_client(event: Event) -> dict[str, Any]:
     """Return an event payload suitable for panel/API clients.
@@ -59,13 +85,44 @@ def safe_event_payload_for_client(event: Event) -> dict[str, Any]:
     get a narrower projection so raw tool output, args, tokens, headers,
     cookies, env values, and similar high-risk fields do not cross the UI/API
     boundary. Unsafe keys are retained with redacted values so clients can see
-    the field existed without leaking secrets.
+    the field existed without leaking secrets. Finished tools additionally get
+    a bounded summary built only from explicitly allowed boolean/numeric fields.
     """
 
     payload = _redact_unsafe_client_fields(event.payload)
+    payload.pop("result_summary", None)
     if _has_output_key(event.payload):
         payload["output_omitted"] = True
+    result_summary = _safe_tool_result_summary(event)
+    if result_summary:
+        payload["result_summary"] = result_summary
     return redact_secrets(payload)
+
+
+def _safe_tool_result_summary(event: Event) -> str:
+    if event.type != "tool.finished":
+        return ""
+    output = event.payload.get("output")
+    if not isinstance(output, Mapping):
+        return ""
+
+    parts: list[str] = []
+    for key in _SAFE_TOOL_RESULT_SUMMARY_KEYS:
+        value = output.get(key)
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, int):
+            rendered = str(value)
+        elif isinstance(value, float) and math.isfinite(value):
+            rendered = str(value)
+        else:
+            continue
+        parts.append(f"{key}={rendered}")
+
+    summary = " · ".join(parts)
+    if len(summary) <= _MAX_TOOL_RESULT_SUMMARY_CHARS:
+        return summary
+    return f"{summary[: _MAX_TOOL_RESULT_SUMMARY_CHARS - 3]}..."
 
 
 def _has_output_key(value: Any) -> bool:

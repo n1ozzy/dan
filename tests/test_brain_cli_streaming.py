@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from jarvis.brain import BrainAdapterError, BrainRequest
+from jarvis.brain import BrainAdapterError, BrainMessage, BrainRequest
 from jarvis.brain.claude_cli_adapter import (
     DEFAULT_STREAM_ARGS,
     ClaudeCliAdapter,
@@ -35,6 +35,13 @@ def make_request(text: str = "Opowiedz o pogodzie.") -> BrainRequest:
         turn_id="turn-stream-1",
         conversation_id="conversation-1",
         input_text=text,
+        context_messages=[
+            BrainMessage(
+                role="system",
+                content="DAN test canon — exact and unsanitized",
+                metadata={"kind": "persona"},
+            )
+        ],
     )
 
 

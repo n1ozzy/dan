@@ -1,5 +1,10 @@
 # Jarvis v4.1 — Runtime Contracts (FROZEN)
 
+> **ACTIVE OWNER OVERRIDE (2026-07-13):** approval tables/routes and legacy
+> lifecycle fields remain compatibility surfaces, but model-originated tool
+> calls execute directly and finish the turn. The `awaiting_approval` sections
+> below are historical for that path and must not be used to rebuild a gate.
+
 > **Status:** FROZEN (Prompt 00A). These are the canonical data contracts of
 > `jarvisd`. Names, owning modules, persistence requirements and forbidden
 > behaviors below are binding. Field *types* and *additional* optional fields
@@ -149,8 +154,8 @@ A durable, cross-session grouping of turns.
 
 ## 4. BrainRequest
 
-The fully-formed input handed to a stateless brain adapter. Jarvis — not the
-provider — assembles all context.
+The fully-formed input handed to the persistent brain adapter. Jarvis — not the
+provider — assembles all authoritative context.
 
 - **Owner module:** `jarvis/brain` (`context_builder` assembles it,
   `manager` dispatches it).
@@ -167,12 +172,12 @@ provider — assembles all context.
 - **Allowed states:** none — it is a value object passed by value.
 - **Emitted events:** `brain.requested` (frozen).
 - **Forbidden behavior:**
-  - The adapter must not mutate or persist it as session state
-    ([ADR-003](DECISIONS.md#adr-003)).
+  - The adapter may checkpoint the assembled prompt only for deterministic
+    crash recovery; that checkpoint is execution state, never Jarvis memory.
   - Disabled memory must never be included
     ([ADR-009](DECISIONS.md#adr-009)).
-  - Context must come from the DB/config, never from a provider's hidden
-    server-side history.
+  - Context authority must come from DB/config. Provider history may continue
+    execution but cannot override Jarvis memory or the canonical persona.
 
 ---
 

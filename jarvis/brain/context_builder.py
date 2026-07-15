@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -23,35 +24,33 @@ if TYPE_CHECKING:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_PERSONA_PATH = REPO_ROOT / "config" / "persona" / "jarvis.md"
+DEFAULT_PERSONA_PATH = Path("/Users/n1_ozzy/Documents/dev/dan/config/persona/DAN.md")
 DEFAULT_CONTEXT_BUDGET_CHARS = 24000
 JOB_PROMPT_PREVIEW_CHARS = 120
 
 PERSONA_PROFILE_SETTING_KEY = "persona.profile"
-PERSONA_VULGARITY_SETTING_KEY = "persona.vulgarity_level"
 
-# Added only when responses are voiced: the model returns a chat answer plus a
-# separate short form for TTS. This must NEVER soften the owner-defined Jarvis
-# persona; the spoken block is shorter only because it is spoken, not because it
-# is polite/censored/corporate.
+# Added only when responses are voiced: the model returns an explicit spoken
+# rendition plus the full chat form, without changing the owner-defined persona.
 _VOICE_FORM_INSTRUCTION = (
     "Twoja odpowiedź jest czytana na głos przez syntezator. Zacznij odpowiedź "
     "od bloku:\n"
     "[[GŁOS]]\n"
-    "tu krótka forma do odsłuchu, tym samym stylem i personą co pełna odpowiedź\n"
+    "tu naturalna forma do odsłuchu, dokładnie tą samą personą co pełna odpowiedź\n"
     "[[/GŁOS]]\n"
     "a dopiero po nim napisz pełną odpowiedź na czat. Blok musi być pierwszy, "
-    "żeby mowa ruszyła od razu. W bloku użyj jednego lub dwóch krótkich zdań. "
-    "Nie wygładzaj stylu, nie usuwaj wulgaryzmów, nie rób z Jarvisa "
-    "uprzejmego generycznego asystenta i nie zmieniaj tonu persony. Unikaj "
-    "markdownu, ścieżek, nazw plików, kodu i identyfikatorów tylko dlatego, że "
-    "to forma mówiona. Użyj dokładnie jednego bloku i nie odwołuj się do niego "
+    "żeby mowa ruszyła od razu. Długość dobierz naturalnie do treści i rytmu persony; "
+    "nie tnij wypowiedzi do ustalonej liczby zdań ani znaków. Jeśli w tej odpowiedzi "
+    "żądasz narzędzia, blok jest jawnym komentarzem dla użytkownika przed jego "
+    "wykonaniem, a nie finalną odpowiedzią. Nie ujawniaj wewnętrznego toku rozumowania. "
+    "Po wyniku narzędzia przygotuj nowy blok dla kolejnej reakcji albo finalnej wypowiedzi. "
+    "Nie wygładzaj stylu, nie usuwaj wulgaryzmów i nie zmieniaj tonu persony. "
+    "Nie wkładaj do bloku surowych logów, argumentów ani wyników narzędzi, kodu, "
+    "ścieżek, nazw plików, adresów ani identyfikatorów; szczegóły techniczne zostaw "
+    "w pełnej odpowiedzi na czacie. Użyj dokładnie jednego bloku i nie odwołuj się do niego "
     "w treści przeznaczonej na czat."
 )
 DEFAULT_PERSONA_PROFILE = "jarvis"
-# Conservative file names only: the profile is a settings-supplied value, so
-# anything that could escape the persona directory is rejected outright.
-_PERSONA_PROFILE_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
 _SAFE_COMPILED_MEMORY_SKIPPED_CATEGORIES = frozenset(
     {
         "candidate_only",
@@ -73,6 +72,11 @@ _LOGGER = get_logger("brain.context_builder")
 
 class ContextBuilderError(Exception):
     """Raised when Jarvis-owned context cannot be assembled."""
+
+
+def _persona_version(content: str) -> str | None:
+    match = re.search(r"(?m)^DAN_CANON_VERSION:\s*([^\s]+)\s*$", content)
+    return match.group(1) if match else None
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,12 @@ class ContextBuilder:
         # input_schema/risk). None or empty => the prompt lists no tools.
         self._tool_specs = tool_specs
 
+    @property
+    def context_budget_chars(self) -> int:
+        """Return the effective input budget used by ``build_request``."""
+
+        return self._resolve_context_budget(None)
+
     def build_request(
         self,
         *,
@@ -169,12 +179,8 @@ class ContextBuilder:
         # reachable. Truncate with a visible marker rather than silently.
         input_text = _cap_input_text(input_text, budget)
         request_settings = self._build_settings(settings)
-        persona_profile = self._resolve_persona_profile(request_settings)
-        core_messages = self._build_core_messages(
-            runtime_state,
-            persona_profile,
-            vulgarity_level=_vulgarity_level(request_settings.get(PERSONA_VULGARITY_SETTING_KEY, 4)),
-        )
+        persona_profile = DEFAULT_PERSONA_PROFILE
+        core_messages = self._build_core_messages(runtime_state)
         recent_messages = self._build_recent_turn_messages(
             normalized_conversation_id,
             recent_turn_limit,
@@ -233,6 +239,10 @@ class ContextBuilder:
                 if message.metadata.get("turn_id")
             }
         )
+        persona_metadata = next(
+            (message.metadata for message in messages if message.metadata.get("kind") == "persona"),
+            {},
+        )
         snapshot = {
             "turn_id": normalized_turn_id,
             "conversation_id": normalized_conversation_id,
@@ -244,6 +254,9 @@ class ContextBuilder:
             "estimated_context_chars": estimated_context_chars,
             "includes_persona": bool(messages and messages[0].metadata.get("kind") == "persona"),
             "persona_profile": persona_profile,
+            "persona_source": persona_metadata.get("source"),
+            "persona_version": persona_metadata.get("version"),
+            "persona_sha256": persona_metadata.get("sha256"),
             "provider_sessions_are_memory": False,
             "created_at": self._now(),
         }
@@ -383,7 +396,7 @@ class ContextBuilder:
     def _collect_available_tools(self) -> list[BrainToolSpec]:
         """Expose the registry's tools so the prompt can list them (else the
         model is told "Available tools: - none" and denies having any). Risk
-        rides along; execution stays approval-gated downstream regardless."""
+        rides along; execution is handled by the observable Jarvis tool loop."""
 
         if self._tool_specs is None:
             return []
@@ -457,7 +470,7 @@ class ContextBuilder:
 
         settings["provider_sessions_are_memory"] = False
         settings[PERSONA_PROFILE_SETTING_KEY] = DEFAULT_PERSONA_PROFILE
-        settings.setdefault(PERSONA_VULGARITY_SETTING_KEY, 4)
+        settings.pop("persona.vulgarity_level", None)
         return settings
 
     def _read_settings_table(self) -> dict[str, Any]:
@@ -481,24 +494,20 @@ class ContextBuilder:
     def _build_core_messages(
         self,
         runtime_state: str | None,
-        persona_profile: str = DEFAULT_PERSONA_PROFILE,
-        vulgarity_level: int = 4,
     ) -> list[BrainMessage]:
         messages: list[BrainMessage] = []
-        persona = self._load_persona(persona_profile)
-        if persona:
-            messages.append(
-                BrainMessage(
-                    role="system",
-                    content=persona,
-                    metadata={"kind": "persona", "profile": persona_profile},
-                )
-            )
+        persona = self._load_persona()
         messages.append(
             BrainMessage(
                 role="system",
-                content=_vulgarity_instruction(vulgarity_level),
-                metadata={"kind": "persona_vulgarity", "level": vulgarity_level},
+                content=persona,
+                metadata={
+                    "kind": "persona",
+                    "profile": DEFAULT_PERSONA_PROFILE,
+                    "source": str(self._persona_path.resolve()),
+                    "version": _persona_version(persona),
+                    "sha256": hashlib.sha256(persona.encode("utf-8")).hexdigest(),
+                },
             )
         )
         if runtime_state:
@@ -520,7 +529,7 @@ class ContextBuilder:
         return messages
 
     def speech_form_enabled(self) -> bool:
-        """Ask for a redacted spoken form only when responses are voiced.
+        """Ask for a model-authored spoken form only when responses are voiced.
 
         Public because the orchestrator uses the same gate to decide whether
         streamed deltas must pass through the [[GŁOS]] stream router — the
@@ -533,27 +542,19 @@ class ContextBuilder:
         )
 
 
-    def _resolve_persona_profile(self, request_settings: Mapping[str, Any]) -> str:
-        """Use the owner persona as the single runtime persona source.
-
-        This branch intentionally has one effective persona: config/persona/jarvis.md.
-        Older profile/settings rows are ignored so a stale panel value cannot silently
-        override the file the operator is editing.
-        """
-
-        return DEFAULT_PERSONA_PROFILE
-
-    def _load_persona(self, persona_profile: str = DEFAULT_PERSONA_PROFILE) -> str | None:
+    def _load_persona(self) -> str:
         path = self._persona_path
-        if persona_profile != DEFAULT_PERSONA_PROFILE:
-            path = self._persona_path.parent / f"{persona_profile}.md"
         try:
             if not path.is_file():
-                return None
-            content = path.read_text(encoding="utf-8").strip()
+                raise ContextBuilderError(f"Persona file does not exist: {path}")
+            content = path.read_text(encoding="utf-8")
         except OSError as exc:
             raise ContextBuilderError(f"Could not read persona file {path}: {exc}") from exc
-        return content or None
+        if not content.strip():
+            raise ContextBuilderError(f"Persona file is empty: {path}")
+        if _persona_version(content) != "1":
+            raise ContextBuilderError(f"Persona file has unknown canonical version: {path}")
+        return content
 
     def _build_recent_turn_messages(
         self,
@@ -572,7 +573,7 @@ class ContextBuilder:
                 FROM turns
                 WHERE conversation_id = ?
                   AND (? IS NULL OR id != ?)
-                ORDER BY created_at DESC, id DESC
+                ORDER BY created_at DESC, rowid DESC
                 LIMIT ?
                 """,
                 (conversation_id, exclude_turn_id, exclude_turn_id, int(recent_turn_limit)),
@@ -659,28 +660,6 @@ class ContextBuilder:
             content="\n".join(lines),
             metadata={"kind": "worker_jobs", "untrusted": True},
         )
-
-
-def _vulgarity_level(value: Any) -> int:
-    try:
-        level = int(value)
-    except (TypeError, ValueError):
-        return 4
-    return max(1, min(4, level))
-
-
-def _vulgarity_instruction(level: int) -> str:
-    descriptions = {
-        1: "Poziom 1: lekko kąśliwy, bez korpo tonu, ale mało bluzgów.",
-        2: "Poziom 2: wyraźnie sarkastyczny i bezpośredni, umiarkowane bluzgi.",
-        3: "Poziom 3: ostry, wulgarny, bez wygładzania i bez HR-owego tonu.",
-        4: "Poziom 4: pełny właścicielski Jarvis/DAN style: brutalny, wulgarny, złośliwy, szybki, bez sanitizacji appki.",
-    }
-    return (
-        "Aktywny poziom wulgarności/persony: "
-        + descriptions.get(_vulgarity_level(level), descriptions[4])
-        + " Zachowaj fakty, użyteczność i ciągłość Jarvisa; poziom wpływa na styl, nie na prawdziwość odpowiedzi."
-    )
 
 
 def utc_now_iso() -> str:

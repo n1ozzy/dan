@@ -81,6 +81,24 @@ class FakeFillerTimer:
         self.disarmed += 1
 
 
+class FakeSharedBrokerClient:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, object]] = []
+
+    def enqueue(
+        self,
+        *,
+        text: str,
+        session: str,
+        priority: int = 0,
+        lane: str | None = None,
+    ) -> Path:
+        self.requests.append(
+            {"text": text, "session": session, "priority": priority, "lane": lane}
+        )
+        return Path("/test-only/request.json")
+
+
 # --- live sentence emission ---------------------------------------------------
 
 
@@ -116,6 +134,62 @@ def test_finalize_without_any_deltas_chunks_the_canonical_text(db_path: Path) ->
         "Pierwsze zdanie odpowiedzi.",
         "Drugie zdanie odpowiedzi.",
     ]
+
+
+def test_shared_broker_stream_publishes_one_canonical_utterance_at_finalize(
+    db_path: Path,
+) -> None:
+    client = FakeSharedBrokerClient()
+    pipeline = SpeechPipeline(
+        lambda: connect(db_path),
+        config=voice_config(broker_enabled=True),
+        shared_broker=client,
+    )
+    session = pipeline.start_stream(turn_id="turn-abcdef")
+
+    session.feed("Pierwsze zdanie odpowiedzi. Drugie zda")
+    session.feed("nie odpowiedzi.")
+    assert client.requests == []
+    assert queued_rows(db_path) == []
+
+    count = session.finalize(
+        "Pierwsze zdanie odpowiedzi. Drugie zdanie odpowiedzi.",
+        lane="commentary",
+    )
+
+    assert count == 1
+    assert client.requests == [
+        {
+            "text": "Pierwsze zdanie odpowiedzi. Drugie zdanie odpowiedzi.",
+            "session": "turn-abcdef",
+            "priority": 0,
+            "lane": "commentary",
+        }
+    ]
+    assert queued_rows(db_path) == []
+
+
+def test_shared_broker_mode_does_not_arm_an_uncancellable_filler(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeSharedBrokerClient()
+    pipeline = SpeechPipeline(
+        lambda: connect(db_path),
+        config=voice_config(broker_enabled=True),
+        shared_broker=client,
+    )
+
+    def forbidden_timer(*_args, **_kwargs):
+        pytest.fail("shared broker mode must not schedule a filler")
+
+    monkeypatch.setattr("jarvis.voice.speech.FillerTimer", forbidden_timer)
+
+    timer = pipeline.arm_filler(turn_id="turn-1")
+    timer.disarm()
+
+    assert client.requests == []
+    assert queued_rows(db_path) == []
 
 
 def test_tool_call_block_split_across_deltas_is_never_spoken(db_path: Path) -> None:

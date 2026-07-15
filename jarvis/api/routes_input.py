@@ -35,7 +35,6 @@ def post_text_input(app: DaemonApp, request_payload: Any) -> dict[str, object]:
         "brain_adapter": result.brain_adapter,
         "brain_model": result.brain_model,
         "tool_calls": list(result.tool_calls),
-        "approvals": list(result.approvals),
         "state": app.snapshot_state()["state"],
         "event_ids": list(result.event_ids),
         "turn": turn_to_dict(result.turn),

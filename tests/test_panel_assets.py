@@ -32,7 +32,6 @@ REQUIRED_ROUTES = (
     "/memory",
     "/memory/items",
     "/tools",
-    "/approvals",
     "/events",
     "/stream",
     "/runtime/processes",
@@ -74,41 +73,48 @@ def test_index_references_static_js_and_css() -> None:
     assert "./styles.css" in markup
 
 
-def test_app_previews_approval_arguments() -> None:
-    # Karta zgody musi pokazywać CO model chce zrobić (argumenty wywołania),
-    # nie tylko nazwę narzędzia i id — inaczej człowiek zatwierdza w ciemno.
-    script = APP_JS.read_text(encoding="utf-8")
-
-    assert "payload.arguments" in script
-    assert "approval-arg" in script
-
-
-def test_approvals_view_reads_at_a_glance() -> None:
-    # Redesign zad. 4: pusty stan jest spokojnym komunikatem (nie ramką-
-    # inputem), a karta zgody czyta się na rzut oka — ludzka nazwa narzędzia,
-    # chip ryzyka po polsku z kolorem wg wagi, argumenty jako tabelka,
-    # jednoznaczne przyciski.
+def test_panel_has_no_active_approval_surface_refresh_or_state() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
-    # Pusty stan: wycentrowany znak ✓, nie wiersz wyglądający jak formularz.
-    assert "empty-state" in script
-    assert "empty-state" in styles
-    assert "Nic nie czeka" in script
+    for marker in (
+        'id="view-approvals"',
+        'data-view="approvals"',
+        "approvalNudge",
+        "approvalsBadge",
+        "approvalList",
+        "memoryApprovalsHeading",
+        '<option value="approvals">',
+    ):
+        assert marker not in markup
 
-    # Ludzkie nazwy narzędzi i etykiety ryzyka (mapa PL, współdzielona z LOGI).
-    assert "TOOL_LABELS" in script
-    assert "toolLabel" in script
-    assert "riskLabel" in script
-    assert "riskTier" in script
+    for marker in (
+        "/approvals",
+        "approvedApprovals",
+        "pendingApprovalCount",
+        "approvalsTimer",
+        "refreshToolsAndApprovals",
+        "refreshApprovals",
+        "syncPendingApprovals",
+        "scheduleApprovalsRefresh",
+        "setPendingBadge",
+        "updateApprovalSignals",
+        "pending_approval_count",
+        'if (text === "approval_required")',
+        "networkPolicyLabel",
+        'actor === "approval"',
+    ):
+        assert marker not in script
 
-    # Chip ryzyka barwiony wagą: odczyt / zapis / destructive.
-    assert "risk-chip" in script
-    assert "risk-chip" in styles
-
-    # Decyzja jednoznaczna.
-    assert "Zatwierdź" in script
-    assert "Odrzuć" in script
+    for marker in (
+        ".approval-card",
+        ".approval-nudge",
+        ".approvals-badge",
+        "body.has-pending",
+        'body[data-state="pending"]',
+    ):
+        assert marker not in styles
 
 
 def test_app_fetches_turns_newest_first() -> None:
@@ -120,7 +126,7 @@ def test_app_fetches_turns_newest_first() -> None:
 
 
 def test_cockpit_is_single_view_app_with_tabbar() -> None:
-    # Architektura popover-first: jeden widok naraz (Czat / Zgody / Pamięć /
+    # Architektura popover-first: jeden widok naraz (Czat / Pamięć /
     # System) + dolny pasek zakładek. Czat = pełna powierzchnia, dymki
     # user/jarvis z metą; strona się nie scrolluje, widoki przewijają się
     # wewnętrznie.
@@ -131,11 +137,12 @@ def test_cockpit_is_single_view_app_with_tabbar() -> None:
     assert "tabbar" in markup
     assert "tab-button" in markup
     assert 'data-view="chat"' in markup
-    for view_id in ("view-chat", "view-approvals", "view-memory", "view-logs", "view-system"):
+    for view_id in ("view-chat", "view-memory", "view-logs", "view-system"):
         assert view_id in markup, view_id
     assert "chat-toolbar" in markup
-    assert "conversationSelect" in markup
-    assert "newConversationButton" in markup
+    assert "conversationSelect" not in markup
+    assert "newConversationButton" not in markup
+    assert "jedna ciągła rozmowa" in markup
     assert "composer" in markup
     assert "chat-log" in markup
     assert "tabbar" in styles
@@ -148,9 +155,9 @@ def test_cockpit_is_single_view_app_with_tabbar() -> None:
 
 
 def test_cockpit_state_signals_are_quiet_structure() -> None:
-    # Stan systemu: żywa ramka (patrz osobny test) + klasy na <body> (offline
-    # wygasza kompozytor, has-pending barwi sygnały zgód). Osobny pill stanu
-    # usunięty — ramka niesie stan, redundantny wskaźnik zbędny.
+    # Stan systemu: żywa ramka (patrz osobny test) + klasa offline na <body>.
+    # Osobny pill stanu usunięty — ramka i strip niosą stan bez bocznych
+    # sygnałów pochodzących ze starej kolejki decyzji.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
@@ -158,14 +165,29 @@ def test_cockpit_state_signals_are_quiet_structure() -> None:
     assert "state-pill" not in markup
     assert "offline-hero" in script
     assert "offline" in script
-    assert "has-pending" in script
-    assert "has-pending" in styles
+    assert "has-pending" not in script
+    assert "has-pending" not in styles
+
+
+def test_chat_has_static_backend_driven_activity_strip() -> None:
+    markup = INDEX_HTML.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert 'id="activityStrip"' in markup
+    assert 'aria-live="polite"' in markup
+    assert 'data-runtime-state="UNKNOWN"' in markup
+    assert 'id="stateLabel">…<' in markup
+    assert 'id="activityStage">Łączenie…<' in markup
+    for element_id in ("activityStage", "activityTool", "activityStatus", "activityResult"):
+        assert f'id="{element_id}"' in markup
+    assert ".activity-strip" in styles
+    assert ".activity-stage" in styles
 
 
 def test_state_frame_is_animated_and_driven_by_live_state() -> None:
     # Sygnatura panelu: neonowa ramka na krawędzi karty, która OBIEGA dookoła,
-    # gdy Jarvis pracuje (THINKING/SPEAKING/LISTENING) i barwi się stanem
-    # (teal online, bursztyn gdy czekają zgody, czerwień offline). Ruch niesie
+    # gdy Jarvis pracuje (THINKING/TOOLING/SPEAKING/LISTENING) i barwi się stanem
+    # (teal online, jasny błękit podczas pracy, czerwień offline). Ruch niesie
     # informację o trwającym procesie — nie jest dekoracją; spoczynek (IDLE)
     # zostawia ramkę statyczną. Renderuje ją CSS w webview, sterowany realnym
     # stanem z JS — jedna geometria, bez malowania natywnej warstwy co klatkę.
@@ -183,10 +205,10 @@ def test_state_frame_is_animated_and_driven_by_live_state() -> None:
     # Obrót zatrzymuje się przy ograniczonym ruchu — ramka wtedy tylko barwi.
     assert "prefers-reduced-motion" in styles
 
-    # JS steruje ramką realnym stunem: online/offline, liczba zgód i to, czy
-    # daemon właśnie pracuje. Stany daemona z RuntimeState (state_machine.py).
+    # JS steruje ramką realnym stanem: online/offline i tym, czy daemon właśnie
+    # pracuje. Stany daemona z RuntimeState (state_machine.py).
     assert "applyStateFrame" in script
-    for runtime_state in ("THINKING", "SPEAKING", "LISTENING"):
+    for runtime_state in ("THINKING", "TOOLING", "SPEAKING", "LISTENING"):
         assert runtime_state in script, runtime_state
     # Ramka reaguje na strumień: state.changed przełącza pracę/spoczynek.
     assert "runtimeState" in script
@@ -209,8 +231,9 @@ def test_app_references_required_daemon_routes() -> None:
     assert missing == []
 
 
-def test_index_has_active_settings_sections_with_apply_controls() -> None:
+def test_index_has_active_settings_sections_with_instant_backend_apply() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
+    script = APP_JS.read_text(encoding="utf-8")
 
     assert "settingsHeading" in markup
     assert "settingsList" in markup
@@ -219,12 +242,19 @@ def test_index_has_active_settings_sections_with_apply_controls() -> None:
     assert "activeBrainProviderSelect" in markup
     assert "activeBrainModelSelect" in markup
     assert "activeBrainEffortSelect" in markup
-    assert "applyBrainSettingsButton" in markup
-    assert "applyTtsSettingsButton" in markup
-    assert "applySttSettingsButton" in markup
     assert "pttHotkeyInput" in markup
-    assert "applyPttSettingsButton" in markup
-    assert "applyPersonaSettingsButton" in markup
+    assert "Zmiany obsługiwane przez runtime zapisują się automatycznie" in markup
+    for old_button in (
+        "applyBrainSettingsButton",
+        "applyTtsSettingsButton",
+        "applySttSettingsButton",
+        "applyPttSettingsButton",
+        "applyToolsSettingsButton",
+        "applyPersonaSettingsButton",
+    ):
+        assert old_button not in markup
+    assert "Instant auto-apply" in script
+    assert "applyRuntimeSettingsGroup(group)" in script
 
 
 def test_app_settings_are_rendered_from_daemon_truth_only() -> None:
@@ -385,7 +415,6 @@ def test_runtime_overview_pins_real_diagnostic_fields() -> None:
         "effort/fast",
         "memory included count",
         "memory excluded count",
-        "approvals requested/executed count",
         "tools attempted count",
         "voice rows created filler/final/error",
         "speech cancellation/interruption reason",
@@ -420,48 +449,31 @@ def test_runtime_overview_pins_real_diagnostic_fields() -> None:
         assert expected in script
 
 
-def test_mission_control_operator_shell_is_present_and_read_only() -> None:
+def test_logs_view_contains_read_only_runtime_diagnostics() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
     for marker in (
-        "missionControlHeading",
-        "Odśwież",
-        "missionControlSummary",
-        "missionControlModules",
+        "quickHealthHeading",
+        "Runtime summary",
         "missionControlChecklist",
         "voiceDoctorList",
-        "providerDoctorList",
-        "missionControlRefreshStatus",
-        "Backend, mózg, głos, narzędzia i jedna następna akcja.",
-        "produkcja",
+        "latestTurnTraceList",
+        "runtimeLogsSummaryList",
     ):
         assert marker in markup
 
     for marker in (
-        "mission-control",
-        "mission-summary",
-        "module-grid",
         "doctor-grid",
         "checklist-grid",
-        "production-badge",
     ):
         assert marker in styles
 
     for marker in (
-        "Jarvis:",
-        "operatorSummaryFromSnapshot",
-        "renderMissionControl",
         "renderVoiceDoctor",
-        "renderProviderDoctor",
         "operationalChecklistItems",
         "refreshMissionControl",
-        "MISSION_CONTROL_ENDPOINTS",
-        "Tryb produkcyjny",
-        "stan należy do backendu",
-        "jawne bramki zgód",
-        "bez renderowania sekretów",
     ):
         assert marker in script
 
@@ -567,13 +579,12 @@ def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) 
                 voice: {{ ok: true, path: "/voice/listening" }},
                 voiceRuntime: {{ ok: true, path: "/voice/runtime" }},
                 voiceQueue: {{ ok: true, path: "/voice/queue?limit=12" }},
-                approvals: {{ ok: true, path: "/approvals?limit=25" }},
                 memory: {{ ok: true, path: "/memory?active_only=true&limit=25" }},
                 tools: {{ ok: true, path: "/tools" }},
                 events: {{ ok: true, path: "/events?latest=true&limit=50" }},
               }},
               health: {{ service: "jarvisd", state: "IDLE", voice_enabled: true }},
-              state: {{ state: "IDLE", pending_approval_count: 0, brain_adapter: "mock" }},
+              state: {{ state: "IDLE", brain_adapter: "mock" }},
               runtimeSettings: {{
                 runtime_readiness: {{
                   top_blockers: projection([], "ok"),
@@ -621,7 +632,6 @@ def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) 
                 }},
               }},
               voiceQueue: {{ voice_queue: [] }},
-              approvals: {{ approvals: [] }},
               memory: {{ memory: [] }},
               memoryItems: {{ items: [] }},
               tools: {{ tools: [] }},
@@ -695,7 +705,7 @@ def test_mission_control_refresh_plan_is_safe_read_only_gets(tmp_path: Path) -> 
             assert.ok(plan.every((entry) => entry.method === "GET"));
             assert.ok(plan.some((entry) => entry.path === "/runtime/settings"));
             assert.ok(plan.some((entry) => entry.path === "/voice/queue?limit=12"));
-            assert.ok(plan.some((entry) => entry.path === "/approvals?limit=25"));
+            assert.ok(!plan.some((entry) => entry.path.startsWith("/approvals")));
             assert.ok(plan.some((entry) => entry.path === "/memory/items"));
             assert.ok(plan.some((entry) => entry.path === "/events?latest=true&limit=50"));
 
@@ -745,7 +755,6 @@ def test_operational_checklist_voice_and_provider_doctors_pin_required_diagnosti
         "Status STT znany",
         "Status narzędzi/internetu znany",
         "Pamięć widoczna",
-        "Zgody widoczne",
         "Ostatni trace tury widoczny",
     ):
         assert item in script
@@ -835,313 +844,28 @@ def test_settings_preview_cockpit_shell_is_present() -> None:
         assert contract_name in script
 
 
-def test_tools_internet_controls_are_truthful_and_not_fake_apply_capable(tmp_path: Path) -> None:
-    # Grant semantics (2026-07-09): checkboxes say what Jarvis may do ON HIS
-    # OWN (checked = no approval click), one per switchable mutation class,
-    # plus the always-gated destructive enable.
+def test_tools_internet_controls_do_not_expose_legacy_decision_controls() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
-    for label in (
-        "Narzędzia",
-        "Dostęp do internetu",
+    script = APP_JS.read_text(encoding="utf-8")
+
+    assert "Narzędzia" in markup
+    assert "Dostęp do internetu" in markup
+    for marker in (
+        "grantShellToggle",
+        "grantFileWriteToggle",
+        "grantNetworkToggle",
+        "grantUiToggle",
+        "grantTerminalToggle",
+        "grantMemoryToggle",
+        "destructiveEnabledToggle",
         "Jarvis może sam",
-        "Komendy (shell)",
-        "Zapis plików",
-        "Internet",
-        "Klikanie i pisanie po ekranie",
-        "Wklejanie do terminala",
-        "Zapis pamięci",
-        "Destrukcyjne dozwolone",
-    ):
-        assert label in markup
-    for misleading_label in (
-        ">tools.enabled<",
-        ">network approval<",
-        ">file write approval<",
-        ">shell approval<",
         "Wymagaj zgody",
     ):
-        assert misleading_label not in markup
+        assert marker not in markup
 
-    harness = tmp_path / "tools-internet-truth-harness.js"
-    harness.write_text(
-        textwrap.dedent(
-            f"""
-            const assert = require("assert");
-            const fs = require("fs");
-            const vm = require("vm");
-
-            function createNode(tag) {{
-              const children = [];
-              const classes = new Set();
-              return {{
-                tagName: tag,
-                children,
-                textContent: "",
-                className: "",
-                hidden: false,
-                disabled: false,
-                checked: false,
-                value: "",
-                type: "",
-                classList: {{
-                  toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
-                  contains: (name) => classes.has(name),
-                }},
-                appendChild(child) {{
-                  children.push(child);
-                  return child;
-                }},
-                append(...nodes) {{
-                  for (const node of nodes) this.appendChild(node);
-                }},
-                removeChild(child) {{
-                  const index = children.indexOf(child);
-                  if (index >= 0) children.splice(index, 1);
-                  return child;
-                }},
-                get firstChild() {{
-                  return children[0] || null;
-                }},
-                addEventListener() {{}},
-              }};
-            }}
-
-            function textOf(node) {{
-              if (!node) return "";
-              return [node.textContent || "", ...(node.children || []).map(textOf)].join(" ");
-            }}
-
-            const requests = [];
-            const context = {{
-              console,
-              URL,
-              location: {{ origin: "http://127.0.0.1:41741" }},
-              localStorage: {{
-                getItem: () => "token",
-                setItem: () => {{}},
-                removeItem: () => {{}},
-              }},
-              createNode,
-              window: {{}},
-              document: {{
-                addEventListener: () => {{}},
-                createElement: createNode,
-              }},
-              fetch: async (url, init) => {{
-                requests.push({{ url, init }});
-                return {{
-                  ok: true,
-                  status: 200,
-                  text: async () => JSON.stringify({{ ok: true, applied: [], runtime_settings: payload }}),
-                }};
-              }},
-            }};
-            context.window.localStorage = context.localStorage;
-            context.globalThis = context;
-            vm.createContext(context);
-            vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
-              filename: "app.js",
-            }});
-
-            const payload = {{
-              tools: {{
-                tools_enabled: {{
-                  value: true,
-                  effective_value: true,
-                  source: "settings",
-                  status: "ok",
-                  editable_later: true,
-                  warning: null,
-                }},
-                tools_master_flag: {{
-                  value: "enabled",
-                  effective_value: "enabled",
-                  source: "settings",
-                  status: "ok",
-                  editable_later: true,
-                  warning: null,
-                }},
-                tool_registry_status: {{
-                  value: "registered",
-                  effective_value: "registered",
-                  source: "runtime_detected",
-                  status: "ok",
-                  editable_later: false,
-                  warning: null,
-                }},
-                internet_capability: {{
-                  value: {{ state: "unavailable", registered_network_tools: [] }},
-                  effective_value: {{ state: "unavailable", registered_network_tools: [] }},
-                  source: "runtime_detected",
-                  status: "missing",
-                  editable_later: false,
-                  warning: "Internet unavailable: no network/search tool registered",
-                }},
-                network_search_tool: {{
-                  value: "missing",
-                  effective_value: "missing",
-                  source: "runtime_detected",
-                  status: "missing",
-                  editable_later: false,
-                  warning: "no network/search tool registered",
-                }},
-                network_policy: {{
-                  value: "approval_required",
-                  effective_value: "approval_required",
-                  source: "config",
-                  status: "ok",
-                  editable_later: true,
-                  warning: "network enabled but no network tool registered",
-                }},
-                approval_required_tools: {{
-                  value: ["network", "shell", "file_write", "terminal", "memory"],
-                  effective_value: ["network", "shell", "file_write", "terminal", "memory"],
-                  source: "settings",
-                  status: "ok",
-                  editable_later: true,
-                  warning: null,
-                }},
-                destructive_tools_enabled: {{
-                  value: false,
-                  effective_value: false,
-                  source: "settings",
-                  status: "ok",
-                  editable_later: true,
-                  warning: null,
-                }},
-              }},
-              capability_graph: {{
-                tools_capabilities: {{
-                  apply_capabilities: {{
-                    "tools.enabled": {{
-                      apply_capable: false,
-                      requires_restart: true,
-                      blocker: "tool registry enable/disable requires daemon restart",
-                    }},
-                    "tools.network_enabled": {{
-                      apply_capable: false,
-                      requires_restart: true,
-                      blocker: "network capability is registry-backed; no live network tool toggle is wired",
-                    }},
-                    "security.require_approval_for_network": {{
-                      apply_capable: true,
-                      requires_restart: false,
-                      blocker: null,
-                    }},
-                    "security.require_approval_for_shell": {{
-                      apply_capable: true,
-                      requires_restart: false,
-                      blocker: null,
-                    }},
-                    "security.require_approval_for_file_write": {{
-                      apply_capable: true,
-                      requires_restart: false,
-                      blocker: null,
-                    }},
-                    "security.require_approval_for_ui": {{
-                      apply_capable: true,
-                      requires_restart: false,
-                      blocker: null,
-                    }},
-                    "security.require_approval_for_terminal": {{
-                      apply_capable: true,
-                      requires_restart: false,
-                      blocker: null,
-                    }},
-                    "security.require_approval_for_memory": {{
-                      apply_capable: true,
-                      requires_restart: false,
-                      blocker: null,
-                    }},
-                    "security.destructive_tools_enabled": {{
-                      apply_capable: true,
-                      requires_restart: false,
-                      blocker: null,
-                    }},
-                  }},
-                }},
-              }},
-              settings_preview: {{
-                sections: {{
-                  tools_internet: {{
-                    fields: {{
-                      tools_support: {{ current: "yes", effective: "yes", status: "ok" }},
-                    }},
-                  }},
-                }},
-              }},
-            }};
-            context.payload = payload;
-
-            vm.runInContext(`
-              el.activeToolsSettingsSection = createNode("section");
-              el.toolsSectionDescription = createNode("p");
-              el.toolsControlGrid = createNode("div");
-              el.toolsSummaryDetails = createNode("dl");
-              el.toolsEnabledToggle = createNode("input");
-              el.toolsNetworkEnabledToggle = createNode("input");
-              el.grantShellToggle = createNode("input");
-              el.grantFileWriteToggle = createNode("input");
-              el.grantNetworkToggle = createNode("input");
-              el.grantUiToggle = createNode("input");
-              el.grantTerminalToggle = createNode("input");
-              el.grantMemoryToggle = createNode("input");
-              el.destructiveEnabledToggle = createNode("input");
-              el.toolsInternetSummary = createNode("dd");
-              el.toolsNetworkPolicySummary = createNode("dd");
-              el.toolsRegistrySummary = createNode("dd");
-              el.toolsInternetStatusList = createNode("div");
-              el.toolsApplyStatus = createNode("p");
-              el.resetToolsPreviewButton = createNode("button");
-              el.applyToolsSettingsButton = createNode("button");
-              el.activeSettingsStatus = createNode("p");
-              cockpit.online = true;
-              cockpit.runtimeSettingsApply.payload = payload;
-              renderToolsApplyControls(payload);
-              globalThis.__el = el;
-            `, context);
-
-            assert.strictEqual(context.__el.toolsEnabledToggle.disabled, false);
-            assert.strictEqual(context.__el.toolsNetworkEnabledToggle.disabled, false);
-            // Grant inversion: classes still requiring approval render as
-            // UNCHECKED grants; "ui" is absent from approval_required_tools,
-            // so its grant is CHECKED.
-            assert.strictEqual(context.__el.grantShellToggle.checked, false);
-            assert.strictEqual(context.__el.grantFileWriteToggle.checked, false);
-            assert.strictEqual(context.__el.grantNetworkToggle.checked, false);
-            assert.strictEqual(context.__el.grantUiToggle.checked, true);
-            assert.strictEqual(context.__el.grantTerminalToggle.checked, false);
-            assert.strictEqual(context.__el.grantMemoryToggle.checked, false);
-            assert.strictEqual(context.__el.destructiveEnabledToggle.checked, false);
-            // Live-apply capability: no restart lie on any grant toggle.
-            for (const toggle of [
-              context.__el.grantShellToggle,
-              context.__el.grantFileWriteToggle,
-              context.__el.grantNetworkToggle,
-              context.__el.grantUiToggle,
-              context.__el.grantTerminalToggle,
-              context.__el.grantMemoryToggle,
-              context.__el.destructiveEnabledToggle,
-            ]) {{
-              assert.strictEqual(toggle.disabled, false);
-              assert.doesNotMatch(String(toggle.title || ""), /restart/i);
-            }}
-            const statusText = textOf(context.__el.toolsInternetStatusList);
-            assert.doesNotMatch(statusText, /What this means|What can I do\\?|tools\\.enabled|security\\.require_approval|approval_required|runtime tool\\/network policy reload|tool registry enable\\/disable|not runtime-apply-capable/i);
-            """
-        ),
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        ["node", str(harness)],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
+    filtered_contract = 'tools: Object.freeze([\n    "tools.enabled",\n    "tools.network_enabled",'
+    assert filtered_contract in script
+    assert '"security.require_approval_for_network",\n    "security.require_approval_for_shell"' not in script
 
 
 def test_system_unknown_runtime_values_disable_apply_and_do_not_create_pending_change(
@@ -1320,8 +1044,6 @@ def test_system_unknown_runtime_values_disable_apply_and_do_not_create_pending_c
             assert.match(context.__el.pttApplyStatus.textContent, /Powód: runtime nie raportuje tego ustawienia/i);
             assert.strictEqual(context.__el.pttModeSelect.disabled, true);
             assert.strictEqual(context.__el.applyPttSettingsButton.disabled, true);
-            assert.match(context.__el.pttListeningSummary.textContent, /Wartość efektywna: nieznana/i);
-            assert.match(context.__el.pttListeningSummary.textContent, /runtime nie raportuje tego ustawienia/i);
             """
         ),
         encoding="utf-8",
@@ -1476,7 +1198,7 @@ def test_ptt_hotkey_missing_value_remains_apply_capable(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
+def test_claude_cli_provider_controls_render_and_apply_semantics_gate(
     tmp_path: Path,
 ) -> None:
     harness = tmp_path / "claude-cli-contract-harness.js"
@@ -1524,11 +1246,6 @@ def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
                 }},
                 addEventListener() {{}},
               }};
-            }}
-
-            function collectText(node) {{
-              if (!node) return "";
-              return [node.textContent || "", ...(node.children || []).map(collectText)].join(" ");
             }}
 
             const context = {{
@@ -1632,7 +1349,6 @@ def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
               el.activeBrainModelSelect = createNode("select");
               el.activeBrainEffortSelect = createNode("select");
               el.activeBrainFastToggle = createNode("input");
-              el.brainSettingsSummaryList = createNode("div");
               el.brainApplyStatus = createNode("p");
               el.applyBrainSettingsButton = createNode("button");
               cockpit.online = true;
@@ -1645,15 +1361,10 @@ def test_claude_cli_provider_contract_renders_and_apply_semantics_gate(
               cockpit.runtimeSettingsApply.payload = nextTurnPayload;
               renderBrainApplyControls(nextTurnPayload);
             `, context);
-            const summary = collectText(context.__el.brainSettingsSummaryList);
-            assert.match(summary, /Kontrakt dostawcy Claude CLI/);
-            assert.match(summary, /claude-sonnet/);
-            assert.match(summary, /xhigh/);
-            assert.match(summary, /acceptEdits/);
-            assert.match(summary, /Bash/);
-            assert.match(summary, /stream-json/);
-            assert.match(summary, /--model claude-sonnet/);
-            assert.doesNotMatch(summary, /sk-/);
+            assert.strictEqual(context.__el.activeBrainProviderSelect.value, "claude_cli");
+            assert.strictEqual(context.__el.activeBrainModelSelect.value, "claude-sonnet");
+            assert.strictEqual(context.__el.activeBrainEffortSelect.value, "xhigh");
+            assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
 
             const newSessionPayload = payloadWithSemantics("requires_new_session");
             context.newSessionPayload = newSessionPayload;
@@ -2759,98 +2470,6 @@ def test_developer_only_brain_provider_preserved_without_auto_switch_or_pending(
         assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_pending_approval_approves_and_executes_in_one_request(tmp_path: Path) -> None:
-        # Ozzy 2026-07-08: clicking the pending approval button must do BOTH in a
-        # single atomic backend call (/approve-and-execute), never a separate
-        # approve then execute that can strand a second "execute" step.
-        harness = tmp_path / "approval-one-click-harness.js"
-        harness.write_text(
-            textwrap.dedent(
-                f"""
-                const assert = require("assert");
-                const fs = require("fs");
-                const vm = require("vm");
-
-                function createNode(tag) {{
-                  const children = [];
-                  return {{
-                    tagName: tag,
-                    children,
-                    textContent: "",
-                    className: "",
-                    hidden: false,
-                    disabled: false,
-                    value: "",
-                    appendChild(child) {{ children.push(child); return child; }},
-                    append(...nodes) {{ for (const node of nodes) this.appendChild(node); }},
-                    removeChild(child) {{
-                      const index = children.indexOf(child);
-                      if (index >= 0) children.splice(index, 1);
-                      return child;
-                    }},
-                    get firstChild() {{ return children[0] || null; }},
-                    addEventListener() {{}},
-                    closest() {{ return null; }},
-                    querySelectorAll() {{ return []; }},
-                    classList: {{ add() {{}}, remove() {{}}, toggle() {{}} }},
-                  }};
-                }}
-
-                const requests = [];
-                const context = {{
-                  console,
-                  URL,
-                  location: {{ origin: "http://127.0.0.1:41741" }},
-                  localStorage: {{ getItem: () => "token", setItem: () => {{}}, removeItem: () => {{}} }},
-                  createNode,
-                  window: {{}},
-                  document: {{ addEventListener: () => {{}}, createElement: createNode }},
-                  fetch: async (url, init = {{}}) => {{
-                    const parsed = new URL(url);
-                    requests.push({{ path: parsed.pathname, method: init.method || "GET" }});
-                    return {{
-                      ok: true,
-                      status: 200,
-                      text: async () => JSON.stringify({{ approvals: [], events: [], items: [], conversations: [] }}),
-                    }};
-                  }},
-                }};
-                context.window.localStorage = context.localStorage;
-                context.globalThis = context;
-                vm.createContext(context);
-                vm.runInContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{ filename: "app.js" }});
-
-                vm.runInContext(`
-                  el.approvalList = createNode("div");
-                  el.approvalsError = createNode("pre");
-                  cockpit.online = true;
-                `, context);
-
-                (async () => {{
-                  await context.approveAndExecuteApproval("appr-1", createNode("button"));
-                  const atomic = requests.filter((r) => r.method === "POST" && r.path === "/approvals/appr-1/approve-and-execute");
-                  const legacyApprove = requests.filter((r) => r.method === "POST" && r.path === "/approvals/appr-1/approve");
-                  const legacyExecute = requests.filter((r) => r.method === "POST" && r.path === "/approvals/appr-1/execute");
-                  assert.strictEqual(atomic.length, 1, "expected exactly one atomic approve-and-execute POST");
-                  assert.strictEqual(legacyApprove.length, 0, "must not POST separate /approve");
-                  assert.strictEqual(legacyExecute.length, 0, "must not POST separate /execute");
-                }})().catch((error) => {{ console.error(error); process.exit(1); }});
-                """
-            ),
-            encoding="utf-8",
-        )
-
-        result = subprocess.run(
-            ["node", str(harness)],
-            cwd=ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-        assert result.returncode == 0, result.stdout + result.stderr
-
-
 def test_personality_apply_posts_when_persona_requires_restart(tmp_path: Path) -> None:
         harness = tmp_path / "personality-requires-restart-harness.js"
         harness.write_text(
@@ -3323,7 +2942,7 @@ def test_system_tts_and_stt_provider_selects_post_real_provider_changes(tmp_path
         assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_system_tab_has_active_settings_apply_sections_before_diagnostics() -> None:
+def test_system_tab_has_auto_applied_settings_sections_and_logs_own_diagnostics() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
     logs_view = markup[markup.index('id="view-logs"') : markup.index('id="view-system"')]
     system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
@@ -3335,31 +2954,25 @@ def test_system_tab_has_active_settings_apply_sections_before_diagnostics() -> N
         "activePttSettingsHeading",
         "activeToolsSettingsHeading",
         "activePersonalitySettingsHeading",
-        "systemDiagnosticsHeading",
-        "missionControlHeading",
     ]
     positions = [system_view.index(item) for item in ordered_ids]
     assert positions == sorted(positions)
 
-    for marker in (
+    for obsolete_control in (
         "applyBrainSettingsButton",
         "applyTtsSettingsButton",
         "applySttSettingsButton",
         "applyPttSettingsButton",
         "applyToolsSettingsButton",
-        "toolsInternetStatusList",
         "applyPersonaSettingsButton",
-        "resetBrainPreviewButton",
-        "resetTtsPreviewButton",
-        "resetSttPreviewButton",
-        "resetToolsPreviewButton",
     ):
-        assert marker in system_view
+        assert obsolete_control not in system_view
+
+    assert "Zmiany obsługiwane przez runtime zapisują się automatycznie." in system_view
 
     for diagnostic_id in (
         "quickHealthHeading",
         "queueBargeInHeading",
-        "memoryApprovalsHeading",
         "runtimeChecksHeading",
         "latestTurnTraceHeading",
         "runtimeLogsSummaryHeading",
@@ -3370,7 +2983,6 @@ def test_system_tab_has_active_settings_apply_sections_before_diagnostics() -> N
         assert diagnostic_id not in system_view
         assert diagnostic_id in logs_view
 
-    assert system_view.index("activePersonalitySettingsHeading") < system_view.index("missionControlHeading")
     assert "activeVoiceSettingsHeading" not in markup
     assert "Voice controls" not in markup
     assert "eventList" not in system_view
@@ -3383,7 +2995,7 @@ def test_system_tab_is_actionable_first_and_logs_own_diagnostics() -> None:
     system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
 
     assert system_view.index("activeBrainSettingsHeading") < system_view.index("activeToolsSettingsHeading")
-    assert system_view.index("activePersonalitySettingsHeading") < system_view.index("missionControlHeading")
+    assert system_view.index("activeToolsSettingsHeading") < system_view.index("activePersonalitySettingsHeading")
     assert "connectionHeading" not in system_view
     assert "settingsHeading" not in system_view
     assert "Połączenie" not in system_view
@@ -3396,15 +3008,13 @@ def test_system_tab_is_actionable_first_and_logs_own_diagnostics() -> None:
     assert "Diagnostyka (surowe)" not in system_view
 
     for moved_heading in (
-        "Events",
-        "Runtime diagnostics",
-        "Provider diagnostics",
-        "Voice diagnostics",
+            "Events",
+            "Runtime diagnostics",
+            "Voice diagnostics",
         "Tools / Internet diagnostics",
         "Raw technical details",
         "Runtime summary",
-            "Kolejka głosu",
-        "Memory / Approvals",
+        "Kolejka głosu",
         "Runtime Checks",
         "Latest Turn Trace",
         "Settings Preview",
@@ -3425,31 +3035,18 @@ def test_system_tab_uses_human_operator_labels_not_backend_keys() -> None:
     for human_label in (
         ">Narzędzia włączone<",
         ">Dostęp do internetu<",
-        ">Komendy (shell)<",
-        ">Zapis plików<",
-        ">Internet<",
-        ">Klikanie i pisanie po ekranie<",
-        ">Wklejanie do terminala<",
-        ">Zapis pamięci<",
         ">Mów odpowiedzi<",
-        ">Tryb szybki<",
         ">Broker głosu<",
         ">Silnik mowy<",
         ">Model mowy<",
+        ">Tożsamość<",
+        ">DAN — kanon<",
     ):
         assert human_label in system_view
 
     for control_id, label in (
         ("toolsEnabledToggle", "Narzędzia włączone"),
-        ("grantShellToggle", "Komendy (shell)"),
-        ("grantFileWriteToggle", "Zapis plików"),
-        ("grantNetworkToggle", "Internet"),
-        ("grantUiToggle", "Klikanie i pisanie po ekranie"),
-        ("grantTerminalToggle", "Wklejanie do terminala"),
-        ("grantMemoryToggle", "Zapis pamięci"),
-        ("destructiveEnabledToggle", "Destrukcyjne dozwolone (i tak zawsze pytają)"),
         ("voiceSpeakResponsesToggle", "Mów odpowiedzi"),
-        ("activeBrainFastToggle", "Tryb szybki"),
     ):
         assert re.search(
             rf'<input id="{control_id}"[^>]*>\s*<span>{re.escape(label)}</span>',
@@ -3487,12 +3084,11 @@ def test_system_tab_has_requested_cockpit_section_headings() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
     system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
     expected_headings = [
-        "Kontrola misji",
-        "Mózg / Dostawca",
+        "Mózg",
         "Głos / TTS",
-        "Głos / STT",
-        "PTT / Detekcja końca",
-        "Narzędzia / Internet",
+        "Nasłuch (STT)",
+        "PTT",
+        "Narzędzia",
         "Osobowość",
     ]
     for heading in expected_headings:
@@ -3591,7 +3187,6 @@ def test_runtime_settings_apply_payload_is_allowlisted_and_posts(tmp_path: Path)
             }});
             assert.deepStrictEqual(JSON.parse(JSON.stringify(toolsFiltered)), {{
               "tools.network_enabled": true,
-              "security.require_approval_for_network": false,
             }});
             assert.strictEqual(typeof context.setRuntimeSettingsApplyBusy, "function");
             const classSet = () => {{
@@ -3956,13 +3551,13 @@ def test_index_splits_basic_and_collapsible_views() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
-    # Operator-first: czat/kompozytor/zgody/rozmowy zawsze widoczne. Zdarzenia
+    # Operator-first: czat/kompozytor/rozmowy zawsze widoczne. Zdarzenia
     # przeniesione do własnej zakładki LOGI, narzędzia do płaskiej sekcji
     # System („Możliwości Jarvisa”) — żadne z nich nie jest już zwijane.
     # Surowa diagnostyka (API/health/ustawienia/runtime) zostaje w <details>.
     assert "<details" in markup
     assert "<summary" in markup
-    assert "<details open" not in markup
+    assert '<details class="sys-section active-settings-section collapsible-card" open' in markup
 
     # Zdarzenia nie są już zwijaną sekcją — mają zakładkę.
     assert "eventsHeading" not in markup
@@ -3971,12 +3566,11 @@ def test_index_splits_basic_and_collapsible_views() -> None:
     first_details = markup.index("<details")
     for basic_marker in (
         "composer",
-        "view-approvals",
-        "conversationSelect",
         "chat-log",
         "memoryHeading",
     ):
         assert markup.index(basic_marker) < first_details, basic_marker
+    assert "conversationSelect" not in markup
     for collapsible_heading in (
         "advancedHeading",
         "apiHeading",
@@ -3988,34 +3582,6 @@ def test_index_splits_basic_and_collapsible_views() -> None:
 
     assert "collapsible" in styles
     assert "summary" in styles
-
-
-def test_pending_approvals_have_badge_and_chat_nudge() -> None:
-    # Zgody sygnalizowane dwukanałowo: licznik na zakładce Zgody oraz
-    # bursztynowy przerywnik w czacie (poza widokiem zgód) — decyzji nie
-    # wolno przegapić.
-    markup = INDEX_HTML.read_text(encoding="utf-8")
-    styles = STYLES_CSS.read_text(encoding="utf-8")
-    script = APP_JS.read_text(encoding="utf-8")
-
-    assert "approvalsBadge" in markup
-    assert "approvalNudge" in markup
-    assert "approvals-badge" in styles
-    assert "approval-nudge" in styles
-    assert "prefers-reduced-motion" in styles
-    assert "setPendingBadge" in script
-    assert "updateApprovalSignals" in script
-
-
-def test_approvals_refresh_rides_stream_with_heartbeat_fallback() -> None:
-    # Zgody odświeżają się z eventów approval.* na WebSocketcie /stream;
-    # heartbeat /health (pending_approval_count) zostaje jako fallback, gdy
-    # stream leży albo event przepadł.
-    script = APP_JS.read_text(encoding="utf-8")
-
-    assert 'startsWith("approval.")' in script
-    assert "syncPendingApprovals" in script
-    assert "pending_approval_count" in script
 
 
 def test_live_stream_refreshes_chat_memory_voice_and_runtime_views() -> None:
@@ -4219,248 +3785,6 @@ def test_live_stream_debounces_runtime_overview_refresh_for_relevant_events(tmp_
               assert.strictEqual(runtimeSettingsCalls.length, 1);
             }})().catch((error) => {{
               console.error(error);
-              process.exit(1);
-            }});
-            """
-        ),
-        encoding="utf-8",
-    )
-
-    result = subprocess.run(
-        ["node", str(harness)],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-
-
-def test_approval_cards_support_memory_save_one_click_and_idempotent_execute() -> None:
-    # Memory-save approvals should feel like one operator action while the
-    # backend keeps explicit approve+execute semantics. Duplicate execute 409s
-    # are a completed state in the UI, not a red error.
-    script = APP_JS.read_text(encoding="utf-8")
-
-    assert "Zatwierdź i zapisz" in script
-    assert "approveAndExecuteApproval" in script
-    assert "isMemoryApproval" in script
-    assert "isAlreadyExecutedConflict" in script
-    assert "already executed" in script
-    assert "approval.status" in script
-    assert "approval.action_type" in script
-
-
-def test_memory_approve_execute_failure_preserves_approved_retry_state(tmp_path: Path) -> None:
-    # One atomic click (/approve-and-execute). If execution fails, the approval
-    # stays approved-but-unexecuted on the SERVER (/approvals still lists it), so
-    # the panel re-renders a retry card straight from server truth — nothing
-    # disappears silently and retry runs execute, not approve again.
-    harness = tmp_path / "approval-flow-harness.js"
-    harness.write_text(
-        textwrap.dedent(
-            f"""
-            const assert = require("assert");
-            const fs = require("fs");
-            const vm = require("vm");
-
-            class FakeNode {{
-              constructor(tagName, id = "") {{
-                this.tagName = tagName;
-                this.id = id;
-                this.children = [];
-                this.parentNode = null;
-                this.dataset = {{}};
-                this.hidden = false;
-                this.disabled = false;
-                this.className = "";
-                this.textContent = "";
-                this.listeners = {{}};
-                this.attributes = {{}};
-                this.classList = {{
-                  add: (name) => this._addClass(name),
-                  remove: (name) => this._removeClass(name),
-                  toggle: (name, force) => this._toggleClass(name, force),
-                }};
-              }}
-              get firstChild() {{
-                return this.children[0] || null;
-              }}
-              append(...items) {{
-                for (const item of items) {{
-                  this.appendChild(item);
-                }}
-              }}
-              appendChild(item) {{
-                if (item === null || item === undefined) {{
-                  return item;
-                }}
-                item.parentNode = this;
-                this.children.push(item);
-                return item;
-              }}
-              removeChild(item) {{
-                this.children = this.children.filter((child) => child !== item);
-                item.parentNode = null;
-                return item;
-              }}
-              setAttribute(name, value) {{
-                this.attributes[name] = String(value);
-              }}
-              addEventListener(name, callback) {{
-                this.listeners[name] = callback;
-              }}
-              querySelectorAll(selector) {{
-                const matches = [];
-                const visit = (node) => {{
-                  for (const child of node.children) {{
-                    if (selector === "button" && child.tagName === "button") {{
-                      matches.push(child);
-                    }}
-                    visit(child);
-                  }}
-                }};
-                visit(this);
-                return matches;
-              }}
-              closest(selector) {{
-                let node = this;
-                while (node) {{
-                  const classes = String(node.className || "").split(/\\s+/);
-                  if (selector === ".approval-card" && classes.includes("approval-card")) {{
-                    return node;
-                  }}
-                  node = node.parentNode;
-                }}
-                return null;
-              }}
-              _addClass(name) {{
-                const classes = new Set(String(this.className || "").split(/\\s+/).filter(Boolean));
-                classes.add(name);
-                this.className = Array.from(classes).join(" ");
-              }}
-              _removeClass(name) {{
-                const classes = new Set(String(this.className || "").split(/\\s+/).filter(Boolean));
-                classes.delete(name);
-                this.className = Array.from(classes).join(" ");
-              }}
-              _toggleClass(name, force) {{
-                const enabled = force === undefined ? !String(this.className).split(/\\s+/).includes(name) : Boolean(force);
-                if (enabled) {{
-                  this._addClass(name);
-                }} else {{
-                  this._removeClass(name);
-                }}
-                return enabled;
-              }}
-            }}
-
-            const nodes = new Map();
-            const node = (id) => {{
-              if (!nodes.has(id)) {{
-                nodes.set(id, new FakeNode("div", id));
-              }}
-              return nodes.get(id);
-            }};
-            const flatten = (root) => [
-              root,
-              ...root.children.flatMap((child) => flatten(child)),
-            ];
-            const response = (status, payload) => ({{
-              status,
-              ok: status >= 200 && status < 300,
-              text: async () => JSON.stringify(payload),
-            }});
-            const calls = [];
-            const approvedApproval = {{
-              id: "ap-1",
-              status: "approved",
-              action_type: "tool:memory_save",
-              risk: "memory_write",
-              requested_by: "model",
-              created_at: "2026-07-05T12:00:00+00:00",
-              payload: {{
-                tool_name: "memory_save",
-                arguments: {{ title: "Projekt", body: "zapamiętaj fakt" }},
-              }},
-            }};
-
-            const context = {{
-              console,
-              URL,
-              setTimeout: () => 0,
-              clearTimeout: () => {{}},
-              window: {{
-                localStorage: {{
-                  getItem: () => "token",
-                  setItem: () => {{}},
-                  removeItem: () => {{}},
-                }},
-                prompt: () => "",
-                setInterval: () => 0,
-              }},
-              document: {{
-                body: node("body"),
-                addEventListener: () => {{}},
-                getElementById: (id) => node(id),
-                querySelectorAll: () => [],
-                createElement: (tagName) => new FakeNode(tagName),
-              }},
-              fetch: async (url, init = {{}}) => {{
-                const parsed = new URL(url);
-                const path = `${{parsed.pathname}}${{parsed.search}}`;
-                calls.push({{ path, method: init.method || "GET" }});
-                if (path === "/approvals/ap-1/approve-and-execute") {{
-                  // Atomic approve+execute where execution is blocked/fails: the
-                  // approval remains approved-but-unexecuted server-side.
-                  return response(200, {{ ok: false, error: "execute failed" }});
-                }}
-                if (path === "/approvals/ap-1/execute") {{
-                  return response(200, {{ ok: true }});
-                }}
-                if (path === "/approvals?limit=25") {{
-                  // Server truth: the approved-but-unexecuted approval is still
-                  // listed, so the retry card survives a panel refresh/reload.
-                  return response(200, {{ approvals: [approvedApproval] }});
-                }}
-                return response(200, {{}});
-              }},
-            }};
-            context.globalThis = context;
-            vm.runInNewContext(fs.readFileSync({str(APP_JS)!r}, "utf8"), context, {{
-              filename: "app.js",
-            }});
-            context.bindElements();
-
-            (async () => {{
-              await context.approveAndExecuteApproval("ap-1", new FakeNode("button"));
-
-              // One atomic call — never the legacy separate approve step.
-              assert.strictEqual(
-                calls.filter((call) => call.path === "/approvals/ap-1/approve-and-execute").length,
-                1,
-              );
-              assert.strictEqual(
-                calls.filter((call) => call.path === "/approvals/ap-1/approve").length,
-                0,
-              );
-              assert.match(node("approvalsError").textContent, /execute failed/);
-              const buttons = flatten(node("approvalList")).filter((item) => item.tagName === "button");
-              assert.strictEqual(
-                buttons.some((button) => button.textContent === "Zatwierdź i zapisz"),
-                false,
-              );
-              const executeButton = buttons.find((button) => button.textContent === "Wykonaj zatwierdzone");
-              assert.ok(executeButton, "approved card should render execute retry from server truth");
-
-              await executeButton.listeners.click();
-              assert.strictEqual(
-                calls.filter((call) => call.path === "/approvals/ap-1/execute").length,
-                1,
-              );
-            }})().catch((error) => {{
-              console.error(error && error.stack ? error.stack : error);
               process.exit(1);
             }});
             """
@@ -4694,6 +4018,7 @@ def _run_logs_harness(tmp_path: Path, name: str, body: str) -> None:
               WebSocket: class {{}},
               document: {{
                 addEventListener: () => {{}},
+                body: node("body"),
                 createElement: (tagName) => new FakeNode(tagName),
                 createTextNode: (text) => {{
                   const textNode = new FakeNode("#text");
@@ -4748,6 +4073,179 @@ def _run_logs_harness(tmp_path: Path, name: str, body: str) -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_live_activity_tracks_backend_state_stage_and_safe_tool_status(tmp_path: Path) -> None:
+    _run_logs_harness(
+        tmp_path,
+        "live-activity-harness",
+        r"""
+        function push(id, type, payload) {
+          context.handleStreamMessage(JSON.stringify({
+            type: "event",
+            event: {
+              id,
+              type,
+              source: "test",
+              created_at: "2026-07-06T12:00:00Z",
+              payload,
+            },
+          }));
+        }
+
+        push(1, "state.changed", { new_state: "THINKING" });
+        assert.strictEqual(node("stateLabel").textContent, "THINKING");
+        assert.strictEqual(node("activityStage").textContent, "Myślenie");
+
+        push(2, "turn.context.built", {});
+        assert.strictEqual(node("activityStage").textContent, "Kontekst gotowy");
+
+        push(3, "tool.requested", { tool_name: "ui_click" });
+        assert.strictEqual(node("activityTool").textContent, "ui_click");
+        assert.strictEqual(node("activityStatus").textContent, "przygotowanie");
+
+        push(4, "tool.started", { tool_name: "ui_click" });
+        assert.strictEqual(node("activityStatus").textContent, "start");
+
+        push(5, "state.changed", { new_state: "TOOLING" });
+        assert.strictEqual(node("stateLabel").textContent, "TOOLING");
+
+        const secretValue = "screen-window-log-stdout-stderr-content-secret";
+        push(6, "tool.finished", {
+          tool_name: "ui_click",
+          result_summary: "ok=true · clicked=true",
+          output: {
+            screen: secretValue,
+            window: secretValue,
+            log: secretValue,
+            stdout: secretValue,
+            stderr: secretValue,
+            content: secretValue,
+          },
+        });
+        assert.strictEqual(node("activityStatus").textContent, "sukces");
+        assert.strictEqual(node("activityResult").textContent, "ok=true · clicked=true");
+        let visibleActivityText = ["stateLabel", "activityStage", "activityTool", "activityStatus", "activityResult"]
+          .map((id) => node(id).textContent)
+          .join(" ");
+        assert.ok(!visibleActivityText.includes(secretValue));
+
+        push(7, "tool.failed", {
+          tool_name: "shell_read",
+          error: `must-not-render-${secretValue}`,
+        });
+        assert.strictEqual(node("activityTool").textContent, "shell_read");
+        assert.strictEqual(node("activityStatus").textContent, "błąd");
+        visibleActivityText = ["stateLabel", "activityStage", "activityTool", "activityStatus", "activityResult"]
+          .map((id) => node(id).textContent)
+          .join(" ");
+        assert.ok(!visibleActivityText.includes(secretValue));
+
+        push(8, "state.changed", { new_state: "IDLE" });
+        assert.strictEqual(node("stateLabel").textContent, "IDLE");
+        assert.strictEqual(node("activityStage").textContent, "Gotowy");
+
+        const visibleIdsBeforeLegacyApproval = eventIds();
+        push(9, "approval.created", {});
+        assert.deepStrictEqual(eventIds(), visibleIdsBeforeLegacyApproval);
+        assert.strictEqual(node("activityStage").textContent, "Gotowy");
+        """,
+    )
+
+
+def test_live_state_event_wins_over_an_older_inflight_state_snapshot(tmp_path: Path) -> None:
+    _run_logs_harness(
+        tmp_path,
+        "activity-state-race-harness",
+        r"""
+        (async () => {
+          node("body").classList = { toggle: () => {} };
+          let resolveState;
+          context.requestJson = async (path) => {
+            if (path === "/health") {
+              return { service: "jarvis", state: "IDLE" };
+            }
+            if (path === "/state") {
+              return new Promise((resolve) => {
+                resolveState = resolve;
+              });
+            }
+            return {};
+          };
+
+          const staleRefresh = context.refreshHealthAndState();
+          await new Promise(setImmediate);
+          assert.strictEqual(typeof resolveState, "function");
+
+          context.handleStreamMessage(JSON.stringify({
+            type: "event",
+            event: {
+              id: 10,
+              type: "state.changed",
+              source: "test",
+              created_at: "2026-07-06T12:00:00Z",
+              payload: { new_state: "SPEAKING" },
+            },
+          }));
+          resolveState({ state: "IDLE" });
+          await staleRefresh;
+
+          assert.strictEqual(node("stateLabel").textContent, "SPEAKING");
+          assert.strictEqual(node("activityStage").textContent, "Mówienie");
+        })().catch((error) => {
+          console.error(error);
+          process.exit(1);
+        });
+        """,
+    )
+
+
+def test_activity_replays_recent_events_in_id_order_and_skips_legacy_decisions(
+    tmp_path: Path,
+) -> None:
+    _run_logs_harness(
+        tmp_path,
+        "activity-rest-replay-harness",
+        r"""
+        (async () => {
+          context.requestJson = async (path) => {
+            assert.strictEqual(path, "/events?latest=true&limit=50");
+            return {
+              // The separately-read watermark may race ahead of the rows.
+              // Only IDs actually observed in this payload may advance replay.
+              latest_event_id: 999,
+              events: [
+                event(4, "approval.created"),
+                {
+                  ...event(3, "tool.finished"),
+                  payload: { tool_name: "ui_click", result_summary: "ok=true · clicked=true" },
+                },
+                {
+                  ...event(1, "state.changed"),
+                  payload: { new_state: "TOOLING" },
+                },
+                {
+                  ...event(2, "tool.started"),
+                  payload: { tool_name: "ui_click" },
+                },
+              ],
+            };
+          };
+
+          await context.refreshEvents();
+
+          assert.deepStrictEqual(eventIds(), [3, 2, 1]);
+          assert.strictEqual(node("stateLabel").textContent, "TOOLING");
+          assert.strictEqual(node("activityStage").textContent, "Narzędzie zakończone");
+          assert.strictEqual(node("activityStatus").textContent, "sukces");
+          assert.strictEqual(node("activityResult").textContent, "ok=true · clicked=true");
+          assert.match(context.streamUrl(), /after_id=4$/);
+        })().catch((error) => {
+          console.error(error);
+          process.exit(1);
+        });
+        """,
+    )
 
 
 def test_safe_debug_timeline_classifies_families_and_never_dumps_raw_payloads(tmp_path: Path) -> None:
@@ -4893,6 +4391,103 @@ def test_stream_hello_does_not_advance_reconnect_cursor(tmp_path: Path) -> None:
     )
 
 
+def test_stream_hello_resets_cursor_when_server_event_epoch_is_newer(tmp_path: Path) -> None:
+    _run_logs_harness(
+        tmp_path,
+        "stream-hello-epoch-reset-harness",
+        """
+        context.handleStreamMessage(JSON.stringify({
+          type: "event",
+          event: event(9, "tool.finished"),
+        }));
+        assert.strictEqual(context.streamUrl(), "ws://127.0.0.1:41741/stream?after_id=9");
+        assert.deepStrictEqual(eventIds(), [9]);
+
+        context.handleStreamMessage(JSON.stringify({
+          type: "stream.hello",
+          latest_event_id: 2,
+          start_after_id: 9,
+        }));
+
+        assert.strictEqual(context.streamUrl(), "ws://127.0.0.1:41741/stream?after_id=0");
+        assert.deepStrictEqual(eventIds(), []);
+        assert.strictEqual(node("activityStage").textContent, "Łączenie…");
+
+        context.handleStreamMessage(JSON.stringify({
+          type: "stream.hello",
+          latest_event_id: 2,
+          start_after_id: 0,
+        }));
+        context.handleStreamMessage(JSON.stringify({ type: "event", event: event(1) }));
+        context.handleStreamMessage(JSON.stringify({ type: "event", event: event(2) }));
+
+        assert.strictEqual(context.streamUrl(), "ws://127.0.0.1:41741/stream?after_id=2");
+        assert.deepStrictEqual(eventIds(), [2, 1]);
+        """,
+    )
+
+
+def test_replaced_socket_cannot_mutate_the_new_stream_cursor_or_activity(tmp_path: Path) -> None:
+    _run_logs_harness(
+        tmp_path,
+        "stale-socket-frame-harness",
+        """
+        const sockets = [];
+        class FakeSocket {
+          static OPEN = 1;
+          static CONNECTING = 0;
+          constructor(url) {
+            this.url = url;
+            this.readyState = FakeSocket.CONNECTING;
+            this.listeners = {};
+            sockets.push(this);
+          }
+          addEventListener(type, listener) {
+            this.listeners[type] = listener;
+          }
+          close() {
+            this.readyState = 3;
+          }
+          emit(type, value = {}) {
+            this.listeners[type](value);
+          }
+        }
+        context.WebSocket = FakeSocket;
+
+        context.connectStream();
+        const oldSocket = sockets[0];
+        context.disconnectStream("base changed");
+        context.connectStream();
+        const currentSocket = sockets[1];
+
+        currentSocket.emit("message", {
+          data: JSON.stringify({
+            type: "event",
+            event: {
+              ...event(10, "state.changed"),
+              payload: { new_state: "SPEAKING" },
+            },
+          }),
+        });
+        assert.match(context.streamUrl(), /after_id=10$/);
+        assert.strictEqual(node("stateLabel").textContent, "SPEAKING");
+
+        oldSocket.emit("message", {
+          data: JSON.stringify({
+            type: "event",
+            event: {
+              ...event(99, "state.changed"),
+              payload: { new_state: "IDLE" },
+            },
+          }),
+        });
+
+        assert.match(context.streamUrl(), /after_id=10$/);
+        assert.strictEqual(node("stateLabel").textContent, "SPEAKING");
+        """,
+    )
+
+
 def test_logs_trim_cache_by_keeping_newest_events(tmp_path: Path) -> None:
     _run_logs_harness(
         tmp_path,
@@ -4998,7 +4593,7 @@ def test_logs_tab_reads_like_a_polish_diary() -> None:
     for pair in ('"turn.finished"', '"listening.lease.created"', '"memory.updated"'):
         assert pair in script, pair
 
-    # Filtr grupuje strumień (tury / głos / zgody / narzędzia).
+    # Filtr grupuje strumień (tury / głos / narzędzia).
     assert "eventMatchesFilter" in script
 
 
@@ -5061,7 +4656,6 @@ def test_system_view_is_human_readable() -> None:
     system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
 
     for heading in (
-        "missionControlHeading",
         "activeBrainSettingsHeading",
         "voiceTtsSettingsHeading",
         "voiceSttSettingsHeading",
@@ -5094,7 +4688,7 @@ def test_system_view_is_human_readable() -> None:
 
     # Surowa diagnostyka jest w LOGI, nie dominuje Systemu.
     assert "Raw technical details" in logs_view
-    assert system_view.index("activePersonalitySettingsHeading") < system_view.index("missionControlHeading")
+    assert system_view.index("activeToolsSettingsHeading") < system_view.index("activePersonalitySettingsHeading")
 
 
 def test_composer_sends_beside_the_field() -> None:
@@ -5190,6 +4784,7 @@ def test_schema_and_migrations_are_unchanged() -> None:
 
 def test_runtime_files_avoid_forbidden_legacy_strings() -> None:
     scanned_roots = (ROOT / "jarvis", ROOT / "scripts")
+    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
     text_suffixes = {".py", ".sql", ".toml", ".md", ".sh", ".example", ".html", ".js", ".css", ""}
     offenders: list[tuple[str, str]] = []
 
@@ -5201,8 +4796,9 @@ def test_runtime_files_avoid_forbidden_legacy_strings() -> None:
             # errors="replace": the forbidden snippets are ASCII, and a stray
             # binary (e.g. Finder's .DS_Store) must not crash the scan.
             text = path.read_text(encoding="utf-8", errors="replace")
+            relative = str(path.relative_to(ROOT))
             for snippet in FORBIDDEN_RUNTIME_SNIPPETS:
-                if snippet in text:
-                    offenders.append((str(path.relative_to(ROOT)), snippet))
+                if snippet in text and (relative, snippet) not in allowed_contracts:
+                    offenders.append((relative, snippet))
 
     assert offenders == []

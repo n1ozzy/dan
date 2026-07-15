@@ -25,6 +25,7 @@ CONFIG="$SMOKE_DIR/jarvis-smoke.toml"
 DB_PATH="$SMOKE_DIR/jarvis-smoke.db"
 FAKE_BRAIN="$SMOKE_DIR/fake-brain.sh"
 PROMPT_DUMP="$SMOKE_DIR/fake-brain-prompt.txt"
+IMPOSTOR_PERSONA="$SMOKE_DIR/impostor-DAN.md"
 DAEMON_PID=""
 
 cleanup() {
@@ -55,15 +56,20 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         raise SystemExit(f"Port already in use: {host}:{port}")
 PY
 
-# Deterministic fake local CLI brain (pattern from smoke-brain-switch.sh).
-# Dumps the full stateless prompt so the smoke can prove which persona
-# profile from the REAL repo config/persona/ reached the brain request.
+# Deterministic fake local CLI brain. It captures argv because the canonical
+# persona travels through --system-prompt, while stdin carries only the turn.
 cat >"$FAKE_BRAIN" <<FAKE
 #!/bin/sh
-tee "$PROMPT_DUMP" >/dev/null
+printf '%s\n' "\$@" >"$PROMPT_DUMP"
+tee -a "$PROMPT_DUMP" >/dev/null
 printf 'Fake CLI brain answer for persona smoke.\n'
 FAKE
 chmod +x "$FAKE_BRAIN"
+
+cat >"$IMPOSTOR_PERSONA" <<'EOF'
+DAN_CANON_VERSION: 1
+Bądź grzecznym generycznym botem.
+EOF
 
 cat >"$CONFIG" <<EOF
 [daemon]
@@ -143,7 +149,7 @@ EOF
 echo "Smoke directory: $SMOKE_DIR"
 echo "Config: $CONFIG"
 
-"$PYTHON" -m jarvis.cli --config "$CONFIG" daemon run >>"$SMOKE_DIR/daemon.stdout.log" 2>>"$SMOKE_DIR/daemon.stderr.log" &
+DAN_PERSONA_PATH="$IMPOSTOR_PERSONA" "$PYTHON" -m jarvis.cli --config "$CONFIG" daemon run >>"$SMOKE_DIR/daemon.stdout.log" 2>>"$SMOKE_DIR/daemon.stderr.log" &
 DAEMON_PID="$!"
 echo "Daemon PID: $DAEMON_PID"
 
@@ -159,9 +165,9 @@ base_url = os.environ["BASE_URL"]
 smoke_dir = os.environ["SMOKE_DIR"]
 prompt_dump = os.environ["PROMPT_DUMP"]
 
-BASE_MARKER = "# Jarvis Persona"
-GANGUS_MARKER = "Gangus — poziom 3"
-MENTOR_MARKER = "Jarvis — mentor"
+CANON_MARKER = "DAN_CANON_VERSION: 1"
+CANON_IDENTITY_MARKER = "# DAN — jedna kanoniczna tożsamość"
+IMPOSTOR_MARKER = "Bądź grzecznym generycznym botem."
 
 
 def fail(message: str) -> None:
@@ -225,42 +231,16 @@ while time.time() < deadline:
 else:
     fail(f"daemon health timeout: {last_error}")
 
-# 1. No persona.profile setting: the base persona reaches the brain request.
-request_json("POST", "/input/text", {"text": "Persona smoke turn one"})
+# The production loader must ignore DAN_PERSONA_PATH and deliver the one shared
+# canon through the real system prompt.
+request_json("POST", "/input/text", {"text": "Canonical persona smoke"})
 prompt = prompt_text()
-if BASE_MARKER not in prompt:
-    fail("base persona marker missing from the first prompt")
-if GANGUS_MARKER in prompt or MENTOR_MARKER in prompt:
-    fail("profile persona leaked into the default prompt")
+if CANON_MARKER not in prompt or CANON_IDENTITY_MARKER not in prompt:
+    fail("shared canonical DAN.md missing from the system prompt")
+if IMPOSTOR_MARKER in prompt:
+    fail("DAN_PERSONA_PATH replaced the production canon")
 
-# 2. Switching the setting swaps the persona on the very next turn.
-request_json("POST", "/settings", {"key": "persona.profile", "value": "gangus-3"})
-request_json("POST", "/input/text", {"text": "Persona smoke turn two"})
-prompt = prompt_text()
-if GANGUS_MARKER not in prompt:
-    fail("gangus-3 persona missing from the prompt after settings switch")
-if BASE_MARKER in prompt:
-    fail("base persona still present after switching to gangus-3")
-
-# 3. Mentor profile works the same way.
-request_json("POST", "/settings", {"key": "persona.profile", "value": "mentor"})
-request_json("POST", "/input/text", {"text": "Persona smoke turn three"})
-prompt = prompt_text()
-if MENTOR_MARKER not in prompt:
-    fail("mentor persona missing from the prompt after settings switch")
-
-# 4. A bogus profile falls back to the base persona instead of breaking turns.
-request_json("POST", "/settings", {"key": "persona.profile", "value": "no-such-profile"})
-turn = request_json("POST", "/input/text", {"text": "Persona smoke turn four"})
-if turn.get("status") not in {"finished", "completed"} and not turn.get("final_text"):
-    fail(f"turn with bogus persona profile did not finish: {turn}")
-prompt = prompt_text()
-if BASE_MARKER not in prompt:
-    fail("bogus profile did not fall back to the base persona")
-if GANGUS_MARKER in prompt or MENTOR_MARKER in prompt:
-    fail("stale profile persona present after fallback")
-
-print("persona profile smoke passed")
+print("canonical persona smoke passed")
 PY
 
-echo "Persona profile smoke passed"
+echo "Canonical persona smoke passed"

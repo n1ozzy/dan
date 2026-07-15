@@ -1,10 +1,4 @@
-"""memory_save tool: the model curates its own memory through the approval gate.
-
-ADR-009 keeps promotion human-sanctioned; ADR-010 routes every mutation through
-ApprovalGate. memory_save composes both: the model proposes a block in-turn,
-the human approves it in the existing approvals panel, and only the approved
-execution promotes it into brain context.
-"""
+"""memory_save tool: one direct, durable, evidence-backed memory path."""
 
 from __future__ import annotations
 
@@ -22,11 +16,7 @@ from jarvis.memory import (
 )
 from jarvis.store.db import close_quietly, initialize_database
 from jarvis.tools.memory_tool import MAX_BODY_CHARS, MAX_TITLE_CHARS, MemorySaveTool
-from jarvis.tools.permissions import (
-    RequestSource,
-    ToolDecision,
-    ToolPermissionPolicy,
-)
+from jarvis.tools.permissions import RequestSource
 from tests.test_api_smoke import write_config
 
 
@@ -76,6 +66,10 @@ def test_spec_declares_memory_write_risk(tool: MemorySaveTool) -> None:
     assert tool.name == "memory_save"
     assert tool.risk == "memory_write"
     assert set(tool.input_schema["required"]) == {"kind", "title", "body"}
+    assert "priority" not in tool.input_schema["properties"]
+    assert "current screen" in tool.description
+    assert "active app" in tool.description
+    assert "running process" in tool.description
 
 
 # --- unit: propose() / run() ---
@@ -207,39 +201,22 @@ def test_run_caps_title_and_body(tool: MemorySaveTool, manager: MemoryManager) -
     assert manager.list_blocks() == []
 
 
-def test_run_requires_candidate_id_from_approval_proposal(
+def test_run_without_candidate_id_creates_evidence_and_activates_directly(
     tool: MemorySaveTool,
     conn: sqlite3.Connection,
 ) -> None:
-    with pytest.raises(ValueError, match="candidate_id"):
-        tool.run({"kind": "fact", "title": "T", "body": "B", "priority": 3})
+    result = tool.run({"kind": "fact", "title": "T", "body": "B"})
 
-    assert table_count(conn, "memory_items") == 0
+    assert result["ok"] is True
+    assert result["candidate_id"]
+    assert result["memory_id"]
+    assert table_count(conn, "memory_candidates") == 1
+    assert table_count(conn, "memory_evidence") == 1
+    assert table_count(conn, "memory_items") == 1
     assert table_count(conn, "memory_blocks") == 0
 
 
-# --- permission matrix: memory_write | user AP | model AP | auto B ---
-
-
-@pytest.mark.parametrize(
-    ("source", "decision"),
-    [
-        (RequestSource.PANEL_COMMAND, ToolDecision.APPROVAL_REQUIRED),
-        (RequestSource.VOICE_COMMAND, ToolDecision.APPROVAL_REQUIRED),
-        (RequestSource.MODEL_ORIGINATED, ToolDecision.APPROVAL_REQUIRED),
-        (RequestSource.SCHEDULED_WORKER, ToolDecision.BLOCKED),
-        (RequestSource.HOOK_TRIGGERED, ToolDecision.BLOCKED),
-    ],
-)
-def test_memory_write_permission_matrix(source: RequestSource, decision: ToolDecision) -> None:
-    policy = ToolPermissionPolicy()
-
-    result = policy.decide("memory_write", source=source, tool_name="memory_save")
-
-    assert result.decision == decision
-
-
-# --- integration: daemon app registration + full approval lifecycle ---
+# --- integration: daemon registration + direct execution ---
 
 
 def test_daemon_app_registers_memory_save(app: DaemonApp) -> None:
@@ -248,31 +225,22 @@ def test_daemon_app_registers_memory_save(app: DaemonApp) -> None:
     assert specs["memory_save"].risk == "memory_write"
 
 
-def test_memory_save_full_approval_lifecycle(app: DaemonApp) -> None:
+def test_memory_save_request_executes_directly_without_approval_row(app: DaemonApp) -> None:
     requested = app.request_tool(
         tool_name="memory_save",
         arguments={"kind": "project", "title": "Jarvis v4", "body": "Repo w ~/Documents/dev."},
         requested_by="model",
         source=RequestSource.MODEL_ORIGINATED,
     )
-    assert requested.status == "approval_required"
-    assert requested.approval_id is not None
+    assert requested.status == "finished"
+    assert requested.approval_id is None
+    assert requested.output is not None
+    assert requested.output["candidate_id"]
+    assert requested.output["memory_id"]
     assert app.conn is not None
+    assert table_count(app.conn, "approvals") == 0
     assert table_count(app.conn, "memory_candidates") == 1
     assert table_count(app.conn, "memory_evidence") == 1
-    assert table_count(app.conn, "memory_items") == 0
-    assert table_count(app.conn, "memory_blocks") == 0
-    assert app.memory_manager.list_blocks() == []  # nic przed zgodą
-
-    app.approve(str(requested.approval_id), reason="ok")
-    assert table_count(app.conn, "memory_items") == 0  # approve sam nie wykonuje
-    assert table_count(app.conn, "memory_blocks") == 0
-
-    response = app.execute_approved_tool(str(requested.approval_id))
-
-    assert response["ok"] is True
-    assert response["result"]["candidate_id"]
-    assert response["result"]["memory_id"]
     assert table_count(app.conn, "memory_items") == 1
     assert table_count(app.conn, "memory_blocks") == 0
     assert app.memory_manager.active_blocks_for_context() == []
@@ -291,8 +259,7 @@ def test_model_originated_request_tool_rejects_model_supplied_candidate_id(
     assert result.status == "failed"
     assert result.approval_id is None
     assert result.error is not None
-    assert "candidate_id" in result.error
-    assert "model proposal" in result.error
+    assert "kind" in result.error
     assert app.conn is not None
     assert table_count(app.conn, "approvals") == 0
     assert table_count(app.conn, "memory_candidates") == 0

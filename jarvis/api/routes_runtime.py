@@ -101,7 +101,6 @@ class SupertonicVoiceId(StrEnum):
 KNOWN_SOURCES = frozenset(RuntimeProjectionSource)
 KNOWN_STATUSES = frozenset(RuntimeProjectionStatus)
 CLAUDE_CLI_EFFORT_LEVELS = CLAUDE_CLI_EFFORTS
-GROQ_EFFORT_LEVELS: tuple[str, ...] = ()
 
 KNOWN_PROVIDER_EFFORT_LEVELS = CLAUDE_CLI_EFFORT_LEVELS
 
@@ -154,7 +153,7 @@ def _model_effort_support(
 KNOWN_PROVIDER_SUPPORT_UNKNOWN = ProviderSupportState.UNKNOWN
 KNOWN_PROVIDER_SUPPORT_YES = ProviderSupportState.YES
 KNOWN_PROVIDER_SUPPORT_NO = ProviderSupportState.NO
-CLAUDE_CLI_PROVIDER_IDS = frozenset({"claude_cli", "claude_cli_warm"})
+CLAUDE_CLI_PROVIDER_IDS = frozenset({"claude_cli"})
 SUPERTONIC_VOICE_MANUAL_DIAGNOSTIC_WARNING = "Supertonic voice list requires manual diagnostic."
 
 # Canonical Whisper language codes (the exact set the Whisper/mlx-whisper
@@ -213,12 +212,6 @@ TOOLS_INTERNET_APPLY_KEYS = frozenset(
         "tools.enabled",
         "tools.network_enabled",
         "security.network_enabled",
-        "security.require_approval_for_network",
-        "security.require_approval_for_shell",
-        "security.require_approval_for_file_write",
-        "security.require_approval_for_ui",
-        "security.require_approval_for_terminal",
-        "security.require_approval_for_memory",
         "security.destructive_tools_enabled",
         "security.auto_approve_mode",
         "security.approved_roots",
@@ -232,12 +225,6 @@ TOOLS_INTERNET_APPLY_KEYS = frozenset(
 # else in TOOLS_INTERNET_APPLY_KEYS is registry-backed and stays restart-bound.
 LIVE_TOOL_POLICY_APPLY_KEYS = frozenset(
     {
-        "security.require_approval_for_network",
-        "security.require_approval_for_shell",
-        "security.require_approval_for_file_write",
-        "security.require_approval_for_ui",
-        "security.require_approval_for_terminal",
-        "security.require_approval_for_memory",
         "security.destructive_tools_enabled",
         "security.auto_approve_mode",
         "security.approved_roots",
@@ -317,26 +304,10 @@ PROVIDER_PRESET: dict[str, dict[str, Any]] = {
         "streaming_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
         "tools_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
     },
-    "claude_cli_warm": {
-        "display_name": "Claude CLI (warm)",
-        "kind": "cli",
-        "supported_efforts": _enum_values(CLAUDE_CLI_EFFORT_LEVELS),
-        "fast_support": _enum_value(KNOWN_PROVIDER_SUPPORT_NO),
-        "streaming_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
-        "tools_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
-    },
     # Codex CLI intentionally removed as a brain provider (owner decree): Jarvis
     # runs on Claude Code only. Removed from PROVIDER_PRESET AND from the
     # BrainManager registration/priority (jarvis/brain/manager.py) so it cannot
     # return via config `enabled=true`.
-    "groq": {
-        "display_name": "Groq API",
-        "kind": "cloud",
-        "supported_efforts": list(GROQ_EFFORT_LEVELS),
-        "fast_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
-        "streaming_support": _enum_value(KNOWN_PROVIDER_SUPPORT_YES),
-        "tools_support": _enum_value(KNOWN_PROVIDER_SUPPORT_NO),
-    },
 }
 
 LOCAL_RUNTIME_PROBES: tuple[dict[str, Any], ...] = (
@@ -1171,8 +1142,7 @@ def _claude_cli_contract(
     requested_effort_status: str,
     command_projection: dict[str, Any],
 ) -> dict[str, Any]:
-    config_attr = "claude_cli_warm" if adapter_name == "claude_cli_warm" else "claude_cli"
-    config = getattr(getattr(app.config, "brain", None), config_attr, None)
+    config = getattr(getattr(app.config, "brain", None), "claude_cli", None)
     command_settings = _claude_cli_command_settings(adapter=adapter, config=config)
     requested_model_text = str(requested_model).strip() if isinstance(requested_model, str) else ""
     requested_effort_text = str(requested_effort).strip() if isinstance(requested_effort, str) else ""
@@ -1195,10 +1165,7 @@ def _claude_cli_contract(
 
     apply_semantics = "next_turn"
     blocker = None
-    if adapter_name == "claude_cli_warm":
-        apply_semantics = "requires_new_session"
-        blocker = "Claude warm CLI keeps a provider process; changes require a new provider session."
-    elif not command_found:
+    if not command_found:
         apply_semantics = "not_apply_capable"
         blocker = f"Claude CLI command is missing: {command_settings.command!r}."
     elif auth_status == "missing":
@@ -1659,29 +1626,14 @@ def _resolve_persona_profile(requested: Any) -> tuple[str, str]:
         return DEFAULT_PERSONA_PROFILE, "invalid"
 
     normalized = requested.strip()
-    if not PERSONA_PROFILE_PATTERN.fullmatch(normalized):
+    if normalized != DEFAULT_PERSONA_PROFILE:
         return DEFAULT_PERSONA_PROFILE, "invalid"
 
-    profile_path = DEFAULT_PERSONA_PATH.parent / f"{normalized}.md"
-    if not profile_path.is_file():
-        return DEFAULT_PERSONA_PROFILE, "invalid"
-
-    return normalized, "ok"
+    return DEFAULT_PERSONA_PROFILE, "ok"
 
 
 def _available_persona_profiles() -> list[str]:
-    profiles = [DEFAULT_PERSONA_PROFILE]
-    persona_dir = DEFAULT_PERSONA_PATH.parent
-    try:
-        for path in sorted(persona_dir.glob("*.md")):
-            if path == DEFAULT_PERSONA_PATH:
-                continue
-            profile = path.stem
-            if PERSONA_PROFILE_PATTERN.fullmatch(profile):
-                profiles.append(profile)
-    except Exception:
-        return profiles
-    return list(dict.fromkeys(profiles))
+    return [DEFAULT_PERSONA_PROFILE]
 
 
 def _required_apply_text(value: Any, label: str) -> str:
@@ -2250,8 +2202,6 @@ def _collect_voice_runtime_compatibility_warnings(
     )
     stt_package_status, stt_package_name = _safe_probe_stt_package(default_stt)
     stt_model_status, _, stt_model_warning = _safe_probe_model_path(str(app.config.voice.stt_model))
-    registered_network_tools = _network_tool_specs(tools_registered)
-
     if voice_enabled:
         if tts_engine and tts_engine != "mock" and tts_binary_status != "ok":
             _append_compatibility_warning(
@@ -2298,7 +2248,12 @@ def _collect_voice_runtime_compatibility_warnings(
 
         if not app.voice_stt and stt_engine:
             _append_compatibility_warning(warnings, "Voice is enabled but STT engine is unavailable.")
-        if not app.voice_broker and tts_engine:
+        tts_runtime_ready = (
+            _shared_voice_publisher_active(app)
+            if app.config.voice.broker_enabled
+            else app.voice_broker is not None
+        )
+        if not tts_runtime_ready and tts_engine:
             _append_compatibility_warning(warnings, "Voice is enabled but TTS engine is unavailable.")
 
         current_provider = _current_provider_capability(provider_capabilities)
@@ -2361,12 +2316,6 @@ def _collect_voice_runtime_compatibility_warnings(
                 warnings,
                 "Requested persona profile is missing; using fallback profile.",
             )
-
-    if getattr(app.config.security, "require_approval_for_network", False) and not registered_network_tools:
-        _append_compatibility_warning(
-            warnings,
-            "network enabled but no network tool registered",
-        )
 
     return warnings
 
@@ -2461,6 +2410,14 @@ def _brain_projection(app: DaemonApp, settings: dict[str, dict[str, Any]]) -> di
                 status="missing",
                 editable_later=False,
             ),
+            "session": _projection(
+                value={},
+                effective_value={},
+                source="runtime_detected",
+                status="missing",
+                editable_later=False,
+                warning="Brain manager is not initialized.",
+            ),
         }
 
     persisted = settings.get(BRAIN_ADAPTER_SETTING_KEY)
@@ -2533,6 +2490,23 @@ def _brain_projection(app: DaemonApp, settings: dict[str, dict[str, Any]]) -> di
 
     persona_requested = settings.get(PERSONA_PROFILE_SETTING_KEY, {}).get("value")
     resolved_persona, persona_status = _resolve_persona_profile(persona_requested)
+    session_warning = None
+    try:
+        raw_session = manager.session_snapshot()
+        safe_session = {
+            key: raw_session[key]
+            for key in (
+                "session_id",
+                "generation",
+                "context_percent",
+                "last_action",
+                "healthy",
+            )
+            if key in raw_session
+        }
+    except Exception as exc:
+        safe_session = {}
+        session_warning = f"Unable to read persistent brain session state: {exc}"
 
     return {
         "default_adapter": _projection(
@@ -2565,6 +2539,14 @@ def _brain_projection(app: DaemonApp, settings: dict[str, dict[str, Any]]) -> di
             status="ok",
             editable_later=False,
             warning=None,
+        ),
+        "session": _projection(
+            value=safe_session,
+            effective_value=safe_session,
+            source="runtime_detected",
+            status="ok" if safe_session else "unknown",
+            editable_later=False,
+            warning=session_warning,
         ),
         "default_model": _projection(
             value=app.config.brain.default_model,
@@ -2764,6 +2746,15 @@ def _status_from_ready(*, started: bool, enabled: bool, ready: bool) -> str:
     return "ok" if ready else "missing"
 
 
+def _shared_voice_publisher_active(app: DaemonApp) -> bool:
+    return bool(
+        app.started
+        and app.config.voice.enabled
+        and app.config.voice.broker_enabled
+        and app.voice_publisher is not None
+    )
+
+
 def _normalize_warning_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -2858,6 +2849,7 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
             "latest_safe_error": None,
             "latest_cancel_reason": None,
             "latest_barge_in": _empty_barge_in_snapshot(),
+            "latest_speech_activity": None,
             "status": "unknown",
         }
 
@@ -2867,11 +2859,14 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
             """
             SELECT type, payload_json, turn_id
             FROM events
-            WHERE type IN (?, ?, ?, ?, ?)
+            WHERE type IN (?, ?, ?, ?, ?, ?, ?, ?)
             ORDER BY id DESC
             LIMIT 60
             """,
             (
+                EventType.VOICE_SPEAK_QUEUED,
+                EventType.VOICE_SPEAK_STARTED,
+                EventType.VOICE_SPEAK_FINISHED,
                 EventType.VOICE_SPEAK_FAILED,
                 EventType.VOICE_SPEAK_CANCELLED,
                 EventType.TURN_CANCELLED,
@@ -2882,6 +2877,7 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
         latest_safe_error = None
         latest_cancel_reason = None
         latest_barge_in = _empty_barge_in_snapshot()
+        latest_speech_activity = None
 
         for event_type, payload_json, event_turn_id in rows:
             try:
@@ -2890,6 +2886,25 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
                 payload = {}
             if not isinstance(payload, dict):
                 payload = {}
+
+            if latest_speech_activity is None and str(event_type) in {
+                EventType.VOICE_SPEAK_QUEUED,
+                EventType.VOICE_SPEAK_STARTED,
+                EventType.VOICE_SPEAK_FINISHED,
+                EventType.VOICE_SPEAK_FAILED,
+                EventType.VOICE_SPEAK_CANCELLED,
+            }:
+                latest_speech_activity = {
+                    "event_type": str(event_type),
+                    "request_id": payload.get("request_id"),
+                    "turn_id": event_turn_id or payload.get("turn_id"),
+                    "lane": payload.get("lane") or payload.get("kind"),
+                    "transport": payload.get("transport") or "local_voice_queue",
+                    "delivery_state": payload.get("delivery_state"),
+                    "interrupt_policy": payload.get("interrupt_policy"),
+                    "acknowledgement": payload.get("acknowledgement"),
+                    "cancel_supported": payload.get("cancel_supported"),
+                }
 
             if latest_safe_error is None and str(event_type) == EventType.VOICE_SPEAK_FAILED:
                 raw = payload.get("error") if isinstance(payload, dict) else None
@@ -2921,6 +2936,7 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
             "latest_safe_error": latest_safe_error,
             "latest_cancel_reason": latest_cancel_reason,
             "latest_barge_in": latest_barge_in,
+            "latest_speech_activity": latest_speech_activity,
             "status": "ok",
         }
     except Exception as exc:
@@ -2928,6 +2944,7 @@ def _collect_voice_events_snapshot(app: DaemonApp) -> dict[str, Any]:
             "latest_safe_error": None,
             "latest_cancel_reason": None,
             "latest_barge_in": _empty_barge_in_snapshot(),
+            "latest_speech_activity": None,
             "status": "invalid",
             "warning": str(exc),
         }
@@ -4345,7 +4362,11 @@ def _voice_layer_projection_turn_manager(
     }
     effective_value = {
         "gateway_ready": gateway_ready,
-        "broker_ready": app.voice_broker is not None,
+        "broker_ready": (
+            _shared_voice_publisher_active(app)
+            if app.config.voice.broker_enabled
+            else app.voice_broker is not None
+        ),
         "active_generation_count": registry_active,
         "speak_responses": app.config.voice.speak_responses,
     }
@@ -4365,6 +4386,50 @@ def _voice_layer_projection_tts(
     event_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     enabled = bool(app.config.voice.enabled)
+    if app.config.voice.broker_enabled:
+        publisher_ready = _shared_voice_publisher_active(app)
+        readiness = _status_from_ready(
+            started=app.started,
+            enabled=enabled,
+            ready=publisher_ready,
+        )
+        publisher_name = (
+            type(app.voice_publisher).__name__ if app.voice_publisher is not None else None
+        )
+        return _layer_projection(
+            configured_value={
+                "default_tts": app.config.voice.default_tts,
+                "voice_id": app.config.voice.supertonic_voice,
+                "voice_profile": app.config.voice.supertonic_lang,
+                "speed": app.config.voice.supertonic_speed,
+                "broker_enabled": True,
+                "speak_responses": app.config.voice.speak_responses,
+                "publisher_mode": "external_shared",
+            },
+            effective_value={
+                "engine_name": str(app.config.voice.default_tts or "external-default"),
+                "publisher": publisher_name,
+                "publisher_mode": "external_shared",
+                "publisher_ready": publisher_ready,
+                "delivery_observation": "published_without_ack",
+                "acknowledgement": "unavailable",
+                "interrupt_policy": "uninterruptible",
+                "voice_id_runtime": app.config.voice.supertonic_voice,
+                "voice_profile_runtime": app.config.voice.supertonic_lang,
+            },
+            readiness=readiness,
+            dependency_status={
+                "shared_publisher": "ok" if publisher_ready else "missing",
+                "tts_engine": "external",
+                "tts_binary": "not_applicable",
+                "tts_player": "external_unobserved",
+                "playback_binary": "not_applicable",
+                "acknowledgement": "unavailable",
+                "cancellation": "unsupported",
+            },
+            latest_safe_error=event_snapshot.get("latest_safe_error"),
+            warnings=[] if publisher_ready else ["External shared publisher is not active."],
+        )
     tts_ready = app.started and enabled and app.voice_broker is not None
     readiness = _status_from_ready(started=app.started, enabled=enabled, ready=tts_ready)
     configured_tts = str(app.config.voice.default_tts or "").strip()
@@ -4531,6 +4596,46 @@ def _voice_layer_projection_playback(
     event_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     enabled = bool(app.config.voice.enabled)
+    if app.config.voice.broker_enabled:
+        publisher_ready = _shared_voice_publisher_active(app)
+        readiness = _status_from_ready(
+            started=app.started,
+            enabled=enabled and app.config.voice.speak_responses,
+            ready=publisher_ready,
+        )
+        return _layer_projection(
+            configured_value={
+                "broker_enabled": True,
+                "speak_responses": app.config.voice.speak_responses,
+                "publisher_mode": "external_shared",
+                "voice_engine": str(app.config.voice.default_tts or "external-default"),
+            },
+            effective_value={
+                "speaker_available": "external_unobserved",
+                "publisher": (
+                    type(app.voice_publisher).__name__
+                    if app.voice_publisher is not None
+                    else None
+                ),
+                "publisher_mode": "external_shared",
+                "publisher_ready": publisher_ready,
+                "delivery_observation": "published_without_ack",
+                "acknowledgement": "unavailable",
+                "interrupt_policy": "uninterruptible",
+                "latest_activity": event_snapshot.get("latest_speech_activity"),
+            },
+            readiness=readiness,
+            dependency_status={
+                "shared_publisher": "ok" if publisher_ready else "missing",
+                "playback_binary": "not_applicable",
+                "tts_broker": "external",
+                "tts_player": "external_unobserved",
+                "acknowledgement": "unavailable",
+                "cancellation": "unsupported",
+            },
+            latest_safe_error=event_snapshot.get("latest_safe_error"),
+            warnings=[] if publisher_ready else ["External shared publisher is not active."],
+        )
     broker_ready = app.voice_broker is not None
     playback_status, playback_binary, playback_warning = _safe_probe_playback_binary(
         str(app.config.voice.playback_binary or "")
@@ -4611,6 +4716,39 @@ def _voice_layer_projection_queue_barge_in(
     queue_snapshot: dict[str, Any],
     event_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
+    if app.config.voice.broker_enabled:
+        publisher_ready = _shared_voice_publisher_active(app)
+        readiness = _status_from_ready(
+            started=app.started,
+            enabled=bool(app.config.voice.enabled and app.config.voice.speak_responses),
+            ready=publisher_ready,
+        )
+        return _layer_projection(
+            configured_value={
+                "speak_responses": app.config.voice.speak_responses,
+                "queue_persisted": app.config.voice.queue_persisted,
+                "publisher_mode": "external_shared",
+            },
+            effective_value={
+                "queue_counts": queue_snapshot.get("counts"),
+                "publisher_mode": "external_shared",
+                "publisher_ready": publisher_ready,
+                "latest_activity": event_snapshot.get("latest_speech_activity"),
+                "delivery_observation": "published_without_ack",
+                "interrupt_policy": "uninterruptible",
+                "cancel_supported": False,
+                "acknowledgement_supported": False,
+            },
+            readiness=readiness,
+            dependency_status={
+                "shared_publisher": "ok" if publisher_ready else "missing",
+                "external_queue_acknowledgement": "unavailable",
+                "external_request_cancellation": "unsupported",
+                "voice_queue_table": str(queue_snapshot.get("status", "unknown")),
+            },
+            latest_safe_error=event_snapshot.get("latest_safe_error"),
+            warnings=[] if publisher_ready else ["External shared publisher is not active."],
+        )
     readiness = queue_snapshot.get("status", "unknown")
     dependency_status = {
         "voice_queue_table": str(queue_snapshot.get("status", "unknown")),
@@ -4716,9 +4854,14 @@ def _turn_detection_projection(app: DaemonApp) -> dict[str, Any]:
         pre_activation_buffer_ms = "unsupported"
         silence_duration_ms = "unsupported"  # silence ending is lease/PTT-driven
         vad_threshold = app.config.voice.stt_min_rms  # map the energy threshold
-        interrupt_response = "partial"  # we have queue-level barge-in
-        semantic_interruption = "partial"  # we have barge-in but not semantic understanding
-        priority_user_lane = "partial"  # broker can be interrupted
+        if app.config.voice.broker_enabled:
+            interrupt_response = "unavailable_external_shared"
+            semantic_interruption = "unsupported"
+            priority_user_lane = "uninterruptible_external_shared"
+        else:
+            interrupt_response = "partial"  # we have queue-level barge-in
+            semantic_interruption = "partial"  # we have barge-in but not semantic understanding
+            priority_user_lane = "partial"  # the local broker can be interrupted
         background_autonomy_lane = "unsupported"
         warnings = [
             "Energy/RMS capture gate used (not streaming VAD)",
@@ -4726,11 +4869,24 @@ def _turn_detection_projection(app: DaemonApp) -> dict[str, Any]:
             "No pre-activation buffer",
             "No silence duration based endpointing",
             f"VAD threshold approximated from STT RMS threshold ({app.config.voice.stt_min_rms})",
-            "Interrupt response is partial (queue-level barge-in)",
-            "Semantic interruption is partial",
-            "Priority user lane is partial (broker can be interrupted)",
             "Background autonomy lane unsupported"
         ]
+        if app.config.voice.broker_enabled:
+            warnings.extend(
+                (
+                    "External shared playback is uninterruptible from Jarvis.",
+                    "External shared playback acknowledgement is unavailable.",
+                    "Semantic interruption is unsupported for external shared playback.",
+                )
+            )
+        else:
+            warnings.extend(
+                (
+                    "Interrupt response is partial (queue-level barge-in)",
+                    "Semantic interruption is partial",
+                    "Priority user lane is partial (local broker can be interrupted)",
+                )
+            )
 
     return {
         "mode": _projection(
@@ -4878,7 +5034,11 @@ def _voice_projection(
     tts_ready = _status_from_ready(
         started=app.started,
         enabled=app.config.voice.enabled and app.config.voice.speak_responses,
-        ready=app.voice_broker is not None,
+        ready=(
+            _shared_voice_publisher_active(app)
+            if app.config.voice.broker_enabled
+            else app.voice_broker is not None
+        ),
     )
 
     warnings = []
@@ -5065,23 +5225,9 @@ def _tools_projection(
         tools_master_flag = "unknown"
     else:
         tools_master_flag = "enabled" if configured_tools_enabled else "disabled"
-    # Effective policy = TOML seed overlaid with the panel's live settings —
-    # the projection must show what the engine will actually enforce on the
-    # next turn, not the stale TOML value (review 2026-07-09 Important #1).
+    # Approval flags remain loadable as legacy config/storage, but the active
+    # runtime executes directly and must not advertise them as live controls.
     live_policy = app._live_tool_permission_policy()
-    approval_required = []
-    if live_policy.require_approval_for_shell:
-        approval_required.append("shell")
-    if live_policy.require_approval_for_file_write:
-        approval_required.append("file_write")
-    if live_policy.require_approval_for_network:
-        approval_required.append("network")
-    if live_policy.require_approval_for_ui:
-        approval_required.append("ui")
-    if live_policy.require_approval_for_terminal:
-        approval_required.append("terminal")
-    if live_policy.require_approval_for_memory:
-        approval_required.append("memory")
     internet_warning = None
     if status == "invalid":
         internet_state = "unknown"
@@ -5096,9 +5242,8 @@ def _tools_projection(
         internet_warning = "Internet unavailable: no network/search tool registered"
     network_search_tool_status = "ok" if has_network_tool else ("invalid" if status == "invalid" else "missing")
     network_search_tool_value = "unknown" if status == "invalid" else ("registered" if has_network_tool else "missing")
-    # The section's primary controls (approval grants + destructive enable)
-    # apply live via the settings overlay; only registry-backed toggles keep
-    # their per-key restart blockers in apply_capabilities.
+    # Live non-approval policy keys use the settings overlay; registry-backed
+    # toggles keep their per-key restart blockers in apply_capabilities.
     apply_capability_warning = None
     requires_restart_value = False
     blocker_value = internet_warning
@@ -5157,22 +5302,6 @@ def _tools_projection(
             status=network_search_tool_status,
             editable_later=False,
             warning=None if has_network_tool else "no network/search tool registered",
-        ),
-        "network_policy": _projection(
-            value="approval_required" if app.config.security.require_approval_for_network else "allowed",
-            effective_value="approval_required" if live_policy.require_approval_for_network else "allowed",
-            source="settings",
-            status="ok",
-            editable_later=True,
-            warning=None if has_network_tool else "network enabled but no network tool registered",
-        ),
-        "approval_required_tools": _projection(
-            value=approval_required,
-            effective_value=approval_required,
-            source="settings",
-            status="ok",
-            editable_later=True,
-            warning=None,
         ),
         "destructive_tools_enabled": _projection(
             value=app.config.security.destructive_tools_enabled,
@@ -5563,58 +5692,9 @@ def _normalize_brain_provider_capability(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _local_provider_capability_nodes(local_capabilities: dict[str, Any]) -> list[dict[str, Any]]:
-    providers: list[dict[str, Any]] = []
-    for runtime in local_capabilities.get("runtimes", []):
-        runtime_id = str(runtime.get("id") or "")
-        if not runtime_id:
-            continue
-        models = [
-            {
-                "id": str(model.get("id")),
-                "label": str(model.get("label") or model.get("id")),
-                "available": bool(model.get("available")),
-                "configured": False,
-            }
-            for model in runtime.get("models", [])
-            if model.get("id")
-        ]
-        available = bool(runtime.get("available")) and bool(models)
-        blocker = runtime.get("blocker")
-        if not available and not blocker:
-            blocker = "Local runtime or local model is missing."
-        providers.append(
-            {
-                "id": runtime_id,
-                "label": str(runtime.get("label") or runtime_id),
-                "kind": str(runtime.get("kind") or "Local"),
-                "configured": bool(runtime.get("configured")),
-                "available": available,
-                "models": models,
-                "current_model": models[0]["id"] if models else None,
-                "allowed_effort_values": [],
-                "fast_supported": False,
-                "context_info": {"budget_chars": None, "source": "unknown"},
-                "tools_supported": False,
-                "streaming_supported": bool(runtime.get("available")),
-                "command_status": KNOWN_PROVIDER_SUPPORT_YES
-                if runtime.get("available")
-                else KNOWN_PROVIDER_SUPPORT_NO,
-                "latest_provider_error": None,
-                "status": "ok" if available else "missing",
-                "warnings": [str(runtime.get("warning"))] if runtime.get("warning") else [],
-                "developer_only": False,
-                "blocker": blocker,
-                "local_runtime": True,
-            }
-        )
-    return providers
-
-
 def _build_brain_capabilities(
     *,
     brain_projection: dict[str, Any],
-    local_capabilities: dict[str, Any],
 ) -> dict[str, Any]:
     raw_providers = _runtime_projection_value(brain_projection.get("providers")) or []
     providers = [
@@ -5622,12 +5702,6 @@ def _build_brain_capabilities(
         for provider in raw_providers
         if isinstance(provider, dict)
     ]
-    known_ids = {provider["id"] for provider in providers}
-    for provider in _local_provider_capability_nodes(local_capabilities):
-        if provider["id"] not in known_ids:
-            providers.append(provider)
-            known_ids.add(provider["id"])
-
     current_provider = _runtime_projection_value(brain_projection.get("current_adapter"))
     current_model = None
     for provider in providers:
@@ -5661,6 +5735,9 @@ def _build_voice_capabilities(
     playback_status, playback_binary, _ = _safe_probe_playback_binary(
         str(app.config.voice.playback_binary or "")
     )
+    shared_mode = bool(app.config.voice.broker_enabled)
+    shared_publisher_ready = _shared_voice_publisher_active(app)
+    supertonic_available = shared_publisher_ready or tts_binary_status == "ok"
 
     tts_providers = []
     if configured_tts == "mock":
@@ -5690,8 +5767,14 @@ def _build_voice_capabilities(
             "id": "supertonic",
             "label": "Supertonic",
             "configured": configured_tts == "supertonic",
-            "available": tts_binary_status == "ok",
-            "models": [{"id": "supertonic", "label": "supertonic", "available": tts_binary_status == "ok"}],
+            "available": supertonic_available,
+            "models": [
+                {
+                    "id": "supertonic",
+                    "label": "supertonic",
+                    "available": supertonic_available,
+                }
+            ],
             "voice_ids": list(
                 dict.fromkeys(
                     voice_id
@@ -5712,8 +5795,9 @@ def _build_voice_capabilities(
                 "continuity": bool(app.config.voice.broker_enabled),
             },
             "developer_only": False,
-            "status": "ok" if tts_binary_status == "ok" else "missing",
+            "status": "ok" if supertonic_available else "missing",
             "binary": tts_binary,
+            "transport": "external_shared" if shared_mode else "local",
         },
     )
     if configured_tts and configured_tts not in {"mock", "supertonic"}:
@@ -5851,9 +5935,14 @@ def _build_voice_capabilities(
         ),
         "endpointing_support": app.config.voice.ptt_mode in CANONICAL_PTT_MODES,
         "ptt_support": True,
-        "playback_support": playback_status == "ok",
+        "playback_support": shared_publisher_ready or playback_status == "ok",
         "playback_binary": playback_binary,
-        "cancellation_support": app.voice_cancellation is not None,
+        "publisher_mode": "external_shared" if shared_mode else "local",
+        "publisher_ready": shared_publisher_ready if shared_mode else app.voice_broker is not None,
+        "delivery_observation": "published_without_ack" if shared_mode else "local_lifecycle",
+        "acknowledgement_support": not shared_mode,
+        "cancellation_support": bool(app.voice_cancellation is not None and not shared_mode),
+        "interrupt_policy": "uninterruptible" if shared_mode else "local_cancellable",
         "queue_status": queue_snapshot.get("status", "unknown"),
         "tts_readiness": _projection_status(tts_projection.get("readiness")),
         "stt_readiness": _projection_status(stt_projection.get("readiness")),
@@ -5868,9 +5957,8 @@ def _build_tools_capabilities(
     registered = _runtime_projection_value(tools_projection.get("registered")) or []
     network_tools = _network_tool_specs(registered if isinstance(registered, list) else [])
     internet_capability = _runtime_projection_value(tools_projection.get("internet_capability")) or {}
-    approval_required = _runtime_projection_value(tools_projection.get("approval_required_tools")) or []
-    # Every live tool-policy key applies through the settings overlay — no
-    # restart, no blocker (review 2026-07-09 Important #1).
+    # Every active non-approval tool-policy key applies through the settings
+    # overlay — no restart, no blocker.
     live_policy_capability = {
         key: {"apply_capable": True, "requires_restart": False, "blocker": None}
         for key in sorted(LIVE_TOOL_POLICY_APPLY_KEYS)
@@ -5879,10 +5967,8 @@ def _build_tools_capabilities(
         "tools_enabled": bool(registered),
         "tools_master_flag": _runtime_projection_value(tools_projection.get("tools_master_flag")) or "unknown",
         "internet_capability": internet_capability,
-        "network_policy": _runtime_projection_value(tools_projection.get("network_policy")),
         "network_search_tool": _runtime_projection_value(tools_projection.get("network_search_tool")) or "unknown",
         "registered_network_tools": [spec["name"] for spec in network_tools],
-        "approval_required_tools": approval_required if isinstance(approval_required, list) else [],
         "tool_registry_status": _runtime_projection_value(tools_projection.get("tool_registry_status")),
         "apply_capability": _runtime_projection_value(tools_projection.get("apply_capability")) or "no",
         "requires_restart": bool(_runtime_projection_value(tools_projection.get("requires_restart"))),
@@ -5931,7 +6017,6 @@ def _build_capability_graph(
     return {
         "brain_capabilities": _build_brain_capabilities(
             brain_projection=brain_projection,
-            local_capabilities=local_capabilities,
         ),
         "voice_capabilities": _build_voice_capabilities(
             app,
@@ -6586,14 +6671,36 @@ def _build_settings_preview(
         "merge_window": _preview_field(section=endpoint_section, field_id="merge_window", label="Merge window", current=app.config.voice.transcript_turn_retry_seconds, status="ok", source="config", blocker=VOICE_GATEWAY_RELOAD_BLOCKER, requires_restart=True, editable_now=False, editable_later=True),
         "silence_threshold": _preview_field(section=endpoint_section, field_id="silence_threshold", label="Silence threshold", current=app.config.voice.stt_min_rms, status="ok", source="config", requires_restart=True, editable_later=True),
         "silence_duration": _preview_field(section=endpoint_section, field_id="silence_duration", label="Silence duration", current=app.config.voice.stt_min_voiced_seconds, status="ok", source="config", requires_restart=True, editable_later=True),
-        "interrupt_policy": _preview_field(section=endpoint_section, field_id="interrupt_policy", label="Interrupt policy", current="barge-in cancels active speech" if voice_capabilities["cancellation_support"] else "not available", status="ok" if voice_capabilities["cancellation_support"] else "unsupported", source="runtime_detected"),
+        "interrupt_policy": _preview_field(
+            section=endpoint_section,
+            field_id="interrupt_policy",
+            label="Interrupt policy",
+            current=voice_capabilities["interrupt_policy"],
+            status="ok",
+            source="runtime_detected",
+        ),
         "listening_lease_state": _preview_field(section=endpoint_section, field_id="listening_lease_state", label="Listening lease state", current=event_snapshot.get("active_leases"), status="ok" if app.started else "unknown", source="runtime_detected"),
     }
 
     queue_section = "queue_barge_in"
     queue_counts = queue_snapshot.get("counts") if isinstance(queue_snapshot.get("counts"), dict) else {}
     queue_fields = {
-        "queue_status": _preview_field(section=queue_section, field_id="queue_status", label="Queue status", current={"status": queue_snapshot.get("status"), "counts": queue_counts}, status=queue_snapshot.get("status", "unknown"), source="runtime_detected"),
+        "queue_status": _preview_field(
+            section=queue_section,
+            field_id="queue_status",
+            label="Queue status",
+            current={
+                "status": queue_snapshot.get("status"),
+                "counts": queue_counts,
+                "publisher_mode": voice_capabilities["publisher_mode"],
+                "publisher_ready": voice_capabilities["publisher_ready"],
+                "delivery_observation": voice_capabilities["delivery_observation"],
+                "acknowledgement_support": voice_capabilities["acknowledgement_support"],
+                "interrupt_policy": voice_capabilities["interrupt_policy"],
+            },
+            status=queue_snapshot.get("status", "unknown"),
+            source="runtime_detected",
+        ),
         "cancel_support": _preview_field(section=queue_section, field_id="cancel_support", label="Cancel support", current=voice_capabilities["cancellation_support"], status="ok" if voice_capabilities["cancellation_support"] else "unsupported", source="runtime_detected"),
         "active_speech_id": _preview_field(section=queue_section, field_id="active_speech_id", label="Active speech id", current=queue_snapshot.get("latest_voice_id"), status="ok" if queue_snapshot.get("latest_voice_id") else "missing", source="runtime_detected"),
         "current_spoken_kind": _preview_field(section=queue_section, field_id="current_spoken_kind", label="Current spoken kind", current=(queue_snapshot.get("tail") or [None])[0] if queue_snapshot.get("tail") else None, status="ok" if queue_snapshot.get("tail") else "unknown", source="runtime_detected"),
@@ -6609,18 +6716,9 @@ def _build_settings_preview(
     internet_value = _runtime_projection_value(internet_projection)
     internet_status = _projection_status(internet_projection)
     internet_warning = _projection_warning(internet_projection)
-    network_policy_projection = tools_projection.get("network_policy")
-    approval_required = _runtime_projection_value(tools_projection.get("approval_required_tools")) or []
-    if not isinstance(approval_required, list):
-        approval_required = []
     tools_apply_capabilities = capability_graph.get("tools_capabilities", {}).get("apply_capabilities", {})
     tools_enabled_capability = (
         tools_apply_capabilities.get("tools.enabled")
-        if isinstance(tools_apply_capabilities, dict)
-        else {}
-    )
-    network_policy_capability = (
-        tools_apply_capabilities.get("security.require_approval_for_network")
         if isinstance(tools_apply_capabilities, dict)
         else {}
     )
@@ -6649,29 +6747,15 @@ def _build_settings_preview(
             warning=internet_warning,
             blocker=internet_warning if internet_status == "missing" else None,
         ),
-        "network_policy": _preview_field(
-            section=tools_section,
-            field_id="network_policy",
-            label="Network policy",
-            current=_runtime_projection_value(network_policy_projection),
-            status=_projection_status(network_policy_projection),
-            source="config",
-            warning=_projection_warning(network_policy_projection),
-            blocker=network_policy_capability.get("blocker") if isinstance(network_policy_capability, dict) else None,
-            requires_restart=True,
-            editable_now=False,
-            editable_later=True,
-        ),
-        "approval_required_tools": _preview_field(section=tools_section, field_id="approval_required_tools", label="Approval required tools", current=approval_required, status="ok" if approval_required else "missing", source="config"),
         "latest_tool_error": _preview_field(section=tools_section, field_id="latest_tool_error", label="Latest tool error", current=event_snapshot.get("latest_tool_error") or _runtime_projection_value(tools_projection.get("latest_safe_error")), status="ok" if not event_snapshot.get("latest_tool_error") and not _runtime_projection_value(tools_projection.get("latest_safe_error")) else "invalid", source="runtime_detected"),
     }
 
     personality_section = "personality"
     personality_fields = {
-        "active_persona": _preview_field(section=personality_section, field_id="active_persona", label="Active persona", current=_runtime_projection_value(brain_projection.get("persona_profile")), status=_projection_status(brain_projection.get("persona_profile")), source="settings", allowed_values=_available_persona_profiles(), requires_reload=True, editable_now=True, editable_later=True),
+        "active_persona": _preview_field(section=personality_section, field_id="active_persona", label="Active persona", current=_runtime_projection_value(brain_projection.get("persona_profile")), status=_projection_status(brain_projection.get("persona_profile")), source="canonical DAN.md", allowed_values=_available_persona_profiles(), requires_reload=False, editable_now=False, editable_later=False),
         "active_style": _preview_field(section=personality_section, field_id="active_style", label="Active style", current=None, status="unknown", source="unknown", editable_later=True),
-        "personality_source": _preview_field(section=personality_section, field_id="personality_source", label="Personality source", current="persona.profile setting + default persona file", status="ok", source="runtime_detected"),
-        "editable_later": _preview_field(section=personality_section, field_id="editable_later", label="Editable later", current=True, status="ok", source="runtime_detected", editable_later=True),
+        "personality_source": _preview_field(section=personality_section, field_id="personality_source", label="Personality source", current=str(DEFAULT_PERSONA_PATH), status="ok", source="runtime_detected"),
+        "editable_later": _preview_field(section=personality_section, field_id="editable_later", label="Editable later", current=False, status="ok", source="runtime_detected", editable_later=False),
     }
 
     return {
@@ -6882,14 +6966,29 @@ def _build_structured_compatibility_warnings(
         )
     queue_fields = settings_preview["sections"]["queue_barge_in"]["fields"]
     if app.config.voice.enabled and app.config.voice.speak_responses and queue_fields["cancel_support"]["status"] == "unsupported":
+        if app.config.voice.broker_enabled:
+            cancel_message = "External shared playback is published as uninterruptible."
+            cancel_reason = (
+                "Jarvis can observe publication, but the shared broker exposes no per-request "
+                "acknowledgement or cancellation contract."
+            )
+            cancel_action = (
+                "Do not present barge-in or manual cancel as available for shared playback."
+            )
+        else:
+            cancel_message = "Barge-in is enabled by voice flow but cancel support is unavailable."
+            cancel_reason = "Runtime cancellation coordinator is not available from safe probes."
+            cancel_action = (
+                "Start/configure the voice runtime cancellation path before relying on barge-in."
+            )
         add(
             warning_id="barge_in_cancel_unavailable",
             severity="warning",
             group="voice",
             field_ids=["queue_barge_in.cancel_support", "queue_barge_in.manual_cancel_available"],
-            message="Barge-in is enabled by voice flow but cancel support is unavailable.",
-            reason="Runtime cancellation coordinator is not available from safe probes.",
-            suggested_action="Start/configure the voice runtime cancellation path before relying on barge-in.",
+            message=cancel_message,
+            reason=cancel_reason,
+            suggested_action=cancel_action,
         )
     ptt_fields = settings_preview["sections"]["endpointing_ptt"]["fields"]
     if ptt_fields["ptt_mode"]["current"] in CANONICAL_PTT_MODES and ptt_fields["ptt_hotkey"]["status"] == "missing":
@@ -6915,27 +7014,6 @@ def _build_structured_compatibility_warnings(
             reason="Tool registry is populated while provider capability says tools unsupported.",
             suggested_action="Choose a tools-capable provider or hide/disable tools for this provider.",
         )
-    if app.config.security.require_approval_for_network and tools_fields["internet_capability"]["status"] == "missing":
-        add(
-            warning_id="internet_policy_without_capability",
-            severity="warning",
-            group="tools",
-            field_ids=["tools_internet.network_policy", "tools_internet.internet_capability"],
-            message="network enabled but no network tool registered",
-            reason="Network approval policy is present, but the Jarvis tool registry has no network/search tool.",
-            suggested_action="Install a network tool or remove the network policy from this profile.",
-        )
-    if tools_fields["approval_required_tools"]["current"] and not hasattr(app, "approval_gate"):
-        add(
-            warning_id="approval_required_surface_unavailable",
-            severity="blocker",
-            group="tools",
-            field_ids=["tools_internet.approval_required_tools"],
-            message="Approval-required tools exist but approval surface is unavailable.",
-            reason="Runtime does not expose approval handling.",
-            suggested_action="Wire approval surface before enabling approval-required tools.",
-        )
-
     return warnings
 
 
@@ -7059,13 +7137,27 @@ def _runtime_readiness_projection(
     )
 
     default_tts = str(app.config.voice.default_tts or "").strip()
-    tts_status = "ok" if default_tts else "missing"
-    fields["tts_provider"] = _readiness_projection(
-        value="configured" if default_tts else "missing",
-        status=tts_status,
-        warning=None if default_tts else "TTS provider is not configured.",
-        source="config",
-    )
+    shared_mode = bool(app.config.voice.broker_enabled)
+    shared_publisher_ready = _shared_voice_publisher_active(app)
+    if shared_mode:
+        fields["tts_provider"] = _readiness_projection(
+            value={
+                "mode": "external_shared",
+                "publisher_ready": shared_publisher_ready,
+                "engine_hint": default_tts or None,
+                "acknowledgement": "unavailable",
+            },
+            status="ok" if shared_publisher_ready else "missing",
+            warning=None if shared_publisher_ready else "External shared publisher is not active.",
+        )
+    else:
+        tts_status = "ok" if default_tts else "missing"
+        fields["tts_provider"] = _readiness_projection(
+            value="configured" if default_tts else "missing",
+            status=tts_status,
+            warning=None if default_tts else "TTS provider is not configured.",
+            source="config",
+        )
 
     default_stt = str(app.config.voice.default_stt or "").strip()
     stt_status = "ok" if default_stt else "missing"
@@ -7090,17 +7182,29 @@ def _runtime_readiness_projection(
         warning=recorder_warning,
     )
 
-    playback_status, playback_binary, playback_warning = _safe_probe_playback_binary(
-        str(app.config.voice.playback_binary or "")
-    )
-    fields["playback_command"] = _readiness_projection(
-        value={
-            "exists": playback_status == "ok",
-            "detected": playback_binary is not None,
-        },
-        status=playback_status,
-        warning=playback_warning,
-    )
+    if shared_mode:
+        fields["playback_command"] = _readiness_projection(
+            value={
+                "mode": "external_shared",
+                "publisher_ready": shared_publisher_ready,
+                "local_player_required": False,
+                "remote_playback_acknowledgement": "unavailable",
+            },
+            status="ok" if shared_publisher_ready else "missing",
+            warning=None if shared_publisher_ready else "External shared publisher is not active.",
+        )
+    else:
+        playback_status, playback_binary, playback_warning = _safe_probe_playback_binary(
+            str(app.config.voice.playback_binary or "")
+        )
+        fields["playback_command"] = _readiness_projection(
+            value={
+                "exists": playback_status == "ok",
+                "detected": playback_binary is not None,
+            },
+            status=playback_status,
+            warning=playback_warning,
+        )
 
     internet_capability = _runtime_projection_value(tools_projection.get("internet_capability")) or {}
     if isinstance(internet_capability, dict):
@@ -7118,7 +7222,7 @@ def _runtime_readiness_projection(
 
     if app.config.voice.enabled and not app.config.voice.broker_enabled:
         warnings.append("voice enabled but broker disabled")
-    if app.config.voice.speak_responses and not default_tts:
+    if app.config.voice.speak_responses and not default_tts and not shared_mode:
         warnings.append("speak_responses enabled but TTS missing")
     if current_provider is not None:
         provider_name = str(current_provider.get("name") or "").strip().lower()
@@ -7174,51 +7278,6 @@ def _runtime_readiness_projection(
         warning="Runtime warnings detected." if deduped_warnings else None,
     )
     return fields
-
-
-def _approvals_projection(app: DaemonApp) -> dict[str, Any]:
-    pending_approvals = 0
-    try:
-        pending_approvals = app._pending_approval_count()
-        status = "ok"
-    except Exception as exc:
-        status = "invalid"
-        pending_approvals = 0
-        warning = str(exc)
-    else:
-        warning = None
-
-    return {
-        "pending_count": _projection(
-            value=pending_approvals,
-            effective_value=pending_approvals,
-            source="runtime_detected",
-            status=status,
-            editable_later=False,
-            warning=warning,
-        ),
-        "require_approval_for_shell": _projection(
-            value=app.config.security.require_approval_for_shell,
-            effective_value=app.config.security.require_approval_for_shell,
-            source="config",
-            status="ok",
-            editable_later=False,
-        ),
-        "require_approval_for_file_write": _projection(
-            value=app.config.security.require_approval_for_file_write,
-            effective_value=app.config.security.require_approval_for_file_write,
-            source="config",
-            status="ok",
-            editable_later=False,
-        ),
-        "require_approval_for_network": _projection(
-            value=app.config.security.require_approval_for_network,
-            effective_value=app.config.security.require_approval_for_network,
-            source="config",
-            status="ok",
-            editable_later=False,
-        ),
-    }
 
 
 def _memory_projection(app: DaemonApp) -> dict[str, Any]:
@@ -7461,7 +7520,6 @@ def get_runtime_settings(app: DaemonApp) -> dict[str, Any]:
         "capability_graph": capability_graph,
         "compatibility_warnings": structured_compatibility_warnings,
         "memory": _memory_projection(app),
-        "approvals": _approvals_projection(app),
         "panel": _panel_projection(app),
         "voice_capture_input": _voice_layer_projection_capture_input(
             app,

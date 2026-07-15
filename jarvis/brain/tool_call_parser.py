@@ -17,11 +17,8 @@ TOOL_CALL_PATTERN = re.compile(
     rf"{re.escape(TOOL_CALL_OPEN)}(.*?){re.escape(TOOL_CALL_CLOSE)}",
     re.DOTALL,
 )
-FALLBACK_TOOL_REQUEST_TEXT = "Jarvis requested tool approval."
-# The fail-safe risk stamped on every parsed call (FIX-07): the model cannot
-# declare its own risk, and the real one is derived from the registered spec
-# downstream. "destructive" is the most restrictive level, so a value that ever
-# leaked into a decision would block, never permit.
+# The model cannot declare its own risk. The registered Jarvis tool remains the
+# source of truth downstream; this placeholder is only parser metadata.
 _UNTRUSTED_TOOL_CALL_RISK = "destructive"
 
 
@@ -40,7 +37,7 @@ def parse_tool_call_blocks(provider_output: str) -> ToolCallParseResult:
 
     matches = list(TOOL_CALL_PATTERN.finditer(provider_output))
     if not matches:
-        return ToolCallParseResult(text=provider_output.strip())
+        return ToolCallParseResult(text=provider_output)
 
     visible_parts: list[str] = []
     tool_calls: list[BrainToolCall] = []
@@ -58,9 +55,9 @@ def parse_tool_call_blocks(provider_output: str) -> ToolCallParseResult:
             tool_calls.append(call)
 
     visible_parts.append(provider_output[cursor:])
-    visible_text = _clean_visible_text("".join(visible_parts))
-    if not visible_text:
-        visible_text = FALLBACK_TOOL_REQUEST_TEXT
+    visible_text = "".join(visible_parts)
+    if not visible_text.strip():
+        visible_text = ""
 
     return ToolCallParseResult(
         text=visible_text,
@@ -92,11 +89,8 @@ def _parse_single_block(payload_text: str, block_index: int) -> tuple[BrainToolC
     if error is not None:
         return None, error
 
-    # The model does NOT get to declare its own call's risk (FIX-07): a
-    # `"risk"` field in the payload is ignored and we fail safe. The
-    # authoritative risk is derived downstream from the registered tool spec by
-    # name (ToolRegistry.evaluate_permission), so a call whose tool is unknown
-    # or dangerous can never be smuggled in as "safe_read".
+    # A `"risk"` field in model output is ignored. The authoritative risk is
+    # derived downstream from the registered Jarvis tool spec by name.
     return (
         BrainToolCall(
             id=call_id,
@@ -123,23 +117,11 @@ def _optional_text(
     return value or default, None
 
 
-def _clean_visible_text(value: str) -> str:
-    cleaned = value.strip()
-    if not cleaned:
-        return ""
-    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
-    cleaned = re.sub(r"\n[ \t]+", "\n", cleaned)
-    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
-    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
-    return cleaned.strip()
-
-
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"invalid JSON constant: {value}")
 
 
 __all__ = [
-    "FALLBACK_TOOL_REQUEST_TEXT",
     "ToolCallParseResult",
     "parse_tool_call_blocks",
 ]

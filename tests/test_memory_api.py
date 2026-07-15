@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from jarvis.brain.manager import BrainManager
+from jarvis.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import (
@@ -31,6 +33,13 @@ def config_path(tmp_path: Path) -> Path:
 @pytest.fixture
 def app(config_path: Path) -> Iterator[DaemonApp]:
     daemon_app = create_daemon_app(config_path)
+    production_manager = daemon_app.brain_manager
+    daemon_app.brain_manager = BrainManager(
+        [HermeticBrainAdapter(default_model="test-model")],
+        default_adapter="test",
+    )
+    if production_manager is not None:
+        production_manager.close()
     try:
         yield daemon_app
     finally:

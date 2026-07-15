@@ -1,5 +1,12 @@
 # Jarvis v4.1 — Security Model (FROZEN)
 
+> **SUPERSEDED FOR THE ACTIVE OWNER RUNTIME (2026-07-13):** this document
+> describes the older restrictive approval architecture. Model-originated tools
+> now execute directly through the registry and are recorded once; they do not
+> create approvals or `awaiting_approval` turns. Do not use the rules below to
+> reinsert a gate into that active path. Redaction and truthful run recording
+> remain active.
+
 > **Status:** FROZEN (Prompt 00A). Defines the tool permission model, the
 > approval gate, secret redaction, and the boundaries on brains and workers.
 > Field shapes are in [CONTRACTS.md](CONTRACTS.md).

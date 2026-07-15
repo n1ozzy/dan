@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from jarvis.daemon.app import DaemonAppNotFoundError, create_daemon_app
+from jarvis.daemon.app import create_daemon_app
 from jarvis.security.transport import API_TOKEN_HEADER
 from tests.test_api_smoke import running_server, write_config
 
@@ -132,7 +132,7 @@ def test_workers_jobs_endpoint_requires_api_token_for_mutating_request(
     assert payload["error"] == "Unauthorized"
 
 
-def test_workers_jobs_unknown_kind_is_rejected_via_api(tmp_path: Path) -> None:
+def test_workers_jobs_unknown_kind_is_disabled_via_api(tmp_path: Path) -> None:
     app = create_daemon_app(
         write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
     )
@@ -153,12 +153,19 @@ def test_workers_jobs_unknown_kind_is_rejected_via_api(tmp_path: Path) -> None:
         app.stop()
         app.close()
 
-    assert status == 404
-    assert payload["status"] == 404
-    assert payload["error"] == "Unknown worker kind: codex_cli"
+    assert status == 201
+    assert payload == {
+        "ok": False,
+        "status": 410,
+        "error": (
+            "workers are disabled on this runtime branch; "
+            "use the main Jarvis brain directly"
+        ),
+        "jobs": [],
+    }
 
 
-def test_workers_jobs_accepts_mock_when_tokened(tmp_path: Path) -> None:
+def test_workers_jobs_former_mock_kind_is_disabled_when_tokened(tmp_path: Path) -> None:
     app = create_daemon_app(
         write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
     )
@@ -180,11 +187,18 @@ def test_workers_jobs_accepts_mock_when_tokened(tmp_path: Path) -> None:
         app.close()
 
     assert status == 201
-    assert payload["job"]["worker_kind"] == "mock"
-    assert payload["job"]["status"] in {"queued", "running", "succeeded"}
+    assert payload == {
+        "ok": False,
+        "status": 410,
+        "error": (
+            "workers are disabled on this runtime branch; "
+            "use the main Jarvis brain directly"
+        ),
+        "jobs": [],
+    }
 
 
-def test_mock_worker_is_only_default_worker_and_unknown_kind_is_rejected(
+def test_workers_have_no_default_broker(
     tmp_path: Path,
 ) -> None:
     config_path = write_config(
@@ -193,17 +207,7 @@ def test_mock_worker_is_only_default_worker_and_unknown_kind_is_rejected(
     app = create_daemon_app(config_path)
     app.start()
     try:
-        assert app.worker_broker is not None
-        assert app.worker_broker.worker_kinds() == ["mock"]
-        with pytest.raises(
-            DaemonAppNotFoundError,
-            match="Unknown worker kind: codex_cli",
-        ):
-            app.create_worker_job(
-                worker_kind="codex_cli",
-                prompt="run a candidate scan",
-                requested_by="api",
-            )
+        assert app.worker_broker is None
     finally:
         app.stop()
         app.close()

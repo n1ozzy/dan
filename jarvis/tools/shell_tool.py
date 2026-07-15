@@ -1,14 +1,11 @@
 """Shell tools.
 
-FAZA C4 (docs/MASTER_PLAN.md) implements the read-only shell tool.
-State-changing shell remains a placeholder (future stage, separate contract).
+The active runtime exposes the read-only shell tool directly to Jarvis.
+State-changing shell remains a separate placeholder.
 
 Safety model for shell_read:
-- Permission class shell_read is approval-required for every source and
-  blocked for unattended sources (matrix, docs/MACOS_PERMISSION_MODEL.md §3).
-- Only exact whitelist matches execute: the requested command must equal a
-  whitelisted command string after whitespace normalization. No shell is ever
-  involved (shell=False), so there is no metacharacter surface at all.
+- Model-originated calls execute directly and are recorded in tool_runs/events.
+- Only normalized whitelist matches execute.
 - Scrubbed environment, bounded runtime, bounded output, optional cwd that
   must stay inside the approved roots.
 """
@@ -68,14 +65,17 @@ _GIT_ARGV_HARDENING = (
 
 class ShellReadTool(Tool):
     name = "shell_read"
-    description = "Run a local command and return stdout/stderr."
+    description = (
+        "Run one configured read-only allowlisted command and return bounded "
+        "stdout/stderr; optional cwd must stay inside Jarvis-approved roots."
+    )
     risk = "shell_read"
     input_schema = {
         "type": "object",
         "properties": {
             "command": {
                 "type": "string",
-                "description": "Command to run.",
+                "description": "Exact command from the runtime's read-only allowlist.",
             },
             "cwd": {
                 "type": "string",

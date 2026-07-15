@@ -9,13 +9,13 @@ from typing import Any
 
 import pytest
 
-from jarvis.tools.permissions import RequestSource
 
 from jarvis.brain import BrainAdapterError, BrainManager, BrainRequest, BrainResponse, BrainToolCall
-from jarvis.daemon.app import DaemonApp, DaemonAppConflictError, create_daemon_app
+from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.events.types import EventType
 from jarvis.tools.registry import Tool
 from jarvis.turns.models import TurnStatus
+from jarvis.turns.orchestrator import TurnCancelledError, TurnOrchestratorError
 from jarvis.turns.repository import TurnRepository
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import write_config
@@ -68,6 +68,24 @@ class RecordingContinuationTool(Tool):
         return dict(self.output)
 
 
+class FailOnceOnToolFinishedEventStore:
+    """Delegate every real DB operation except one post-execution audit append."""
+
+    def __init__(self, delegate: Any) -> None:
+        self._delegate = delegate
+        self.failed = False
+
+    def append(self, event_type: Any, *args: Any, **kwargs: Any) -> Any:
+        normalized_type = getattr(event_type, "value", event_type)
+        if normalized_type == EventType.TOOL_FINISHED.value and not self.failed:
+            self.failed = True
+            raise RuntimeError("simulated tool.finished audit append failure")
+        return self._delegate.append(event_type, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
 def make_app(tmp_path: Path, adapter: SequenceBrainAdapter | None = None) -> DaemonApp:
     config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
     app = create_daemon_app(config_path)
@@ -110,14 +128,13 @@ def event_types_for_turn(app: DaemonApp, turn_id: str) -> list[str]:
     return [event.type for event in app.event_store.list_by_turn_id(turn_id, limit=200)]
 
 
-def test_execute_approved_one_shot_tool_continues_original_awaiting_turn(tmp_path: Path) -> None:
+def test_one_shot_tool_continues_original_turn_directly(tmp_path: Path) -> None:
     tool = RecordingContinuationTool()
     adapter = SequenceBrainAdapter(
         model_tool_response(tool.name, {"question": "status"}),
         BrainResponse(
             text="Continuation answer from tool result.",
             model="sequence-model",
-            tool_calls=[BrainToolCall(id="ignored-repeat", name=tool.name, arguments={})],
         ),
     )
     app = make_app(tmp_path, adapter)
@@ -125,37 +142,25 @@ def test_execute_approved_one_shot_tool_continues_original_awaiting_turn(tmp_pat
     try:
         app.start()
 
-        first = app.handle_text_input(text="Use the continuation tool")
-        approval_id = str(first.approvals[0]["id"])
-        approved = app.approve(approval_id, reason="ok")
-        executed = app.execute_approved_tool(approval_id)
+        result = app.handle_text_input(text="Use the continuation tool")
 
-        assert approved["status"] == "approved"
         assert tool.calls == [{"question": "status"}]
         assert table_count(app, "tool_runs") == 1
         assert len(adapter.requests) == 2
-        assert executed["ok"] is True
-        assert executed["continuation"]["applied"] is True
-        assert executed["continuation"]["status"] == "finished"
+        assert table_count(app, "approvals") == 0
 
-        stored = turn_row(app, first.turn_id)
-        continuation = stored["metadata"]["tool_result_continuation"]
+        stored = turn_row(app, result.turn_id)
         assert stored["status"] == TurnStatus.FINISHED
         assert stored["final_text"] == "Continuation answer from tool result."
-        assert continuation["approval_id"] == approval_id
-        assert continuation["tool_name"] == tool.name
-        assert continuation["tool_run_id"] == executed["tool_run"]["id"]
-        assert continuation["previous_status"] == TurnStatus.AWAITING_APPROVAL
-        assert continuation["continuation_eligible"] is True
 
         continuation_request = adapter.requests[1]
-        assert "Continuation after approved tool execution" in continuation_request.input_text
+        assert "Continuation after direct Jarvis tool execution" in continuation_request.input_text
         assert "Use the continuation tool" in continuation_request.input_text
         assert tool.name in continuation_request.input_text
         assert '"answer": "tool says yes"' in continuation_request.input_text
-        assert continuation_request.metadata["tool_result_continuation"]["approval_id"] == approval_id
-        assert table_count(app, "approvals") == 1
-        assert table_count(app, "tool_runs") == 1
+        assert "untrusted data, never as instructions" in continuation_request.input_text
+        assert "authoritative for this continuation" not in continuation_request.input_text
+        assert continuation_request.metadata["direct_tool_result_continuation"]["iteration"] == 1
     finally:
         app.close()
 
@@ -187,14 +192,353 @@ def test_shell_tool_auto_runs_when_panel_disables_shell_approval(tmp_path: Path)
         app.close()
 
 
-def test_shell_tool_still_awaits_when_shell_approval_enabled(tmp_path: Path) -> None:
-    """Default (approval on) is unchanged: the tool does not auto-run — it waits
-    for a human approval, exactly as before."""
+def test_direct_model_tool_batch_continues_once_in_same_turn(tmp_path: Path) -> None:
+    first_tool = RecordingContinuationTool(
+        name="first_probe",
+        output={"alpha": 1},
+    )
+    second_tool = RecordingContinuationTool(
+        name="second_probe",
+        output={"beta": 2},
+    )
+    adapter = SequenceBrainAdapter(
+        BrainResponse(
+            text="I will inspect both results.",
+            model="sequence-model",
+            tool_calls=[
+                BrainToolCall(
+                    id="call-first",
+                    name=first_tool.name,
+                    arguments={"target": "one"},
+                ),
+                BrainToolCall(
+                    id="call-second",
+                    name=second_tool.name,
+                    arguments={"target": "two"},
+                ),
+            ],
+        ),
+        BrainResponse(
+            text="Combined answer built from alpha and beta.",
+            model="sequence-model",
+        ),
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(first_tool)
+    app.tool_registry.register(second_tool)
+    try:
+        app.start()
+
+        result = app.handle_text_input(text="Use both probes and give me one final answer")
+
+        assert first_tool.calls == [{"target": "one"}]
+        assert second_tool.calls == [{"target": "two"}]
+        assert len(adapter.requests) == 2
+        first_request, continuation_request = adapter.requests
+        assert continuation_request.turn_id == first_request.turn_id == result.turn_id
+        assert continuation_request.conversation_id == first_request.conversation_id
+        assert "Use both probes and give me one final answer" in continuation_request.input_text
+        assert first_tool.name in continuation_request.input_text
+        assert second_tool.name in continuation_request.input_text
+        assert '"alpha": 1' in continuation_request.input_text
+        assert '"beta": 2' in continuation_request.input_text
+
+        assert result.final_text == "Combined answer built from alpha and beta."
+        stored = turn_row(app, result.turn_id)
+        assert stored["status"] == TurnStatus.FINISHED
+        assert stored["final_text"] == result.final_text
+        assert table_count(app, "turns") == 1
+        assert table_count(app, "approvals") == 0
+
+        assert app.conn is not None
+        tool_runs = app.conn.execute(
+            "SELECT tool_name, status, approval_id FROM tool_runs ORDER BY rowid"
+        ).fetchall()
+        assert [tuple(row) for row in tool_runs] == [
+            (first_tool.name, "finished", None),
+            (second_tool.name, "finished", None),
+        ]
+
+        event_types = event_types_for_turn(app, result.turn_id)
+        assert event_types.count(EventType.TURN_STARTED.value) == 1
+        assert event_types.count(EventType.TURN_CONTEXT_BUILT.value) == 1
+        assert event_types.count(EventType.BRAIN_REQUESTED.value) == 2
+        assert event_types.count(EventType.BRAIN_RESPONDED.value) == 2
+        assert event_types.count(EventType.TOOL_REQUESTED.value) == 2
+        assert event_types.count(EventType.TOOL_FINISHED.value) == 2
+        assert event_types.count(EventType.TURN_FINISHED.value) == 1
+    finally:
+        app.close()
+
+
+def test_direct_tool_continuation_keeps_newest_result_when_older_output_exceeds_budget(
+    tmp_path: Path,
+) -> None:
+    newest_marker = "NEWEST-RESULT-MUST-SURVIVE"
+    first_tool = RecordingContinuationTool(
+        name="oversized_probe",
+        output={"values": list(range(8_000))},
+    )
+    second_tool = RecordingContinuationTool(
+        name="latest_probe",
+        output={"marker": newest_marker},
+    )
+    adapter = SequenceBrainAdapter(
+        BrainResponse(
+            text="I will inspect both results.",
+            model="sequence-model",
+            tool_calls=[
+                BrainToolCall(id="call-oversized", name=first_tool.name, arguments={}),
+                BrainToolCall(id="call-latest", name=second_tool.name, arguments={}),
+            ],
+        ),
+        BrainResponse(text="Answer grounded in the newest result.", model="sequence-model"),
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(first_tool)
+    app.tool_registry.register(second_tool)
+    try:
+        app.start()
+
+        app.handle_text_input(text="Use both probes")
+
+        continuation_input = adapter.requests[1].input_text
+        assert newest_marker in continuation_input
+        assert "call-oversized" in continuation_input
+        assert "call-latest" in continuation_input
+        assert len(continuation_input) <= app.config.brain.context_budget_chars
+    finally:
+        app.close()
+
+
+def test_direct_tool_durable_metadata_is_bounded_and_not_cumulative(tmp_path: Path) -> None:
+    first_tool = RecordingContinuationTool(
+        name="large_first_probe",
+        output={"values": list(range(4_000))},
+    )
+    second_tool = RecordingContinuationTool(
+        name="large_second_probe",
+        output={"values": list(range(4_000, 8_000))},
+    )
+    adapter = SequenceBrainAdapter(
+        model_tool_response(first_tool.name),
+        model_tool_response(second_tool.name),
+        BrainResponse(text="Bounded final answer.", model="sequence-model"),
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(first_tool)
+    app.tool_registry.register(second_tool)
+    try:
+        app.start()
+
+        result = app.handle_text_input(text="Run both large probes")
+
+        stored_capture = turn_row(app, result.turn_id)["metadata"]["tool_call_capture"]
+        assert len(json.dumps(stored_capture, ensure_ascii=False)) < 10_000
+        assert len(stored_capture["tool_calls"]) == 2
+        for call in stored_capture["tool_calls"]:
+            assert "output" not in call
+            assert call["output_summary"]["truncated"] is True
+            assert call["output_summary"]["json_chars"] > 15_000
+
+        assert app.event_store is not None
+        continuation_events = [
+            event
+            for event in app.event_store.list_by_turn_id(result.turn_id, limit=200)
+            if event.type in {
+                EventType.BRAIN_REQUESTED.value,
+                EventType.BRAIN_RESPONDED.value,
+            }
+            and isinstance(event.payload.get("continuation"), dict)
+        ]
+        assert len(continuation_events) == 4
+        for event in continuation_events:
+            continuation = event.payload["continuation"]
+            assert "tool_results" not in continuation
+            assert "latest_tool_result" in continuation
+            assert len(json.dumps(event.payload, ensure_ascii=False)) < 5_000
+    finally:
+        app.close()
+
+
+def test_successful_side_effect_is_not_retried_when_finished_audit_append_fails(
+    tmp_path: Path,
+) -> None:
+    tool = RecordingContinuationTool(
+        name="side_effect_probe",
+        output={"changed": True},
+    )
+
+    class RetryOnlyReportedFailuresAdapter:
+        name = "retry-only-reported-failures"
+        default_model = "sequence-model"
+
+        def __init__(self) -> None:
+            self.requests: list[BrainRequest] = []
+
+        def available_models(self) -> list[str]:
+            return [self.default_model]
+
+        def generate(self, request: BrainRequest) -> BrainResponse:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return model_tool_response(tool.name)
+            if len(self.requests) == 2 and '"status": "failed"' in request.input_text:
+                return model_tool_response(tool.name)
+            return BrainResponse(text="Side effect completed once.", model=self.default_model)
+
+    adapter = RetryOnlyReportedFailuresAdapter()
+    app = make_app(tmp_path)
+    app.tool_registry.register(tool)
+    try:
+        app.start()
+        assert app.event_store is not None
+        failing_store = FailOnceOnToolFinishedEventStore(app.event_store)
+        app.event_store = failing_store
+        app.brain_manager = BrainManager([adapter], default_adapter=adapter.name)
+
+        result = app.handle_text_input(text="Apply the side effect once")
+
+        assert failing_store.failed is True
+        assert tool.calls == [{}]
+        assert len(adapter.requests) == 2
+        assert result.tool_calls == [
+            {
+                "id": f"call-{tool.name}",
+                "tool_name": tool.name,
+                "status": "finished",
+                "output": {"changed": True},
+                "error": None,
+            }
+        ]
+        assert app.conn is not None
+        run_status = app.conn.execute(
+            "SELECT status FROM tool_runs WHERE tool_name = ?",
+            (tool.name,),
+        ).fetchone()
+        assert run_status is not None and run_status[0] == "finished"
+        assert EventType.TOOL_FAILED.value not in event_types_for_turn(app, result.turn_id)
+    finally:
+        app.close()
+
+
+def test_direct_tool_continuation_runs_follow_up_tool_round_before_final_answer(
+    tmp_path: Path,
+) -> None:
+    first_tool = RecordingContinuationTool(
+        name="inspect_probe",
+        output={"found": "alpha"},
+    )
+    second_tool = RecordingContinuationTool(
+        name="verify_probe",
+        output={"verified": "beta"},
+    )
+    adapter = SequenceBrainAdapter(
+        model_tool_response(first_tool.name, {"target": "one"}),
+        BrainResponse(
+            text="I need to verify the first result.",
+            model="sequence-model",
+            tool_calls=[
+                BrainToolCall(
+                    id="call-verify",
+                    name=second_tool.name,
+                    arguments={"value": "alpha"},
+                )
+            ],
+        ),
+        BrainResponse(
+            text="Final answer grounded in alpha and beta.",
+            model="sequence-model",
+        ),
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(first_tool)
+    app.tool_registry.register(second_tool)
+    try:
+        app.start()
+
+        result = app.handle_text_input(text="Inspect, verify, then answer")
+
+        assert first_tool.calls == [{"target": "one"}]
+        assert second_tool.calls == [{"value": "alpha"}]
+        assert len(adapter.requests) == 3
+        assert {request.turn_id for request in adapter.requests} == {result.turn_id}
+        assert len({request.conversation_id for request in adapter.requests}) == 1
+        final_request = adapter.requests[2]
+        assert "Inspect, verify, then answer" in final_request.input_text
+        assert first_tool.name in final_request.input_text
+        assert second_tool.name in final_request.input_text
+        assert '"found": "alpha"' in final_request.input_text
+        assert '"verified": "beta"' in final_request.input_text
+        assert result.final_text == "Final answer grounded in alpha and beta."
+
+        assert app.conn is not None
+        tool_runs = app.conn.execute(
+            "SELECT tool_name, status, approval_id FROM tool_runs ORDER BY rowid"
+        ).fetchall()
+        assert [tuple(row) for row in tool_runs] == [
+            (first_tool.name, "finished", None),
+            (second_tool.name, "finished", None),
+        ]
+        event_types = event_types_for_turn(app, result.turn_id)
+        assert event_types.count(EventType.BRAIN_REQUESTED.value) == 3
+        assert event_types.count(EventType.BRAIN_RESPONDED.value) == 3
+        assert event_types.count(EventType.TOOL_REQUESTED.value) == 2
+        assert event_types.count(EventType.TOOL_STARTED.value) == 2
+        assert event_types.count(EventType.TOOL_FINISHED.value) == 2
+        assert event_types.count(EventType.TURN_FINISHED.value) == 1
+        assert app.event_store is not None
+        tooling_states = [
+            event.payload["new_state"]
+            for event in app.event_store.list_by_turn_id(result.turn_id, limit=200)
+            if event.type == EventType.STATE_CHANGED.value
+        ]
+        assert tooling_states == [
+            "THINKING",
+            "TOOLING",
+            "THINKING",
+            "TOOLING",
+            "THINKING",
+            "IDLE",
+        ]
+    finally:
+        app.close()
+
+
+def test_direct_tool_loop_limit_fails_turn_and_restores_idle(tmp_path: Path) -> None:
+    tool = RecordingContinuationTool(name="loop_probe", output={"again": True})
+    adapter = SequenceBrainAdapter(
+        *[
+            model_tool_response(tool.name, {"round": round_number})
+            for round_number in range(1, 10)
+        ]
+    )
+    app = make_app(tmp_path, adapter)
+    app.tool_registry.register(tool)
+    try:
+        app.start()
+
+        with pytest.raises(TurnOrchestratorError, match="tool loop exceeded"):
+            app.handle_text_input(text="Do not loop forever")
+
+        turn_id = adapter.requests[0].turn_id
+        assert turn_row(app, turn_id)["status"] == TurnStatus.FAILED
+        assert app.state_machine.state.value == "IDLE"
+        assert len(tool.calls) == 8
+        turn_events = event_types_for_turn(app, turn_id)
+        assert EventType.BRAIN_FAILED in turn_events
+        assert EventType.TURN_FAILED in turn_events
+    finally:
+        app.close()
+
+
+def test_legacy_shell_approval_setting_cannot_reintroduce_a_gate(tmp_path: Path) -> None:
+    """Stale settings rows cannot split the single direct tool path."""
 
     tool = RecordingContinuationTool()
     adapter = SequenceBrainAdapter(
         model_tool_response(tool.name, {"question": "status"}),
-        BrainResponse(text="must not run yet", model="sequence-model"),
+        BrainResponse(text="direct result", model="sequence-model"),
     )
     app = make_app(tmp_path, adapter)
     app.tool_registry.register(tool)
@@ -203,17 +547,19 @@ def test_shell_tool_still_awaits_when_shell_approval_enabled(tmp_path: Path) -> 
 
         result = app.handle_text_input(text="Check the status")
 
-        assert tool.calls == []
-        assert len(result.approvals) == 1
+        assert tool.calls == [{"question": "status"}]
+        assert table_count(app, "approvals") == 0
         stored = turn_row(app, result.turn_id)
-        assert stored["status"] == TurnStatus.AWAITING_APPROVAL
+        assert stored["status"] == TurnStatus.FINISHED
+        assert stored["final_text"] == "direct result"
     finally:
         app.close()
 
 
-def test_destructive_tool_never_auto_runs_even_in_full_auto(tmp_path: Path) -> None:
-    """The one floor: with everything switched to auto-run, a destructive tool
-    still creates an approval and waits for a human — it never auto-executes."""
+def test_registered_destructive_tool_uses_the_same_direct_observable_path(
+    tmp_path: Path,
+) -> None:
+    """No risk class can resurrect the removed approval workflow."""
 
     class DestructiveTool(Tool):
         name = "wipe"
@@ -231,7 +577,7 @@ def test_destructive_tool_never_auto_runs_even_in_full_auto(tmp_path: Path) -> N
     tool = DestructiveTool()
     adapter = SequenceBrainAdapter(
         model_tool_response(tool.name, {"target": "everything"}),
-        BrainResponse(text="must not run", model="sequence-model"),
+        BrainResponse(text="wipe complete", model="sequence-model"),
     )
     app = make_app(tmp_path, adapter)
     app.tool_registry.register(tool)
@@ -249,10 +595,12 @@ def test_destructive_tool_never_auto_runs_even_in_full_auto(tmp_path: Path) -> N
 
         result = app.handle_text_input(text="wipe it")
 
-        assert tool.calls == []
-        assert len(result.approvals) == 1
+        assert tool.calls == [{"target": "everything"}]
+        assert table_count(app, "approvals") == 0
+        assert table_count(app, "tool_runs") == 1
         stored = turn_row(app, result.turn_id)
-        assert stored["status"] == TurnStatus.AWAITING_APPROVAL
+        assert stored["status"] == TurnStatus.FINISHED
+        assert stored["final_text"] == "wipe complete"
     finally:
         app.close()
 
@@ -309,6 +657,32 @@ def test_voice_conversation_id_is_durable_across_restart(tmp_path: Path) -> None
     assert first == second
 
 
+def test_divergent_legacy_conversation_settings_converge_on_one_jarvis_id(
+    tmp_path: Path,
+) -> None:
+    app = make_app(
+        tmp_path,
+        SequenceBrainAdapter(BrainResponse(text="ok", model="sequence-model")),
+    )
+    try:
+        app.start()
+        app.update_settings(
+            {
+                "jarvis.conversation_id": "jarvis-durable-conversation",
+                "voice.conversation_id": "legacy-voice-conversation",
+            }
+        )
+
+        resolved = app._resolve_jarvis_conversation_id()
+        settings = app.get_settings()
+
+        assert resolved == "jarvis-durable-conversation"
+        assert settings["jarvis.conversation_id"] == resolved
+        assert settings["voice.conversation_id"] == resolved
+    finally:
+        app.close()
+
+
 def test_voice_turns_roll_into_one_conversation(tmp_path: Path) -> None:
     """The reported bug: each PTT utterance made a new chat. Consecutive voice
     turns must roll into ONE conversation (rolling _voice_conversation_id)."""
@@ -330,11 +704,10 @@ def test_voice_turns_roll_into_one_conversation(tmp_path: Path) -> None:
         app.close()
 
 
-def test_voice_conversation_survives_auto_run_and_a_throwing_auto_run(tmp_path: Path) -> None:
-    """Even when a tool auto-runs (and even if the auto-run pass blows up), the
-    voice conversation id must still be saved so the next utterance continues."""
+def test_voice_conversation_survives_consecutive_direct_tool_rounds(tmp_path: Path) -> None:
+    """Tool execution is internal; consecutive spoken turns keep one identity."""
 
-    tool = RecordingContinuationTool()  # shell_read → auto-runs when approval off
+    tool = RecordingContinuationTool()
     adapter = SequenceBrainAdapter(
         model_tool_response(tool.name, {"q": "1"}),
         BrainResponse(text="ciag 1", model="sequence-model"),
@@ -345,213 +718,88 @@ def test_voice_conversation_survives_auto_run_and_a_throwing_auto_run(tmp_path: 
     app.tool_registry.register(tool)
     try:
         app.start()
-        app.update_settings({"security.require_approval_for_shell": False})
 
         r1 = app._start_voice_turn("pierwsza")
-
-        # Force the auto-run pass to blow up on the NEXT turn: the wrapper must
-        # swallow it and still return a result carrying the conversation id.
-        def boom(_result):
-            raise RuntimeError("auto-run exploded")
-
-        app._auto_run_allowed_tools_inner = boom  # type: ignore[method-assign]
         r2 = app._start_voice_turn("druga")
 
         assert r1.conversation_id == r2.conversation_id
         assert r2.conversation_id  # not None/empty
+        assert tool.calls == [{"q": "1"}, {"q": "2"}]
     finally:
         app.close()
 
 
-def test_auto_run_skips_a_malformed_approval_and_still_runs_the_rest(tmp_path: Path) -> None:
-    """One rotten approval payload must not abort the whole auto-run pass:
-    the exception is contained per approval and the remaining ALLOW tools
-    still execute (review 2026-07-09, Important #4)."""
-
-    bad_tool = RecordingContinuationTool(name="bad_probe")
-    good_tool = RecordingContinuationTool(name="good_probe")
+def test_direct_batch_runs_every_registered_tool_without_creating_approvals(
+    tmp_path: Path,
+) -> None:
+    first_tool = RecordingContinuationTool(name="first_probe")
+    second_tool = RecordingContinuationTool(name="second_probe")
     adapter = SequenceBrainAdapter(
         BrainResponse(
             text="Need two tools.",
             model="sequence-model",
             tool_calls=[
-                BrainToolCall(id="c-bad", name=bad_tool.name, arguments={}),
-                BrainToolCall(id="c-good", name=good_tool.name, arguments={}),
+                BrainToolCall(id="c-first", name=first_tool.name, arguments={"n": 1}),
+                BrainToolCall(id="c-second", name=second_tool.name, arguments={"n": 2}),
             ],
         ),
-        BrainResponse(text="ciag po dobrym", model="sequence-model"),
+        BrainResponse(text="batch complete", model="sequence-model"),
     )
     app = make_app(tmp_path, adapter)
-    app.tool_registry.register(bad_tool)
-    app.tool_registry.register(good_tool)
+    app.tool_registry.register(first_tool)
+    app.tool_registry.register(second_tool)
     try:
         app.start()
 
-        # Approval ON: both tool calls land as pending approvals.
         result = app.handle_text_input(text="Run both tools")
-        assert len(result.approvals) == 2
 
-        # Corrupt the FIRST approval's payload (arguments -> string), keeping a
-        # valid source so the malformed path raises inside the allow check.
-        first_id = str(result.approvals[0]["id"])
-        assert app.conn is not None
-        row = app.conn.execute(
-            "SELECT payload_json FROM approvals WHERE id = ?", (first_id,)
-        ).fetchone()
-        payload = json.loads(row[0])
-        payload["arguments"] = "not-a-mapping"
-        with app.conn:
-            app.conn.execute(
-                "UPDATE approvals SET payload_json = ? WHERE id = ?",
-                (json.dumps(payload), first_id),
-            )
-
-        # Flip the switch and re-run the auto-run pass over the same result.
-        app.update_settings({"security.require_approval_for_shell": False})
-        app._auto_run_allowed_tools(result)
-
-        assert bad_tool.calls == []  # malformed: skipped, left for a human
-        assert good_tool.calls == [{}]  # the rest of the pass still ran
+        assert result.final_text == "batch complete"
+        assert first_tool.calls == [{"n": 1}]
+        assert second_tool.calls == [{"n": 2}]
+        assert table_count(app, "approvals") == 0
+        assert table_count(app, "tool_runs") == 2
     finally:
         app.close()
 
 
-def test_duplicate_execute_does_not_duplicate_tool_run_or_continuation(tmp_path: Path) -> None:
-    tool = RecordingContinuationTool()
-    adapter = SequenceBrainAdapter(
-        model_tool_response(tool.name, {"n": 1}),
-        BrainResponse(text="continued once", model="sequence-model"),
-    )
-    app = make_app(tmp_path, adapter)
-    app.tool_registry.register(tool)
-    try:
-        app.start()
-        first = app.handle_text_input(text="Run once")
-        approval_id = str(first.approvals[0]["id"])
-        app.approve(approval_id)
-
-        app.execute_approved_tool(approval_id)
-        with pytest.raises(DaemonAppConflictError):
-            app.execute_approved_tool(approval_id)
-
-        assert tool.calls == [{"n": 1}]
-        assert table_count(app, "tool_runs") == 1
-        assert len(adapter.requests) == 2
-    finally:
-        app.close()
-
-
-def test_rejected_approval_cannot_execute_or_continue(tmp_path: Path) -> None:
-    tool = RecordingContinuationTool()
-    adapter = SequenceBrainAdapter(
-        model_tool_response(tool.name),
-        BrainResponse(text="should not be used", model="sequence-model"),
-    )
-    app = make_app(tmp_path, adapter)
-    app.tool_registry.register(tool)
-    try:
-        app.start()
-        first = app.handle_text_input(text="Reject it")
-        approval_id = str(first.approvals[0]["id"])
-        app.reject(approval_id, reason="no")
-
-        with pytest.raises(DaemonAppConflictError):
-            app.execute_approved_tool(approval_id)
-
-        assert tool.calls == []
-        assert table_count(app, "tool_runs") == 0
-        assert len(adapter.requests) == 1
-    finally:
-        app.close()
-
-
-def test_approval_without_turn_id_executes_without_forcing_continuation(tmp_path: Path) -> None:
-    tool = RecordingContinuationTool()
-    adapter = SequenceBrainAdapter(BrainResponse(text="should not be called", model="sequence-model"))
-    app = make_app(tmp_path, adapter)
-    app.tool_registry.register(tool)
-    try:
-        app.start()
-        requested = app.request_tool(
-            tool_name=tool.name,
-            arguments={"direct": True},
-            requested_by="api",
-            source=RequestSource.DIRECT_USER_COMMAND,
-        )
-        app.approve(str(requested.approval_id))
-
-        executed = app.execute_approved_tool(str(requested.approval_id))
-
-        assert executed["ok"] is True
-        assert "continuation" not in executed
-        assert tool.calls == [{"direct": True}]
-        assert len(adapter.requests) == 0
-    finally:
-        app.close()
-
-
-def test_approval_tied_to_non_awaiting_turn_executes_without_forcing_continuation(tmp_path: Path) -> None:
-    tool = RecordingContinuationTool()
-    adapter = SequenceBrainAdapter(BrainResponse(text="plain answer", model="sequence-model"))
-    app = make_app(tmp_path, adapter)
-    app.tool_registry.register(tool)
-    try:
-        app.start()
-        finished_turn = app.handle_text_input(text="No pending approval")
-        requested = app.request_tool(
-            tool_name=tool.name,
-            arguments={"after": "finished"},
-            requested_by="api",
-            source=RequestSource.DIRECT_USER_COMMAND,
-            turn_id=finished_turn.turn_id,
-        )
-        app.approve(str(requested.approval_id))
-
-        executed = app.execute_approved_tool(str(requested.approval_id))
-
-        assert executed["ok"] is True
-        assert "continuation" not in executed
-        assert tool.calls == [{"after": "finished"}]
-        assert len(adapter.requests) == 1
-        assert turn_row(app, finished_turn.turn_id)["status"] == TurnStatus.FINISHED
-    finally:
-        app.close()
-
-
-def test_unknown_and_blocked_model_tools_create_no_approval_and_do_not_continue(tmp_path: Path) -> None:
-    blocked = RecordingContinuationTool(name="blocked_continuation")
-    blocked.risk = "destructive"
+def test_unknown_tool_fails_but_registered_tool_still_runs_and_continues(
+    tmp_path: Path,
+) -> None:
+    registered = RecordingContinuationTool(name="registered_destructive")
+    registered.risk = "destructive"
     adapter = SequenceBrainAdapter(
         BrainResponse(
             text="Need tools.",
             model="sequence-model",
             tool_calls=[
                 BrainToolCall(id="call-missing", name="missing_tool", arguments={}),
-                BrainToolCall(id="call-blocked", name=blocked.name, arguments={}),
+                BrainToolCall(id="call-registered", name=registered.name, arguments={}),
             ],
-        )
+        ),
+        BrainResponse(text="continued after mixed batch", model="sequence-model"),
     )
     app = make_app(tmp_path, adapter)
-    app.tool_registry.register(blocked)
+    app.tool_registry.register(registered)
     try:
         app.start()
 
-        result = app.handle_text_input(text="Try unsafe tools")
+        result = app.handle_text_input(text="Try mixed tools")
 
-        assert result.approvals == []
-        assert [call["status"] for call in result.tool_calls] == ["unknown", "blocked"]
+        assert result.final_text == "continued after mixed batch"
+        assert [call["status"] for call in result.tool_calls] == ["failed", "finished"]
         assert table_count(app, "approvals") == 0
-        assert table_count(app, "tool_runs") == 0
-        assert len(adapter.requests) == 1
-        assert blocked.calls == []
+        assert table_count(app, "tool_runs") == 1
+        assert len(adapter.requests) == 2
+        assert registered.calls == [{}]
     finally:
         app.close()
 
 
-def test_new_input_after_pending_approval_remains_allowed(tmp_path: Path) -> None:
+def test_new_input_after_direct_tool_turn_remains_in_same_conversation(tmp_path: Path) -> None:
     tool = RecordingContinuationTool()
     adapter = SequenceBrainAdapter(
         model_tool_response(tool.name),
+        BrainResponse(text="first turn complete", model="sequence-model"),
         BrainResponse(text="plain follow-up", model="sequence-model"),
     )
     app = make_app(tmp_path, adapter)
@@ -559,16 +807,18 @@ def test_new_input_after_pending_approval_remains_allowed(tmp_path: Path) -> Non
     try:
         app.start()
 
-        first = app.handle_text_input(text="Needs approval")
+        first = app.handle_text_input(text="Use a tool")
         second = app.handle_text_input(
             text="Plain follow-up",
             conversation_id=first.conversation_id,
         )
 
-        assert first.turn.status == TurnStatus.AWAITING_APPROVAL
+        assert first.turn.status == TurnStatus.FINISHED
+        assert first.final_text == "first turn complete"
         assert second.turn.status == TurnStatus.FINISHED
         assert second.final_text == "plain follow-up"
-        assert len(adapter.requests) == 2
+        assert second.conversation_id == first.conversation_id
+        assert len(adapter.requests) == 3
     finally:
         app.close()
 
@@ -583,30 +833,19 @@ def test_continuation_failure_keeps_tool_run_and_records_predictable_metadata(tm
     app.tool_registry.register(tool)
     try:
         app.start()
-        first = app.handle_text_input(text="Continue but fail")
-        approval_id = str(first.approvals[0]["id"])
-        app.approve(approval_id)
+        with pytest.raises(TurnOrchestratorError, match="continuation brain failed"):
+            app.handle_text_input(text="Continue but fail")
 
-        executed = app.execute_approved_tool(approval_id)
-        with pytest.raises(DaemonAppConflictError):
-            app.execute_approved_tool(approval_id)
-
-        stored = turn_row(app, first.turn_id)
-        continuation = stored["metadata"]["tool_result_continuation"]
-        assert executed["ok"] is True
-        assert executed["continuation"]["status"] == "failed"
-        # FIX-05 (case 3): a failed continuation drives the turn to a terminal
-        # status instead of dangling forever in AWAITING_APPROVAL. The approval
-        # was already executed, so there is nothing left to wait for.
+        turn_id = adapter.requests[0].turn_id
+        stored = turn_row(app, turn_id)
         assert stored["status"] == TurnStatus.FAILED
-        assert continuation["status"] == "failed"
-        assert continuation["continuation_eligible"] is True
-        assert "continuation brain failed" in continuation["error"]
         assert tool.calls == [{"n": 1}]
         assert table_count(app, "tool_runs") == 1
         assert len(adapter.requests) == 2
-        assert EventType.BRAIN_FAILED in event_types_for_turn(app, first.turn_id)
-        assert EventType.ERROR_RAISED in event_types_for_turn(app, first.turn_id)
+        turn_events = event_types_for_turn(app, turn_id)
+        assert EventType.BRAIN_FAILED in turn_events
+        assert EventType.TURN_FAILED in turn_events
+        assert EventType.ERROR_RAISED in turn_events
     finally:
         app.close()
 
@@ -625,16 +864,13 @@ def test_continuation_cancellation_marks_turn_cancelled_not_failed(tmp_path: Pat
     app.tool_registry.register(tool)
     try:
         app.start()
-        first = app.handle_text_input(text="Continue but get barged in")
-        approval_id = str(first.approvals[0]["id"])
-        app.approve(approval_id)
+        with pytest.raises(TurnCancelledError, match="continuation cancelled"):
+            app.handle_text_input(text="Continue but get barged in")
 
-        executed = app.execute_approved_tool(approval_id)
-
-        stored = turn_row(app, first.turn_id)
-        assert executed["continuation"]["status"] == "cancelled"
+        turn_id = adapter.requests[0].turn_id
+        stored = turn_row(app, turn_id)
         assert stored["status"] == TurnStatus.CANCELLED
-        turn_events = event_types_for_turn(app, first.turn_id)
+        turn_events = event_types_for_turn(app, turn_id)
         assert EventType.BRAIN_CANCELLED in turn_events
         assert EventType.TURN_CANCELLED in turn_events
         assert EventType.BRAIN_FAILED not in turn_events
@@ -659,15 +895,11 @@ def test_event_store_redacts_continuation_payloads(tmp_path: Path) -> None:
     app.tool_registry.register(tool)
     try:
         app.start()
-        first = app.handle_text_input(text="Use secret-shaped data")
-        approval_id = str(first.approvals[0]["id"])
-        app.approve(approval_id)
-
-        app.execute_approved_tool(approval_id)
+        result = app.handle_text_input(text="Use secret-shaped data")
 
         assert app.event_store is not None
         rendered_events = json.dumps(
-            [event.payload for event in app.event_store.list_by_turn_id(first.turn_id, limit=200)],
+            [event.payload for event in app.event_store.list_by_turn_id(result.turn_id, limit=200)],
             sort_keys=True,
         )
         rendered_request = json.dumps(adapter.requests[1].metadata, sort_keys=True)
@@ -682,14 +914,19 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 
 def test_runtime_code_and_scripts_do_not_contain_forbidden_legacy_strings() -> None:
+    allowed_contracts = {
+        ("jarvis/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("jarvis/voice/shared_broker.py", "/tmp/dan"),
+    }
     findings: list[str] = []
     for root_name in ("jarvis", "scripts"):
         for path in (ROOT / root_name).rglob("*"):
             if not path.is_file() or "__pycache__" in path.parts:
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
+            relative = str(path.relative_to(ROOT))
             for forbidden in FORBIDDEN_RUNTIME_STRINGS:
-                if forbidden in text:
-                    findings.append(f"{path.relative_to(ROOT)} contains {forbidden}")
+                if forbidden in text and (relative, forbidden) not in allowed_contracts:
+                    findings.append(f"{relative} contains {forbidden}")
 
     assert findings == []

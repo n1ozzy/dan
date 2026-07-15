@@ -38,6 +38,9 @@ REQUIRED_TABLES = {
     "conversations",
     "turns",
     "memory_blocks",
+    "memory_archive_documents",
+    "memory_archive_sync_state",
+    "memory_archive_fts",
     "settings",
     "worker_jobs",
     "tool_runs",
@@ -60,6 +63,7 @@ REQUIRED_INDEXES = {
     "idx_memory_blocks_kind",
     "idx_memory_blocks_active",
     "idx_memory_blocks_priority",
+    "idx_memory_archive_documents_source",
     "idx_worker_jobs_status",
     "idx_worker_jobs_created_at",
     "idx_worker_jobs_worker_kind",
@@ -124,6 +128,27 @@ CRITICAL_COLUMNS = {
         "created_at",
         "updated_at",
         "source_event_id",
+        "metadata_json",
+    },
+    "memory_archive_documents": {
+        "canonical_id",
+        "source_type",
+        "source_uri",
+        "source_item_id",
+        "title",
+        "content",
+        "content_hash",
+        "source_updated_at",
+        "metadata_json",
+        "created_at",
+        "updated_at",
+    },
+    "memory_archive_sync_state": {
+        "source_type",
+        "source_uri",
+        "cursor",
+        "fingerprint",
+        "synced_at",
         "metadata_json",
     },
     "approvals": {
@@ -431,8 +456,8 @@ def test_applying_migrations_twice_is_idempotent(tmp_path: Path) -> None:
     close_quietly(conn)
 
 
-def test_memory_os_sidecar_tables_do_not_bump_core_schema_version() -> None:
-    assert LATEST_SCHEMA_VERSION == 2
+def test_memory_archive_is_the_only_v3_core_schema_bump() -> None:
+    assert LATEST_SCHEMA_VERSION == 3
 
 
 def test_schema_sql_declares_memory_os_v1_tables() -> None:
@@ -457,7 +482,7 @@ def test_sidecar_migration_creates_memory_os_tables_for_preexisting_v2_database(
 
     assert MEMORY_OS_TABLES.issubset(table_names(conn))
     assert get_schema_version(conn) == LATEST_SCHEMA_VERSION
-    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 3").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 4").fetchone()[0] == 0
     close_quietly(conn)
 
 
@@ -646,6 +671,10 @@ def test_db_init_cli_initializes_temp_config_database(tmp_path: Path) -> None:
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
+    allowed_contracts = {
+        ("jarvis/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("jarvis/voice/shared_broker.py", "/tmp/dan"),
+    }
     forbidden = (
         "/Users/n1_ozzy/Documents/dev/dan",
         "/tmp/dan",
@@ -667,8 +696,9 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
             if "__pycache__" in path.parts or path.suffix not in text_suffixes:
                 continue
             text = path.read_text(encoding="utf-8")
+            relative = str(path.relative_to(ROOT))
             for snippet in forbidden:
-                if snippet in text:
-                    offenders.append((str(path.relative_to(ROOT)), snippet))
+                if snippet in text and (relative, snippet) not in allowed_contracts:
+                    offenders.append((relative, snippet))
 
     assert offenders == []

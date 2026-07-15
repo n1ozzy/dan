@@ -1,20 +1,18 @@
-"""Tests for new brain adapters: Groq, Qwen, Ollama, Chain, Eco Brain."""
+"""Tests for new brain adapters: Groq, Qwen, Ollama, Eco Brain."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from jarvis.brain import (
     BrainManager,
-    ChainAdapter,
     EcoBrainAdapter,
     GroqAdapter,
     OllamaAdapter,
     QwenAdapter,
 )
-from jarvis.brain.base import BrainRequest, BrainResponse
 
 
 class TestGroqAdapter:
@@ -100,45 +98,6 @@ class TestOllamaAdapter:
         assert models == ["cached-model"]
 
 
-class TestChainAdapter:
-    """Tests for Chain (Claude → Ollama) composite adapter."""
-
-    @pytest.fixture
-    def chain_adapter(self):
-        claude_mock = MagicMock()
-        claude_mock.name = "claude_cli"
-        claude_mock.default_model = "sonnet"
-
-        ollama_mock = MagicMock()
-        ollama_mock.name = "ollama"
-        ollama_mock.default_model = "bielik-11b-v2.3-instruct:Q4_K_M"
-
-        adapter = ChainAdapter(
-            claude_adapter=claude_mock,
-            ollama_adapter=ollama_mock,
-            claude_model="sonnet",
-            ollama_model="bielik-11b-v2.3-instruct:Q4_K_M",
-        )
-        yield adapter
-
-    def test_available_models_returns_both(self, chain_adapter):
-        models = chain_adapter.available_models()
-        assert "claude:sonnet" in models
-        assert "ollama:bielik-11b-v2.3-instruct:Q4_K_M" in models
-
-    def test_requires_both_adapters(self):
-        # ChainAdapter.validate() or generate() should fail without both
-        adapter = ChainAdapter(claude_adapter=None, ollama_adapter=MagicMock())
-        import asyncio
-        request = BrainRequest(
-            turn_id="test",
-            conversation_id="test",
-            input_text="test",
-        )
-        with pytest.raises(Exception, match="requires both"):
-            asyncio.run(adapter.generate(request))
-
-
 class TestEcoBrainAdapter:
     """Tests for Eco Brain adapter."""
 
@@ -190,8 +149,8 @@ class TestBrainManagerRegistration:
         # Code only), even if the binary is installed.
         assert "codex_cli" not in names
 
-    def test_manager_uses_config_when_provided(self):
-        """Test that explicit config overrides auto-detection for default adapter."""
+    def test_manager_does_not_restore_configured_provider_maze(self):
+        """Owner contract: even stale provider config resolves to cold Claude only."""
         from types import SimpleNamespace
 
         config = SimpleNamespace(
@@ -218,10 +177,9 @@ class TestBrainManagerRegistration:
 
             manager = BrainManager.from_config(config)
             names = manager.adapter_names()
-            assert "groq" in names
-            assert "test" in names
-            # But default is still test since we set it explicitly
-            assert manager.current_adapter_name == "test"
+            assert names == ["claude_cli"]
+            assert manager.current_adapter_name == "claude_cli"
+            mock_create.assert_not_called()
 
 
 if __name__ == "__main__":

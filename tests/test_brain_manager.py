@@ -195,7 +195,7 @@ def test_brain_manager_switch_adapter_does_not_modify_request_data() -> None:
     assert asdict(request) == before
 
 
-def test_brain_manager_from_config_uses_brain_defaults() -> None:
+def test_brain_manager_from_config_ignores_test_adapter_product_config() -> None:
     config = SimpleNamespace(
         brain=SimpleNamespace(
             default_adapter="test",
@@ -205,13 +205,9 @@ def test_brain_manager_from_config_uses_brain_defaults() -> None:
     )
 
     manager = BrainManager.from_config(config)
-    response = manager.generate(make_request("configured model"))
-
-    # Auto-detection registers available providers; test adapter is registered
-    names = manager.adapter_names()
-    assert "test" in names
-    assert manager.current_adapter_name == "test"
-    assert response.model == "mock-configured"
+    assert manager.adapter_names() == ["claude_cli"]
+    assert manager.current_adapter_name == "claude_cli"
+    assert manager.get_adapter().default_model == "mock-configured"
 
 
 def test_brain_modules_do_not_import_runtime_side_effect_dependencies() -> None:
@@ -247,7 +243,6 @@ def test_brain_tool_call_can_represent_requested_tool_without_execution() -> Non
 
 def test_brain_runtime_files_avoid_forbidden_legacy_strings() -> None:
     forbidden = (
-        "/Users/n1_ozzy/Documents/dev/dan",
         "/tmp/dan",
         "afplay",
         "--dangerously-skip-permissions",

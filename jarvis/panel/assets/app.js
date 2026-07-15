@@ -23,14 +23,21 @@ const cockpit = {
   apiBase: DEFAULT_API_BASE,
   online: false,
   selectedConversationId: readStoredConversationId(),
-  approvedApprovals: new Map(),
   // Tytuły rozmów dorabiane z pierwszego input_text (GET /turns?limit=1);
   // cache po id rozmowy, bo pierwsza tura się nie zmienia.
   conversationTitles: new Map(),
-  pendingApprovalCount: 0,
-  // Ostatni znany stan pracy daemona (RuntimeState: IDLE/LISTENING/THINKING/
-  // SPEAKING) — steruje żywą ramką: praca => neon obiega, spoczynek => spokój.
-  runtimeState: "IDLE",
+  // Ostatni znany stan pracy daemona — wyświetlany bezpośrednio w pasku
+  // aktywności i używany do sterowania żywą ramką.
+  runtimeState: "unknown",
+  runtimeStateRevision: 0,
+  runtimeStateRequestId: 0,
+  activity: {
+    lastEventId: 0,
+    stage: "Łączenie…",
+    toolName: "",
+    toolStatus: "",
+    resultSummary: "",
+  },
   // Zakładka LOGI: aktywny filtr + ostatnia partia zdarzeń, żeby zmiana
   // filtra przerysowała dziennik bez ponownego strzału do daemona.
   logFilter: "all",
@@ -67,9 +74,9 @@ const cockpit = {
     socket: null,
     base: null,
     lastEventId: 0,
+    replayFromStart: false,
     retryMs: 2000,
     reconnectTimer: null,
-    approvalsTimer: null,
     historyTimer: null,
     memoryTimer: null,
     runtimeTimer: null,
@@ -85,6 +92,35 @@ const STREAM_SUBPROTOCOL = "jarvis.v1";
 const STREAM_TOKEN_SUBPROTOCOL_PREFIX = "jarvis-token.";
 const STREAM_MAX_RETRY_MS = 15000;
 const MAX_LIVE_EVENT_ROWS = 50;
+const MAX_ACTIVITY_RESULT_SUMMARY_CHARS = 160;
+const ACTIVITY_STAGE_LABELS = Object.freeze({
+  "turn.started": "Rozpoczęcie tury",
+  "turn.context.built": "Kontekst gotowy",
+  "brain.requested": "Model pracuje",
+  "brain.responded": "Model odpowiedział",
+  "tool.requested": "Przygotowanie narzędzia",
+  "tool.started": "Narzędzie działa",
+  "tool.finished": "Narzędzie zakończone",
+  "tool.failed": "Błąd narzędzia",
+  "turn.finished": "Odpowiedź gotowa",
+  "turn.failed": "Błąd tury",
+  "turn.cancelled": "Tura przerwana",
+});
+const ACTIVITY_RUNTIME_STAGE_LABELS = Object.freeze({
+  IDLE: "Gotowy",
+  THINKING: "Myślenie",
+  TOOLING: "Narzędzie działa",
+  LISTENING: "Nasłuch",
+  TRANSCRIBING: "Transkrypcja",
+  SPEAKING: "Mówienie",
+  ERROR: "Błąd runtime",
+});
+const ACTIVITY_TOOL_STATUS_LABELS = Object.freeze({
+  requested: "przygotowanie",
+  started: "start",
+  success: "sukces",
+  error: "błąd",
+});
 // When the daemon is unreachable at load (e.g. panel started before the daemon
 // finished booting), re-poll health on this interval so the panel recovers on
 // its own instead of getting stuck on "unknown"/"offline" until a manual click.
@@ -121,7 +157,6 @@ const MISSION_CONTROL_ENDPOINTS = Object.freeze([
   { key: "voiceRuntime", path: "/voice/runtime", method: "GET" },
   { key: "voiceQueue", path: "/voice/queue?limit=12", method: "GET" },
   { key: "tools", path: "/tools", method: "GET" },
-  { key: "approvals", path: "/approvals?limit=25", method: "GET" },
   { key: "memory", path: "/memory?active_only=true&limit=25", method: "GET" },
   { key: "memoryItems", path: "/memory/items", method: "GET" },
   { key: "events", path: "/events?latest=true&limit=50", method: "GET" },
@@ -138,15 +173,14 @@ const RUNTIME_OVERVIEW_FIELD_SOURCES = Object.freeze({
   voiceRuntime: "Runtime głosu",
   voiceQueue: "Kolejka głosu",
   tools: "Rejestr narzędzi",
-  approvals: "Zgody",
   memory: "Pamięć",
   memoryItems: "Memory OS",
   events: "Zdarzenia",
   contract: "Kontrakt Jarvisa",
 });
 
-// Ludzkie nazwy narzędzi (rejestr daemona) — używane w kartach zgód i w
-// sekcji „Możliwości Jarvisa”. Fallback dla rodzin ui_/screen_/terminal_,
+// Ludzkie nazwy narzędzi (rejestr daemona) — używane w sekcji
+// „Możliwości Jarvisa”. Fallback dla rodzin ui_/screen_/terminal_,
 // a na końcu surowa nazwa, żeby nowe narzędzie nigdy nie zniknęło z widoku.
 const TOOL_LABELS = {
   file_read: "Odczyt pliku",
@@ -164,7 +198,6 @@ const TOOL_LABELS = {
   terminal_read_screen: "Odczyt ekranu terminala",
   terminal_paste: "Wklejenie do terminala",
   echo: "Echo (test)",
-  approval_probe: "Sonda zgód (demo)",
 };
 
 function toolLabel(name) {
@@ -284,14 +317,7 @@ const EVENT_LABELS = {
   "memory.disabled": "Pamięć: notatka wyłączona",
   "memory.candidate.created": "Pamięć: propozycja",
   "memory.candidate.promoted": "Pamięć: zatwierdzona",
-  "approval.created": "Zgoda: prośba",
-  "approval.approved": "Zgoda: zatwierdzona",
-  "approval.rejected": "Zgoda: odrzucona",
-  "approval.expired": "Zgoda: wygasła",
   "tool.requested": "Narzędzie: prośba",
-  "tool.approval.required": "Narzędzie: wymaga zgody",
-  "tool.approved": "Narzędzie: dopuszczone",
-  "tool.rejected": "Narzędzie: odrzucone",
   "tool.started": "Narzędzie: start",
   "tool.finished": "Narzędzie: koniec",
   "tool.failed": "Narzędzie: błąd",
@@ -305,6 +331,19 @@ const EVENT_LABELS = {
   "runtime.process.observed": "Runtime: proces",
 };
 
+const INACTIVE_DECISION_EVENT_TYPES = new Set([
+  "tool.approval.required",
+  "tool.approved",
+  "tool.rejected",
+]);
+
+// Dawne zdarzenia decyzji mogą nadal istnieć w historii backendu. Panel
+// świadomie ich nie pokazuje ani nie używa do odświeżeń lub stanu UI.
+function isInactiveDecisionEvent(type) {
+  const key = String(type || "");
+  return key.startsWith("approval.") || INACTIVE_DECISION_EVENT_TYPES.has(key);
+}
+
 function eventLabel(type) {
   const key = typeof type === "string" ? type : "";
   if (EVENT_LABELS[key]) {
@@ -313,19 +352,21 @@ function eventLabel(type) {
   if (key.startsWith("turn.")) return "Tura: …";
   if (key.startsWith("voice.")) return "Mowa: …";
   if (key.startsWith("listening.")) return "Nasłuch: …";
-  if (key.startsWith("approval.")) return "Zgoda: …";
   if (key.startsWith("tool.")) return "Narzędzie: …";
   if (key.startsWith("memory.")) return "Pamięć: …";
   if (key.startsWith("brain.")) return "Model: …";
   return key || "zdarzenie";
 }
 
-// Filtr dziennika wg rodziny typu: tury / głos / zgody / narzędzia.
+// Filtr dziennika wg rodziny typu: tury / głos / narzędzia.
 function eventMatchesFilter(type, filter) {
+  const key = typeof type === "string" ? type : "";
+  if (isInactiveDecisionEvent(key)) {
+    return false;
+  }
   if (!filter || filter === "all") {
     return true;
   }
-  const key = typeof type === "string" ? type : "";
   if (filter === "turns") {
     return key.startsWith("turn.");
   }
@@ -336,9 +377,6 @@ function eventMatchesFilter(type, filter) {
       key.startsWith("audio.") ||
       key === "input.voice.transcribed"
     );
-  }
-  if (filter === "approvals") {
-    return key.startsWith("approval.");
   }
   if (filter === "tools") {
     return key.startsWith("tool.");
@@ -379,7 +417,7 @@ async function pollLiveFallback() {
   await Promise.allSettled([
     refreshHistory(),
     refreshMemory(),
-    refreshToolsAndApprovals(),
+    refreshTools(),
     refreshSettingsPreview(),
     refreshVoice(),
     refreshVoiceQueue(),
@@ -391,7 +429,13 @@ async function pollLiveFallback() {
 
 function bindElements() {
   const ids = [
+    "activityStrip",
     "stateLabel",
+    "activityStage",
+    "activityDetail",
+    "activityTool",
+    "activityStatus",
+    "activityResult",
     "refreshAllButton",
     "apiBaseInput",
     "healthHumanList",
@@ -416,10 +460,6 @@ function bindElements() {
     "memoryError",
     "refreshToolsButton",
     "toolList",
-    "approvalList",
-    "approvalsError",
-    "approvalsBadge",
-    "approvalNudge",
     "toolsError",
     "refreshMissionControlButton",
     "missionControlSummary",
@@ -479,21 +519,12 @@ function bindElements() {
     "toolsControlGrid",
     "toolsEnabledToggle",
     "toolsNetworkEnabledToggle",
-    "grantShellToggle",
-    "grantFileWriteToggle",
-    "grantNetworkToggle",
-    "grantUiToggle",
-    "grantTerminalToggle",
-    "grantMemoryToggle",
-    "destructiveEnabledToggle",
     "resetToolsPreviewButton",
     "applyToolsSettingsButton",
     "toolsApplyStatus",
     "personaProfileSelect",
     "applyPersonaSettingsButton",
     "personaApplyStatus",
-    "refreshMemoryApprovalsButton",
-    "memoryApprovalsList",
     "latestTurnTraceList",
     "refreshRuntimeLogsSummaryButton",
     "runtimeLogsSummaryList",
@@ -566,13 +597,6 @@ function bindEvents() {
   bindIf(el.testPttButton, "click", testPttPath);
   bindIf(el.toolsEnabledToggle, "change", updateToolsControlOptions);
   bindIf(el.toolsNetworkEnabledToggle, "change", updateToolsControlOptions);
-  bindIf(el.grantShellToggle, "change", updateToolsControlOptions);
-  bindIf(el.grantFileWriteToggle, "change", updateToolsControlOptions);
-  bindIf(el.grantNetworkToggle, "change", updateToolsControlOptions);
-  bindIf(el.grantUiToggle, "change", updateToolsControlOptions);
-  bindIf(el.grantTerminalToggle, "change", updateToolsControlOptions);
-  bindIf(el.grantMemoryToggle, "change", updateToolsControlOptions);
-  bindIf(el.destructiveEnabledToggle, "change", updateToolsControlOptions);
   bindIf(el.personaProfileSelect, "change", updatePersonaControlOptions);
   // Instant auto-apply: every settings control persists immediately on change — no Apply/Reset buttons.
   const instantApplyTimers = {};
@@ -588,16 +612,7 @@ function bindEvents() {
     tts: [el.voiceSpeakResponsesToggle, el.voiceTtsSelect, el.voiceTtsModelSelect, el.voiceVoiceIdSelect, el.voiceProfileSelect, el.voiceSpeedInput],
     stt: [el.voiceSttSelect, el.voiceSttModelSelect, el.voiceSttLanguageSelect],
     ptt: [el.pttModeSelect, el.pttHotkeyInput, el.pttMergeWindowInput],
-    tools: [
-      el.toolsEnabledToggle,
-      el.grantShellToggle,
-      el.grantFileWriteToggle,
-      el.grantNetworkToggle,
-      el.grantUiToggle,
-      el.grantTerminalToggle,
-      el.grantMemoryToggle,
-      el.destructiveEnabledToggle,
-    ],
+    tools: [el.toolsEnabledToggle],
     persona: [el.personaProfileSelect],
   };
   for (const [group, elems] of Object.entries(instantApplyGroups)) {
@@ -610,9 +625,6 @@ function bindEvents() {
   });
   bindIf(el.refreshQueueButton, "click", refreshVoiceQueue);
   bindIf(el.cancelCurrentSpeechButton, "click", cancelCurrentSpeech);
-  bindIf(el.refreshMemoryApprovalsButton, "click", async () => {
-    await Promise.allSettled([refreshMemory(), refreshToolsAndApprovals(), refreshSettingsPreview()]);
-  });
   bindIf(el.refreshRuntimeLogsSummaryButton, "click", refreshEvents);
   bindIf(el.resetBrainPreviewButton, "click", resetSettingsPreview);
   bindIf(el.resetTtsPreviewButton, "click", resetSettingsPreview);
@@ -620,7 +632,7 @@ function bindEvents() {
   bindIf(el.resetToolsPreviewButton, "click", resetSettingsPreview);
   bindIf(el.resetSettingsPreviewButton, "click", resetSettingsPreview);
   bindIf(el.refreshMemoryButton, "click", refreshMemory);
-  bindIf(el.refreshToolsButton, "click", refreshToolsAndApprovals);
+  bindIf(el.refreshToolsButton, "click", refreshTools);
   bindIf(el.refreshSettingsPreviewButton, "click", refreshSettingsPreview);
   bindIf(el.refreshSettingsButton, "click", refreshSettings);
   bindIf(el.refreshRuntimeOverviewButton, "click", refreshRuntimeOverview);
@@ -646,7 +658,6 @@ function bindEvents() {
   for (const tab of document.querySelectorAll(".tab-button")) {
     tab.addEventListener("click", () => switchView(tab.dataset.view));
   }
-  bindIf(el.approvalNudge, "click", () => switchView("approvals"));
   bindIf(el.pttModeButton, "click", () => setVoiceMode("ptt"));
   bindIf(el.listenToggle, "click", () => setVoiceMode("listen"));
   bindIf(el.memoryForm, "submit", createMemoryBlock);
@@ -654,10 +665,10 @@ function bindEvents() {
     const nextBase = el.apiBaseInput.value.trim();
     cockpit.apiBase = nextBase || DEFAULT_API_BASE;
     el.apiBaseInput.value = cockpit.apiBase;
-    cockpit.approvedApprovals.clear();
     cockpit.conversationTitles.clear();
     disconnectStream("api base changed");
     cockpit.stream.lastEventId = 0;
+    resetActivity();
     refreshAll();
   });
 }
@@ -684,7 +695,7 @@ async function refreshAll() {
     refreshVoiceQueue(),
     refreshHistory(),
     refreshMemory(),
-    refreshToolsAndApprovals(),
+    refreshTools(),
     refreshSettingsPreview(),
     refreshSettings(),
     refreshRuntimeOverview(),
@@ -914,6 +925,8 @@ if (document.readyState === "loading") {
 
 async function refreshHealthAndState() {
   clearError(el.healthError);
+  const requestId = ++cockpit.runtimeStateRequestId;
+  const stateRevisionAtRequest = cockpit.runtimeStateRevision;
 
   try {
     const health = await requestJson("/health");
@@ -927,19 +940,21 @@ async function refreshHealthAndState() {
     }
 
     const merged = { ...health, ...statePayload };
-    setText(el.stateLabel, merged.state || "unknown");
-    if (merged.state) {
-      cockpit.runtimeState = merged.state;
+    // A state.changed frame may arrive while /health + /state are in flight.
+    // Never let that older REST snapshot roll the strip back afterward.
+    if (
+      requestId === cockpit.runtimeStateRequestId &&
+      stateRevisionAtRequest === cockpit.runtimeStateRevision
+    ) {
+      setActivityRuntimeState(merged.state || "unknown");
     }
     applyStateFrame();
-    syncPendingApprovals(merged.pending_approval_count);
     renderHealthHuman(merged);
     renderKeyValues(el.healthStateList, [
       ["service", merged.service],
       ["state", merged.state],
       ["started", merged.started],
       ["schema_version", merged.schema_version],
-      ["pending_approval_count", merged.pending_approval_count],
       ["brain_adapter", merged.brain_adapter],
       ["voice_enabled", merged.voice_enabled],
       ["tokens_in", merged.session_tokens_in],
@@ -947,8 +962,13 @@ async function refreshHealthAndState() {
     ]);
     return true;
   } catch (error) {
+    if (requestId !== cockpit.runtimeStateRequestId) {
+      return cockpit.online;
+    }
     setOnline(false);
-    setText(el.stateLabel, "offline");
+    setActivityRuntimeState("offline");
+    cockpit.activity.stage = "Brak połączenia";
+    renderActivity();
     clearNode(el.healthHumanList);
     clearNode(el.healthStateList);
     renderError(el.healthError, error);
@@ -1023,7 +1043,7 @@ async function refreshMissionControl() {
     await Promise.allSettled([
       refreshVoice(),
       refreshVoiceQueue(),
-      refreshToolsAndApprovals(),
+      refreshTools(),
       refreshMemory(),
       refreshEvents(),
       refreshSettingsPreview(),
@@ -1121,12 +1141,6 @@ const RUNTIME_SETTINGS_GROUP_FIELDS = Object.freeze({
     "tools.enabled",
     "tools.network_enabled",
     "security.network_enabled",
-    "security.require_approval_for_network",
-    "security.require_approval_for_shell",
-    "security.require_approval_for_file_write",
-    "security.require_approval_for_ui",
-    "security.require_approval_for_terminal",
-    "security.require_approval_for_memory",
     "security.destructive_tools_enabled",
     "destructive_tools_enabled",
     "provider_tools_enabled",
@@ -1159,12 +1173,6 @@ const RUNTIME_SETTING_LABELS = Object.freeze({
   "tools.enabled": "Narzędzia włączone",
   "tools.network_enabled": "Dostęp do internetu",
   "security.network_enabled": "Polityka sieci",
-  "security.require_approval_for_network": "Sam: internet",
-  "security.require_approval_for_shell": "Sam: komendy (shell)",
-  "security.require_approval_for_file_write": "Sam: zapis plików",
-  "security.require_approval_for_ui": "Sam: klikanie po ekranie",
-  "security.require_approval_for_terminal": "Sam: terminal",
-  "security.require_approval_for_memory": "Sam: zapis pamięci",
   "security.destructive_tools_enabled": "Destrukcyjne dozwolone",
   "persona.profile": "Profil persony",
 });
@@ -1189,12 +1197,6 @@ const RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY = Object.freeze({
   "tools.enabled": Object.freeze(["tools_internet", "tools_enabled"]),
   "tools.network_enabled": Object.freeze(["tools_internet", "internet_capability"]),
   "security.network_enabled": Object.freeze(["tools_internet", "network_policy"]),
-  "security.require_approval_for_network": Object.freeze(["tools_internet", "network_policy"]),
-  "security.require_approval_for_shell": Object.freeze(["tools_internet", "approval_required_tools"]),
-  "security.require_approval_for_file_write": Object.freeze(["tools_internet", "approval_required_tools"]),
-  "security.require_approval_for_ui": Object.freeze(["tools_internet", "approval_required_tools"]),
-  "security.require_approval_for_terminal": Object.freeze(["tools_internet", "approval_required_tools"]),
-  "security.require_approval_for_memory": Object.freeze(["tools_internet", "approval_required_tools"]),
   "persona.profile": Object.freeze(["personality", "active_persona"]),
 });
 
@@ -1334,7 +1336,6 @@ function humanDisplayValue(value) {
   if (text === "not_apply_capable") return "Nie można zastosować";
   if (text === "available") return "Dostępne";
   if (text === "unavailable") return "Brak";
-  if (text === "approval_required") return "Wymagana zgoda";
   if (text === "disabled") return "Wyłączone";
   if (text === "enabled") return "Włączone";
   return text;
@@ -1409,14 +1410,6 @@ function humanActionForReason(reason, fallback = "Brak dostępnej akcji w tej ch
     return "Skonfiguruj lokalny model przed włączeniem tego dostawcy.";
   }
   return fallback;
-}
-
-function networkPolicyLabel(value) {
-  const raw = String(value || "").toLowerCase();
-  if (raw === "approval_required") return "Wymagana zgoda";
-  if (raw === "allowed") return "Dozwolone";
-  if (raw === "disabled") return "Wyłączone";
-  return raw ? humanDisplayValue(raw) : "Nieznane";
 }
 
 function runtimeSettingsPreviewFieldForKey(payload, key) {
@@ -1741,30 +1734,6 @@ function runtimeSettingsCurrentValueForKey(payload, key) {
   if (key === "tools.network_enabled" || key === "security.network_enabled") {
     const internet = safeObject(projectionValue(tools.internet_capability));
     return internet.state === "available";
-  }
-  if (key === "security.require_approval_for_network") {
-    const approvalRequired = projectionValue(tools.approval_required_tools);
-    return Array.isArray(approvalRequired) && approvalRequired.includes("network");
-  }
-  if (key === "security.require_approval_for_shell") {
-    const approvalRequired = projectionValue(tools.approval_required_tools);
-    return Array.isArray(approvalRequired) && approvalRequired.includes("shell");
-  }
-  if (key === "security.require_approval_for_file_write") {
-    const approvalRequired = projectionValue(tools.approval_required_tools);
-    return Array.isArray(approvalRequired) && approvalRequired.includes("file_write");
-  }
-  if (key === "security.require_approval_for_ui") {
-    const approvalRequired = projectionValue(tools.approval_required_tools);
-    return Array.isArray(approvalRequired) && approvalRequired.includes("ui");
-  }
-  if (key === "security.require_approval_for_terminal") {
-    const approvalRequired = projectionValue(tools.approval_required_tools);
-    return Array.isArray(approvalRequired) && approvalRequired.includes("terminal");
-  }
-  if (key === "security.require_approval_for_memory") {
-    const approvalRequired = projectionValue(tools.approval_required_tools);
-    return Array.isArray(approvalRequired) && approvalRequired.includes("memory");
   }
   if (key === "security.destructive_tools_enabled") {
     return Boolean(projectionValue(tools.destructive_tools_enabled));
@@ -2546,9 +2515,6 @@ function renderToolsApplyControls(payload) {
   const graphTools = safeObject(safeObject(payload.capability_graph).tools_capabilities);
   const applyCapabilities = safeObject(graphTools.apply_capabilities);
   const internet = safeObject(projectionValue(tools.internet_capability));
-  const approvalRequired = Array.isArray(projectionValue(tools.approval_required_tools))
-    ? projectionValue(tools.approval_required_tools)
-    : [];
   const hasLiveApplyControl = runtimeSettingsToolsHasLiveApplyControl(applyCapabilities);
   const operator = toolsInternetOperatorState(tools, applyCapabilities);
   const missingInternetReason = operator.applyStatus === "Blocked" ? operator.reason : "";
@@ -2565,49 +2531,6 @@ function renderToolsApplyControls(payload) {
     "tools.network_enabled",
     applyCapabilities,
     missingInternetReason,
-  );
-  // Grant semantics: checked = Jarvis runs the class on his own (approval OFF).
-  setToolsToggleState(
-    el.grantShellToggle,
-    !approvalRequired.includes("shell"),
-    "security.require_approval_for_shell",
-    applyCapabilities,
-  );
-  setToolsToggleState(
-    el.grantFileWriteToggle,
-    !approvalRequired.includes("file_write"),
-    "security.require_approval_for_file_write",
-    applyCapabilities,
-  );
-  setToolsToggleState(
-    el.grantNetworkToggle,
-    !approvalRequired.includes("network"),
-    "security.require_approval_for_network",
-    applyCapabilities,
-  );
-  setToolsToggleState(
-    el.grantUiToggle,
-    !approvalRequired.includes("ui"),
-    "security.require_approval_for_ui",
-    applyCapabilities,
-  );
-  setToolsToggleState(
-    el.grantTerminalToggle,
-    !approvalRequired.includes("terminal"),
-    "security.require_approval_for_terminal",
-    applyCapabilities,
-  );
-  setToolsToggleState(
-    el.grantMemoryToggle,
-    !approvalRequired.includes("memory"),
-    "security.require_approval_for_memory",
-    applyCapabilities,
-  );
-  setToolsToggleState(
-    el.destructiveEnabledToggle,
-    Boolean(projectionValue(tools.destructive_tools_enabled)),
-    "security.destructive_tools_enabled",
-    applyCapabilities,
   );
   const compactBlocked = operator.applyStatus !== "Dostępne" || !hasLiveApplyControl;
   setToolsSectionCompactMode(compactBlocked);
@@ -2851,7 +2774,6 @@ function toolsInternetOperatorState(tools, applyCapabilities) {
     toolsStatus: toolsOn ? "Włączone" : "Wyłączone",
     internetStatus: internetMissing ? "Blokada setupu" : toolsInternetStateLabel(rawInternetState),
     searchToolStatus: networkToolMissing ? "Brak" : (networkTool ? "Dostępne" : "Nieznane"),
-    networkPolicy: networkPolicyLabel(projectionValue(tools.network_policy)),
     reason: reason || "Brak",
     action,
     applyStatus,
@@ -2880,7 +2802,6 @@ function renderToolsInternetCompactStatusList(payload, tools, applyCapabilities)
     ["Dostęp do internetu", operator.internetStatus],
     ["Powód", operator.reason],
     ["Akcja", operator.action],
-    ["Polityka", operator.networkPolicy],
     ["Zastosowanie", operator.applyLabel],
   ]);
   row.appendChild(values);
@@ -2905,10 +2826,6 @@ function renderToolsInternetStatusList(payload, tools, applyCapabilities) {
     || runtimeSettingsToolBlockers(applyCapabilities, tools)[0]
     || "brak";
   const internetWarning = projectionWarning(tools.internet_capability) || "brak";
-  const networkApprovalCapability = safeObject(applyCapabilities["security.require_approval_for_network"]);
-  const approvalCanApply = networkApprovalCapability.apply_capable === true && !networkApprovalCapability.requires_restart
-    ? "Dostępne"
-    : "Wymaga restartu";
   const operator = toolsInternetOperatorState(tools, applyCapabilities);
   renderKeyValues(values, [
     ["Narzędzia", operator.toolsStatus],
@@ -2916,8 +2833,6 @@ function renderToolsInternetStatusList(payload, tools, applyCapabilities) {
     ["Powód", humanShortReason(internetWarning) || "Brak"],
     ["Akcja", operator.action],
     ["Narzędzie szukania", operator.searchToolStatus],
-    ["Polityka sieci", operator.networkPolicy],
-    ["Zmiany zgód", approvalCanApply],
     ["Zastosowanie", applyCapability === "yes" ? "Dostępne" : operator.applyStatus],
     ["Restart wymagany", requiresRestart ? "Wymaga restartu" : "Wyłączone"],
     ["Blokada", humanShortReason(blocker) || "Brak"],
@@ -2978,7 +2893,6 @@ function updatePersonaControlOptions() {
 
 function renderAuxiliaryCockpitSectionsFromPayload(payload) {
   renderQueueBargeInSummary(payload);
-  renderMemoryApprovalsSummary(payload);
   renderLatestTurnTraceSummary(payload);
   renderRuntimeLogsSummaryFromPayload(payload);
 }
@@ -3021,31 +2935,6 @@ function renderQueueBargeInSummary(payload, rows = null) {
   }
 }
 
-function renderMemoryApprovalsSummary(payload) {
-  clearNode(el.memoryApprovalsList);
-  if (!el.memoryApprovalsList) {
-    return;
-  }
-  const memory = safeObject(payload.memory);
-  const approvals = safeObject(payload.approvals);
-  const row = document.createElement("article");
-  row.className = "list-row cockpit-summary-card";
-  appendLine(row, "Memory / Approvals compact status", "input-line");
-  const values = document.createElement("dl");
-  values.className = "kv-list";
-  renderKeyValues(values, [
-    ["memory enabled", settingsPreviewValue(projectionValue(memory.enabled))],
-    ["active memory max/count", firstPresent(projectionValue(memory.active_count), projectionValue(memory.max_active_blocks), "unknown")],
-    ["pending memory candidates", firstPresent(projectionValue(memory.pending_candidates), settingsPreviewValue(projectionValue(memory.worker_candidates_require_promotion)))],
-    ["pending approvals", settingsPreviewValue(projectionValue(approvals.pending_count))],
-    ["latest approval status", latestProjectionWarning(approvals) || "none"],
-    ["latest memory error", latestProjectionWarning(memory) || "none"],
-    ["memory write approval path", projectionValue(approvals.require_approval_for_file_write) ? "approval visible" : "unknown/manual"],
-  ]);
-  row.appendChild(values);
-  el.memoryApprovalsList.appendChild(row);
-}
-
 function latestProjectionWarning(group) {
   for (const item of Object.values(safeObject(group))) {
     const warning = projectionWarning(item);
@@ -3072,7 +2961,6 @@ function renderLatestTurnTraceSummary(payload) {
     ["source", settingsPreviewValue(projectionValue(trace.source))],
     ["provider/model", `${settingsPreviewValue(projectionValue(trace.provider_adapter))} / ${settingsPreviewValue(projectionValue(trace.provider_model))}`],
     ["tools attempted", settingsPreviewValue(projectionValue(trace.tools_attempted_count))],
-    ["approval status", settingsPreviewValue(projectionValue(trace.approval_status))],
     ["voice rows", settingsPreviewValue(projectionValue(trace.voice_rows_created))],
     ["interrupted turn", settingsPreviewValue(projectionValue(trace.interrupted_turn_id))],
     ["cancelled speech", settingsPreviewValue(projectionValue(trace.cancelled_speech_id))],
@@ -3095,7 +2983,6 @@ function renderRuntimeLogsSummaryFromPayload(payload, events = []) {
     ["latest safe error", firstPresent(traceLatestSafeError(runtimeOverviewContext({ runtimeSettings: payload, events: { events } })), "none")],
     ["latest voice event", latestEventSummaryForFamily(events, "voice")],
     ["latest provider event", latestEventSummaryForFamilies(events, ["brain", "provider", "adapter"])],
-    ["latest approval event", latestEventSummaryForFamily(events, "approval")],
     ["debug events", newestFirstEvents(events).slice(0, 5).map((event) => `${event.type || "event"} #${event.id || "?"}`).join(" | ") || "none"],
   ]);
   row.appendChild(values);
@@ -3274,29 +3161,6 @@ function runtimeSettingsDraftForGroup(group) {
     }
     if (el.toolsNetworkEnabledToggle && !el.toolsNetworkEnabledToggle.disabled) {
       draft["tools.network_enabled"] = Boolean(el.toolsNetworkEnabledToggle.checked);
-    }
-    // Grant checkboxes are the INVERSE of the stored require_approval keys:
-    // checked (może sam) => require_approval = false.
-    if (el.grantShellToggle && !el.grantShellToggle.disabled) {
-      draft["security.require_approval_for_shell"] = !el.grantShellToggle.checked;
-    }
-    if (el.grantFileWriteToggle && !el.grantFileWriteToggle.disabled) {
-      draft["security.require_approval_for_file_write"] = !el.grantFileWriteToggle.checked;
-    }
-    if (el.grantNetworkToggle && !el.grantNetworkToggle.disabled) {
-      draft["security.require_approval_for_network"] = !el.grantNetworkToggle.checked;
-    }
-    if (el.grantUiToggle && !el.grantUiToggle.disabled) {
-      draft["security.require_approval_for_ui"] = !el.grantUiToggle.checked;
-    }
-    if (el.grantTerminalToggle && !el.grantTerminalToggle.disabled) {
-      draft["security.require_approval_for_terminal"] = !el.grantTerminalToggle.checked;
-    }
-    if (el.grantMemoryToggle && !el.grantMemoryToggle.disabled) {
-      draft["security.require_approval_for_memory"] = !el.grantMemoryToggle.checked;
-    }
-    if (el.destructiveEnabledToggle && !el.destructiveEnabledToggle.disabled) {
-      draft["security.destructive_tools_enabled"] = Boolean(el.destructiveEnabledToggle.checked);
     }
     return draft;
   }
@@ -4071,10 +3935,21 @@ function renderSettingsPreview(model) {
     appendLine(card, section.label || SETTINGS_PREVIEW_SECTION_LABELS[sectionId] || sectionId, "input-line");
     const fields = safeObject(section.fields);
     for (const key of Object.keys(fields)) {
+      if (inactiveSettingsPreviewField(key, fields[key])) {
+        continue;
+      }
       card.appendChild(renderSettingsPreviewField(fields[key], model));
     }
     el.settingsPreviewList.appendChild(card);
   }
+}
+
+function inactiveSettingsPreviewField(key, field) {
+  const source = safeObject(field);
+  const identity = [key, source.id, source.label, source.current, source.effective]
+    .map((value) => String(value || "").toLowerCase())
+    .join(" ");
+  return identity.includes("approval") || identity.includes("zgod");
 }
 
 function renderSettingsPreviewDiff(model) {
@@ -4362,12 +4237,10 @@ function renderMissionAuxiliarySummaries(snapshot) {
   const events = Array.isArray(safeObject(snapshot.events).events) ? snapshot.events.events : [];
   if (Object.keys(runtimeSettings).length > 0) {
     renderQueueBargeInSummary(runtimeSettings);
-    renderMemoryApprovalsSummary(runtimeSettings);
     renderLatestTurnTraceSummary(runtimeSettings);
     renderRuntimeLogsSummaryFromPayload(runtimeSettings, events);
   } else {
     renderQueueBargeInSummary({});
-    renderMemoryApprovalsSummary({});
     renderLatestTurnTraceSummary({});
     renderRuntimeLogsSummaryFromPayload({}, events);
   }
@@ -4391,7 +4264,7 @@ function renderMissionSummary(summary) {
     ["provider", summary.activeProvider],
     ["voice", summary.voiceStatus],
     ["tools", summary.toolsInternetStatus],
-    ["memory", summary.memoryApprovalStatus],
+    ["memory", summary.memoryStatus],
     ["refresh", summary.lastRefreshTime],
   ]) {
     glance.appendChild(missionGlanceItem(item[0], item[1]));
@@ -4548,14 +4421,11 @@ function missionControlModuleCards(context, summary) {
       ],
     },
     {
-      title: "Memory / Approval",
-      status: moduleStatusFromSources(context, ["memory", "memoryItems", "approvals"]),
+      title: "Memory",
+      status: moduleStatusFromSources(context, ["memory", "memoryItems"]),
       rows: [
         ["memory enabled", memoryEnabledSummary(context)],
         ["latest memory status", latestMemoryStatus(context)],
-        ["pending approvals", pendingApprovalSummary(context)],
-        ["already-executed/idempotent", cockpit.approvedApprovals.size > 0 ? "approved retry state visible" : "not active"],
-        ["approval blocker", approvalBlocker(context)],
       ],
     },
     {
@@ -4564,7 +4434,7 @@ function missionControlModuleCards(context, summary) {
       rows: [
         ["tools", context.tools.length > 0 ? `${context.tools.length} known` : "unknown/none"],
         ["internet/network", networkToolSummary(context.tools)],
-        ["approval-required tools", toolRiskSummary(context.tools)],
+        ["risk classes", toolRiskSummary(context.tools)],
         ["provider tools support", providerSupportValue(context, "tools_support")],
       ],
     },
@@ -4625,7 +4495,6 @@ function operationalChecklistItems(snapshot) {
   const memoryVisible =
     runtimeOverviewSourceAvailable(context, "memory") ||
     runtimeOverviewSourceAvailable(context, "memoryItems");
-  const approvalsVisible = runtimeOverviewSourceAvailable(context, "approvals");
   const providerKnown = firstPresent(
     projectionValue(context.brainRuntime.current_adapter),
     context.activeAdapter,
@@ -4709,13 +4578,6 @@ function operationalChecklistItems(snapshot) {
       memoryVisible ? "podsumowania/elementy pamięci wczytane" : "brakuje źródła pamięci",
       "/memory + /memory/items",
       "Utwórz albo zatwierdź pamięć, potem odśwież.",
-    ),
-    checklistItem(
-      "Zgody widoczne",
-      approvalsVisible ? "manual" : "unknown",
-      approvalsVisible ? "źródło listy zgód wczytane" : "brakuje źródła zgód",
-      "/approvals?limit=25",
-      "Utwórz zgodę pamięci, żeby sprawdzić karty decyzji.",
     ),
     checklistItem(
       "Ostatni trace tury widoczny",
@@ -4970,7 +4832,7 @@ function operatorSummaryFromSnapshot(snapshot) {
     activeProvider: firstPresent(projectionValue(context.brainRuntime.current_adapter), context.activeAdapter, "nieznane"),
     voiceStatus: missionVoiceStatus(context),
     toolsInternetStatus: firstPresent(toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)), networkToolSummary(context.tools), "unknown"),
-    memoryApprovalStatus: `${memoryEnabledSummary(context)} · ${pendingApprovalSummary(context)}`,
+    memoryStatus: memoryEnabledSummary(context),
     latestCriticalBlocker: blockers[0] || "brak",
     latestSafeError: traceLatestSafeError(context) || "brak",
     lastRefreshTime: cockpit.missionControl.lastRefreshAt
@@ -4978,7 +4840,7 @@ function operatorSummaryFromSnapshot(snapshot) {
       : "nieznane",
     lastImportantEvent: lastImportantEventSummary(context),
     safetyGuarantee:
-      "Tryb produkcyjny; stan należy do backendu; diagnostyka redagowana; jawne bramki zgód; bez renderowania sekretów",
+      "Tryb produkcyjny; stan należy do backendu; diagnostyka redagowana; bez renderowania sekretów",
   };
 }
 
@@ -5120,14 +4982,13 @@ function operatorNextAction(status, blockers, warnings) {
   if (status === "degraded") {
     return `Przetestuj następną bezpieczną ścieżkę, potem sprawdź ostrzeżenie: ${warnings[0] || "ostatnie ostrzeżenie"}.`;
   }
-  return "Następny test: wyślij turę tekstową, przytrzymaj PTT ręcznie, zatwierdź pamięć, sprawdź ostatni trace.";
+  return "Następny test: wyślij turę tekstową, przytrzymaj PTT ręcznie, sprawdź pamięć i ostatni trace.";
 }
 
 function lastImportantEventSummary(context) {
   const parts = [
-    importantEventPart(context.events, "error", (event) => eventMatchesIssue(event, ["runtime", "turn", "voice", "brain", "provider", "approval", "memory", "tool"])),
+    importantEventPart(context.events, "error", (event) => eventMatchesIssue(event, ["runtime", "turn", "voice", "brain", "provider", "memory", "tool"])),
     importantEventPart(context.events, "voice", (event) => eventFamily(event && event.type) === "voice"),
-    importantEventPart(context.events, "approval", (event) => eventFamily(event && event.type) === "approval"),
     importantEventPart(context.events, "turn", (event) => eventFamily(event && event.type) === "turn"),
   ].filter(Boolean);
   return parts.join(" | ");
@@ -5223,19 +5084,6 @@ function latestMemoryStatus(context) {
     return `${context.memoryBlocks.length} legacy blocks visible`;
   }
   return "none/unknown";
-}
-
-function pendingApprovalSummary(context) {
-  const rows = context.approvals;
-  const pending = rows.filter((item) => String(item.status || "pending") === "pending").length;
-  return `${pending} pending · ${rows.length} loaded`;
-}
-
-function approvalBlocker(context) {
-  if (!runtimeOverviewSourceAvailable(context, "approvals")) {
-    return "approval source unavailable";
-  }
-  return "none";
 }
 
 function latestTurnBrief(context) {
@@ -5335,9 +5183,6 @@ const RUNTIME_OVERVIEW_SECTIONS = [
       field("state", "state", (ctx) => firstPresent(ctx.state.state, ctx.health.state)),
       field("started", "health", (ctx) => ctx.health.started),
       field("schema version", "health", (ctx) => ctx.health.schema_version),
-      field("pending approval count", "state", (ctx) =>
-        firstPresent(ctx.state.pending_approval_count, ctx.health.pending_approval_count),
-      ),
       field("voice enabled", "state", (ctx) => ctx.voiceEnabled),
     ],
   },
@@ -5516,7 +5361,7 @@ const RUNTIME_OVERVIEW_SECTIONS = [
       }),
       field("provider sessions are memory", "contract", () => "no; daemon owns memory"),
       field("Claude config", "brain", (ctx) =>
-        adapterRegistration(ctx.adapters, ["claude_cli", "claude_cli_warm"]),
+        adapterRegistration(ctx.adapters, ["claude_cli"]),
       ),
     ],
   },
@@ -5547,9 +5392,6 @@ const RUNTIME_OVERVIEW_SECTIONS = [
         readiness: (ctx) => traceReadiness(ctx, "memory_excluded_count"),
         warnings: (ctx) => traceWarnings(ctx, ["memory_excluded_count"]),
       }),
-      field("approvals requested/executed count", "runtimeSettings", (ctx) =>
-        `${overviewValue(traceValue(ctx, "approvals_requested_count"))} / ${overviewValue(traceValue(ctx, "approvals_executed_count"))}`,
-      ),
       field("tools attempted count", "runtimeSettings", (ctx) => traceValue(ctx, "tools_attempted_count")),
       field("voice rows created filler/final/error", "runtimeSettings", (ctx) => traceVoiceRowsCreated(ctx)),
       field("speech cancellation/interruption reason", "runtimeSettings", (ctx) =>
@@ -5879,7 +5721,6 @@ const RUNTIME_OVERVIEW_SECTIONS = [
         ctx.tools.length > 0 ? `${ctx.tools.length} zarejestrowane` : "brak zarejestrowanych",
       ),
       field("widoczne klasy ryzyka", "tools", (ctx) => toolRiskSummary(ctx.tools)),
-      field("approval-required tools", "tools", () => "policy not exposed; risk classes visible"),
       field("internet/network capability", "tools", (ctx) => networkToolSummary(ctx.tools), {
         readiness: (ctx) =>
           networkToolCandidates(ctx.tools).length > 0
@@ -5907,8 +5748,8 @@ const RUNTIME_OVERVIEW_SECTIONS = [
       field("latest provider error", "events", (ctx) =>
         latestEventIssue(ctx.events, ["brain", "provider", "adapter"]),
       ),
-      field("latest approval/tool error", "events", (ctx) =>
-        latestEventIssue(ctx.events, ["approval", "tool"]),
+      field("latest tool error", "events", (ctx) =>
+        latestEventIssue(ctx.events, ["tool"]),
       ),
       field("events window", "events", () => "latest 50 events"),
       field("last failure source", "events", (ctx) => runtimeOverviewSourceFailures(ctx.failures)),
@@ -5962,16 +5803,14 @@ function runtimeOverviewContext(snapshot) {
     ? snapshot.voiceQueue.voice_queue
     : [];
   const tools = Array.isArray(safeObject(snapshot.tools).tools) ? snapshot.tools.tools : [];
-  const approvals = Array.isArray(safeObject(snapshot.approvals).approvals)
-    ? snapshot.approvals.approvals
-    : [];
   const memoryBlocks = Array.isArray(safeObject(snapshot.memory).memory)
     ? snapshot.memory.memory
     : [];
   const memoryItems = Array.isArray(safeObject(snapshot.memoryItems).items)
     ? snapshot.memoryItems.items
     : [];
-  const events = Array.isArray(safeObject(snapshot.events).events) ? snapshot.events.events : [];
+  const events = (Array.isArray(safeObject(snapshot.events).events) ? snapshot.events.events : [])
+    .filter((event) => !isInactiveDecisionEvent(event && event.type));
   const adapters = Array.isArray(brain.adapters) ? brain.adapters : [];
   const activeAdapter = firstPresent(brain.current, state.brain_adapter, health.brain_adapter);
   const failures = Array.isArray(snapshot.failures) ? snapshot.failures : [];
@@ -6000,7 +5839,6 @@ function runtimeOverviewContext(snapshot) {
     voiceQueue: safeObject(snapshot.voiceQueue),
     queueRows,
     tools,
-    approvals,
     memoryBlocks,
     memoryItems,
     events,
@@ -7007,7 +6845,6 @@ function toolSupportsNetwork(tool) {
 
 function networkPolicyRequiresTool(context) {
   const value = configuredSetting(context, [
-    "security.require_approval_for_network",
     "tools.internet_enabled",
     "internet.enabled",
     "network.enabled",
@@ -7164,7 +7001,7 @@ async function sendTextInput(event) {
     });
     setSelectedConversation(payload.conversation_id || cockpit.selectedConversationId);
     cockpit.composingNew = false;
-    await Promise.all([refreshHistory(), refreshEvents(), refreshToolsAndApprovals()]);
+    await Promise.all([refreshHistory(), refreshEvents(), refreshTools()]);
   } catch (error) {
     renderError(el.inputError, error);
   } finally {
@@ -7374,7 +7211,7 @@ function memoryItemToPanelRow(item) {
       memory_os_status: item.status || "unknown",
       namespace: item.namespace || "",
       scope: item.scope || "",
-      promoted_by: item.source_policy || "approval",
+      promoted_by: "backend",
     },
   };
 }
@@ -7446,8 +7283,7 @@ function renderMemory(blocks) {
     }
     row.appendChild(chips);
 
-    // Pochodzenie bloku po ludzku: kto zaproponował i kto zatwierdził
-    // (auto-pamięć przez zgody) — bez tego nie widać, które notatki wpisał model.
+    // Pochodzenie bloku po ludzku: kto zaproponował i kto zatwierdził.
     const metadata = block.metadata || {};
     if (metadata.proposed_by || metadata.promoted_by) {
       appendLine(row, memorySourceLine(metadata), "muted");
@@ -7509,25 +7345,24 @@ function renderMemory(blocks) {
   }
 }
 
-// Pochodzenie notatki po ludzku: „zaproponował: model · zatwierdził:
-// zatwierdzenie w panelu” zamiast surowego proposed_by/promoted_by.
+// Pochodzenie notatki po ludzku zamiast surowego proposed_by/promoted_by.
 function memorySourceLine(metadata) {
   const parts = [];
   if (metadata.proposed_by) {
-    parts.push(`zaproponował: ${requesterLabel(metadata.proposed_by)}`);
+    parts.push(`zaproponował: ${memoryActorLabel(metadata.proposed_by)}`);
   }
   if (metadata.promoted_by) {
-    const who =
-      metadata.promoted_by === "approval"
-        ? "zgoda w panelu"
-        : requesterLabel(metadata.promoted_by);
-    parts.push(`zatwierdził: ${who}`);
+    parts.push(`zatwierdził: ${memoryActorLabel(metadata.promoted_by)}`);
   }
   return parts.join(" · ");
 }
 
-async function refreshToolsAndApprovals() {
-  await Promise.all([refreshTools(), refreshApprovals()]);
+function memoryActorLabel(value) {
+  const actor = String(value || "");
+  if (actor === "assistant" || actor === "brain" || actor === "model") return "model";
+  if (actor === "memory_worker" || actor === "worker") return "proces pamięci";
+  if (actor === "panel" || actor === "user") return "Ty";
+  return actor.replace(/_/g, " ") || "backend";
 }
 
 async function refreshTools() {
@@ -7541,41 +7376,144 @@ async function refreshTools() {
   }
 }
 
-async function refreshApprovals() {
-  clearError(el.approvalsError);
-  try {
-    const approvalsPayload = await requestJson("/approvals?limit=25");
-    renderApprovals(Array.isArray(approvalsPayload.approvals) ? approvalsPayload.approvals : []);
-  } catch (error) {
-    clearNode(el.approvalList);
-    renderError(el.approvalsError, error);
+function setActivityRuntimeState(value) {
+  cockpit.runtimeState = String(value || "unknown");
+  renderActivity();
+}
+
+function resetActivity() {
+  cockpit.runtimeState = "unknown";
+  cockpit.runtimeStateRevision = 0;
+  cockpit.runtimeStateRequestId += 1;
+  cockpit.activity.lastEventId = 0;
+  cockpit.activity.stage = "Łączenie…";
+  cockpit.activity.toolName = "";
+  cockpit.activity.toolStatus = "";
+  cockpit.activity.resultSummary = "";
+  renderActivity();
+}
+
+function applyActivityEvents(events) {
+  const rows = Array.isArray(events) ? [...events] : [];
+  rows.sort((left, right) => {
+    const leftId = eventNumericId(left);
+    const rightId = eventNumericId(right);
+    if (leftId !== null && rightId !== null) {
+      return leftId - rightId;
+    }
+    if (leftId !== null) return -1;
+    if (rightId !== null) return 1;
+    return 0;
+  });
+  for (const event of rows) {
+    applyActivityEvent(event);
   }
 }
 
-// Heartbeat /health niesie pending_approval_count — to fallback dla eventów
-// approval.* ze streamu: gdy licznik się rozjedzie z tym, co panel pokazuje,
-// dociągamy karty zgód nawet bez działającego WebSocketa.
-function syncPendingApprovals(rawCount) {
-  const count = Number(rawCount);
-  if (!Number.isFinite(count)) {
+function applyActivityEvent(event) {
+  if (!event || typeof event !== "object") {
     return;
   }
-  if (count !== cockpit.pendingApprovalCount) {
-    scheduleApprovalsRefresh();
+  const eventId = eventNumericId(event);
+  if (eventId !== null && eventId <= cockpit.activity.lastEventId) {
+    return;
   }
-  setPendingBadge(count);
+  if (eventId !== null) {
+    cockpit.activity.lastEventId = eventId;
+  }
+
+  const type = String(event.type || "");
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+
+  if (type === "turn.started") {
+    cockpit.activity.toolName = "";
+    cockpit.activity.toolStatus = "";
+    cockpit.activity.resultSummary = "";
+  }
+
+  if (type === "state.changed" && payload.new_state) {
+    cockpit.runtimeStateRevision += 1;
+    cockpit.runtimeState = String(payload.new_state);
+    const runtimeStage = ACTIVITY_RUNTIME_STAGE_LABELS[cockpit.runtimeState.toUpperCase()];
+    if (runtimeStage) {
+      cockpit.activity.stage = runtimeStage;
+    }
+  } else if (ACTIVITY_STAGE_LABELS[type]) {
+    cockpit.activity.stage = ACTIVITY_STAGE_LABELS[type];
+  }
+
+  if (type.startsWith("tool.")) {
+    const toolName = boundedActivityText(payload.tool_name, 80);
+    if (toolName) {
+      cockpit.activity.toolName = toolName;
+    }
+    if (type === "tool.requested") {
+      cockpit.activity.toolStatus = "requested";
+      cockpit.activity.resultSummary = "";
+    } else if (type === "tool.started") {
+      cockpit.activity.toolStatus = "started";
+      cockpit.activity.resultSummary = "";
+    } else if (type === "tool.finished") {
+      cockpit.activity.toolStatus = "success";
+      cockpit.activity.resultSummary = boundedActivityText(
+        payload.result_summary,
+        MAX_ACTIVITY_RESULT_SUMMARY_CHARS,
+      );
+    } else if (type === "tool.failed") {
+      cockpit.activity.toolStatus = "error";
+      cockpit.activity.resultSummary = "";
+    }
+  }
+
+  renderActivity();
+}
+
+function boundedActivityText(value, maxChars) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const text = value.trim();
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function renderActivity() {
+  const runtimeState = cockpit.runtimeState || "unknown";
+  setText(el.stateLabel, runtimeState.toLowerCase() === "unknown" ? "…" : runtimeState);
+  setText(el.activityStage, cockpit.activity.stage || "Łączenie…");
+  if (el.activityStrip) {
+    el.activityStrip.dataset.runtimeState = runtimeState;
+  }
+
+  const hasTool = Boolean(cockpit.activity.toolName);
+  if (el.activityDetail) {
+    el.activityDetail.hidden = !hasTool;
+  }
+  setText(el.activityTool, cockpit.activity.toolName);
+
+  const status = cockpit.activity.toolStatus;
+  setText(el.activityStatus, ACTIVITY_TOOL_STATUS_LABELS[status] || "");
+  if (el.activityStatus) {
+    el.activityStatus.dataset.status = status;
+  }
+
+  const resultSummary = cockpit.activity.resultSummary;
+  setText(el.activityResult, resultSummary);
+  if (el.activityResult) {
+    el.activityResult.hidden = !resultSummary;
+  }
 }
 
 // Żywa ramka stanu: jeden atrybut body[data-state] steruje neonem na krawędzi
-// karty. Priorytet od najważniejszego: brak łącza (offline) > czekająca zgoda
-// (pending) > daemon pracuje (busy: myśli/mówi/słucha) > spoczynek (online).
-// Ruch (obieganie) tylko przy busy/pending — czyli gdy coś naprawdę trwa.
+// karty. Priorytet od najważniejszego: brak łącza (offline) > daemon pracuje
+// (busy: myśli/używa narzędzia/mówi/słucha) > spoczynek (online).
+// Ruch (obieganie) tylko przy busy — czyli gdy coś naprawdę trwa.
 function applyStateFrame() {
   let state = "offline";
   if (cockpit.online) {
-    if (cockpit.pendingApprovalCount > 0) {
-      state = "pending";
-    } else if (isDaemonBusy()) {
+    if (isDaemonBusy()) {
       state = "busy";
     } else {
       state = "online";
@@ -7584,12 +7522,17 @@ function applyStateFrame() {
   document.body.dataset.state = state;
 }
 
-// Daemon "pracuje", gdy jego RuntimeState wyszedł ze spoczynku (myśli, mówi,
-// słucha) albo mikrofon właśnie zbiera dźwięk. IDLE i wszystko nieznane =
+// Daemon "pracuje", gdy jego RuntimeState wyszedł ze spoczynku (myśli, używa
+// narzędzia, mówi, słucha) albo mikrofon właśnie zbiera dźwięk. IDLE i wszystko nieznane =
 // spoczynek, żeby ramka nie kręciła się bez powodu.
 function isDaemonBusy() {
   const state = String(cockpit.runtimeState || "").toUpperCase();
-  if (state === "THINKING" || state === "SPEAKING" || state === "LISTENING") {
+  if (
+    state === "THINKING" ||
+    state === "TOOLING" ||
+    state === "SPEAKING" ||
+    state === "LISTENING"
+  ) {
     return true;
   }
   return cockpit.voice.listening === true;
@@ -7610,42 +7553,6 @@ function switchView(view) {
   if (view === "chat") {
     scrollChatToBottom();
   }
-  updateApprovalSignals();
-}
-
-function setPendingBadge(count) {
-  cockpit.pendingApprovalCount = count;
-  document.body.classList.toggle("has-pending", count > 0);
-  applyStateFrame();
-  updateApprovalSignals();
-}
-
-// Dwa sygnały zgód: licznik na zakładce (zawsze) i bursztynowy przerywnik
-// w czacie (tylko poza widokiem zgód) — przerwanie ma być nie do przegapienia.
-function updateApprovalSignals() {
-  const count = cockpit.pendingApprovalCount;
-  if (el.approvalsBadge) {
-    el.approvalsBadge.hidden = count === 0;
-    setText(el.approvalsBadge, String(count));
-  }
-  if (el.approvalNudge) {
-    const onApprovalsView = document.body.dataset.view === "approvals";
-    el.approvalNudge.hidden = count === 0 || onApprovalsView;
-    const verb = count === 1 ? "czeka" : approvalLabel(count) === "zgody" ? "czekają" : "czeka";
-    setText(el.approvalNudge, `${count} ${approvalLabel(count)} ${verb} na decyzję — pokaż`);
-  }
-}
-
-function approvalLabel(count) {
-  if (count === 1) {
-    return "zgoda";
-  }
-  const lastDigit = count % 10;
-  const lastTwo = count % 100;
-  if (lastDigit >= 2 && lastDigit <= 4 && (lastTwo < 12 || lastTwo > 14)) {
-    return "zgody";
-  }
-  return "zgód";
 }
 
 function renderTools(tools) {
@@ -7660,12 +7567,11 @@ function renderTools(tools) {
     const row = document.createElement("div");
     row.className = "list-row";
 
-    // Ludzka nazwa + chip polityki zgód po polsku (nigdy „file_read -
-    // file_read”): CO to umie i z jaką wagą pyta o zgodę.
+    // Ludzka nazwa + chip klasy ryzyka (nigdy „file_read - file_read”).
     const head = document.createElement("div");
-    head.className = "approval-head";
+    head.className = "tool-head";
     const name = document.createElement("span");
-    name.className = "approval-tool";
+    name.className = "tool-name";
     setText(name, toolLabel(tool.name));
     const chip = document.createElement("span");
     chip.className = `risk-chip ${riskTier(tool.risk)}`;
@@ -7679,325 +7585,6 @@ function renderTools(tools) {
     el.toolList.appendChild(row);
   }
 }
-
-// Zgody renderujemy WYŁĄCZNIE z prawdy serwera (/approvals = actionable:
-// pending + approved-niewykonane). Żaden stan nie żyje tylko w kliencie, więc
-// nic nie znika po cichu — approved-niewykonane (np. execute padł) zostaje
-// widoczne po odświeżeniu i po reloadzie panelu.
-function renderApprovals(approvals) {
-  clearNode(el.approvalList);
-  const list = Array.isArray(approvals) ? approvals : [];
-  const pending = list.filter((approval) => (approval.status || "pending") === "pending");
-  const approved = list.filter((approval) => approval.status === "approved");
-  setPendingBadge(pending.length);
-
-  if (list.length === 0) {
-    renderApprovalsEmpty();
-    return;
-  }
-
-  for (const approval of pending) {
-    el.approvalList.appendChild(approvalCard(approval, "pending"));
-  }
-  for (const approval of approved) {
-    el.approvalList.appendChild(approvalCard(approval, "approved"));
-  }
-}
-
-// Pusty stan zgód: spokojny, wycentrowany znak ✓ + jedno zdanie, co się tu
-// pojawi — a nie wiersz, który wygląda jak wyszarzony formularz.
-function renderApprovalsEmpty() {
-  clearNode(el.approvalList);
-  const box = document.createElement("div");
-  box.className = "empty-state";
-
-  const mark = document.createElement("div");
-  mark.className = "empty-state-mark";
-  mark.setAttribute("aria-hidden", "true");
-
-  const title = document.createElement("p");
-  title.className = "empty-state-title";
-  setText(title, "Nic nie czeka");
-
-  const hint = document.createElement("p");
-  hint.className = "empty-state-hint muted";
-  setText(hint, "Gdy Jarvis poprosi o użycie narzędzia, decyzja pojawi się tutaj.");
-
-  const note = document.createElement("p");
-  note.className = "empty-state-note muted";
-  setText(note, "Jeden klik „Zatwierdź i wykonaj” załatwia całość.");
-
-  box.append(mark, title, hint, note);
-  el.approvalList.appendChild(box);
-}
-
-// Karta zgody czytelna na rzut oka: CO (ludzka nazwa narzędzia) + JAK
-// ryzykowne (chip barwiony wagą) na górze, JAKIE argumenty (tabelka
-// klucz→wartość), meta (id · kto prosi · kiedy) najmniej ważną linijką na
-// dole, i jednoznaczne przyciski w prawym dolnym rogu.
-function approvalCard(approval, mode) {
-  const card = document.createElement("article");
-  card.className = `approval-card ${mode}`;
-  const payload = approval.payload || {};
-  const status = approval.status || mode;
-
-  // Eyebrow: jednoznaczny kontekst, że to prośba czekająca na Twoją decyzję
-  // (albo już zatwierdzona, gotowa do wykonania) — żeby wiadomo było, co się
-  // dzieje, zanim spojrzysz na przyciski.
-  const eyebrow = document.createElement("p");
-  eyebrow.className = "approval-eyebrow";
-  setText(
-    eyebrow,
-    mode === "pending"
-      ? "Jarvis prosi o zgodę na:"
-      : "Zatwierdzone, ale wykonanie się nie udało — ponów:",
-  );
-  card.appendChild(eyebrow);
-
-  const head = document.createElement("div");
-  head.className = "approval-head";
-  const name = document.createElement("span");
-  name.className = "approval-tool";
-  setText(name, toolLabel(payload.tool_name || approval.action_type));
-  const chip = document.createElement("span");
-  chip.className = `risk-chip ${riskTier(approval.risk)}`;
-  setText(chip, riskLabel(approval.risk));
-  head.append(name, chip);
-  card.appendChild(head);
-
-  const args = Object.entries(payload.arguments || {});
-  if (args.length > 0) {
-    const table = document.createElement("dl");
-    table.className = "approval-args";
-    for (const [key, value] of args) {
-      const dt = document.createElement("dt");
-      setText(dt, key);
-      const dd = document.createElement("dd");
-      dd.className = "approval-arg";
-      setText(dd, argumentPreview(value));
-      table.append(dt, dd);
-    }
-    card.appendChild(table);
-  }
-
-  const summary = approvalSummary(approval);
-  if (summary) {
-    appendLine(card, summary, "payload-line");
-  }
-
-  const details = document.createElement("dl");
-  details.className = "approval-args";
-  for (const [key, value] of [
-    ["id", approval.id],
-    ["status", status],
-    ["typ", approval.action_type],
-    ["narzędzie", payload.tool_name],
-    ["źródło", approval.requested_by],
-  ]) {
-    if (value === undefined || value === null || value === "") {
-      continue;
-    }
-    const dt = document.createElement("dt");
-    setText(dt, key);
-    const dd = document.createElement("dd");
-    dd.className = "approval-arg";
-    setText(dd, argumentPreview(value));
-    details.append(dt, dd);
-  }
-  if (details.children.length > 0) {
-    card.appendChild(details);
-  }
-
-  const meta = document.createElement("p");
-  meta.className = "approval-meta";
-  const modeLabel = mode === "pending" ? "czeka na decyzję" : "zatwierdzona";
-  const who = requesterLabel(approval.requested_by);
-  const metaText = document.createElement("span");
-  setText(metaText, `${shortId(approval.id)} · ${who} · ${modeLabel} · `);
-  meta.append(metaText, timeNode(approval.created_at || approval.requested_at));
-  card.appendChild(meta);
-
-  const actions = document.createElement("div");
-  actions.className = "row-actions";
-  if (mode === "pending") {
-    const approveButton = smallButton(isMemoryApproval(approval) ? "Zatwierdź i zapisz" : "Zatwierdź i wykonaj");
-    approveButton.classList.add("strong");
-    approveButton.addEventListener("click", () => {
-      if (isMemoryApproval(approval)) {
-        approveAndExecuteApproval(approval.id, approveButton);
-      } else {
-        approveAndExecuteApproval(approval.id, approveButton);
-      }
-    });
-    const rejectButton = smallButton("Odrzuć");
-    rejectButton.classList.add("reject");
-    rejectButton.addEventListener("click", () => decideApproval(approval.id, "reject", rejectButton));
-    actions.append(approveButton, rejectButton);
-  } else {
-    const executeButton = smallButton("Wykonaj zatwierdzone");
-    executeButton.classList.add("strong");
-    executeButton.addEventListener("click", () => executeApproval(approval.id, executeButton));
-    actions.appendChild(executeButton);
-  }
-  card.appendChild(actions);
-  return card;
-}
-
-function approvalSummary(approval) {
-  const payload = approval.payload || {};
-  const args = payload.arguments || {};
-  if (typeof payload.summary === "string" && payload.summary.trim()) {
-    return payload.summary.trim();
-  }
-  if (isMemoryApproval(approval)) {
-    const title = typeof args.title === "string" ? args.title.trim() : "";
-    const body = typeof args.body === "string" ? args.body.trim() : "";
-    return [title, body].filter(Boolean).join(" — ").slice(0, 220);
-  }
-  if (typeof args.command === "string") {
-    return args.command.slice(0, 220);
-  }
-  if (typeof args.path === "string") {
-    return args.path.slice(0, 220);
-  }
-  return "";
-}
-
-function isMemoryApproval(approval) {
-  const payload = approval.payload || {};
-  return payload.tool_name === "memory_save" || approval.action_type === "tool:memory_save";
-}
-
-// Kto prosi o zgodę — po ludzku, bez surowego identyfikatora źródła.
-function requesterLabel(requestedBy) {
-  const map = {
-    brain: "model",
-    model: "model",
-    panel: "panel",
-    voice: "głos",
-    worker: "worker",
-  };
-  const key = typeof requestedBy === "string" ? requestedBy : "";
-  return map[key] || key || "nieznane źródło";
-}
-
-async function decideApproval(approvalId, action, button) {
-  clearError(el.approvalsError);
-  setApprovalCardBusy(button, true);
-  try {
-    const payload = await requestJson(`/approvals/${encodeURIComponent(approvalId)}/${action}`, {
-      method: "POST",
-      body: { reason: "panel click" },
-    });
-    if (action === "approve" && payload.approval) {
-      cockpit.approvedApprovals.set(approvalId, payload.approval);
-    }
-    if (action === "reject") {
-      cockpit.approvedApprovals.delete(approvalId);
-    }
-    await Promise.all([refreshApprovals(), refreshEvents()]);
-  } catch (error) {
-    renderError(el.approvalsError, error);
-  } finally {
-    setApprovalCardBusy(button, false);
-  }
-}
-
-// Jeden klik = zatwierdź I wykonaj, jednym atomowym żądaniem do serwera (approve
-// + execute pod wspólnym lockiem). Zero osobnego kroku „execute", zero okna
-// półstanu. Gdy wykonanie się nie uda (blocked/błąd narzędzia), approval zostaje
-// po stronie serwera jako approved-niewykonane i wróci jako karta z retry —
-// nic nie ginie po cichu, pokazujemy tylko powód.
-async function approveAndExecuteApproval(approvalId, button) {
-  clearError(el.approvalsError);
-  setApprovalCardBusy(button, true);
-  try {
-    const result = await requestJson(
-      `/approvals/${encodeURIComponent(approvalId)}/approve-and-execute`,
-      {
-        method: "POST",
-        body: { reason: "panel approve and execute" },
-      },
-    );
-    // Refresh first (it clears the error banner), THEN surface any failure so
-    // the reason survives — the approved-but-unexecuted card comes back from the
-    // server refresh and the message stays next to it.
-    await refreshAfterApprovalExecution();
-    if (result && result.ok === false) {
-      renderError(
-        el.approvalsError,
-        new Error(result.error || "Wykonanie zablokowane — zgoda czeka na ponowienie."),
-      );
-    }
-  } catch (error) {
-    if (isAlreadyExecutedConflict(error)) {
-      await refreshAfterApprovalExecution();
-      return;
-    }
-    renderError(el.approvalsError, error);
-    await refreshApprovals();
-  } finally {
-    setApprovalCardBusy(button, false);
-  }
-}
-
-async function executeApproval(approvalId, button) {
-  clearError(el.approvalsError);
-  setApprovalCardBusy(button, true);
-  try {
-    await executeApprovalRequest(approvalId);
-    cockpit.approvedApprovals.delete(approvalId);
-    await refreshAfterApprovalExecution();
-  } catch (error) {
-    if (isAlreadyExecutedConflict(error)) {
-      cockpit.approvedApprovals.delete(approvalId);
-      await refreshAfterApprovalExecution();
-      return;
-    }
-    renderError(el.approvalsError, error);
-  } finally {
-    setApprovalCardBusy(button, false);
-  }
-}
-
-async function executeApprovalRequest(approvalId) {
-  return requestJson(`/approvals/${encodeURIComponent(approvalId)}/execute`, {
-    method: "POST",
-  });
-}
-
-async function refreshAfterApprovalExecution() {
-  await Promise.all([
-    refreshApprovals(),
-    refreshEvents(),
-    refreshMemory(),
-    refreshHistory(),
-    refreshHealthAndState(),
-  ]);
-}
-
-function isAlreadyExecutedConflict(error) {
-  const detail = error && error.detail ? error.detail : {};
-  const payload = detail.payload || {};
-  const text = `${error?.message || ""} ${payload.error || ""}`.toLowerCase();
-  return detail.status === 409 && text.includes("already executed");
-}
-
-function setApprovalCardBusy(button, busy) {
-  const card = button.closest(".approval-card");
-  if (card) {
-    for (const item of card.querySelectorAll("button")) {
-      item.disabled = busy;
-      item.classList.toggle("busy", busy);
-    }
-  } else {
-    setBusy(button, busy);
-  }
-}
-
-// --- Settings (GET /settings + POST /settings, brain switch; ADR-002) ---
-// The cockpit never keeps a settings copy: every render reads the daemon
-// and every mutation POSTs, then re-fetches daemon truth.
 
 async function refreshSettings() {
   clearError(el.settingsError);
@@ -8133,10 +7720,19 @@ async function refreshEvents() {
 
   try {
     const payload = await requestJson("/events?latest=true&limit=50");
-    const events = Array.isArray(payload.events) ? payload.events : [];
+    const rawEvents = Array.isArray(payload.events) ? payload.events : [];
+    const events = rawEvents
+      .filter((event) => !isInactiveDecisionEvent(event && event.type));
+    applyActivityEvents(events);
     renderEvents(events);
     renderRuntimeLogsSummaryFromPayload(cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {}, events);
-    const latestId = Number(payload.latest_event_id);
+    // The endpoint's watermark is read separately from its rows and may race
+    // ahead. Advance only through event IDs actually observed in this payload;
+    // include hidden legacy rows so they are not replayed forever.
+    const observedIds = rawEvents
+      .map(eventNumericId)
+      .filter((value) => value !== null);
+    const latestId = observedIds.length > 0 ? Math.max(...observedIds) : null;
     if (Number.isFinite(latestId) && latestId > cockpit.stream.lastEventId) {
       cockpit.stream.lastEventId = latestId;
     }
@@ -8241,7 +7837,6 @@ const EVENT_PAYLOAD_SUMMARY_KEYS = [
   "turn_id",
   "conversation_id",
   "request_id",
-  "approval_id",
   "tool_name",
   "status",
   "kind",
@@ -8284,9 +7879,6 @@ function eventFamily(type) {
   }
   if (value.startsWith("brain.") || value.startsWith("provider.")) {
     return "provider";
-  }
-  if (value.startsWith("approval.")) {
-    return "approval";
   }
   if (value.startsWith("memory.")) {
     return "memory";
@@ -8385,6 +7977,9 @@ function redactEventSummaryText(value) {
 
 function streamUrl() {
   const base = apiBase().replace(/^http/, "ws");
+  if (cockpit.stream.replayFromStart) {
+    return `${base}/stream?after_id=0`;
+  }
   if (cockpit.stream.lastEventId > 0) {
     return `${base}/stream?after_id=${cockpit.stream.lastEventId}`;
   }
@@ -8425,11 +8020,17 @@ function connectStream() {
   setStreamStatus("stream connecting");
 
   socket.addEventListener("open", () => {
+    if (stream.socket !== socket) {
+      return;
+    }
     stream.retryMs = 2000;
     stream.connected = true;
     setStreamStatus("live");
   });
   socket.addEventListener("message", (message) => {
+    if (stream.socket !== socket) {
+      return;
+    }
     handleStreamMessage(message.data);
   });
   socket.addEventListener("close", () => {
@@ -8484,8 +8085,27 @@ function handleStreamMessage(raw) {
   }
 
   if (frame.type === "stream.hello") {
-    // Hello reports server state only; the reconnect cursor advances when an
-    // actual event frame is accepted.
+    const serverLatestEventId = Number(frame.latest_event_id);
+    if (
+      Number.isFinite(serverLatestEventId) &&
+      serverLatestEventId < cockpit.stream.lastEventId
+    ) {
+      // The daemon/database event epoch changed underneath this browser. A
+      // monotonic-only cursor would otherwise suppress every new live event
+      // until IDs caught up with the previous database.
+      cockpit.stream.lastEventId = 0;
+      cockpit.stream.replayFromStart = true;
+      resetActivity();
+      renderEvents([]);
+      if (cockpit.stream.socket) {
+        disconnectStream("event epoch changed");
+        scheduleStreamReconnect();
+      }
+      return;
+    }
+    // This connection already carries the requested replay cursor. Future
+    // reconnects can resume from the first event actually accepted below.
+    cockpit.stream.replayFromStart = false;
     return;
   }
   if (frame.type !== "event" || !frame.event) {
@@ -8497,14 +8117,16 @@ function handleStreamMessage(raw) {
   if (Number.isFinite(eventId) && eventId > cockpit.stream.lastEventId) {
     cockpit.stream.lastEventId = eventId;
   }
+  if (isInactiveDecisionEvent(event.type)) {
+    return;
+  }
   prependLiveEvent(event);
+  applyActivityEvent(event);
 
   const type = String(event.type || "");
   if (type === "state.changed" && event.payload && event.payload.new_state) {
-    setText(el.stateLabel, event.payload.new_state);
     // Stan pracy prosto ze strumienia — ramka reaguje natychmiast, bez
     // czekania na następny heartbeat /state.
-    cockpit.runtimeState = event.payload.new_state;
     applyStateFrame();
   }
   if (type.startsWith("input.") || type.startsWith("turn.")) {
@@ -8512,9 +8134,6 @@ function handleStreamMessage(raw) {
   }
   if (type.startsWith("memory.") || type === "tool.finished") {
     scheduleMemoryRefresh();
-  }
-  if (type.startsWith("approval.") || type.startsWith("tool.")) {
-    scheduleApprovalsRefresh();
   }
   if (type.startsWith("brain.")) {
     scheduleSettingsRefresh();
@@ -8541,7 +8160,6 @@ function runtimeOverviewEventType(type) {
     type.startsWith("voice.") ||
     type.startsWith("brain.") ||
     type.startsWith("daemon.") ||
-    type.startsWith("approval.") ||
     type.startsWith("memory.") ||
     type.startsWith("tool.")
   );
@@ -8610,21 +8228,6 @@ function scheduleVoiceQueueRefresh() {
 function prependLiveEvent(event) {
   const rows = Array.isArray(cockpit.lastEvents) ? cockpit.lastEvents : [];
   renderEvents([event, ...rows]);
-}
-
-function scheduleApprovalsRefresh() {
-  const stream = cockpit.stream;
-  if (stream.approvalsTimer !== null) {
-    return;
-  }
-  stream.approvalsTimer = setTimeout(async () => {
-    stream.approvalsTimer = null;
-    try {
-      await refreshToolsAndApprovals();
-    } catch (error) {
-      // section renders its own errors
-    }
-  }, 300);
 }
 
 function scheduleSettingsRefresh() {
@@ -8867,13 +8470,6 @@ function setInteractiveEnabled(enabled) {
     el.cancelCurrentSpeechButton,
     el.toolsEnabledToggle,
     el.toolsNetworkEnabledToggle,
-    el.grantShellToggle,
-    el.grantFileWriteToggle,
-    el.grantNetworkToggle,
-    el.grantUiToggle,
-    el.grantTerminalToggle,
-    el.grantMemoryToggle,
-    el.destructiveEnabledToggle,
     el.applyToolsSettingsButton,
     el.personaProfileSelect,
     el.applyPersonaSettingsButton,
@@ -8898,14 +8494,12 @@ function setInteractiveEnabled(enabled) {
 }
 
 function clearDynamicSections() {
-  setPendingBadge(0);
   // Nieaktualne błędy sekcji nie mogą wisieć pod świeżym stanem offline —
   // jedyną diagnozą pozostaje healthError w Zaawansowane → Stan daemona.
   for (const box of [
     el.historyError,
     el.inputError,
     el.voiceError,
-    el.approvalsError,
     el.memoryError,
     el.toolsError,
     el.settingsPreviewError,
@@ -8943,12 +8537,10 @@ function clearDynamicSections() {
   clearNode(el.pttModeSelect);
   clearNode(el.personaProfileSelect);
   clearNode(el.toolList);
-  clearNode(el.approvalList);
   clearNode(el.missionControlModules);
   clearNode(el.missionControlChecklist);
   clearNode(el.voiceDoctorList);
   clearNode(el.queueBargeInList);
-  clearNode(el.memoryApprovalsList);
   clearNode(el.latestTurnTraceList);
   clearNode(el.runtimeLogsSummaryList);
   clearNode(el.settingsPreviewList);
@@ -8968,7 +8560,6 @@ function clearDynamicSections() {
   // Jeden mocny komunikat offline z akcją zamiast szarego "Daemon offline"
   // powtórzonego w każdej sekcji — czerwona ramka i pill niosą resztę.
   renderOfflineHero();
-  renderEmpty(el.approvalList, "Podgląd zgód niedostępny, dopóki daemon nie wstanie.");
   renderMissionControl(missionControlOfflineSnapshot());
 }
 

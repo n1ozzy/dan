@@ -335,55 +335,39 @@ def test_mock_worker_is_deterministic() -> None:
 # --- HTTP API ---
 
 
-def _wait_for_job(base_url: str, job_id: str, *, timeout: float = 10.0) -> dict:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        status, payload = request_json("GET", f"{base_url}/workers/jobs/{job_id}")
-        assert status == 200
-        job = payload["job"]
-        if job["status"] in {"succeeded", "failed", "cancelled"}:
-            return job
-        time.sleep(0.05)
-    raise AssertionError(f"worker job did not finish in time: {job_id}")
+def _assert_workers_disabled(
+    status: int, payload: dict, *, expected_transport_status: int
+) -> None:
+    assert status == expected_transport_status
+    assert payload == {
+        "ok": False,
+        "status": 410,
+        "error": (
+            "workers are disabled on this runtime branch; "
+            "use the main Jarvis brain directly"
+        ),
+        "jobs": [],
+    }
 
 
-def test_worker_job_api_full_lifecycle(app: DaemonApp) -> None:
+def test_worker_job_api_post_is_disabled(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json(
             "POST",
             f"{base_url}/workers/jobs",
             {"worker_kind": "mock", "prompt": "API job", "requested_by": "ozzy"},
         )
-        assert status == 201
-        job = payload["job"]
-        assert job["worker_kind"] == "mock"
-        assert job["status"] in {"queued", "running", "succeeded"}
-
-        finished = _wait_for_job(base_url, job["id"])
-        assert finished["status"] == "succeeded"
-        assert finished["result_summary"]
-        assert finished["metadata"]["memory_candidate_id"]
-
-        status, listing = request_json("GET", f"{base_url}/workers/jobs")
-        assert status == 200
-        assert [item["id"] for item in listing["jobs"]] == [job["id"]]
-
-        status, filtered = request_json(
-            "GET", f"{base_url}/workers/jobs?status=succeeded"
-        )
-        assert status == 200
-        assert len(filtered["jobs"]) == 1
+    _assert_workers_disabled(status, payload, expected_transport_status=201)
 
 
-def test_worker_job_api_unknown_kind_is_404(app: DaemonApp) -> None:
+def test_worker_job_api_unknown_kind_is_disabled(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json(
             "POST",
             f"{base_url}/workers/jobs",
             {"worker_kind": "bogus", "prompt": "x", "requested_by": "ozzy"},
         )
-    assert status == 404
-    assert "bogus" in str(payload["error"])
+    _assert_workers_disabled(status, payload, expected_transport_status=201)
 
 
 @pytest.mark.parametrize(
@@ -397,23 +381,28 @@ def test_worker_job_api_unknown_kind_is_404(app: DaemonApp) -> None:
         ["not", "an", "object"],
     ],
 )
-def test_worker_job_api_rejects_invalid_payload(app: DaemonApp, body: object) -> None:
+def test_worker_job_api_disables_before_payload_validation(
+    app: DaemonApp, body: object
+) -> None:
     with running_server(app) as base_url:
         status, payload = request_json("POST", f"{base_url}/workers/jobs", body)
-    assert status == 400
-    assert "error" in payload
+    _assert_workers_disabled(status, payload, expected_transport_status=201)
 
 
-def test_worker_job_api_unknown_job_is_404(app: DaemonApp) -> None:
+def test_worker_job_api_resource_is_disabled(app: DaemonApp) -> None:
     with running_server(app) as base_url:
-        status, _ = request_json("GET", f"{base_url}/workers/jobs/nope")
-    assert status == 404
+        status, payload = request_json("GET", f"{base_url}/workers/jobs/nope")
+    _assert_workers_disabled(status, payload, expected_transport_status=200)
 
 
-def test_worker_job_api_invalid_status_filter_is_400(app: DaemonApp) -> None:
+def test_worker_job_api_listing_is_disabled_before_filter_validation(
+    app: DaemonApp,
+) -> None:
     with running_server(app) as base_url:
-        status, _ = request_json("GET", f"{base_url}/workers/jobs?status=weird")
-    assert status == 400
+        status, payload = request_json(
+            "GET", f"{base_url}/workers/jobs?status=weird"
+        )
+    _assert_workers_disabled(status, payload, expected_transport_status=200)
 
 
 def test_worker_job_api_requires_transport_token(tmp_path: Path) -> None:

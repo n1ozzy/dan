@@ -9,7 +9,7 @@
   <body data-view="chat" data-state="offline">
     <!-- Żywa ramka stanu: neon obiega krawędź karty, gdy Jarvis pracuje,
          i barwi się stanem. Dekoracyjna (aria-hidden) — treść niosą pill
-         stanu, hero offline i licznik zgód; JS ustawia body[data-state]. -->
+         stanu i hero offline; JS ustawia body[data-state]. -->
     <div class="state-frame" aria-hidden="true"></div>
     <main class="cockpit" aria-label="Kokpit Jarvisa">
       <div class="views">
@@ -19,7 +19,29 @@
             <strong>Jarvis</strong>
             <span class="muted">jedna ciągła rozmowa</span>
           </header>
-          <button id="approvalNudge" type="button" class="approval-nudge" hidden aria-label="Pokaż oczekujące zgody"></button>
+          <div
+            id="activityStrip"
+            class="activity-strip"
+            data-runtime-state="UNKNOWN"
+            aria-label="Bieżąca aktywność Jarvisa"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <span class="activity-state">
+              <span class="activity-label">Stan</span>
+              <strong id="stateLabel">…</strong>
+            </span>
+            <span class="activity-stage">
+              <span class="activity-label">Etap</span>
+              <span id="activityStage">Łączenie…</span>
+            </span>
+            <span id="activityDetail" class="activity-detail" hidden>
+              <span class="activity-label">Narzędzie</span>
+              <code id="activityTool"></code>
+              <span id="activityStatus" class="activity-status"></span>
+              <span id="activityResult" class="activity-result" hidden></span>
+            </span>
+          </div>
           <div id="turnList" class="chat-log" aria-label="Przebieg rozmowy"></div>
           <form id="textForm" class="composer">
             <div class="composer-row">
@@ -41,12 +63,6 @@
           <pre id="historyError" class="error-box" hidden></pre>
           <pre id="inputError" class="error-box" hidden></pre>
           <pre id="voiceError" class="error-box" hidden></pre>
-        </section>
-
-        <!-- ZGODY: pełnoekranowy widok przerywnika — tu zapadają decyzje. -->
-        <section id="view-approvals" class="view" aria-label="Zgody na narzędzia">
-          <div id="approvalList" class="list"></div>
-          <pre id="approvalsError" class="error-box" hidden></pre>
         </section>
 
         <!-- PAMIĘĆ: trwałe notatki mózgu na pełnym ekranie. -->
@@ -100,7 +116,7 @@
             <button id="refreshEventsButton" type="button" class="ghost">Odśwież</button>
           </div>
           <p class="muted section-desc">
-            Co Jarvis robi na bieżąco — tury, głos, zgody i narzędzia.
+            Co Jarvis robi na bieżąco — tury, głos i narzędzia.
             Najnowsze na górze.
           </p>
           <h3 id="eventsDiagnosticsHeading">Events</h3>
@@ -110,7 +126,6 @@
               <option value="all">Wszystko</option>
               <option value="turns">Tury</option>
               <option value="voice">Głos</option>
-              <option value="approvals">Zgody</option>
               <option value="tools">Narzędzia</option>
             </select>
           </label>
@@ -148,19 +163,6 @@
             <div id="queueBargeInList" class="list compact-list"></div>
             <div id="voiceQueueList" class="list compact-list voice-queue-list"></div>
             <p id="queueApplyStatus" class="muted apply-status" aria-live="polite"></p>
-          </div>
-
-          <div class="sys-section active-settings-section" aria-labelledby="memoryApprovalsHeading">
-            <div class="section-head">
-              <div>
-                <h2 id="memoryApprovalsHeading">Memory / Approvals</h2>
-                <p class="muted section-desc">
-                  Compact status only. Full memory and approval work stays in their tabs.
-                </p>
-              </div>
-              <button id="refreshMemoryApprovalsButton" type="button" class="ghost">Refresh memory/approvals</button>
-            </div>
-            <div id="memoryApprovalsList" class="list compact-list"></div>
           </div>
 
           <details class="sys-section runtime-checks-section" aria-labelledby="runtimeChecksHeading">
@@ -291,7 +293,7 @@
               <button id="refreshToolsButton" type="button" class="ghost">Odśwież</button>
             </div>
             <p class="muted section-desc">
-              Co Jarvis potrafi i o co musi zapytać, zanim tego użyje.
+              Zarejestrowane narzędzia jednego bezpośredniego toru wykonania.
             </p>
             <div id="toolList" class="list"></div>
             <pre id="toolsError" class="error-box" hidden></pre>
@@ -301,6 +303,7 @@
         <!-- SYSTEM: cockpit-first runtime controls; full logs live in LOGI. -->
         <section id="view-system" class="view" aria-label="System">
           <div class="system-section-label" aria-hidden="true">Ustawienia</div>
+          <p class="muted section-desc">Zmiany obsługiwane przez runtime zapisują się automatycznie.</p>
           <div id="restartRequiredBanner" class="restart-required-banner" hidden>
             <span id="restartRequiredMessage">Wymagany restart dla oczekujących ustawień.</span>
             <button id="restartJarvisButton" type="button" class="ghost">Restart Jarvisa</button>
@@ -450,38 +453,6 @@
                 <span id="toolsNetworkEnabledToggle" class="status-badge" role="status">unknown</span>
               </div>
             </div>
-            <h3 class="settings-subhead">Jarvis może sam (bez pytania):</h3>
-            <p class="muted">Zaznaczone = robi od ręki. Odznaczone = czeka na Twoją zgodę w Zgodach.</p>
-            <div class="settings-control-grid">
-              <label class="inline-toggle">
-                <input id="grantShellToggle" type="checkbox" disabled />
-                <span>Komendy (shell)</span>
-              </label>
-              <label class="inline-toggle">
-                <input id="grantFileWriteToggle" type="checkbox" disabled />
-                <span>Zapis plików</span>
-              </label>
-              <label class="inline-toggle">
-                <input id="grantNetworkToggle" type="checkbox" disabled />
-                <span>Internet</span>
-              </label>
-              <label class="inline-toggle">
-                <input id="grantUiToggle" type="checkbox" disabled />
-                <span>Klikanie i pisanie po ekranie</span>
-              </label>
-              <label class="inline-toggle">
-                <input id="grantTerminalToggle" type="checkbox" disabled />
-                <span>Wklejanie do terminala</span>
-              </label>
-              <label class="inline-toggle">
-                <input id="grantMemoryToggle" type="checkbox" disabled />
-                <span>Zapis pamięci</span>
-              </label>
-              <label class="inline-toggle">
-                <input id="destructiveEnabledToggle" type="checkbox" disabled />
-                <span>Destrukcyjne dozwolone (i tak zawsze pytają)</span>
-              </label>
-            </div>
             <p id="toolsApplyStatus" class="muted apply-status" aria-live="polite"></p>
           </details>
 
@@ -491,25 +462,23 @@
                 <h2 id="activePersonalitySettingsHeading">Osobowość</h2>
               </div>
             </summary>
-            <label class="field-label">
-              <span>Profil persony</span>
-              <select id="personaProfileSelect" aria-label="Profil persony"></select>
-            </label>
-            <p id="personaApplyStatus" class="muted apply-status" aria-live="polite"></p>
+            <div class="inline-toggle read-only-setting">
+              <span>Tożsamość</span>
+              <strong class="status-badge">DAN — kanon</strong>
+            </div>
+            <p id="personaApplyStatus" class="muted apply-status" aria-live="polite">
+              Jedna tożsamość ponad czatem, głosem i providerem.
+            </p>
           </details>
 
 
         </section>
       </div>
 
-      <!-- Pasek zakładek: jeden widok naraz, licznik zgód żyje na zakładce. -->
+      <!-- Pasek zakładek: jeden widok naraz. -->
       <nav class="tabbar" aria-label="Widoki panelu">
         <button type="button" class="tab-button active" data-view="chat" aria-selected="true">
           Czat
-        </button>
-        <button type="button" class="tab-button" data-view="approvals" aria-selected="false">
-          Zgody
-          <span id="approvalsBadge" class="approvals-badge" hidden aria-live="polite"></span>
         </button>
         <button type="button" class="tab-button" data-view="memory" aria-selected="false">
           Pamięć

@@ -73,7 +73,7 @@ class UiClickTool(Tool):
     name = "ui_click"
     description = (
         "Click a control in the focused window of the frontmost application, "
-        "matched by its visible label (approval-gated)."
+        "matched by its visible label."
     )
     risk = "ui_act"
     input_schema = {
@@ -111,8 +111,8 @@ class UiClickTool(Tool):
 class UiTypeTool(Tool):
     name = "ui_type"
     description = (
-        "Type text into the focused element of the frontmost application "
-        "(approval-gated). Refuses secure text fields; never types passwords."
+        "Type text into the focused element of the frontmost application. "
+        "Refuses secure text fields; never types passwords."
     )
     risk = "ui_act"
     input_schema = {
@@ -159,7 +159,7 @@ class UiTypeTool(Tool):
 
 class UiFocusAppTool(Tool):
     name = "ui_focus_app"
-    description = "Bring a running application to the front by name (approval-gated)."
+    description = "Bring a running application to the front by name."
     risk = "ui_act"
     input_schema = {
         "type": "object",

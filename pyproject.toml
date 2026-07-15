@@ -40,6 +40,7 @@ panel = [
 
 [project.scripts]
 jarvisd = "jarvis.cli:main"
+jarvis-memory-mcp = "jarvis.mcp.memory_server:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

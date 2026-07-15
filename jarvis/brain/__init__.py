@@ -14,7 +14,6 @@ from jarvis.brain.base import (
     BrainToolSpec,
     BrainUsage,
 )
-from jarvis.brain.chain_adapter import ChainAdapter
 from jarvis.brain.eco_brain_adapter import EcoBrainAdapter
 from jarvis.brain.groq_adapter import GroqAdapter
 from jarvis.brain.manager import BrainManager, BrainManagerError
@@ -39,6 +38,5 @@ __all__ = [
     "GroqAdapter",
     "QwenAdapter",
     "OllamaAdapter",
-    "ChainAdapter",
     "EcoBrainAdapter",
 ]

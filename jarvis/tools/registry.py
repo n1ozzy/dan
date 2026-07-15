@@ -89,7 +89,7 @@ class EchoTool(Tool):
 
 class ApprovalProbeTool(Tool):
     name = "approval_probe"
-    description = "Approval-required demo tool that only runs after explicit approved execution."
+    description = "Demo tool that executes immediately and returns a recorded result."
     risk = "shell_read"
     input_schema = {"type": "object"}
 
@@ -380,6 +380,7 @@ class ToolRunRecorder:
         input: Mapping[str, Any],
         turn_id: str | None = None,
         approval_id: str | None = None,
+        correlation_id: str | None = None,
     ) -> dict[str, Any]:
         safe_input = _redact(_json_safe(input))
         created_at = self._now()
@@ -414,13 +415,20 @@ class ToolRunRecorder:
                 "input": safe_input,
             },
             turn_id=turn_id,
+            correlation_id=correlation_id,
         )
         record = self.get(run_id)
         if record is None:
             raise ToolRegistryError(f"Tool run was not persisted: {run_id}")
         return record
 
-    def record_finished(self, run_id: str, output: Mapping[str, Any]) -> dict[str, Any]:
+    def record_finished(
+        self,
+        run_id: str,
+        output: Mapping[str, Any],
+        *,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
         run = self.get(run_id)
         if run is None:
             raise ToolRegistryError(f"Unknown tool run: {run_id}")
@@ -448,13 +456,19 @@ class ToolRunRecorder:
                 "output": safe_output,
             },
             turn_id=run["turn_id"],
+            correlation_id=correlation_id,
         )
         record = self.get(run_id)
         if record is None:
             raise ToolRegistryError(f"Tool run disappeared after finish: {run_id}")
         return record
 
-    def record_started(self, run_id: str) -> dict[str, Any]:
+    def record_started(
+        self,
+        run_id: str,
+        *,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
         run = self.get(run_id)
         if run is None:
             raise ToolRegistryError(f"Unknown tool run: {run_id}")
@@ -480,13 +494,20 @@ class ToolRunRecorder:
                 "status": "started",
             },
             turn_id=run["turn_id"],
+            correlation_id=correlation_id,
         )
         record = self.get(run_id)
         if record is None:
             raise ToolRegistryError(f"Tool run disappeared after start: {run_id}")
         return record
 
-    def record_failed(self, run_id: str, error: str) -> dict[str, Any]:
+    def record_failed(
+        self,
+        run_id: str,
+        error: str,
+        *,
+        correlation_id: str | None = None,
+    ) -> dict[str, Any]:
         run = self.get(run_id)
         if run is None:
             raise ToolRegistryError(f"Unknown tool run: {run_id}")
@@ -514,6 +535,7 @@ class ToolRunRecorder:
                 "error": normalized_error,
             },
             turn_id=run["turn_id"],
+            correlation_id=correlation_id,
         )
         record = self.get(run_id)
         if record is None:
@@ -570,12 +592,14 @@ class ToolRunRecorder:
         payload: Mapping[str, Any],
         *,
         turn_id: str | None = None,
+        correlation_id: str | None = None,
     ) -> None:
         if self._event_store is not None:
             self._event_store.append(
                 event_type,
                 "tool_run_recorder",
                 _redact(_json_safe(payload)),
+                correlation_id=correlation_id,
                 turn_id=turn_id,
             )
 

@@ -330,14 +330,16 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 
 def test_runtime_code_and_scripts_do_not_contain_forbidden_legacy_strings() -> None:
+    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
     findings: list[str] = []
     for root_name in ("jarvis", "scripts"):
         for path in (ROOT / root_name).rglob("*"):
             if not path.is_file() or "__pycache__" in path.parts:
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
+            relative = str(path.relative_to(ROOT))
             for forbidden in FORBIDDEN_RUNTIME_STRINGS:
-                if forbidden in text:
-                    findings.append(f"{path.relative_to(ROOT)} contains {forbidden}")
+                if forbidden in text and (relative, forbidden) not in allowed_contracts:
+                    findings.append(f"{relative} contains {forbidden}")
 
     assert findings == []

@@ -203,6 +203,78 @@ def test_stream_event_dict_omits_bulk_output() -> None:
     assert streamed["payload"]["tool_name"] == "ui_read_window"
 
 
+def test_stream_event_dict_adds_bounded_safe_tool_result_summary() -> None:
+    secret_value = "screen-window-log-output-that-must-never-reach-the-panel"
+    event = Event(
+        id=9,
+        created_at="2026-07-02T20:00:00+00:00",
+        type="tool.finished",
+        source="tool_registry",
+        correlation_id="corr-9",
+        turn_id="turn-9",
+        payload={
+            "tool_name": "ui_read_window",
+            "screen": secret_value,
+            "window": {"title": secret_value},
+            "log": secret_value,
+            "logs": [secret_value],
+            "content": secret_value,
+            "output": {
+                "ok": True,
+                "clicked": True,
+                "chars_typed": 27,
+                "line_count": 9,
+                "truncated": False,
+                "size_bytes": int("9" * 300),
+                "screen": {"text": secret_value},
+                "window": {"title": secret_value},
+                "log": secret_value,
+                "logs": [secret_value],
+                "stdout": secret_value,
+                "stderr": secret_value,
+                "content": secret_value,
+            },
+        },
+    )
+
+    streamed = stream_event_dict(event)
+    summary = streamed["payload"]["result_summary"]
+
+    assert isinstance(summary, str)
+    assert len(summary) <= 160
+    assert "ok=true" in summary
+    assert "clicked=true" in summary
+    assert "chars_typed=27" in summary
+    assert "line_count=9" in summary
+    assert "truncated=false" in summary
+    assert secret_value not in summary
+    assert secret_value not in json.dumps(streamed)
+    for forbidden in ("screen", "window", "log", "stdout", "stderr", "content"):
+        assert forbidden not in summary.lower()
+
+
+def test_stream_event_dict_never_trusts_stored_tool_result_summary() -> None:
+    secret_value = "stored-summary-must-not-reach-the-panel"
+    event = Event(
+        id=10,
+        created_at="2026-07-02T20:00:00+00:00",
+        type="tool.finished",
+        source="tool_registry",
+        correlation_id=None,
+        turn_id=None,
+        payload={
+            "tool_name": "ui_click",
+            "result_summary": secret_value,
+            "output": {"message": secret_value},
+        },
+    )
+
+    streamed = stream_event_dict(event)
+
+    assert "result_summary" not in streamed["payload"]
+    assert secret_value not in json.dumps(streamed)
+
+
 def test_stream_event_dict_redacts_secrets_defensively() -> None:
     event = Event(
         id=8,

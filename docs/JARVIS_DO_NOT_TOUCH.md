@@ -146,7 +146,6 @@ Rules:
 High-risk files:
 
 - `jarvis/brain/claude_cli_adapter.py`
-- `jarvis/brain/claude_cli_warm_adapter.py`
 - `jarvis/brain/codex_cli_adapter.py`
 - `jarvis/brain/openai_adapter.py`
 

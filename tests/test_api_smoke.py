@@ -24,9 +24,10 @@ from jarvis.security.redaction import REDACTION_PLACEHOLDER
 from jarvis.tools.permissions import RequestSource
 
 from tests.git_guards import assert_schema_and_migrations_unchanged
-from jarvis.brain import BrainRequest
-from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
+from jarvis.brain import BrainManager, BrainRequest
+from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter, apply_claude_system_prompt
 from jarvis.brain.claude_cli_contract import build_claude_cli_command
+from jarvis.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
 from jarvis.config import COMPILED_MEMORY_ENABLED_ENV, COMPILED_MEMORY_FORCE_DISABLED_ENV
 from jarvis.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
@@ -202,6 +203,13 @@ def config_path(tmp_path: Path) -> Path:
 @pytest.fixture
 def app(config_path: Path) -> Iterator[DaemonApp]:
     daemon_app = create_daemon_app(config_path)
+    production_manager = daemon_app.brain_manager
+    daemon_app.brain_manager = BrainManager(
+        [HermeticBrainAdapter(default_model="test-model")],
+        default_adapter="test",
+    )
+    if production_manager is not None:
+        production_manager.close()
     try:
         yield daemon_app
     finally:
@@ -1444,7 +1452,8 @@ def test_snapshot_state_returns_required_keys(app: DaemonApp) -> None:
         "voice_enabled",
         "brain_adapter",
         "launchd_label",
-        "pending_approval_count",
+        "session_tokens_in",
+        "session_tokens_out",
     }
 
     snapshot = app.snapshot_state()
@@ -1455,7 +1464,8 @@ def test_snapshot_state_returns_required_keys(app: DaemonApp) -> None:
     assert snapshot["started"] is True
     assert snapshot["state"] == "IDLE"
     assert snapshot["latest_event_id"] == 2
-    assert snapshot["pending_approval_count"] == 0
+    assert snapshot["session_tokens_in"] == 0
+    assert snapshot["session_tokens_out"] == 0
 
 
 def test_app_stop_transitions_to_stopping_and_appends_daemon_stopped(app: DaemonApp) -> None:
@@ -1472,6 +1482,64 @@ def test_app_stop_transitions_to_stopping_and_appends_daemon_stopped(app: Daemon
         "daemon.stopped",
         "state.changed",
     ]
+
+
+def test_app_stop_closes_persistent_brain_manager(
+    app: DaemonApp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert app.brain_manager is not None
+    closed: list[bool] = []
+    monkeypatch.setattr(app.brain_manager, "close", lambda: closed.append(True))
+    app.start()
+
+    app.stop(reason="test")
+
+    assert closed == [True]
+
+
+def test_daemon_wires_persistent_brain_state_under_runtime_dir(
+    config_path: Path,
+) -> None:
+    production_app = create_daemon_app(config_path)
+    assert production_app.brain_manager is not None
+    adapter = production_app.brain_manager.get_adapter("claude_cli")
+
+    try:
+        assert adapter.state_path == production_app.paths.runtime_dir / "claude-session.json"
+    finally:
+        production_app.close()
+
+
+def test_runtime_settings_projects_only_safe_persistent_brain_session_fields(
+    app: DaemonApp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert app.brain_manager is not None
+    monkeypatch.setattr(
+        app.brain_manager,
+        "session_snapshot",
+        lambda: {
+            "session_id": "session-safe-id",
+            "generation": 7,
+            "context_percent": 42.5,
+            "last_action": "resumed",
+            "healthy": True,
+            "checkpoint_prompt": "must never reach runtime settings",
+        },
+    )
+
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+
+    assert status == 200
+    assert payload["brain"]["session"]["effective_value"] == {
+        "session_id": "session-safe-id",
+        "generation": 7,
+        "context_percent": 42.5,
+        "last_action": "resumed",
+        "healthy": True,
+    }
 
 
 def test_get_health_returns_200_json_and_expected_fields(app: DaemonApp) -> None:
@@ -1708,6 +1776,31 @@ def test_post_input_text_returns_200_and_creates_turn(
     turn_count = app.conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
     assert turn_count == 1
     assert "brain.responded" in event_types(app)
+
+
+def test_api_fixture_never_calls_production_claude_adapter(
+    app: DaemonApp,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production_calls: list[str] = []
+
+    def forbidden_generate(self: ClaudeCliAdapter, request: BrainRequest, **kwargs: Any):
+        del self, request, kwargs
+        production_calls.append("called")
+        raise AssertionError("API smoke fixture invoked production Claude")
+
+    monkeypatch.setattr(ClaudeCliAdapter, "generate", forbidden_generate)
+    app.start()
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/input/text",
+            {"text": "hermetic"},
+        )
+
+    assert status == 200
+    assert payload["final_text"] == "Test response: hermetic"
+    assert production_calls == []
 
 
 def test_get_input_text_returns_json_method_error(app: DaemonApp) -> None:
@@ -2271,7 +2364,6 @@ def test_get_runtime_settings_returns_typed_projection_groups_and_fields(app: Da
         "audio",
         "tools",
         "memory",
-        "approvals",
         "panel",
         "runtime_readiness",
         "current_turn_state",
@@ -2416,8 +2508,6 @@ def test_get_runtime_settings_includes_settings_preview_payload_and_capability_g
             "tools_enabled",
             "tools_support",
             "internet_capability",
-            "network_policy",
-            "approval_required_tools",
             "latest_tool_error",
         ),
         "personality": (
@@ -2840,6 +2930,7 @@ def test_ptt_down_acquires_lease_without_cancelling_current_speech(tmp_path: Pat
 
 def test_get_runtime_settings_does_not_apply_stale_barge_in_to_later_text_turn(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
@@ -2850,6 +2941,21 @@ def test_get_runtime_settings_does_not_apply_stale_barge_in_to_later_text_turn(
         "enabled = true\ndefault_tts = 'mock'\ndefault_stt = 'mock'\n",
     )
     app = create_daemon_app(config_path)
+    production_manager = app.brain_manager
+    app.brain_manager = BrainManager(
+        [HermeticBrainAdapter(default_model="test-model")],
+        default_adapter="test",
+    )
+    if production_manager is not None:
+        production_manager.close()
+    production_calls: list[str] = []
+
+    def forbidden_generate(self: ClaudeCliAdapter, request: BrainRequest, **kwargs: Any):
+        del self, request, kwargs
+        production_calls.append("called")
+        raise AssertionError("direct API test invoked production Claude")
+
+    monkeypatch.setattr(ClaudeCliAdapter, "generate", forbidden_generate)
     try:
         app.start()
         from jarvis.store.event_store import create_event_store
@@ -2900,6 +3006,11 @@ def test_get_runtime_settings_does_not_apply_stale_barge_in_to_later_text_turn(
                 {"source": "ptt"},
             )
             assert status == 200, first_payload
+            assert app.voice_cancellation is not None
+            app.voice_cancellation.cancel_active_speech(
+                reason="barge_in",
+                source="ptt",
+            )
             status, original_runtime = request_json("GET", f"{base_url}/runtime/settings")
             assert status == 200
             request_json("POST", f"{base_url}/voice/ptt/up", {"source": "ptt"})
@@ -2938,6 +3049,7 @@ def test_get_runtime_settings_does_not_apply_stale_barge_in_to_later_text_turn(
     assert turn_state["cancelled_speech_id"]["value"] is None
     assert turn_state["interruption_reason"]["value"] is None
     assert turn_state["interrupted_turn_id"]["value"] is None
+    assert production_calls == []
 
 
 def test_get_runtime_settings_counts_turn_approvals_and_tool_attempts(
@@ -3293,27 +3405,21 @@ def test_runtime_settings_warns_stale_brain_effort_and_fast_settings(
     }.issubset(warning_ids)
 
 
-def test_runtime_settings_warns_when_network_policy_enabled_without_network_tool(
+def test_runtime_settings_ignores_legacy_network_approval_without_network_tool(
     app: DaemonApp,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
-
-    monkeypatch.setattr(
-        routes_runtime,
-        "_safe_probe_network_capability",
-        lambda: ("no", None),
-    )
-
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/runtime/settings")
 
     assert status == 200
     warnings = _runtime_warning_messages(payload)
-    assert any("network enabled but no network tool registered" in message for message in warnings)
+    assert not any("network enabled but no network tool registered" in message for message in warnings)
+    warning_ids = {warning["id"] for warning in payload["compatibility_warnings"]}
+    assert "internet_policy_without_capability" not in warning_ids
+    assert "approval_required_surface_unavailable" not in warning_ids
 
 
-def test_get_runtime_settings_includes_brain_provider_capabilities(app: DaemonApp) -> None:
+def test_get_runtime_settings_exposes_only_cold_claude_provider(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/runtime/settings")
 
@@ -3321,16 +3427,18 @@ def test_get_runtime_settings_includes_brain_provider_capabilities(app: DaemonAp
     providers = payload["brain"]["providers"]["value"]
     assert isinstance(providers, list)
     provider_names = {provider["name"] for provider in providers}
-    # Test provider should be present
-    assert "test" in provider_names
+    assert provider_names == {"claude_cli"}
     graph_provider_ids = {
         provider["id"]
         for provider in payload["capability_graph"]["brain_capabilities"]["providers"]
     }
-    assert "test" in graph_provider_ids
+    assert graph_provider_ids == {"claude_cli"}
 
-    test_provider = _brain_capability_provider(payload, "test")
-    assert test_provider.get("current") is True or test_provider.get("raw", {}).get("current") is True
+    claude_provider = _brain_capability_provider(payload, "claude_cli")
+    assert (
+        claude_provider.get("current") is True
+        or claude_provider.get("raw", {}).get("current") is True
+    )
 
 
 def test_post_runtime_settings_apply_rejects_unknown_setting(app: DaemonApp) -> None:
@@ -3362,7 +3470,7 @@ def test_post_runtime_settings_apply_rejects_unavailable_provider(app: DaemonApp
     )
 
 
-def test_post_runtime_settings_apply_graph_only_provider_does_not_persist(
+def test_post_runtime_settings_apply_local_runtime_cannot_enter_brain_graph_or_persist(
     app: DaemonApp,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3419,7 +3527,7 @@ def test_post_runtime_settings_apply_graph_only_provider_does_not_persist(
         _, refreshed = request_json("GET", f"{base_url}/runtime/settings")
 
     assert status in {409, 422}
-    assert "not apply-capable" in payload["error"] or "registered" in payload["error"]
+    assert "not present in capability_graph" in payload["error"]
     assert settings_value(app, BRAIN_ADAPTER_SETTING_KEY) == "test"
     assert refreshed["brain"]["current_adapter"]["value"] == "test"
 
@@ -3532,7 +3640,7 @@ def test_runtime_settings_rejects_unknown_effort_without_pending_applyable_value
     assert settings_value(app, "effort") is None
 
 
-def test_runtime_settings_requires_new_session_disables_brain_apply(
+def test_runtime_settings_stale_warm_config_is_forced_to_cold_claude(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3558,21 +3666,20 @@ def test_runtime_settings_requires_new_session_disables_brain_apply(
         with running_server(app) as base_url:
             status, runtime = request_json("GET", f"{base_url}/runtime/settings")
             assert status == 200
-            status, payload = request_json(
-                "POST",
-                f"{base_url}/runtime/settings/apply",
-                {"settings": {"brain.model": "claude-warm"}},
-            )
     finally:
         app.close()
 
+    provider_ids = {
+        provider["id"]
+        for provider in runtime["capability_graph"]["brain_capabilities"]["providers"]
+    }
+    assert runtime["capability_graph"]["brain_capabilities"]["current_provider"] == "claude_cli"
+    assert provider_ids == {"claude_cli"}
     brain_section = runtime["settings_preview"]["sections"]["brain_provider"]
-    assert brain_section["apply_semantics"] == "requires_new_session"
-    assert brain_section["apply_capable"] is False
-    assert brain_section["apply_disabled_reason"] == "requires_new_session"
-    assert "brain.model" in brain_section["requires_new_session_changes"]
-    assert status == 422
-    assert "requires_new_session" in payload["error"] or "requires a new provider session" in payload["error"]
+    assert brain_section["apply_semantics"] == "next_turn"
+    assert brain_section["apply_capable"] is True
+    assert brain_section["apply_disabled_reason"] is None
+    assert "brain.model" in brain_section["valid_next_turn_changes"]
 
 
 def test_post_runtime_settings_apply_rejects_mock_as_normal_brain_provider(
@@ -3779,26 +3886,30 @@ def test_runtime_settings_tools_internet_projection_uses_registered_network_tool
     assert tools["tools_enabled"]["effective_value"] is True
     assert tools["tools_master_flag"]["effective_value"] == "enabled"
     assert tools["tool_registry_status"]["effective_value"] == "registered"
-    assert tools["network_search_tool"]["effective_value"] == "missing"
-    assert tools["internet_capability"]["effective_value"]["state"] == "unavailable"
-    assert "no network/search tool registered" in tools["internet_capability"]["warning"]
+    assert tools["network_search_tool"]["effective_value"] == "registered"
+    assert tools["internet_capability"]["effective_value"] == {
+        "state": "available",
+        "registered_network_tools": ["web_fetch"],
+    }
+    assert tools["internet_capability"]["warning"] is None
     tools_capabilities = payload["capability_graph"]["tools_capabilities"]
     assert tools_capabilities["tools_master_flag"] == "enabled"
-    assert tools_capabilities["internet_capability"]["state"] == "unavailable"
-    assert tools_capabilities["network_search_tool"] == "missing"
-    assert tools_capabilities["apply_capability"] == "no"
-    assert tools_capabilities["requires_restart"] is True
-    assert "no network/search tool registered" in tools_capabilities["blocker"]
+    assert tools_capabilities["internet_capability"] == {
+        "state": "available",
+        "registered_network_tools": ["web_fetch"],
+    }
+    assert tools_capabilities["network_search_tool"] == "registered"
+    assert tools_capabilities["apply_capability"] == "yes"
+    assert tools_capabilities["requires_restart"] is False
+    assert tools_capabilities["blocker"] is None
     warnings = _runtime_warning_messages(payload)
-    assert any("network enabled but no network tool registered" in message for message in warnings)
+    assert not any("network enabled but no network tool registered" in message for message in warnings)
 
 
-def test_runtime_settings_tool_policy_keys_are_live_apply_capable(
+def test_runtime_settings_exposes_only_active_tool_policy_apply_capabilities(
     app: DaemonApp,
 ) -> None:
-    """The approval grants (and destructive enable) apply live via settings —
-    the API must say so instead of claiming a restart is needed (review
-    2026-07-09 Important #1). Registry-backed toggles stay restart-bound."""
+    """Legacy approval flags are absent; remaining live policy stays truthful."""
 
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/runtime/settings")
@@ -3809,14 +3920,20 @@ def test_runtime_settings_tool_policy_keys_are_live_apply_capable(
     assert tools["requires_restart"]["effective_value"] is False
 
     apply_capabilities = payload["capability_graph"]["tools_capabilities"]["apply_capabilities"]
-    for key in (
+    approval_keys = {
         "security.require_approval_for_network",
         "security.require_approval_for_shell",
         "security.require_approval_for_file_write",
         "security.require_approval_for_ui",
         "security.require_approval_for_terminal",
         "security.require_approval_for_memory",
+    }
+    assert approval_keys.isdisjoint(apply_capabilities)
+    for key in (
         "security.destructive_tools_enabled",
+        "security.auto_approve_mode",
+        "security.approved_roots",
+        "security.voice_auto_approve_tools",
     ):
         capability = apply_capabilities[key]
         assert capability["apply_capable"] is True, key
@@ -3828,9 +3945,8 @@ def test_runtime_settings_tool_policy_keys_are_live_apply_capable(
         assert capability["requires_restart"] is True, key
 
 
-def test_post_runtime_settings_apply_tool_policy_applies_live(app: DaemonApp) -> None:
-    """Toggling an approval grant through /runtime/settings/apply lands in the
-    settings table AND is reflected back in the effective projection."""
+def test_post_runtime_settings_apply_rejects_legacy_approval_policy(app: DaemonApp) -> None:
+    before = app.get_settings()
 
     with running_server(app) as base_url:
         status, payload = request_json(
@@ -3843,22 +3959,15 @@ def test_post_runtime_settings_apply_tool_policy_applies_live(app: DaemonApp) ->
                 }
             },
         )
-        assert status == 200
-        assert payload["status"] == "applied"
-        assert "security.require_approval_for_network" in payload["applied_keys"]
-        assert "security.require_approval_for_ui" in payload["applied_keys"]
-        assert payload["rejected_keys"] == []
 
-        status, projection = request_json("GET", f"{base_url}/runtime/settings")
-
-    assert status == 200
-    approval_required = projection["tools"]["approval_required_tools"]["effective_value"]
-    assert "network" not in approval_required
-    assert "ui" not in approval_required
-    assert "shell" in approval_required  # untouched grants still gate
-    settings = app.get_settings()
-    assert settings["security.require_approval_for_network"] is False
-    assert settings["security.require_approval_for_ui"] is False
+    assert status == 400
+    assert payload["status"] == "blocked"
+    assert payload["applied_keys"] == []
+    assert payload["rejected_keys"] == [
+        "security.require_approval_for_network",
+        "security.require_approval_for_ui",
+    ]
+    assert app.get_settings() == before
 
 
 def test_runtime_settings_marks_invalid_stale_effort_and_fast_state_for_current_provider(
@@ -4264,11 +4373,18 @@ def test_claude_cli_adapter_argv_uses_selected_model_from_command_contract() -> 
     contract = build_claude_cli_command(
         adapter.command_settings(),
         request_settings=request.settings,
+        streaming=False,
     )
+    expected_command, expected_input = apply_claude_system_prompt(contract.argv, request)
 
     assert response.text == "ok"
     assert response.model == "claude-sonnet-4"
-    assert runner_calls[0]["command"] == contract.argv
+    assert runner_calls[0]["command"] == expected_command
+    assert runner_calls[0]["input_text"] == expected_input
+    assert expected_command.count("--system-prompt") == 1
+    assert "--safe-mode" in expected_command
+    assert "--no-session-persistence" in expected_command
+    assert expected_command[expected_command.index("--setting-sources") + 1] == ""
     assert "--model" in contract.argv
     assert contract.argv[contract.argv.index("--model") + 1] == "claude-sonnet-4"
     assert "--model claude-sonnet-4" in contract.command_preview
@@ -4365,6 +4481,7 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
+    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
     forbidden = (
         "/Users/n1_ozzy/Documents/dev/dan",
         "/tmp/dan",
@@ -4386,9 +4503,10 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
             if "__pycache__" in path.parts or path.suffix not in text_suffixes:
                 continue
             text = path.read_text(encoding="utf-8")
+            relative = str(path.relative_to(ROOT))
             for snippet in forbidden:
-                if snippet in text:
-                    offenders.append((str(path.relative_to(ROOT)), snippet))
+                if snippet in text and (relative, snippet) not in allowed_contracts:
+                    offenders.append((relative, snippet))
 
     assert offenders == []
 
@@ -4449,14 +4567,12 @@ def test_brain_capabilities_expose_model_effort_support(app: DaemonApp) -> None:
 
     assert status == 200
     providers = payload["capability_graph"]["brain_capabilities"]["providers"]
-    # The test provider is a normal brain provider and must carry the field as a
-    # dict keyed by its model id (it supports no efforts -> empty list).
-    test_provider = next(item for item in providers if item["id"] == "test")
-    support = test_provider["model_effort_support"]
+    assert {provider["id"] for provider in providers} == {"claude_cli"}
+    claude_provider = providers[0]
+    support = claude_provider["model_effort_support"]
     assert isinstance(support, dict)
     assert all(isinstance(efforts, list) for efforts in support.values())
-    assert "test-model" in support
-    assert support["test-model"] == []
+    assert set(support) == {model["id"] for model in claude_provider["models"]}
 
 
 def test_voice_capabilities_expose_whisper_languages_and_models(app: DaemonApp) -> None:

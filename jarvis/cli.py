@@ -6,6 +6,7 @@ import argparse
 import json
 import signal
 import sys
+from dataclasses import asdict
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
@@ -15,6 +16,8 @@ from jarvis.config import ConfigError, JarvisConfig, load_config
 from jarvis.daemon.app import DaemonAppError, create_daemon_app, create_daemon_app_from_config
 from jarvis.daemon.lifecycle import DaemonServerError, serve_forever
 from jarvis.logging import configure_logging
+from jarvis.memory.archive import MemoryArchive
+from jarvis.memory.sync import MemorySourceSynchronizer
 from jarvis.paths import RuntimePaths, resolve_runtime_paths
 from jarvis.security.transport import API_TOKEN_HEADER, TransportTokenError, load_api_token
 from jarvis.store.db import (
@@ -89,6 +92,26 @@ def build_parser() -> argparse.ArgumentParser:
     memory_list.add_argument("--limit", type=int)
     memory_list.add_argument("--url", help="Base URL for a running jarvisd")
     memory_list.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    memory_recall = memory_commands.add_parser("recall")
+    memory_recall.add_argument("query")
+    memory_recall.add_argument("--limit", type=int, default=10)
+    memory_recall.add_argument("--url", help="Base URL for a running jarvisd")
+    memory_recall.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    memory_sync = memory_commands.add_parser("sync")
+    memory_sync.add_argument(
+        "source_type",
+        choices=[
+            "claude_jsonl",
+            "claude_memory",
+            "codex_session",
+            "codex_memory",
+            "gpt_transcript",
+            "jarvis_turns",
+        ],
+    )
+    memory_sync.add_argument("path", nargs="?")
 
     memory_create = memory_commands.add_parser("create")
     memory_create.add_argument("--kind", required=True)
@@ -186,6 +209,8 @@ def main(argv: list[str] | None = None) -> int:
         return _handle_turns_list(args, _base_url(args, config))
 
     if args.command == "memory":
+        if args.memory_command == "sync":
+            return _handle_memory_sync(args, paths)
         return _handle_memory_command(args, _base_url(args, config))
 
     if args.command == "health":
@@ -336,6 +361,15 @@ def _handle_turns_list(args: argparse.Namespace, base_url: str) -> int:
 
 def _handle_memory_command(args: argparse.Namespace, base_url: str) -> int:
     command = args.memory_command
+    if command == "recall":
+        return _handle_remote_json(
+            base_url,
+            "/memory/recall",
+            method="POST",
+            payload={"query": args.query, "limit": args.limit},
+            timeout=args.timeout,
+        )
+
     if command == "list":
         query: dict[str, object] = {}
         if args.active_only:
@@ -412,6 +446,28 @@ def _handle_memory_command(args: argparse.Namespace, base_url: str) -> int:
 
     print(f"unknown memory command: {command}", file=sys.stderr)
     return 2
+
+
+def _handle_memory_sync(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    conn = None
+    try:
+        conn = initialize_database(paths.db_path)
+        synchronizer = MemorySourceSynchronizer(MemoryArchive(conn), conn)
+        if args.source_type == "jarvis_turns":
+            if args.path is not None:
+                raise ValueError("jarvis_turns sync does not accept a path")
+            result = synchronizer.sync_jarvis_turns()
+        else:
+            if args.path is None:
+                raise ValueError(f"{args.source_type} sync requires a path")
+            result = synchronizer.sync_path(args.source_type, args.path)
+        _print_json(asdict(result))
+        return 0
+    except (DatabaseError, OSError, ValueError) as exc:
+        _print_json_error({"error": "memory_sync_failed", "message": str(exc)})
+        return 2
+    finally:
+        close_quietly(conn)
 
 
 def _path_with_query(path: str, query: dict[str, object]) -> str:

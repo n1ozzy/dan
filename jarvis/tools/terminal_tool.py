@@ -72,7 +72,7 @@ class TerminalPasteTool(Tool):
     name = "terminal_paste"
     description = (
         "Paste a prepared single-line command into the current session of a "
-        "named terminal app WITHOUT executing it (approval-gated); pressing "
+        "named terminal app WITHOUT executing it; pressing "
         "Enter stays with the user. Refuses control characters."
     )
     risk = "terminal_write"

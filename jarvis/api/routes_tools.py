@@ -24,9 +24,7 @@ def get_tools(app: DaemonApp) -> dict[str, object]:
 
 def post_tool_request(app: DaemonApp, request_payload: Any) -> dict[str, object]:
     payload = _validate_request_payload(request_payload)
-    # Source is assigned here, at the daemon entry point — never taken from the
-    # request payload (docs/MACOS_PERMISSION_MODEL.md §1). Every direct
-    # /tools/request caller (CLI, cockpit, API) shares the user column.
+    # Source is backend-owned audit metadata, never caller-controlled.
     result = app.request_tool(
         tool_name=payload["tool_name"],
         arguments=payload["arguments"],
@@ -45,7 +43,6 @@ def tool_result_to_dict(result: ToolResult) -> dict[str, object]:
         "status": result.status,
         "output": result.output,
         "error": result.error,
-        "approval_id": result.approval_id,
     }
 
 

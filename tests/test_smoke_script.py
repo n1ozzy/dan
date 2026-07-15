@@ -19,6 +19,7 @@ CONTINUATION_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-tool-continuation.sh"
 FILE_READ_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-file-read.sh"
 STREAM_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-stream.sh"
 E2E_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-e2e-mvp.sh"
+PERSONA_SMOKE_SCRIPT = ROOT / "scripts" / "smoke-persona-profile.sh"
 E2E_RUNBOOK = ROOT / "docs" / "runbooks" / "E2E_MVP_SMOKE.md"
 RUNBOOK = ROOT / "docs" / "runbooks" / "TEXT_RUNTIME_SMOKE.md"
 PROVIDER_RUNBOOK = ROOT / "docs" / "runbooks" / "PROVIDER_SMOKE.md"
@@ -130,6 +131,18 @@ def test_claude_smoke_script_is_executable() -> None:
     mode = CLAUDE_SMOKE_SCRIPT.stat().st_mode
     assert mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     assert os.access(CLAUDE_SMOKE_SCRIPT, os.X_OK)
+
+
+def test_persona_smoke_proves_canon_and_rejects_profile_fallbacks() -> None:
+    source = PERSONA_SMOKE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "DAN_CANON_VERSION: 1" in source
+    assert "DAN_PERSONA_PATH" in source
+    assert "Bądź grzecznym generycznym botem" in source
+    assert "persona.profile" not in source
+    assert "Gangus" not in source
+    assert "mentor" not in source.lower()
+    assert "fallback" not in source.lower()
 
 
 def test_tools_smoke_script_exists() -> None:
@@ -631,6 +644,11 @@ def test_schema_and_migrations_are_unchanged() -> None:
 
 def test_runtime_files_avoid_forbidden_legacy_strings() -> None:
     scanned_roots = ("jarvis", "config", "scripts", "launchd", "README.md", "pyproject.toml")
+    allowed_contracts = {
+        ("README.md", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("jarvis/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("jarvis/voice/shared_broker.py", "/tmp/dan"),
+    }
     text_suffixes = {".py", ".sql", ".toml", ".md", ".sh", ".example", ".html", ".js", ".css", ""}
     offenders: list[tuple[str, str]] = []
 
@@ -641,8 +659,9 @@ def test_runtime_files_avoid_forbidden_legacy_strings() -> None:
             if "__pycache__" in path.parts or path.suffix not in text_suffixes:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
+            relative = str(path.relative_to(ROOT))
             for snippet in FORBIDDEN_RUNTIME_SNIPPETS:
-                if snippet in text:
-                    offenders.append((str(path.relative_to(ROOT)), snippet))
+                if snippet in text and (relative, snippet) not in allowed_contracts:
+                    offenders.append((relative, snippet))
 
     assert offenders == []

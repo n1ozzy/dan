@@ -65,6 +65,15 @@ class ApprovalTool(RecordingTool):
     risk = "shell_read"
 
 
+class RecordingApprovalProbeTool(ApprovalProbeTool):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(dict(arguments))
+        return dict(super().run(arguments))
+
+
 class BlockedTool(RecordingTool):
     name = "blocked"
     risk = "destructive"
@@ -108,25 +117,27 @@ def test_file_read_allows_when_approved_root_policy_is_satisfied(tmp_path: Path)
     assert result.decision == ToolDecision.ALLOW
 
 
-def test_file_read_blocks_outside_approved_roots(tmp_path: Path) -> None:
+def test_direct_file_read_allows_outside_approved_roots(tmp_path: Path) -> None:
     policy = ToolPermissionPolicy(approved_roots=[str(tmp_path / "allowed")])
 
     result = policy.decide("file_read", source=RequestSource.DIRECT_USER_COMMAND, tool_name="file.read", payload={"path": str(tmp_path / "other.txt")})
 
-    assert result.decision == ToolDecision.BLOCKED
-    assert result.blocked is True
+    assert result.decision == ToolDecision.ALLOW
+    assert result.approval_required is False
+    assert result.blocked is False
 
 
-def test_file_read_blocks_when_no_approved_roots_configured(tmp_path: Path) -> None:
+def test_direct_file_read_allows_when_no_approved_roots_configured(tmp_path: Path) -> None:
     policy = ToolPermissionPolicy()
 
     result = policy.decide("file_read", source=RequestSource.DIRECT_USER_COMMAND, tool_name="file.read", payload={"path": str(tmp_path / "notes.txt")})
 
-    assert result.decision == ToolDecision.BLOCKED
-    assert result.blocked is True
+    assert result.decision == ToolDecision.ALLOW
+    assert result.approval_required is False
+    assert result.blocked is False
 
 
-def test_file_read_blocks_symlink_escaping_approved_root(tmp_path: Path) -> None:
+def test_direct_file_read_allows_symlink_escaping_approved_root(tmp_path: Path) -> None:
     approved_root = tmp_path / "allowed"
     approved_root.mkdir()
     outside_dir = tmp_path / "outside"
@@ -144,8 +155,9 @@ def test_file_read_blocks_symlink_escaping_approved_root(tmp_path: Path) -> None
         payload={"path": str(escape_link / "secret.txt")},
     )
 
-    assert result.decision == ToolDecision.BLOCKED
-    assert result.blocked is True
+    assert result.decision == ToolDecision.ALLOW
+    assert result.approval_required is False
+    assert result.blocked is False
 
 
 def test_file_read_allows_symlink_resolving_inside_approved_root(tmp_path: Path) -> None:
@@ -187,11 +199,11 @@ def test_file_read_allows_when_approved_root_itself_is_symlink(tmp_path: Path) -
 
 
 @pytest.mark.parametrize("risk", ["file_write", "shell_read", "shell_write", "network"])
-def test_approval_required_risks_require_approval(risk: str) -> None:
+def test_direct_policy_allows_former_approval_required_risks(risk: str) -> None:
     result = ToolPermissionPolicy().decide(risk, source=RequestSource.DIRECT_USER_COMMAND, tool_name="risky", payload={})
 
-    assert result.decision == ToolDecision.APPROVAL_REQUIRED
-    assert result.approval_required is True
+    assert result.decision == ToolDecision.ALLOW
+    assert result.approval_required is False
     assert result.blocked is False
 
 
@@ -213,14 +225,15 @@ def test_shell_allows_model_originated_when_shell_approval_disabled() -> None:
     assert result.blocked is False
 
 
-def test_destructive_blocked_by_default() -> None:
+def test_direct_policy_allows_destructive_by_default() -> None:
     result = ToolPermissionPolicy().decide("destructive", source=RequestSource.DIRECT_USER_COMMAND, tool_name="delete_everything", payload={})
 
-    assert result.decision == ToolDecision.BLOCKED
-    assert result.blocked is True
+    assert result.decision == ToolDecision.ALLOW
+    assert result.approval_required is False
+    assert result.blocked is False
 
 
-def test_destructive_requires_approval_when_enabled() -> None:
+def test_direct_policy_allows_destructive_when_enabled() -> None:
     result = ToolPermissionPolicy(destructive_tools_enabled=True).decide(
         "destructive",
         source=RequestSource.DIRECT_USER_COMMAND,
@@ -228,15 +241,17 @@ def test_destructive_requires_approval_when_enabled() -> None:
         payload={},
     )
 
-    assert result.decision == ToolDecision.APPROVAL_REQUIRED
-    assert result.approval_required is True
+    assert result.decision == ToolDecision.ALLOW
+    assert result.approval_required is False
+    assert result.blocked is False
 
 
-def test_unknown_risk_is_blocked() -> None:
+def test_direct_policy_allows_unknown_risk() -> None:
     result = ToolPermissionPolicy().decide("surprise", source=RequestSource.DIRECT_USER_COMMAND, tool_name="unknown", payload={})
 
-    assert result.decision == ToolDecision.BLOCKED
-    assert result.blocked is True
+    assert result.decision == ToolDecision.ALLOW
+    assert result.approval_required is False
+    assert result.blocked is False
 
 
 def test_registry_rejects_duplicate_tool_names() -> None:
@@ -259,14 +274,15 @@ def test_registry_lists_tool_specs() -> None:
     assert specs[0].input_schema == {"type": "object"}
 
 
-def test_approval_probe_is_approval_required_and_harmless_if_called() -> None:
+def test_approval_probe_is_allowed_and_harmless_if_called() -> None:
     probe = ApprovalProbeTool()
     decision = ToolPermissionPolicy().decide(probe.risk, source=RequestSource.DIRECT_USER_COMMAND, tool_name=probe.name, payload={})
 
     assert probe.name == "approval_probe"
     assert probe.risk == "shell_read"
-    assert decision.decision == ToolDecision.APPROVAL_REQUIRED
-    assert decision.approval_required is True
+    assert decision.decision == ToolDecision.ALLOW
+    assert decision.approval_required is False
+    assert decision.blocked is False
     assert probe.run({}) == {
         "ok": True,
         "message": "approval_probe executed safely",
@@ -289,7 +305,7 @@ def test_allowed_tool_executes() -> None:
     assert tool.calls == [{"x": 1}]
 
 
-def test_approval_required_tool_does_not_execute(conn: sqlite3.Connection) -> None:
+def test_former_approval_required_tool_executes_once_without_approval(conn: sqlite3.Connection) -> None:
     tool = ApprovalTool()
     registry = ToolRegistry()
     registry.register(tool)
@@ -301,19 +317,21 @@ def test_approval_required_tool_does_not_execute(conn: sqlite3.Connection) -> No
         approval_gate=ApprovalGate(conn),
     )
 
-    assert result.status == "approval_required"
-    assert result.approval_id is not None
-    assert tool.calls == []
-    assert table_count(conn, "approvals") == 1
+    assert result.status == "finished"
+    assert result.output == {"received": {"cmd": "status"}}
+    assert result.approval_id is None
+    assert tool.calls == [{"cmd": "status"}]
+    assert table_count(conn, "approvals") == 0
     assert table_count(conn, "worker_jobs") == 0
     assert table_count(conn, "voice_queue") == 0
 
 
-def test_approval_probe_request_creates_approval_without_tool_run_or_runtime_side_effects(
+def test_approval_probe_request_executes_without_approval_or_runtime_side_effects(
     conn: sqlite3.Connection,
 ) -> None:
+    probe = RecordingApprovalProbeTool()
     registry = ToolRegistry()
-    registry.register(ApprovalProbeTool())
+    registry.register(probe)
 
     result = registry.request_tool(
         ToolRequest(id="run-probe", tool_name="approval_probe", arguments={}, requested_by="tests"),
@@ -322,21 +340,26 @@ def test_approval_probe_request_creates_approval_without_tool_run_or_runtime_sid
         approval_gate=ApprovalGate(conn),
     )
 
-    assert result.status == "approval_required"
-    assert result.approval_id is not None
-    assert result.output is None
-    assert table_count(conn, "approvals") == 1
+    assert result.status == "finished"
+    assert result.approval_id is None
+    assert result.output == {
+        "ok": True,
+        "message": "approval_probe executed safely",
+    }
+    assert probe.calls == [{}]
+    assert table_count(conn, "approvals") == 0
     assert table_count(conn, "tool_runs") == 0
     assert table_count(conn, "worker_jobs") == 0
     assert table_count(conn, "voice_queue") == 0
 
 
-def test_approval_required_tool_without_turn_id_keeps_approval_created_uncorrelated(
+def test_direct_tool_without_turn_id_executes_without_approval_event(
     conn: sqlite3.Connection,
     event_store: EventStore,
 ) -> None:
+    tool = ApprovalTool()
     registry = ToolRegistry()
-    registry.register(ApprovalTool())
+    registry.register(tool)
 
     result = registry.request_tool(
         ToolRequest(id="run-no-turn", tool_name="approval", arguments={}, requested_by="api"),
@@ -345,19 +368,21 @@ def test_approval_required_tool_without_turn_id_keeps_approval_created_uncorrela
         approval_gate=ApprovalGate(conn, event_store=event_store),
     )
 
-    assert result.status == "approval_required"
-    event = event_store.list_after(0, limit=10)[0]
-    assert event.type == EventType.APPROVAL_CREATED
-    assert event.turn_id is None
-    assert event.correlation_id is None
+    assert result.status == "finished"
+    assert result.output == {"received": {}}
+    assert result.approval_id is None
+    assert tool.calls == [{}]
+    assert table_count(conn, "approvals") == 0
+    assert event_store.list_after(0, limit=10) == []
 
 
-def test_approval_required_tool_with_turn_id_correlates_approval_created_event(
+def test_direct_tool_with_turn_id_executes_without_approval_event(
     conn: sqlite3.Connection,
     event_store: EventStore,
 ) -> None:
+    tool = ApprovalTool()
     registry = ToolRegistry()
-    registry.register(ApprovalTool())
+    registry.register(tool)
 
     result = registry.request_tool(
         ToolRequest(
@@ -372,18 +397,15 @@ def test_approval_required_tool_with_turn_id_correlates_approval_created_event(
         approval_gate=ApprovalGate(conn, event_store=event_store),
     )
 
-    assert result.status == "approval_required"
-    event = event_store.list_after(0, limit=10)[0]
-    assert event.type == EventType.APPROVAL_CREATED
-    assert event.turn_id == "turn-direct"
-    assert event.correlation_id == "turn-direct"
-    assert event.payload["approval_id"] == result.approval_id
-    assert event.payload["risk"] == "shell_read"
-    assert event.payload["requested_by"] == "api"
-    assert event.payload["payload"]["tool_name"] == "approval"
+    assert result.status == "finished"
+    assert result.output == {"received": {"command": "status"}}
+    assert result.approval_id is None
+    assert tool.calls == [{"command": "status"}]
+    assert table_count(conn, "approvals") == 0
+    assert event_store.list_after(0, limit=10) == []
 
 
-def test_blocked_tool_does_not_execute() -> None:
+def test_former_blocked_tool_executes_once_without_approval(conn: sqlite3.Connection) -> None:
     tool = BlockedTool()
     registry = ToolRegistry()
     registry.register(tool)
@@ -392,11 +414,15 @@ def test_blocked_tool_does_not_execute() -> None:
         ToolRequest(id="run-blocked", tool_name="blocked", arguments={}, requested_by="tests"),
         source=RequestSource.DIRECT_USER_COMMAND,
         permission_policy=ToolPermissionPolicy(),
+        approval_gate=ApprovalGate(conn),
     )
 
-    assert result.status == "blocked"
-    assert result.error is not None
-    assert tool.calls == []
+    assert result.status == "finished"
+    assert result.output == {"received": {}}
+    assert result.error is None
+    assert result.approval_id is None
+    assert tool.calls == [{}]
+    assert table_count(conn, "approvals") == 0
 
 
 def test_tool_handler_exception_returns_failed_result() -> None:
@@ -562,17 +588,24 @@ def test_tool_run_recorder_records_started_event_with_approval_payload(
     }
 
 
-def test_placeholder_tools_do_not_mutate_shell_file_or_system_state(tmp_path: Path) -> None:
+def test_placeholder_tools_do_not_mutate_and_system_status_reports_live_context(
+    tmp_path: Path,
+) -> None:
     target = tmp_path / "target.txt"
 
     assert ShellReadPlaceholderTool().run({"command": "echo unsafe"})["ok"] is False
     assert ShellWritePlaceholderTool().run({"command": "touch target.txt"})["ok"] is False
     assert FileReadPlaceholderTool().run({"path": str(target)})["ok"] is False
     assert FileWritePlaceholderTool().run({"path": str(target), "content": "x"})["ok"] is False
-    assert SystemStatusTool().run({}) == {
-        "ok": True,
-        "message": "Jarvis system status placeholder",
-    }
+    status = SystemStatusTool().run({})
+    assert status["ok"] is True
+    assert status["system"] == "Darwin"
+    assert status["hostname"]
+    assert status["architecture"]
+    assert status["user"]
+    assert status["home"]
+    assert status["daemon_cwd"]
+    assert "placeholder" not in str(status).lower()
     assert not target.exists()
 
 

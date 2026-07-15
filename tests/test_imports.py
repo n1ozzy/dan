@@ -30,7 +30,6 @@ MODULES = (
     "jarvis.api.routes_workers",
     "jarvis.api.routes_memory",
     "jarvis.api.routes_tools",
-    "jarvis.api.routes_approvals",
     "jarvis.api.websocket",
     "jarvis.store",
     "jarvis.store.db",

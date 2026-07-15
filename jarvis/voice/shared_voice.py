@@ -72,7 +72,7 @@ def _normalize_mastering(value: str) -> str:
 def apply_shared_voices(voice_cfg: _VOICE_CFG, directory: str | Path | None = None) -> _VOICE_CFG:
     """Zwróć VoiceConfig wzbogacony o wspólny katalog (baza), z lokalnym override.
 
-    Scala trzy pola: persona_voices, persona_mastering, tts_pronunciations.
+    Scala voice/mastering/speed person oraz tts_pronunciations.
     Nic innego nie rusza — to warstwa danych person + wymowy, nie silnik.
     """
     personas = load_personas(directory)
@@ -89,22 +89,28 @@ def apply_shared_voices(voice_cfg: _VOICE_CFG, directory: str | Path | None = No
     # ── persony: wspólny plik jako baza, lokalne mapy nadpisują ──
     shared_voices: dict[str, str] = {}
     shared_master: dict[str, str] = {}
+    shared_speeds: dict[str, float] = {}
     for name, spec in personas.items():
         voice = spec.get("voice")
         master = spec.get("mastering")
+        speed = spec.get("speed")
         if isinstance(voice, str) and voice.strip():
             shared_voices[name] = voice.strip()
         if isinstance(master, str):
             shared_master[name] = _normalize_mastering(master)
+        if isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0:
+            shared_speeds[name] = float(speed)
 
     merged_voices = {**shared_voices, **(getattr(voice_cfg, "persona_voices", None) or {})}
     merged_master = {**shared_master, **(getattr(voice_cfg, "persona_mastering", None) or {})}
+    merged_speeds = {**shared_speeds, **(getattr(voice_cfg, "persona_speeds", None) or {})}
 
     return dataclasses.replace(
         voice_cfg,
         tts_pronunciations=merged_pron,
         persona_voices=merged_voices,
         persona_mastering=merged_master,
+        persona_speeds=merged_speeds,
     )
 
 

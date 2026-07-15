@@ -47,9 +47,11 @@ def test_populates_personas_and_pronunciations(tmp_path):
         [jarvis]
         voice = "M2"
         mastering = "clean"
+        speed = 1.35
         [dan]
         voice = "M3"
         mastering = "raw"
+        speed = 1.25
         """,
         pronunciations="""
         runtime = "rantajm"
@@ -60,6 +62,7 @@ def test_populates_personas_and_pronunciations(tmp_path):
     assert out.persona_voices == {"jarvis": "M2", "dan": "M3"}
     # "raw" → pusty profil (Jarvis: surowy = brak łańcucha ffmpeg)
     assert out.persona_mastering == {"jarvis": "clean", "dan": ""}
+    assert out.persona_speeds == {"jarvis": 1.35, "dan": 1.25}
     assert out.tts_pronunciations["runtime"] == "rantajm"
     assert out.tts_pronunciations["chatterbox"] == "czaterboks"
 
@@ -67,13 +70,18 @@ def test_populates_personas_and_pronunciations(tmp_path):
 def test_local_config_overrides_shared(tmp_path):
     _voice_dir(
         tmp_path,
-        personas='[jarvis]\nvoice = "M2"\n',
+        personas='[jarvis]\nvoice = "M2"\nspeed = 1.35\n',
         pronunciations='bug = "bag"\nruntime = "rantajm"\n',
     )
     # Lokalny [voice] podał własny głos jarvisa i własną wymowę 'bug' — wygrywa.
-    cfg = VoiceConfig(persona_voices={"jarvis": "F1"}, tts_pronunciations={"bug": "ROBAK"})
+    cfg = VoiceConfig(
+        persona_voices={"jarvis": "F1"},
+        persona_speeds={"jarvis": 1.1},
+        tts_pronunciations={"bug": "ROBAK"},
+    )
     out = apply_shared_voices(cfg, directory=tmp_path)
     assert out.persona_voices["jarvis"] == "F1"           # local wins
+    assert out.persona_speeds["jarvis"] == 1.1             # local wins
     assert out.tts_pronunciations["bug"] == "ROBAK"        # local wins
     assert out.tts_pronunciations["runtime"] == "rantajm"  # shared fills the gap
 

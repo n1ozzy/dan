@@ -15,6 +15,7 @@ from jarvis.memory import (
     MemoryEvidence,
     MemoryItem,
 )
+from jarvis.memory.archive import MemoryRecallValidationError, parse_memory_recall_request
 
 ROUTE_GROUP = "memory"
 
@@ -43,6 +44,16 @@ def post_memory(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
     payload = _create_payload(request_payload)
     block = app.create_memory(**payload)
     return {"memory": memory_to_dict(block)}
+
+
+def post_memory_recall(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
+    if not isinstance(request_payload, Mapping):
+        raise MemoryRequestValidationError("Request JSON must be an object.")
+    try:
+        request = parse_memory_recall_request(request_payload)
+        return app.recall_memory(request.query, limit=request.limit)
+    except MemoryRecallValidationError as exc:
+        raise MemoryRequestValidationError(str(exc)) from exc
 
 
 def post_memory_compile_preview(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
@@ -310,6 +321,7 @@ __all__ = [
     "post_memory_candidate_evidence",
     "post_memory_candidate",
     "post_memory",
+    "post_memory_recall",
     "reject_memory_candidate",
     "register_routes",
 ]

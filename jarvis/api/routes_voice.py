@@ -169,6 +169,8 @@ def _voice_runtime_groups(
         queue_rows,
         ("cancellation_reason", "cancel_reason", "interruption_reason"),
     )
+    shared_publisher = bool(voice.broker_enabled)
+    shared_publisher_ready = bool(app.started and app.voice_publisher is not None)
 
     return {
         "capture_input": _runtime_group(
@@ -266,6 +268,9 @@ def _voice_runtime_groups(
             effective={
                 "engine": _effective_tts_engine(app),
                 "voice_id": voice.supertonic_voice if _effective_tts_engine(app) else None,
+                "publisher": _component_name(app.voice_publisher),
+                "publisher_mode": "external_shared" if shared_publisher else "local",
+                "acknowledgement": "unavailable" if shared_publisher else "local_lifecycle",
             },
             readiness=tts_probe["readiness"],
             dependency_status=tts_probe["dependency_status"],
@@ -282,6 +287,15 @@ def _voice_runtime_groups(
             },
             effective={
                 "broker": _component_name(app.voice_broker),
+                "publisher": _component_name(app.voice_publisher),
+                "publisher_mode": "external_shared" if shared_publisher else "local",
+                "publisher_ready": (
+                    shared_publisher_ready
+                    if shared_publisher
+                    else app.voice_broker is not None
+                ),
+                "acknowledgement": "unavailable" if shared_publisher else "local_lifecycle",
+                "interrupt_policy": "uninterruptible" if shared_publisher else "local_cancellable",
                 "output_device": getattr(audio_state, "output_device", None),
                 "output_transport": getattr(audio_state, "output_transport", None),
             },
@@ -301,10 +315,21 @@ def _voice_runtime_groups(
                 "queue_counts": queue_summary,
                 "cancellation_reason": cancellation_reason,
                 "cancellation_coordinator": _component_name(app.voice_cancellation),
+                "publisher_mode": "external_shared" if shared_publisher else "local",
+                "interrupt_policy": "uninterruptible" if shared_publisher else "local_cancellable",
+                "cancel_supported": bool(
+                    app.voice_cancellation is not None and not shared_publisher
+                ),
+                "acknowledgement_supported": not shared_publisher,
             },
             readiness=READINESS_OK,
-            dependency_status="queue readable; cancellation coordinator "
-            + ("present" if app.voice_cancellation is not None else "not built"),
+            dependency_status=(
+                "external shared publication is observable; "
+                "acknowledgement and cancellation unavailable"
+                if shared_publisher
+                else "queue readable; cancellation coordinator "
+                + ("present" if app.voice_cancellation is not None else "not built")
+            ),
             latest_safe_error=voice_error,
             warnings=_queue_warnings(app, queue_rows),
         ),
@@ -349,6 +374,21 @@ def _runtime_group(
 
 def _tts_readiness(app: DaemonApp) -> dict[str, Any]:
     voice = app.config.voice
+    if voice.broker_enabled:
+        ready = bool(app.started and app.voice_publisher is not None)
+        return _probe(
+            (
+                READINESS_OK
+                if ready
+                else (READINESS_UNKNOWN if not app.started else READINESS_MISSING)
+            ),
+            (
+                "external shared publisher active; synthesis/playback acknowledgement unavailable"
+                if ready
+                else "external shared publisher is not active"
+            ),
+            [] if ready else ["external shared publisher is not active"],
+        )
     engine = str(voice.default_tts or "").strip().lower()
     warnings: list[str] = []
     if not engine:
@@ -424,6 +464,21 @@ def _recorder_readiness(app: DaemonApp) -> dict[str, Any]:
 
 
 def _playback_readiness(app: DaemonApp) -> dict[str, Any]:
+    if app.config.voice.broker_enabled:
+        ready = bool(app.started and app.voice_publisher is not None)
+        return _probe(
+            (
+                READINESS_OK
+                if ready
+                else (READINESS_UNKNOWN if not app.started else READINESS_MISSING)
+            ),
+            (
+                "external shared publisher active; remote playback state is not acknowledged"
+                if ready
+                else "external shared publisher is not active"
+            ),
+            [] if ready else ["external shared publisher is not active"],
+        )
     playback_binary = str(app.config.voice.playback_binary or "").strip()
     probe = _probe_executable(
         explicit=playback_binary,
@@ -582,6 +637,9 @@ def _component_engine_name(component: Any) -> str | None:
 
 
 def _effective_tts_engine(app: DaemonApp) -> str | None:
+    if app.voice_publisher is not None:
+        configured = str(app.config.voice.default_tts or "external-default").strip()
+        return f"external_shared:{configured or 'external-default'}"
     return (
         _component_engine_name(app.voice_broker)
         or _component_engine_name(app.voice_cancellation)
