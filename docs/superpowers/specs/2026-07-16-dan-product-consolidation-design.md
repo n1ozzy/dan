@@ -96,6 +96,16 @@ Aktywny `/Users/n1_ozzy/.jarvis/jarvis.toml` ustawia głos `M3`, profil
 - `jarvis = M3/clean/1.35`;
 - `danusia = F4/clean/1.28`.
 
+Istnieje czwarte źródło: ignorowany przez Git
+`/Users/n1_ozzy/Documents/dev/dan/state/overrides.json`, zapisywany między innymi
+przez stary panel. Obecnie zawiera dla Jarvisa `jarvis_supertonic_voice = M2` i
+`jarvis_speed = 1.4`. Resolver `dan_core/say.py` naprawdę wybiera jednak
+`M2/clean/1.35`: osobny override głosu wygrywa z `personas.toml`, natomiast
+`jarvis_speed` nie ma czytnika, a jawna persona bierze tempo z `personas.toml`.
+Wywołanie bez jawnej persony wpada jeszcze w globalne `supertonic_speed = 1.2`.
+Jeden plik zawiera więc jednocześnie aktywny override, martwy klucz i wartość
+globalną działającą tylko na części tras.
+
 Komentarze w `jarvis.toml` nadal opisują wcześniejsze `M2/clean`, mimo że wartości
 wykonawcze mówią co innego. Panel i tabela `settings` w SQLite tworzą dodatkową
 warstwę trwałych ustawień. To nie jest jeden kanon konfiguracji.
@@ -125,7 +135,10 @@ werdykty są kanonem produkcyjnym, którego nie wolno zgubić.
 instrukcje wskazują `M3/clean/1.35`, a jeden dokument w repo bazowym nadal podaje
 `M5/bastard/1.4`; starsze handoffy wskazują jeszcze inne wartości. Ostateczna
 mapa głosów nie może powstać z pamięci ani przez wybranie najnowszego komentarza.
-Wymaga tabeli decyzji i zatwierdzonego odsłuchu każdej postaci.
+Wymaga tabeli decyzji, testu rzeczywistego resolvera dla każdej trasy i
+zatwierdzonego odsłuchu każdej postaci. Nieaktualny komentarz w
+`~/.config/voice/personas.toml` nadal twierdzi, że `dsp` czyta feeder, nie broker;
+migracja usuwa takie kłamliwe komentarze razem z martwymi kluczami.
 
 ### 3.3 Żywi konsumenci poza repo
 
@@ -206,6 +219,13 @@ rozmów, tur, bloków pamięci i skompilowanych kontekstów oraz pusty katalog
 odwołania prowadzą także do DANv2 i wyłączonego skilla OpenClaw. Dlatego nie
 wolno jej nadpisać ani automatycznie uznać za schemat docelowy.
 
+Jednorazowe `lsof` nie pokazuje obecnie uchwytu do `memory.db`, ale nie dowodzi
+braku pisarza otwierającego bazę tylko na czas operacji. Statyczne odwołania
+wskazują co najmniej `DANv2/memory/store.py`, `DANv2/dan.py`, narzędzia DANv2 i
+wyłączony skill OpenClaw. Przed migracją trzeba ustalić wszystkie entrypointy
+zapisu statycznie oraz krótkim monitoringiem dostępu podczas normalnych operacji,
+a następnie je zatrzymać. Nieznany pisarz blokuje migrację i usunięcie źródła.
+
 W katalogu `~/.jarvis/` żyją osobna baza, konfiguracja, zainstalowany `jarvisd`,
 backupy i cache modeli. Migracja wymaga rozpoznania obu schematów, kopii SQLite,
 liczników rekordów, jawnej polityki deduplikacji i raportu po imporcie. Samo
@@ -252,6 +272,12 @@ Runtime nie scala kilku wartości tego samego ustawienia. Panel zapisuje przez A
 do właściwego właściciela, nie tworzy override'u w SQLite. `dan config explain
 <klucz>` pokazuje wartość, źródło i ścieżkę. Nieznany lub zdublowany klucz blokuje
 start z czytelnym błędem.
+
+`state/overrides.json` jest źródłem jednorazowego importu i raportu konfliktów,
+nie elementem docelowej drabiny konfiguracji. Aktywne wartości są porównywane z
+TOML i zatwierdzane; martwe lub nieczytane klucze są raportowane, nie przenoszone
+na ślepo. Po cutoverze panel nie tworzy nowego pliku override obok właściciela
+ustawienia.
 
 ### 4.2 Persona i prywatność
 
@@ -417,6 +443,8 @@ Do porównania i selektywnego przejęcia:
 - algorytmy brokera, Supertonic, mastering, wymowa i gain;
 - pełną mapę obsady, kody `M1`–`F5`, DSP, komentarze odsłuchowe i sześć backupów
   `personas.toml` jako materiał do zatwierdzenia aktualnych wartości;
+- ignorowany przez Git `state/overrides.json` jako aktywne źródło konfliktów,
+  wraz z mapą: `klucz -> czytnik -> trasy -> faktyczny wynik -> decyzja importu`;
 - dwadzieścia custom styles z cache Supertonic, przeniesione do wersjonowanych
   assetów z sumami SHA, źródłem, licencją i procedurą instalacji;
 - pipeline Żanety Chatterbox V3: generator, parametry, referencje, zależności,
@@ -447,12 +475,14 @@ Migracja odbywa się atomowo dla wszystkich aktywnych hostów:
    plisty, zainstalowane binaria oraz kontrakty `/tmp`;
 2. instalator generuje cienkie adaptery wywołujące `dan` i wskazujące jeden
    kanon persony bez kopiowania jego treści;
-3. testuje Claude, Codex, OpenClaw, standup, hook, dobranockę, `voice-report`,
-   Trio/screen-control i panel;
+3. testuje Claude, Codex, OpenClaw, standup, hook, dobranockę, `gpt-say`,
+   `voice-report`, Trio/screen-control i panel;
 4. zachowuje jawny odpowiednik wyłącznika hooka: sesyjne
    `dan voice hook off|on|status` oraz osobno udokumentowane ustawienie trwałe;
-5. dopiero potem wyłącza stare skrypty i plisty;
-6. skan wszystkich aktywnych korzeni musi zwrócić zero wykonywalnych odwołań do
+5. hook MessageDisplay działa fail-open: przy niedostępnym `dand` kończy szybko
+   kodem `0`, nie blokuje odpowiedzi i nie uruchamia starego brokera ani fallbacku;
+6. dopiero potem wyłącza stare skrypty i plisty;
+7. skan wszystkich aktywnych korzeni musi zwrócić zero wykonywalnych odwołań do
    starych repo, `/tmp/dan-*` i `/tmp/claude-loud-thinking`.
 
 `~/.openclaw/workspace/skills/radio-dan` jest żywe i musi zostać zastąpione
@@ -490,12 +520,14 @@ wydania, zawsze w tym samym repo.
    w izolacji, bez aktywnego mikrofonu, kolejki i audio;
 4. bezpieczne wyłączenie panelu, `jarvisd`, feedera i starego toru głosu przed
    edycją aktywnych plików i kopiami baz;
-5. spójne backupy i kontrolowana migracja `~/.jarvis/jarvis.db` oraz zastanego
+5. identyfikacja i zatrzymanie wszystkich pisarzy baz, następnie spójne backupy
+   i kontrolowana migracja `~/.jarvis/jarvis.db` oraz zastanego
    `~/.dan/memory.db` do wersjonowanego schematu `~/.dan/dan.db`, z licznikami,
    deduplikacją, raportem i rollbackiem;
 6. wewnętrzna zmiana nazw `jarvis` na `dan` oraz przełączenie ścieżek dopiero po
    przejściu testów migracji danych;
-7. jeden model konfiguracji i rozdzielenie persony od prywatnego profilu;
+7. jeden model konfiguracji, rozliczenie każdego klucza `state/overrides.json`
+   oraz rozdzielenie persony od prywatnego profilu;
 8. natywny broker i trwała kolejka jako faktyczny właściciel playbacku;
 9. migracja Supertonic, pełnej obsady, custom styles, masteringu, wymowy,
    pipeline'u Żanety i testów jakości;
@@ -562,7 +594,10 @@ bazy źródłowe nie są kasowane w tym samym kroku co cutover.
 - brak aktywnych zapisów do `/tmp/dan-*`, `/tmp/claude-loud-thinking`,
   bezpośredniego `afplay` i uruchamiania brokera przez skille, hooki lub panel;
 - `dan config explain` wskazuje jednego właściciela każdego ustawienia;
-- brak trwałych override'ów głosu w SQLite i panelu.
+- brak trwałych override'ów głosu w SQLite, panelu, `state/overrides.json` i
+  innych plikach stanu obok kanonicznej konfiguracji;
+- każdy stary klucz override ma decyzję importu i test dowodzący, że martwy klucz
+  nie wpływa na runtime.
 
 ### 11.2 Runtime i głos
 
@@ -577,6 +612,9 @@ bazy źródłowe nie są kasowane w tym samym kroku co cutover.
   referencyjną i odsłuchem Ozzy'ego;
 - pełna obsada ma tabelę decyzji `persona -> engine -> style/głos -> tempo ->
   mastering/DSP -> dowód odsłuchu`, bez sprzecznych override'ów;
+- macierz tras porównuje żądanie producenta, wynik resolvera, snapshot requestu i
+  zdarzenie faktycznego playbacku; obejmuje personę jawną i domyślną, a każda
+  różnica głosu, tempa, profilu lub DSP blokuje cutover;
 - custom styles działają po wyczyszczeniu cache i instalacji ze świeżego klona;
 - przygotowany pipeline Żanety odtwarza zaakceptowany rezultat albo jawnie
   zgłasza brak niedystrybuowalnego assetu; nie podmienia go cicho na inny głos;
@@ -586,7 +624,7 @@ bazy źródłowe nie są kasowane w tym samym kroku co cutover.
 ### 11.3 Konsumenci
 
 - działają panel, CLI, Claude, Codex, OpenClaw, standup, hook, dobranocka,
-  `voice-report`, Trio/screen-control i kanoniczne skille persony;
+  `gpt-say`, `voice-report`, Trio/screen-control i kanoniczne skille persony;
 - każdy z nich przechodzi przez to samo API i tę samą kolejkę;
 - skan aktywnych instrukcji i adapterów w `~/AGENTS.md`, `~/.agents`,
   `~/.claude` z wyłączeniem archiwum, `~/.codex`, `~/.openclaw`,
@@ -595,6 +633,8 @@ bazy źródłowe nie są kasowane w tym samym kroku co cutover.
   wyłączone z tej bramki;
 - `dan voice hook off|on|status` zastępuje stary wyłącznik hooka bez utraty
   możliwości szybkiego wyciszenia;
+- przy wyłączonym `dand` hook MessageDisplay kończy kodem `0` poniżej jednej
+  sekundy, nie blokuje odpowiedzi i nie startuje alternatywnego toru;
 - diagnostyka odróżnia `opublikowano`, `zsyntetyzowano` i `naprawdę odtworzono`.
 
 ### 11.4 Prywatność i przekazanie koledze
@@ -620,6 +660,8 @@ Ozzy może usunąć stare projekty dopiero po spełnieniu wszystkich warunków:
 - wszystkie gałęzie i refy WIP mają decyzję na poziomie zmian przed rename;
 - migracja `jarvis.db` i zastanego `memory.db` ma zgodne liczniki, sumy oraz
   raport rekordów odrzuconych lub scalonych;
+- wszystkie procesy i entrypointy mogące pisać do obu baz są zidentyfikowane,
+  zatrzymane na czas migracji i nie zapisują już do baz źródłowych po cutoverze;
 - pełny bezpieczny baseline testów oraz docelowy zestaw regresji są zapisane;
 - wymagania ze starego planu Radia, `summary.md` i `opinia-planu.md` są
   rozliczone w manifeście, a stare dokumenty oznaczone jako historyczne lub
@@ -628,7 +670,8 @@ Ozzy może usunąć stare projekty dopiero po spełnieniu wszystkich warunków:
 - DAN działa po wylogowaniu/logowaniu lub równoważnym cold starcie;
 - testy automatyczne, smoke testy i odsłuch są zaakceptowane;
 - backup i rollback zostały sprawdzone;
-- przez ustalony okres obserwacyjny nie trzeba było uruchamiać starego toru.
+- przez minimum siedem kolejnych dni normalnego użycia, obejmujących co najmniej
+  dwa pełne cold starty po logowaniu, nie trzeba było uruchamiać starego toru.
 
 Wtedy `dan`, `DANv2` i `menubar-controller` przestają być donorami i mogą zostać
 usunięte przez Ozzy'ego. Wcześniej są archiwum migracyjne, nie aktywną prawdą.
