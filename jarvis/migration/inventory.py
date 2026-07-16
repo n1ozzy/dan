@@ -22,6 +22,9 @@ from typing import Any, Literal, Protocol
 
 SCHEMA_VERSION = 1
 MANIFEST_FILE_MODE = 0o600
+CANONICAL_MANIFEST_RELATIVE_PATH = Path(
+    ".dan/migration/release1-source-manifest.json"
+)
 SURFACE_NAMES = (
     "repositories",
     "git_refs",
@@ -147,7 +150,7 @@ class InventoryRoots:
             home=actual_home,
             repo_root=repo_root,
             tmp_root=tmp_root,
-            excludes=tuple(excludes) + (required_archive_exclusion,),
+            excludes=_unique_paths((*excludes, required_archive_exclusion)),
         )
 
     def repository_paths(self) -> tuple[Path, ...]:
@@ -163,6 +166,15 @@ class InventoryRoots:
         )
 
     def active_skill_roots(self) -> tuple[Path, ...]:
+        repository_skill_roots = tuple(
+            candidate
+            for repository in self.repository_paths()
+            for candidate in (
+                repository / ".agents/skills",
+                repository / ".claude/skills",
+                repository / "skills",
+            )
+        )
         return _unique_paths(
             (
                 self.home / ".agents/skills",
@@ -170,20 +182,59 @@ class InventoryRoots:
                 self.home / ".codex/skills",
                 self.home / ".codex/memories/skills",
                 self.home / ".openclaw/workspace/skills",
-                self.repo_root / ".agents/skills",
-                self.repo_root / ".claude/skills",
+                self.home / ".openclaw/plugin-skills",
+            )
+            + repository_skill_roots
+            + self.plugin_skill_roots()
+        )
+
+    def plugin_skill_roots(self) -> tuple[Path, ...]:
+        discovered: list[Path] = []
+        for cache in (
+            self.home / ".claude/plugins/cache",
+            self.home / ".codex/plugins/cache",
+        ):
+            for path in _walk_paths(cache, self.excludes):
+                if path.name == "SKILL.md" and path.is_file():
+                    discovered.append(path.parent)
+        return _unique_paths(discovered)
+
+    def active_scan_roots(self) -> tuple[Path, ...]:
+        """Name every active production root covered by the Task 1 inventory."""
+
+        return _unique_paths(
+            self.repository_paths()
+            + (
+                self.home / ".agents",
+                self.home / ".claude",
+                self.home / ".codex",
+                self.home / ".openclaw",
+                self.home / "AGENTS.md",
+                self.home / ".claude/CLAUDE.md",
+                self.home / "Library/LaunchAgents",
             )
         )
 
-    def active_scan_roots(self) -> tuple[Path, ...]:
+    def producer_scan_roots(self) -> tuple[Path, ...]:
+        """Executable, config, and injected-instruction subsets of active roots."""
+
         return _unique_paths(
             self.repository_paths()
             + self.active_skill_roots()
             + (
                 self.home / ".claude/hooks",
                 self.home / ".claude/bin",
+                self.home / ".claude/agents",
+                self.home / ".claude/settings.json",
+                self.home / ".claude/settings.local.json",
+                self.home / ".claude/statusline-command.sh",
                 self.home / ".codex/rules",
+                self.home / ".codex/AGENTS.md",
+                self.home / ".codex/config.toml",
                 self.home / ".codex/memories/MEMORY.md",
+                self.home / ".openclaw/openclaw.json",
+                self.home / ".openclaw/plugin-skills",
+                self.home / ".openclaw/service-env",
                 self.home / ".openclaw/workspace",
                 self.home / "AGENTS.md",
                 self.home / ".claude/CLAUDE.md",
@@ -308,8 +359,17 @@ def _is_under(path: Path, parent: Path) -> bool:
     return True
 
 
+def _is_skipped_directory_name(name: str) -> bool:
+    return (
+        name in _SKIP_DIRECTORY_NAMES
+        or name == "venv"
+        or name.endswith("-venv")
+        or name.endswith("_venv")
+    )
+
+
 def _is_excluded(path: Path, excludes: Iterable[Path]) -> bool:
-    if any(part in _SKIP_DIRECTORY_NAMES for part in path.parts):
+    if any(_is_skipped_directory_name(part) for part in path.parts):
         return True
     return any(_is_under(path, excluded.expanduser()) for excluded in excludes)
 
@@ -357,11 +417,98 @@ def _run(
 
 
 def _git_output(runner: Runner, repo: Path, args: Sequence[str]) -> tuple[int, str]:
-    result = _run(runner, ("git", "-C", str(repo), *args))
+    result = _run(runner, ("git", "--no-optional-locks", "-C", str(repo), *args))
     return result.returncode, result.stdout.strip()
 
 
-def _repository_record(runner: Runner, path: Path) -> Mapping[str, object]:
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", errors="surrogateescape")).hexdigest()
+
+
+def _git_diff_sha256(
+    runner: Runner,
+    repo: Path,
+    args: Sequence[str],
+) -> tuple[str | None, str]:
+    result = _run(runner, ("git", "--no-optional-locks", "-C", str(repo), *args))
+    if result.returncode != 0:
+        return None, ""
+    return _sha256_text(result.stdout), result.stdout
+
+
+def _parse_porcelain_v1_z(output: str, repo: Path) -> list[Mapping[str, object]]:
+    chunks = output.split("\0")
+    records: list[Mapping[str, object]] = []
+    index = 0
+    while index < len(chunks):
+        chunk = chunks[index]
+        index += 1
+        if len(chunk) < 4:
+            continue
+        status = chunk[:2]
+        relative_path = chunk[3:]
+        original_path: str | None = None
+        if "R" in status or "C" in status:
+            if index < len(chunks) and chunks[index]:
+                original_path = chunks[index]
+                index += 1
+
+        item = inspect_path(repo / relative_path)
+        record: dict[str, object] = {
+            "status": status,
+            "path": relative_path,
+            "kind": item.kind,
+            "sha256": item.sha256,
+        }
+        if original_path is not None:
+            record["original_path"] = original_path
+        if item.target is not None:
+            record["target"] = item.target
+        records.append(record)
+    return sorted(records, key=lambda row: (str(row["path"]), str(row["status"])))
+
+
+def _untracked_tree_sha256(entries: Iterable[Mapping[str, object]]) -> str:
+    digest = hashlib.sha256()
+    for entry in entries:
+        if entry.get("status") != "??":
+            continue
+        for key in ("path", "kind", "sha256", "target"):
+            digest.update(str(entry.get(key, "")).encode("utf-8", errors="surrogateescape"))
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _repository_exclusion_pathspecs(
+    repository: Path,
+    excludes: Iterable[Path],
+) -> tuple[str, ...]:
+    pathspecs = {
+        f":(exclude,glob)**/{name}/**" for name in _SKIP_DIRECTORY_NAMES
+    }
+    pathspecs.update(
+        {
+            ":(exclude,glob)**/venv/**",
+            ":(exclude,glob)**/*-venv/**",
+            ":(exclude,glob)**/*_venv/**",
+        }
+    )
+    for excluded in excludes:
+        try:
+            relative = excluded.expanduser().absolute().relative_to(repository.absolute())
+        except ValueError:
+            continue
+        if relative.parts:
+            pathspecs.add(f":(exclude,glob){relative.as_posix()}")
+            pathspecs.add(f":(exclude,glob){relative.as_posix()}/**")
+    return tuple(sorted(pathspecs))
+
+
+def _repository_record(
+    runner: Runner,
+    path: Path,
+    excludes: Iterable[Path] = (),
+) -> Mapping[str, object]:
     item = inspect_path(path, expected_kind="directory")
     result = item.to_mapping()
     if item.status != "present":
@@ -372,13 +519,115 @@ def _repository_record(runner: Runner, path: Path) -> Mapping[str, object]:
         return result
     head_code, head = _git_output(runner, path, ("rev-parse", "HEAD"))
     _, branch = _git_output(runner, path, ("branch", "--show-current"))
-    _, porcelain = _git_output(runner, path, ("status", "--porcelain"))
-    result["status"] = "dirty" if porcelain else "clean"
+    pathspecs = _repository_exclusion_pathspecs(path, excludes)
+    status_result = _run(
+        runner,
+        (
+            "git",
+            "--no-optional-locks",
+            "-C",
+            str(path),
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            *pathspecs,
+        ),
+    )
+    if status_result.returncode != 0:
+        result["status"] = "git-status-probe-error"
+        result["metadata"] = {
+            "branch": branch or None,
+            "head": head if head_code == 0 and head else None,
+            "toplevel": top,
+            "probe": "git status --porcelain=v1 -z",
+            "returncode": status_result.returncode,
+        }
+        return result
+    porcelain = status_result.stdout
+    wip_entries = _parse_porcelain_v1_z(porcelain, path)
+    staged_sha, staged_patch = _git_diff_sha256(
+        runner,
+        path,
+        (
+            "diff",
+            "--cached",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "HEAD",
+            "--",
+            *pathspecs,
+        ),
+    )
+    if staged_sha is None and head_code != 0:
+        staged_sha, staged_patch = _git_diff_sha256(
+            runner,
+            path,
+            (
+                "diff",
+                "--cached",
+                "--binary",
+                "--full-index",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--",
+                *pathspecs,
+            ),
+        )
+    unstaged_sha, unstaged_patch = _git_diff_sha256(
+        runner,
+        path,
+        (
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--",
+            *pathspecs,
+        ),
+    )
+    tracked_sha, _ = _git_diff_sha256(
+        runner,
+        path,
+        (
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "HEAD",
+            "--",
+            *pathspecs,
+        ),
+    )
+    tracked_basis = "HEAD"
+    if tracked_sha is None and head_code != 0:
+        tracked_sha = _sha256_text(f"staged\0{staged_patch}\0unstaged\0{unstaged_patch}")
+        tracked_basis = "unborn-staged-and-unstaged"
+
+    diff_probe_error = any(
+        digest is None for digest in (staged_sha, unstaged_sha, tracked_sha)
+    )
+    result["status"] = (
+        "git-diff-probe-error"
+        if diff_probe_error
+        else ("dirty" if wip_entries else "clean")
+    )
     result["metadata"] = {
         "branch": branch or None,
         "head": head if head_code == 0 and head else None,
         "toplevel": top,
-        "dirty_entry_count": len(porcelain.splitlines()) if porcelain else 0,
+        "dirty_entry_count": len(wip_entries),
+        "wip_entries": wip_entries,
+        "tracked_diff_sha256": tracked_sha,
+        "tracked_diff_basis": tracked_basis,
+        "staged_diff_sha256": staged_sha,
+        "unstaged_diff_sha256": unstaged_sha,
+        "untracked_tree_sha256": _untracked_tree_sha256(wip_entries),
     }
     return result
 
@@ -406,6 +655,14 @@ def _git_ref_records(
             ),
         )
         if code != 0:
+            records.append(
+                {
+                    "repository": str(repo.absolute()),
+                    "status": "git-ref-probe-error",
+                    "probe": "git for-each-ref",
+                    "returncode": code,
+                }
+            )
             continue
         base_code, base_sha = _git_output(runner, repo, ("rev-parse", "--verify", base_ref))
         if base_code != 0:
@@ -425,17 +682,22 @@ def _git_ref_records(
                 )
                 if unique_code == 0 and unique_output:
                     unreachable = unique_output.splitlines()
-            records.append(
-                {
-                    "repository": str(repo.absolute()),
-                    "ref": ref_name,
-                    "head": head,
-                    "upstream": upstream or None,
-                    "chosen_base": base_sha or None,
-                    "unreachable_from_base": unreachable,
-                }
-            )
-    return sorted(records, key=lambda row: (str(row["repository"]), str(row["ref"])))
+            record: dict[str, object] = {
+                "repository": str(repo.absolute()),
+                "ref": ref_name,
+                "head": head,
+                "upstream": upstream or None,
+                "chosen_base": base_sha or None,
+                "unreachable_from_base": unreachable,
+            }
+            if base_sha and unique_code != 0:
+                record["status"] = "git-ref-ancestry-probe-error"
+                record["returncode"] = unique_code
+            records.append(record)
+    return sorted(
+        records,
+        key=lambda row: (str(row["repository"]), str(row.get("ref", ""))),
+    )
 
 
 def _process_records(runner: Runner) -> list[Mapping[str, object]]:
@@ -448,13 +710,16 @@ def _process_records(runner: Runner) -> list[Mapping[str, object]]:
         if len(fields) != 3:
             continue
         pid, ppid, command = fields
+        pid_value = int(pid)
+        if pid_value == os.getpid():
+            continue
         lowered = command.lower()
         if not any(token in lowered for token in _PROCESS_TOKENS):
             continue
         records.append(
             {
                 "kind": "process",
-                "pid": int(pid),
+                "pid": pid_value,
                 "ppid": int(ppid),
                 "command": command,
                 "status": "running",
@@ -596,6 +861,17 @@ def _records_for_roots(
 
 def _config_source_paths(roots: InventoryRoots) -> tuple[Path, ...]:
     donor = roots.home / "Documents/dev/dan"
+    claude_agents = tuple(sorted((roots.home / ".claude/agents").glob("*.md")))
+    repository_configs = tuple(
+        candidate
+        for repository in roots.repository_paths()
+        for candidate in (
+            repository / "AGENTS.md",
+            repository / "CLAUDE.md",
+            repository / ".claude/settings.json",
+            repository / ".claude/settings.local.json",
+        )
+    )
     return _unique_paths(
         (
             donor / "config/persona/DAN.md",
@@ -607,10 +883,32 @@ def _config_source_paths(roots: InventoryRoots) -> tuple[Path, ...]:
             roots.home / ".dan/config.toml",
             roots.home / ".dan/owner.toml",
             roots.home / ".dan/secrets.env",
+            roots.home / ".agents/.skill-lock.json",
             roots.home / "AGENTS.md",
             roots.home / ".claude/CLAUDE.md",
+            roots.home / ".claude/plugins/installed_plugins.json",
+            roots.home / ".claude/settings.json",
+            roots.home / ".claude/settings.local.json",
+            roots.home / ".codex/.codex-global-state.json",
+            roots.home / ".codex/AGENTS.md",
+            roots.home / ".codex/auth.json",
+            roots.home / ".codex/config.toml",
+            roots.home / ".codex/memories/MEMORY.md",
             roots.home / ".codex/rules/default.rules",
+            roots.home / ".openclaw/exec-approvals.json",
+            roots.home / ".openclaw/identity/device-auth.json",
+            roots.home / ".openclaw/openclaw.json",
+            roots.home / ".openclaw/workspace/AGENTS.md",
+            roots.home / ".openclaw/workspace/DREAMS.md",
+            roots.home / ".openclaw/workspace/HEARTBEAT.md",
+            roots.home / ".openclaw/workspace/IDENTITY.md",
+            roots.home / ".openclaw/workspace/MEMORY.md",
+            roots.home / ".openclaw/workspace/SOUL.md",
+            roots.home / ".openclaw/workspace/TOOLS.md",
+            roots.home / ".openclaw/workspace/USER.md",
         )
+        + repository_configs
+        + claude_agents
     )
 
 
@@ -647,6 +945,8 @@ def _read_signatures(path: Path) -> tuple[str, ...]:
 def _is_producer_candidate(path: Path) -> bool:
     """Limit producer discovery to executable/config/injected instruction surfaces."""
 
+    if tuple(path.parts[-3:]) == ("jarvis", "migration", "inventory.py"):
+        return False
     lowered_parts = {part.lower() for part in path.parts}
     if "tests" in lowered_parts or "docs" in lowered_parts:
         return False
@@ -681,7 +981,7 @@ def _producer_records(
     request_formats: list[Mapping[str, object]] = []
     scanned_files: list[Path] = []
     seen: set[str] = set()
-    for root in roots.active_scan_roots():
+    for root in roots.producer_scan_roots():
         for path in _walk_paths(root, roots.excludes):
             if not path.is_file() or path.is_symlink() or not _is_producer_candidate(path):
                 continue
@@ -728,11 +1028,14 @@ def _producer_records(
 def _find_input_materials(
     roots: InventoryRoots,
     scanned_files: Iterable[Path],
+    process_records: Iterable[Mapping[str, object]],
+    existing_records: Iterable[Mapping[str, object]] = (),
 ) -> list[Mapping[str, object]]:
     donor = roots.home / "Documents/dev/dan"
     explicit = [
         roots.home / "Documents/summary.md",
         roots.home / "Documents/opinia-planu.md",
+        roots.home / "Desktop/djdan-visualizer.html",
         donor / "docs/RADIO-DAN-KONSOLIDACJA-PLAN.md",
         donor / "_sesja-glosy-2026-07-11",
         donor / "_quarantine-continuity-fix-2026-07-08",
@@ -742,24 +1045,45 @@ def _find_input_materials(
     explicit.extend(_find_voice_lab_materials(donor, roots.excludes))
     candidates = _unique_paths(explicit)
     searchable_files = tuple(scanned_files)
-    records: list[Mapping[str, object]] = []
+    live_processes = tuple(process_records)
+    existing_by_path = {
+        str(record.get("path")): record for record in existing_records if record.get("path")
+    }
+    records: dict[str, Mapping[str, object]] = {}
     historical_names = {path.name for path in candidates if "quarantine" in path.name.lower()}
     for path in candidates:
-        consumers = _find_consumers(path, searchable_files)
+        consumers = _find_consumers(path, searchable_files, live_processes)
         if path.name in historical_names:
             decision = "active-source" if consumers else "archive/do-not-copy"
         else:
             decision = "input-material"
-        records.append(
-            inspect_path(
-                path,
-                consumers=consumers,
-                expected_kind="directory" if path.suffix == "" else "file",
-                status=decision if path.exists() or path.is_symlink() else "missing",
-                metadata={"decision": decision},
-            ).to_mapping()
-        )
-    return records
+        root_record = inspect_path(
+            path,
+            consumers=consumers,
+            expected_kind="directory" if path.suffix == "" else "file",
+            status=decision if path.exists() or path.is_symlink() else "missing",
+            metadata={"decision": decision, "source_root": str(path.absolute())},
+        ).to_mapping()
+        records[str(path.absolute())] = root_record
+        if not path.is_dir() or path.is_symlink():
+            continue
+        for child in _walk_paths(path, roots.excludes):
+            key = str(child.absolute())
+            if key in existing_by_path:
+                child_record = dict(existing_by_path[key])
+                child_record["metadata"] = {
+                    **dict(child_record.get("metadata", {})),
+                    "decision": decision,
+                    "source_root": str(path.absolute()),
+                }
+            else:
+                child_record = inspect_path(
+                    child,
+                    status=decision,
+                    metadata={"decision": decision, "source_root": str(path.absolute())},
+                ).to_mapping()
+            records[key] = child_record
+    return [records[key] for key in sorted(records)]
 
 
 def _find_voice_lab_materials(donor: Path, excludes: Iterable[Path]) -> tuple[Path, ...]:
@@ -783,7 +1107,11 @@ def _find_voice_lab_materials(donor: Path, excludes: Iterable[Path]) -> tuple[Pa
     return _unique_paths(matches)
 
 
-def _find_consumers(candidate: Path, files: Iterable[Path]) -> tuple[str, ...]:
+def _find_consumers(
+    candidate: Path,
+    files: Iterable[Path],
+    process_records: Iterable[Mapping[str, object]] = (),
+) -> tuple[str, ...]:
     needles = {candidate.name.encode(), str(candidate).encode()}
     consumers: list[str] = []
     for path in files:
@@ -797,6 +1125,10 @@ def _find_consumers(candidate: Path, files: Iterable[Path]) -> tuple[str, ...]:
             continue
         if any(needle and needle in payload for needle in needles):
             consumers.append(str(path.absolute()))
+    for process in process_records:
+        command = str(process.get("command", "")).encode("utf-8", errors="surrogateescape")
+        if any(needle and needle in command for needle in needles):
+            consumers.append(f"process:{process.get('pid', 'unknown')}")
     return tuple(sorted(set(consumers)))
 
 
@@ -824,6 +1156,14 @@ def _decision_for(surface: str, record: Mapping[str, object], roots: InventoryRo
         )
     ).lower()
     if status == "missing":
+        if surface == "databases" and path.endswith("/.dan/dan.db"):
+            return "create-and-verify-through-versioned-migration"
+        if surface == "config_sources" and path.endswith("/.dan/config.toml"):
+            return "create-installation-config-in-task5"
+        if surface == "config_sources" and path.endswith("/.dan/owner.toml"):
+            return "create-private-owner-config-in-task5"
+        if surface == "config_sources" and path.endswith("/.dan/secrets.env"):
+            return "create-private-secrets-config-mode-0600-in-task5"
         return "record-missing-source"
     if "probe-error" in status or "probe-unavailable" in status:
         return "record-probe-failure-and-recheck-at-review-gate"
@@ -855,8 +1195,10 @@ def _decision_for(surface: str, record: Mapping[str, object], roots: InventoryRo
     if surface == "voice_assets":
         return "reconcile-license-hash-and-version-in-task6"
     if surface == "config_sources":
-        if path.endswith(("owner.toml", "secrets.env")):
+        if path.endswith(("owner.toml", "secrets.env", "auth.json", "device-auth.json")):
             return "retain-private-never-commit"
+        if path.endswith("/.codex/.codex-global-state.json"):
+            return "retain-private-never-commit-and-audit-host-config-in-task11"
         if path.endswith("config/persona/DAN.md"):
             return "migrate-as-single-persona-canon-in-task5"
         if path.endswith("state/overrides.json"):
@@ -867,14 +1209,34 @@ def _decision_for(surface: str, record: Mapping[str, object], roots: InventoryRo
             return "import-approved-installation-values-in-task5"
         if path.endswith(("AGENTS.md", "CLAUDE.md", "default.rules")):
             return "rewrite-managed-reference-during-task11-cutover"
+        if any(
+            marker in path
+            for marker in (
+                "/.claude/agents/",
+                "/.codex/memories/",
+                "/.openclaw/workspace/",
+            )
+        ):
+            return "audit-active-instruction-and-migrate-or-disable-in-task11"
+        if path.endswith("/.claude/plugins/installed_plugins.json"):
+            return "retain-host-plugin-registry-and-audit-adapters-in-task11"
         return "classify-in-config-registry-before-write"
     if surface == "skills":
+        if "/.openclaw/workspace/skills/radio-dan/" in lowered:
+            return "replace-live-openclaw-skill-with-thin-dan-adapter-in-task11"
+        if "/.openclaw/workspace/skills/danv2-enhanced/" in lowered:
+            return "retain-disabled-openclaw-skill-and-retire-after-task11-audit"
         if "quarantine" in lowered:
             return "retain-historical-do-not-copy-unless-live-consumer-proves-active"
+        if "/plugins/cache/" in lowered:
+            return "classify-installed-plugin-version-and-migrate-or-disable-in-task11"
         return "migrate-to-thin-dan-adapter-or-disable-in-task11"
     if surface == "hooks":
         return "migrate-to-fail-open-dan-adapter-or-disable-in-task11"
     if surface == "symlinks":
+        tmp_prefix = f"{roots.tmp_root.absolute()}/dan-"
+        if path.startswith(tmp_prefix):
+            return "observe-ephemeral-link-and-retire-with-runtime-in-task12"
         if "chatterbox" in lowered or "custom_styles" in lowered:
             return "classify-license-and-version-or-fetch-in-task6"
         return "replace-with-managed-dan-link-or-disable-in-task11"
@@ -917,6 +1279,14 @@ def _attach_surface_decisions(
             row = dict(record)
             row["decision"] = _decision_for(surface, row, roots)
             decided[surface].append(row)
+        decided[surface].sort(
+            key=lambda row: json.dumps(
+                row,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
     return decided
 
 
@@ -927,11 +1297,15 @@ class InventoryBuilder:
 
     def collect(self) -> InventoryReport:
         repository_paths = self._roots.repository_paths()
-        repositories = [_repository_record(self._runner, path) for path in repository_paths]
+        repositories = [
+            _repository_record(self._runner, path, self._roots.excludes)
+            for path in repository_paths
+        ]
         _, branch = _git_output(self._runner, self._roots.repo_root, ("branch", "--show-current"))
         _, head = _git_output(self._runner, self._roots.repo_root, ("rev-parse", "HEAD"))
         selected_base_ref = branch or "HEAD"
         producers, request_formats, scanned_files = _producer_records(self._roots)
+        processes = _process_records(self._runner)
 
         voice_assets = _records_for_roots(_voice_asset_roots(self._roots), self._roots.excludes)
         config_sources = [
@@ -940,7 +1314,12 @@ class InventoryBuilder:
         skills = _records_for_roots(self._roots.active_skill_roots(), self._roots.excludes)
         hooks = _records_for_roots(_hook_roots(self._roots), self._roots.excludes)
         runtime_paths = _runtime_path_records(self._roots)
-        input_materials = _find_input_materials(self._roots, scanned_files)
+        input_materials = _find_input_materials(
+            self._roots,
+            scanned_files,
+            processes,
+            voice_assets,
+        )
 
         symlink_records: dict[str, Mapping[str, object]] = {}
         evidence_surfaces = (
@@ -963,7 +1342,7 @@ class InventoryBuilder:
                 repository_paths,
                 selected_base_ref,
             ),
-            "processes": _process_records(self._runner),
+            "processes": processes,
             "launchd": _launchd_records(self._runner, self._roots),
             "databases": _database_records(self._roots, self._runner),
             "voice_assets": voice_assets,
@@ -990,6 +1369,9 @@ class InventoryBuilder:
                 "repo_root": str(self._roots.repo_root.absolute()),
                 "tmp_root": str(self._roots.tmp_root.absolute()),
                 "excluded": [str(path.absolute()) for path in self._roots.excludes],
+                "production": [
+                    str(path.absolute()) for path in self._roots.active_scan_roots()
+                ],
             },
             surfaces=surfaces,
         )
@@ -1006,11 +1388,23 @@ def build_inventory(
 def write_manifest_atomic(manifest: Mapping[str, object], destination: Path) -> None:
     """Write mode 0600 through a sibling temporary file and ``os.replace``."""
 
-    destination = destination.expanduser()
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(destination.parent, 0o700)
+    destination = destination.expanduser().absolute()
+    directory = destination.parent
+    if any(path.is_symlink() for path in (directory, *directory.parents)):
+        raise ValueError("manifest directory must not be a symlink")
+    if directory.exists():
+        if not directory.is_dir():
+            raise NotADirectoryError(f"manifest parent is not a directory: {directory}")
+        directory_mode = directory.stat().st_mode & 0o777
+        if directory_mode != 0o700:
+            raise PermissionError(
+                f"manifest directory mode must be 0700, got {directory_mode:04o}: {directory}"
+            )
+    else:
+        directory.mkdir(parents=True, mode=0o700)
+        os.chmod(directory, 0o700)
     file_descriptor, temporary_name = tempfile.mkstemp(
-        dir=destination.parent,
+        dir=directory,
         prefix=f".{destination.name}.",
         suffix=".tmp",
     )
@@ -1024,7 +1418,7 @@ def write_manifest_atomic(manifest: Mapping[str, object], destination: Path) -> 
             os.fsync(handle.fileno())
         os.replace(temporary, destination)
         os.chmod(destination, MANIFEST_FILE_MODE)
-        directory_fd = os.open(destination.parent, os.O_RDONLY)
+        directory_fd = os.open(directory, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
         finally:
@@ -1032,6 +1426,19 @@ def write_manifest_atomic(manifest: Mapping[str, object], destination: Path) -> 
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _prepare_canonical_manifest_directory(home: Path, destination: Path) -> None:
+    canonical = (home.expanduser() / CANONICAL_MANIFEST_RELATIVE_PATH).absolute()
+    if destination != canonical:
+        return
+    directory = destination.parent
+    if any(path.is_symlink() for path in (directory, *directory.parents)):
+        raise ValueError("manifest directory must not be a symlink")
+    if directory.exists() and not directory.is_dir():
+        raise NotADirectoryError(f"manifest parent is not a directory: {directory}")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(directory, 0o700)
 
 
 def _contains_key(value: object, forbidden: str) -> bool:
@@ -1084,6 +1491,15 @@ def check_manifest(path: Path) -> tuple[Mapping[str, object], list[str]]:
         mode = 0
     if mode != MANIFEST_FILE_MODE:
         errors.append(f"manifest mode must be 0600, got {mode:04o}")
+    manifest_path = str(path.expanduser().absolute())
+    surfaces = manifest.get("surfaces", {})
+    if isinstance(surfaces, Mapping) and any(
+        isinstance(row, Mapping) and str(row.get("path", "")) == manifest_path
+        for rows in surfaces.values()
+        if isinstance(rows, list)
+        for row in rows
+    ):
+        errors.append("manifest must not inventory its own destination")
     return manifest, errors
 
 
@@ -1121,20 +1537,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
+    output = args.output.expanduser().absolute()
     repo_root = args.repo_root.expanduser().absolute()
     roots = InventoryRoots.production(
         repo_root,
         home=args.home.expanduser(),
         tmp_root=args.tmp_root.expanduser(),
-        excludes=(path.expanduser() for path in args.exclude),
+        excludes=(
+            *(path.expanduser() for path in args.exclude),
+            output,
+        ),
     )
+    _prepare_canonical_manifest_directory(roots.home, output)
     manifest = build_inventory(roots)
     errors = validate_manifest(manifest)
     if errors:
         for error in errors:
             print(f"ERROR: {error}")
         return 1
-    output = args.output.expanduser()
     write_manifest_atomic(manifest, output)
     print(f"manifest written: {output} sha256={_manifest_sha256(output)}")
     return 0
