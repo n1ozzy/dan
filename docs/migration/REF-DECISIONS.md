@@ -112,6 +112,26 @@ present on the selected integration line.
 | `refs/heads/rescue/audt-gpt5.5pro-limit-cdn` | `0b5ea9d11eb97b829cdd84950e6477579e1bbc00` | complete Memory OS branch already reachable | `18417950a4653e5d666df745c62023778cfeb153` |
 | `refs/remotes/origin/spike/jarvis-local-runtime-check` | `b18143d4a192c0e0e1414f1418c8c464d5be7d48` | remote base already reachable; local line adds five accepted consolidation commits | `18417950a4653e5d666df745c62023778cfeb153` |
 
+The donor repositories use their checked-out `HEAD` as the comparison base.
+The following donor refs have zero commits outside that base, so they require no
+tree integration. They remain frozen as named evidence; duplicate remote refs
+resolve to the same retained donor commits.
+
+| Ref | Head SHA | Resolution | Resulting commit |
+|---|---|---|---|
+| `dan:refs/heads/agent/voice-lab` | `0d20dcc6573930b1a3a6d3dd30de450658dcc9e0` | already reachable from donor `HEAD`; retain as voice-lab history | `75045401ed127efa9a64018424a1c97101dffb36` |
+| `dan:refs/heads/feat/shared-voice-source` | `f5eafed47dd365b83c7d69894157bd045a663d9a` | already reachable from donor `HEAD`; superseded by the selected donor line | `75045401ed127efa9a64018424a1c97101dffb36` |
+| `dan:refs/heads/main` | `75045401ed127efa9a64018424a1c97101dffb36` | checked-out donor comparison base | `75045401ed127efa9a64018424a1c97101dffb36` |
+| `dan:refs/remotes/origin/HEAD` | `75045401ed127efa9a64018424a1c97101dffb36` | duplicate of donor `origin/main` | `75045401ed127efa9a64018424a1c97101dffb36` |
+| `dan:refs/remotes/origin/agent/voice-lab` | `0d20dcc6573930b1a3a6d3dd30de450658dcc9e0` | duplicate reachable voice-lab ref | `75045401ed127efa9a64018424a1c97101dffb36` |
+| `dan:refs/remotes/origin/main` | `75045401ed127efa9a64018424a1c97101dffb36` | duplicate of the checked-out donor base | `75045401ed127efa9a64018424a1c97101dffb36` |
+| `dan:refs/remotes/origin/worktree-panel-web-ui` | `79b27423523843140524b5f5cc1fbe7d65811e60` | already reachable from donor `HEAD`; retain as panel history | `75045401ed127efa9a64018424a1c97101dffb36` |
+| `DANv2:refs/heads/main` | `5524d2ba00b7cfcca7af0d2672528fb75a509d5a` | checked-out donor comparison base | `5524d2ba00b7cfcca7af0d2672528fb75a509d5a` |
+| `DANv2:refs/remotes/origin/main` | `5524d2ba00b7cfcca7af0d2672528fb75a509d5a` | duplicate of the checked-out donor base | `5524d2ba00b7cfcca7af0d2672528fb75a509d5a` |
+
+`Documents/dev/menubar-controller` is an unborn repository and has no local or
+remote refs to classify.
+
 ## Dirty working-tree decisions
 
 Raw patches and private contents stay out of Git. The private manifest records

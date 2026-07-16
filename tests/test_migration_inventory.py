@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
 
+import jarvis.migration.inventory as inventory
 from jarvis.migration.inventory import (
     InventoryRoots,
     build_inventory,
@@ -63,8 +65,18 @@ def git_only_runner(
     return unavailable_runner(args)
 
 
+def isolated_inventory_runner(
+    args: list[str], **kwargs: object
+) -> subprocess.CompletedProcess[str]:
+    if args == ["ps", "-axo", "pid=,ppid=,command="]:
+        return subprocess.CompletedProcess(args, 0, "", "")
+    if args == ["launchctl", "list"]:
+        return subprocess.CompletedProcess(args, 0, "", "")
+    return git_only_runner(args, **kwargs)
+
+
 def test_inventory_has_every_release1_surface(tmp_path: Path) -> None:
-    manifest = build_inventory(fixture_roots(tmp_path))
+    manifest = build_inventory(fixture_roots(tmp_path), runner=unavailable_runner)
 
     assert set(manifest["surfaces"]) == EXPECTED_SURFACES
     assert manifest["schema_version"] == 1
@@ -129,7 +141,7 @@ def test_manifest_write_refuses_symlink_directory_without_mutating_target(
 
 
 def test_every_inventory_row_has_a_named_decision(tmp_path: Path) -> None:
-    manifest = build_inventory(fixture_roots(tmp_path))
+    manifest = build_inventory(fixture_roots(tmp_path), runner=unavailable_runner)
 
     missing = {
         surface: [row for row in rows if not str(row.get("decision", "")).strip()]
@@ -175,7 +187,7 @@ def test_voice_lab_input_discovery_excludes_git_and_bytecode(tmp_path: Path) -> 
     bytecode_voice_lab.write_bytes(b"fixture")
     venv_voice_lab.write_text("fixture\n", encoding="utf-8")
 
-    manifest = build_inventory(roots)
+    manifest = build_inventory(roots, runner=unavailable_runner)
     paths = {row["path"] for row in manifest["surfaces"]["input_materials"]}
 
     assert str(live_voice_lab) in paths
@@ -211,7 +223,7 @@ def test_voice_asset_symlink_gets_asset_decision_not_adapter_decision(tmp_path: 
     target.write_bytes(b"model")
     link.symlink_to(target)
 
-    manifest = build_inventory(roots)
+    manifest = build_inventory(roots, runner=unavailable_runner)
     row = next(item for item in manifest["surfaces"]["symlinks"] if item["path"] == str(link))
 
     assert row["decision"] == "classify-license-and-version-or-fetch-in-task6"
@@ -236,7 +248,7 @@ def test_unborn_git_repository_has_no_fake_head(tmp_path: Path) -> None:
     roots = fixture_roots(tmp_path)
     subprocess.run(["git", "init", str(roots.repo_root)], check=True, capture_output=True)
 
-    manifest = build_inventory(roots)
+    manifest = build_inventory(roots, runner=git_only_runner)
     row = next(
         item
         for item in manifest["surfaces"]["repositories"]
@@ -246,8 +258,48 @@ def test_unborn_git_repository_has_no_fake_head(tmp_path: Path) -> None:
     assert row["metadata"]["head"] is None
 
 
-def test_existing_output_manifest_is_excluded_from_runtime_inventory(tmp_path: Path) -> None:
+def test_existing_output_manifest_is_excluded_from_runtime_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     roots = fixture_roots(tmp_path)
+    required_repositories = (
+        roots.repo_root,
+        roots.home / "Documents/dev/jarvis",
+        roots.home / "Documents/dev/dan",
+        roots.home / "Documents/dev/DANv2",
+        roots.home / "Documents/dev/menubar-controller",
+    )
+    for repository in required_repositories:
+        repository.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "--quiet", str(repository)],
+            check=True,
+            capture_output=True,
+        )
+    required_files = {
+        roots.home / "Documents/dev/dan/config/persona/DAN.md": "fixture canon\n",
+        roots.home / "AGENTS.md": "fixture instructions\n",
+        roots.home / ".claude/CLAUDE.md": "fixture instructions\n",
+    }
+    for path, contents in required_files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+    for database in (
+        roots.home / ".jarvis/jarvis.db",
+        roots.home / ".dan/memory.db",
+    ):
+        database.parent.mkdir(parents=True, exist_ok=True)
+        sqlite3.connect(database).close()
+    real_build_inventory = inventory.build_inventory
+    monkeypatch.setattr(
+        inventory,
+        "build_inventory",
+        lambda production_roots: real_build_inventory(
+            production_roots,
+            runner=isolated_inventory_runner,
+        ),
+    )
     output = roots.home / ".dan/migration/release1-source-manifest.json"
     output.parent.mkdir(parents=True)
     output.write_text('{"old": true}\n', encoding="utf-8")
