@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
@@ -181,9 +182,10 @@ def test_report_verification_does_not_require_collection(tmp_path: Path) -> None
 
 
 def test_report_verifier_rejects_raw_parameter_payload(tmp_path: Path) -> None:
+    payload = "secret-token"
     report = tmp_path / "report.json"
     report.write_text(
-        json.dumps(_valid_report(failures=["tests/test_example.py::test_failure[secret-token]" ])),
+        json.dumps(_valid_report(failures=[f"tests/test_example.py::test_failure[{payload}]" ])),
         encoding="utf-8",
     )
     report.chmod(0o600)
@@ -192,18 +194,20 @@ def test_report_verifier_rejects_raw_parameter_payload(tmp_path: Path) -> None:
         cwd=Path(__file__).resolve().parents[1], check=False, capture_output=True, text=True,
     )
     assert completed.returncode == 2
-    assert "secret-token" not in completed.stdout + completed.stderr
+    assert payload not in completed.stdout + completed.stderr
 
 
-def test_failure_id_sanitization_hashes_parameter_payload() -> None:
+def test_raw_failure_id_sanitization_hashes_every_parameter_payload() -> None:
     baseline = _load_baseline_script()
 
-    node = "tests/test_example.py::test_failure[secret-token-http://[::1]/]"
-    sanitized = baseline.sanitize_node_id(node)
+    for payload in ("secret-token-http://[::1]/", "param-0123456789abcdef"):
+        node = f"tests/test_example.py::test_failure[{payload}]"
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
-    assert sanitized.startswith("tests/test_example.py::test_failure[param-")
-    assert sanitized.endswith("]")
-    assert "secret-token-http://[::1]/" not in sanitized
+        sanitized = baseline.sanitize_raw_node_id(node)
+
+        assert sanitized == f"tests/test_example.py::test_failure[param-{digest}]"
+        assert sanitized != node
 
 
 def test_failure_report_comparator_requires_no_new_ids(tmp_path: Path) -> None:
@@ -228,11 +232,39 @@ def test_failure_report_comparator_requires_no_new_ids(tmp_path: Path) -> None:
     previous.chmod(0o400)
     current.chmod(0o600)
 
-    comparison = baseline.compare_failure_reports(previous, current)
+    comparison = baseline.compare_failure_reports(
+        previous, current, reference_is_canonical=True
+    )
 
     assert comparison["new"] == ["tests/test_example.py::test_new_failure"]
     assert comparison["removed"] == []
     assert comparison["unchanged"] == ["tests/test_example.py::test_failure[param-a1b2c3d4e5f60708]"]
+
+
+def test_failure_report_comparator_rehashes_raw_canonical_looking_reference(tmp_path: Path) -> None:
+    baseline = _load_baseline_script()
+    previous = tmp_path / "previous.json"
+    current = tmp_path / "current.json"
+    raw_payload = "param-0123456789abcdef"
+    canonical_payload = f"param-{hashlib.sha256(raw_payload.encode('utf-8')).hexdigest()[:16]}"
+    previous.write_text(
+        json.dumps(_valid_report(failures=[f"tests/test_example.py::test_failure[{raw_payload}]"])),
+        encoding="utf-8",
+    )
+    current.write_text(
+        json.dumps(_valid_report(failures=[f"tests/test_example.py::test_failure[{canonical_payload}]"])),
+        encoding="utf-8",
+    )
+    previous.chmod(0o400)
+    current.chmod(0o600)
+
+    comparison = baseline.compare_failure_reports(previous, current)
+
+    assert comparison == {
+        "new": [],
+        "removed": [],
+        "unchanged": [f"tests/test_example.py::test_failure[{canonical_payload}]"],
+    }
 
 
 @pytest.mark.parametrize(

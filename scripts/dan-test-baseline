@@ -24,9 +24,10 @@ from jarvis.migration.test_safety import (  # noqa: E402
     collect_node_ids,
     isolated_node_ids,
     live_manual_node_ids,
-    sanitize_node_id,
+    sanitize_raw_node_id,
     scan_node_ids,
     test_environment,
+    validate_canonical_node_id,
     _pytest_command,
 )
 
@@ -76,7 +77,7 @@ def _failure_ids(output: str) -> list[str]:
     for line in output.splitlines():
         candidate = line.strip().removeprefix("FAILED ").split(" ", 1)[0]
         try:
-            found.add(sanitize_node_id(candidate))
+            found.add(sanitize_raw_node_id(candidate))
         except ValueError:
             continue
     return sorted(found)
@@ -100,7 +101,7 @@ def _report(
         "isolated": isolated,
         "live_manual": manual,
         "duration_seconds": round(duration, 3),
-        "failures": sorted({sanitize_node_id(node) for node in failures}),
+        "failures": sorted({sanitize_raw_node_id(node) for node in failures}),
     }
 
 
@@ -127,7 +128,11 @@ def _read_report(
     if not isinstance(failures, list) or not all(isinstance(node, str) for node in failures):
         raise ValueError("baseline report failures are not sanitized node IDs")
     try:
-        canonical = [sanitize_node_id(node) for node in failures]
+        canonical = (
+            [validate_canonical_node_id(node) for node in failures]
+            if require_sanitized_failures
+            else [sanitize_raw_node_id(node) for node in failures]
+        )
     except ValueError as error:
         raise ValueError("baseline report failures are not sanitized node IDs") from error
     if require_sanitized_failures and canonical != failures:
@@ -150,6 +155,8 @@ def _read_report(
         or not failures
     ):
         raise ValueError("live-manual refusal report is inconsistent")
+    if not require_sanitized_failures:
+        payload = {**payload, "failures": canonical}
     return payload
 
 
@@ -157,14 +164,18 @@ def _verified_report(path: Path) -> dict[str, Any]:
     return _read_report(path, require_sanitized_failures=True)
 
 
-def compare_failure_reports(previous_path: Path, current_path: Path) -> dict[str, list[str]]:
-    """Compare canonical failure-ID sets; legacy evidence is canonicalized on read."""
+def compare_failure_reports(
+    previous_path: Path, current_path: Path, *, reference_is_canonical: bool = False
+) -> dict[str, list[str]]:
+    """Compare a legacy or explicitly verified canonical reference to a canonical report."""
     previous = _read_report(
-        previous_path.expanduser(), require_sanitized_failures=False, allow_read_only=True
+        previous_path.expanduser(),
+        require_sanitized_failures=reference_is_canonical,
+        allow_read_only=True,
     )
     current = _read_report(current_path.expanduser(), require_sanitized_failures=True)
-    previous_ids = {sanitize_node_id(node) for node in previous["failures"]}
-    current_ids = {sanitize_node_id(node) for node in current["failures"]}
+    previous_ids = set(previous["failures"])
+    current_ids = set(current["failures"])
     return {
         "new": sorted(current_ids - previous_ids),
         "removed": sorted(previous_ids - current_ids),
@@ -247,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
                     failures=refusal_ids,
                 ),
             )
-            details = violations or [sanitize_node_id(node) for node in manual]
+            details = violations or [sanitize_raw_node_id(node) for node in manual]
             print("refusing unsafe tests: " + ", ".join(details), file=sys.stderr)
             return 2
         completed = subprocess.run(

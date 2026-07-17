@@ -78,8 +78,8 @@ def _node_parts(node_id: str, *, sanitized: bool = False) -> tuple[str, tuple[st
     return path, tuple(names)
 
 
-def sanitize_node_id(node_id: str) -> str:
-    """Keep a stable node identity without persisting parametrized payloads."""
+def sanitize_raw_node_id(node_id: str) -> str:
+    """Sanitize a pytest-produced node ID without persisting parameter payloads."""
     path, parts = _node_parts(node_id)
     sanitized: list[str] = []
     for part in parts:
@@ -88,12 +88,15 @@ def sanitize_node_id(node_id: str) -> str:
             sanitized.append(name)
             continue
         payload = parameter[:-1]
-        if _SANITIZED_PARAM.fullmatch(payload):
-            sanitized.append(part)
-            continue
         digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
         sanitized.append(f"{name}[param-{digest}]")
     return "::".join((path, *sanitized))
+
+
+def validate_canonical_node_id(node_id: str) -> str:
+    """Validate a node ID already persisted by the sanitizer."""
+    _node_parts(node_id, sanitized=True)
+    return node_id
 
 
 def _node_file(repo_root: Path, node_id: str) -> Path:
@@ -439,7 +442,7 @@ def scan_node_ids(repo_root: Path, node_ids: Sequence[str]) -> list[str]:
     """List unmarked direct live primitives with sanitized node IDs only."""
     classified = classify_node_ids(repo_root, node_ids)
     return sorted(
-        f"{sanitize_node_id(node)}: {reason}"
+        f"{sanitize_raw_node_id(node)}: {reason}"
         for node, row in classified.items()
         if row.reasons and not row.explicit_manual
         for reason in row.reasons
