@@ -9,7 +9,6 @@ import re
 import shutil
 import subprocess
 from collections.abc import Mapping
-from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -37,6 +36,7 @@ from dan.brain.codex_cli_contract import (
     build_codex_cli_command,
 )
 from dan.brain.manager import BrainManagerError
+from dan.config_registry import REGISTRY, REJECTED_KEYS, ConfigOwner
 from dan.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp
 from dan.runtime.models import RuntimeProcessObservation, RuntimeRisk
 from dan.runtime.supervisor import OFFICIAL_LABEL
@@ -196,15 +196,9 @@ CANONICAL_PTT_MODES = tuple(VoicePttMode)
 SUPERTONIC_BUILTIN_VOICE_IDS = tuple(SupertonicVoiceId)
 VOICE_ENGINE_RESTART_ONLY_KEYS = frozenset(
     {
-        "voice.default_tts",
         "voice.default_stt",
         "voice.stt_model",
         "voice.stt_language",
-        "voice.voice_id",
-        "voice.voice_profile",
-        "voice.profile",
-        "voice.speed",
-        "voice.rate",
     }
 )
 TOOLS_INTERNET_APPLY_KEYS = frozenset(
@@ -242,21 +236,13 @@ RUNTIME_SETTINGS_APPLY_ALLOWED_KEYS = frozenset(
         "brain.model",
         "brain.effort",
         "brain.fast",
-        "voice.default_tts",
         "voice.default_stt",
         "voice.stt_model",
         "voice.stt_language",
-        "voice.voice_id",
-        "voice.voice_profile",
-        "voice.profile",
-        "voice.speed",
-        "voice.rate",
         "voice.speak_responses",
         "voice.broker_enabled",
         "voice.ptt_mode",
         "voice.ptt_hotkey",
-        "voice.merge_window",
-        "persona.profile",
     }
     | TOOLS_INTERNET_APPLY_KEYS
 )
@@ -1660,13 +1646,26 @@ def _runtime_settings_apply_request(request_payload: Mapping[str, Any]) -> dict[
         raise RuntimeSettingsApplyError("Request must include settings JSON object.")
     unknown = sorted(str(key) for key in settings if str(key) not in RUNTIME_SETTINGS_APPLY_ALLOWED_KEYS)
     if unknown:
+        blockers = [_runtime_setting_rejection(key) for key in unknown]
         raise RuntimeSettingsApplyError(
-            f"Unknown runtime setting: {unknown[0]}",
+            blockers[0],
             apply_status="blocked",
             rejected_keys=unknown,
-            blockers=[f"Unknown runtime setting: {key}" for key in unknown],
+            blockers=blockers,
         )
     return {str(key): value for key, value in settings.items()}
+
+
+def _runtime_setting_rejection(key: str) -> str:
+    entry = REGISTRY.get(key)
+    if entry is not None:
+        if not entry.writable:
+            return f"{key} is owned by {entry.owner.value} configuration and is read-only"
+        if entry.owner is ConfigOwner.INSTALLATION:
+            return f"{key} is installation-owned and is not exposed by runtime settings apply"
+        return f"{key} is not exposed by runtime settings apply"
+    reason = REJECTED_KEYS.get(key)
+    return f"{key}: {reason}" if reason else f"Unknown runtime setting: {key}"
 
 
 def _current_capability_payload(app: DaemonApp) -> dict[str, Any]:
@@ -2078,17 +2077,7 @@ def _apply_voice_and_ptt_settings(
     if not updates:
         return []
 
-    app.config = replace(app.config, voice=replace(voice, **updates))
-    settings_updates = {}
-    if "voice.ptt_hotkey" in settings:
-        settings_updates["voice.ptt_hotkey"] = updates.get("ptt_hotkey", "")
-    if settings_updates:
-        app.update_settings(settings_updates)
-    if app.context_builder is not None:
-        try:
-            app.context_builder._config = app.config
-        except Exception:
-            pass
+    app.update_settings({f"voice.{key}": value for key, value in updates.items()})
 
     applied: list[str] = []
     for key in voice_keys:

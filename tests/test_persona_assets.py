@@ -1,4 +1,4 @@
-"""DAN and DAN share one external, versioned persona canon."""
+"""The release contains and renders exactly one versioned persona canon."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from tests.git_guards import assert_schema_and_migrations_unchanged
 
 ROOT = Path(__file__).resolve().parents[1]
 PERSONA_DIR = ROOT / "config" / "persona"
-BASE_PERSONA = Path("/Users/n1_ozzy/Documents/dev/dan/config/persona/DAN.md")
+BASE_PERSONA = ROOT / "config" / "persona" / "DAN.md"
 
 
 def test_base_persona_exists_and_is_non_empty() -> None:
@@ -22,12 +22,12 @@ def test_base_persona_exists_and_is_non_empty() -> None:
     assert "DAN_CANON_VERSION: 1" in text
 
 
-def test_dan_has_no_local_persona_copy() -> None:
+def test_dan_has_exactly_one_versioned_persona_canon() -> None:
     profiles = sorted(p.name for p in PERSONA_DIR.glob("*.md"))
-    assert profiles == [], f"DAN must point to the shared canon; found {profiles}"
+    assert profiles == ["DAN.md"]
 
 
-def test_context_builder_points_to_the_shared_canon() -> None:
+def test_context_builder_points_to_the_release_canon() -> None:
     assert DEFAULT_PERSONA_PATH == BASE_PERSONA
 
 

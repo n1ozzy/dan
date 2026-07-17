@@ -99,13 +99,13 @@ def test_token_required_post_routes_reject_without_and_accept_with_token(
             unauthorized_status, unauthorized_payload = _request(
                 "POST",
                 f"{base_url}/settings",
-                payload={"settings": {"ui.theme": "dark"}},
+                payload={"settings": {"model": "test-model"}},
             )
             authorized_status, authorized_payload = _request(
                 "POST",
                 f"{base_url}/settings",
                 token=app.api_token,
-                payload={"settings": {"ui.theme": "dark"}},
+                payload={"settings": {"model": "test-model"}},
             )
     finally:
         app.close()
@@ -114,7 +114,7 @@ def test_token_required_post_routes_reject_without_and_accept_with_token(
     assert unauthorized_payload["status"] == 401
     assert unauthorized_payload["error"] == "Unauthorized"
     assert authorized_status == 200
-    assert authorized_payload["settings"]["ui.theme"] == "dark"
+    assert authorized_payload["settings"]["model"] == "test-model"
 
 
 def test_workers_jobs_endpoint_requires_api_token_for_mutating_request(

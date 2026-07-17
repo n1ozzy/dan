@@ -75,7 +75,10 @@ def _write_report(path: Path, report: dict[str, Any]) -> None:
 def _failure_ids(output: str) -> list[str]:
     found: set[str] = set()
     for line in output.splitlines():
-        candidate = line.strip().removeprefix("FAILED ").split(" ", 1)[0]
+        stripped = line.strip()
+        if not stripped.startswith("FAILED "):
+            continue
+        candidate = stripped.removeprefix("FAILED ").split(" ", 1)[0]
         try:
             found.add(sanitize_raw_node_id(candidate))
         except ValueError:

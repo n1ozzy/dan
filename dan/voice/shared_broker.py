@@ -7,9 +7,13 @@ import os
 import threading
 import time
 import uuid
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+from dan.voice.models import SpeechIntent
+from dan.voice.resolver import VoiceResolver
 
 
 DEFAULT_REQUEST_DIR = Path("/tmp/dan-voice/req")
@@ -32,6 +36,7 @@ class SharedBrokerClient:
         clock: Callable[[], float] = time.time,
         pid: Callable[[], int] = os.getpid,
         nonce: Callable[[], str] | None = None,
+        resolver: VoiceResolver | None = None,
     ) -> None:
         self._config = config
         self._request_dir = Path(request_dir)
@@ -39,6 +44,13 @@ class SharedBrokerClient:
         self._clock = clock
         self._pid = pid
         self._nonce = nonce or (lambda: uuid.uuid4().hex)
+        self._resolver = resolver
+        if resolver is None:
+            warnings.warn(
+                "SharedBrokerClient(config) is a compatibility caller; pass VoiceResolver",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self._publish_lock = threading.Lock()
         self._last_published_ns = -1
 
@@ -54,26 +66,30 @@ class SharedBrokerClient:
         if not clean:
             raise SharedBrokerError("shared broker request text must not be empty")
 
-        voice = (getattr(self._config, "persona_voices", None) or {}).get(
-            self._persona,
-            getattr(self._config, "supertonic_voice", None),
+        intent = SpeechIntent(
+            text=clean,
+            persona=self._persona,
+            source="shared_broker_compat" if self._resolver is None else "dand",
+            session=str(session or "?"),
+            participant=self._persona,
+            priority=int(priority),
+            lane=lane if lane in {"live", "normal", "background"} else "normal",
+            interrupt_policy="finish_current",
+            utterance_index=0,
         )
-        speed = (getattr(self._config, "persona_speeds", None) or {}).get(
-            self._persona,
-            getattr(self._config, "supertonic_speed", None),
-        )
-        profile = (getattr(self._config, "persona_mastering", None) or {}).get(
-            self._persona,
-            getattr(self._config, "mastering_profile", None),
+        snapshot = (
+            self._resolver.resolve(intent)
+            if self._resolver is not None
+            else VoiceResolver.compatibility_snapshot(self._config, intent)
         )
         request = {
             "text": clean,
-            "engine": getattr(self._config, "default_tts", None),
+            "engine": snapshot.engine,
             "session": (str(session or "?") or "?")[:8],
-            "voice": voice,
-            "speed": speed,
+            "voice": snapshot.voice_or_style,
+            "speed": snapshot.speed,
             "priority": int(priority),
-            "profile": profile,
+            "profile": snapshot.mastering_profile,
             "language": getattr(self._config, "supertonic_lang", "pl") or "pl",
         }
         if lane:

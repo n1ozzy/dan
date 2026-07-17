@@ -19,9 +19,13 @@ import threading
 import time
 import urllib.request
 import uuid
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from dan.voice.models import SpeechIntent
+from dan.voice.resolver import VoiceResolver
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -194,8 +198,22 @@ class SupertonicEngine:
 
     name = "supertonic"
 
-    def __init__(self, *, config: Any, persona_provider: Any = None) -> None:
+    def __init__(
+        self,
+        *,
+        config: Any,
+        persona_provider: Any = None,
+        resolver: VoiceResolver | None = None,
+    ) -> None:
         voice_cfg = config.voice
+        self._voice_config = voice_cfg
+        self._resolver = resolver
+        if resolver is None:
+            warnings.warn(
+                "SupertonicEngine(config) is a compatibility caller; pass VoiceResolver",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         # Persona binding (2026-07-08): resolve the current persona.profile per
         # chunk so a live persona switch (panel dropdown) changes voice +
         # mastering on the next spoken chunk, no daemon restart. None -> the
@@ -211,10 +229,8 @@ class SupertonicEngine:
                 "(set voice.playback_binary)."
             )
         self._player = player
-        self._voice = str(voice_cfg.supertonic_voice or "M1")
         self._lang = str(voice_cfg.supertonic_lang or "pl")
         self._steps = max(1, int(voice_cfg.supertonic_steps or 14))
-        self._speed = float(voice_cfg.supertonic_speed or 1.35)
         self._short_chars = max(
             0, int(getattr(voice_cfg, "supertonic_short_sentence_chars", 0) or 0)
         )
@@ -224,37 +240,19 @@ class SupertonicEngine:
         self._timeout = max(1, int(voice_cfg.tts_timeout_seconds or 120))
         self._pad_start = max(0.0, float(getattr(voice_cfg, "playback_pad_start_seconds", 0.0) or 0.0))
         self._pad_end = max(0.0, float(getattr(voice_cfg, "playback_pad_end_seconds", 0.0) or 0.0))
-        self._pronunciations = {
-            str(key): str(value)
-            for key, value in dict(getattr(voice_cfg, "tts_pronunciations", {}) or {}).items()
-        }
         self._player_lock = threading.Lock()
         self._player_proc: subprocess.Popen[str] | None = None
         workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
         workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(workdir, 0o700)
         self.workdir = str(workdir)
-        # Per-persona mastering (ported from DAN): resolve the ffmpeg chain once.
-        self._mastering_profile = str(getattr(voice_cfg, "mastering_profile", "") or "")
-        self._mastering_filter = mastering_filter(self._mastering_profile)
         self._mastering_binary = str(getattr(voice_cfg, "mastering_binary", "ffmpeg") or "ffmpeg")
-        # Per-persona voice + mastering maps (2026-07-08). Filter selection is a
-        # pure lookup (compiled once here); whether ffmpeg actually runs is a
-        # separate gate below, so an unmapped profile deterministically falls
-        # back to the global filter regardless of ffmpeg availability.
-        self._persona_voices = {
-            str(key): str(value)
-            for key, value in dict(getattr(voice_cfg, "persona_voices", {}) or {}).items()
-            if str(value).strip()
-        }
-        self._persona_mastering_filters = {
-            str(profile): mastering_filter(name)
-            for profile, name in dict(getattr(voice_cfg, "persona_mastering", {}) or {}).items()
-        }
         self._mastering_enabled = bool(shutil.which(self._mastering_binary))
-        if not self._mastering_enabled and (
-            self._mastering_filter or self._persona_mastering_filters
-        ):
+        configured_mastering = bool(
+            getattr(voice_cfg, "mastering_profile", "")
+            or getattr(voice_cfg, "persona_mastering", {})
+        )
+        if not self._mastering_enabled and configured_mastering:
             _LOGGER.warning(
                 "mastering configured but %r not found on PATH; playing raw audio.",
                 self._mastering_binary,
@@ -349,10 +347,27 @@ class SupertonicEngine:
             return ""
 
     def _voice_for(self, profile: str) -> str:
-        return self._persona_voices.get(profile) or self._voice
+        return self._render_snapshot("compatibility", profile).voice_or_style
 
     def _mastering_filter_for(self, profile: str) -> str:
-        return self._persona_mastering_filters.get(profile, self._mastering_filter)
+        return mastering_filter(self._render_snapshot("compatibility", profile).mastering_profile)
+
+    def _render_snapshot(self, text: str, profile: str):
+        persona = profile or "dan"
+        intent = SpeechIntent(
+            text=text,
+            persona=persona,
+            source="tts_compat" if self._resolver is None else "dand",
+            session="tts",
+            participant=persona,
+            priority=0,
+            lane="normal",
+            interrupt_policy="finish_current",
+            utterance_index=0,
+        )
+        if self._resolver is not None:
+            return self._resolver.resolve(intent)
+        return VoiceResolver.compatibility_snapshot(self._voice_config, intent)
 
     def _apply_mastering(self, audio: bytes, filter_chain: str) -> bytes:
         """Run the ffmpeg persona chain; fail-safe returns the raw audio."""
@@ -402,7 +417,9 @@ class SupertonicEngine:
             out.unlink(missing_ok=True)
 
     def synthesize(self, text: str) -> SynthesizedChunk:
-        spoken = apply_pronunciations(str(text or ""), self._pronunciations)
+        profile = self._current_persona()
+        snapshot = self._render_snapshot(str(text or ""), profile)
+        spoken = apply_pronunciations(str(text or ""), dict(snapshot.pronunciations))
         clean = spoken.translate(_SUPERTONIC_STRIP).strip()
         if not clean:
             raise TTSEngineError(f"Nothing speakable left after sanitizing {text!r}.")
@@ -411,13 +428,12 @@ class SupertonicEngine:
         # the generated audio, so playback pads cannot help) and above ~1.25
         # occasionally emits a near-silent file. Short sentences may only be
         # slowed down, never sped up.
-        speed = self._speed
+        speed = snapshot.speed
         if 0 < len(clean) <= self._short_chars:
             speed = min(speed, self._short_speed)
         # Resolve the persona once per chunk so a live switch takes effect on the
         # next chunk (voice + mastering both key off the same profile).
-        profile = self._current_persona()
-        voice = self._voice_for(profile)
+        voice = snapshot.voice_or_style
         # Warm serve first (no per-chunk model reload); any failure falls back
         # to the CLI so warm-serve never regresses to silence.
         audio: bytes | None = None
@@ -431,7 +447,8 @@ class SupertonicEngine:
         if audio is None:
             audio = self._synth_cli(clean, speed, voice)
         return SynthesizedChunk(
-            text=text, audio=self._apply_mastering(audio, self._mastering_filter_for(profile))
+            text=text,
+            audio=self._apply_mastering(audio, mastering_filter(snapshot.mastering_profile)),
         )
 
     def play(
@@ -563,7 +580,11 @@ def _resolve_supertonic_binary(explicit: str) -> str:
 
 
 def build_tts_engine(
-    name: str, *, config: Any | None = None, persona_provider: Any = None
+    name: str,
+    *,
+    config: Any | None = None,
+    persona_provider: Any = None,
+    resolver: VoiceResolver | None = None,
 ) -> Any:
     normalized = str(name or "").strip().lower()
     if normalized in BANNED_ENGINES:
@@ -583,7 +604,11 @@ def build_tts_engine(
                 "TTS engine 'supertonic' needs the daemon config "
                 "(voice.supertonic_* and runtime.runtime_dir)."
             )
-        return SupertonicEngine(config=config, persona_provider=persona_provider)
+        return SupertonicEngine(
+            config=config,
+            persona_provider=persona_provider,
+            resolver=resolver,
+        )
     raise TTSEngineError(f"Unknown TTS engine {name!r}.")
 
 

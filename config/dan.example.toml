@@ -54,6 +54,7 @@ compiled_context_include_procedural = false
 enabled = true
 speak_responses = true
 broker_enabled = true
+output_gain = 1.0
 default_tts = "supertonic"
 default_stt = "mlx_whisper"
 ptt_mode = "hold"

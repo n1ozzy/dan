@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from dan.brain.base import BrainMessage, BrainRequest, BrainToolSpec
 from dan.logging import get_logger
+from dan.persona import DEFAULT_CANON_PATH, PersonaError, render_persona
 from dan.security.redaction import redact_secret_text
 
 from ..memory.compiler import MemoryCompiler, MemoryCompilerConfig, MemoryCompilerRequest
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_PERSONA_PATH = Path("/Users/n1_ozzy/Documents/dev/dan/config/persona/DAN.md")
+DEFAULT_PERSONA_PATH = DEFAULT_CANON_PATH
 DEFAULT_CONTEXT_BUDGET_CHARS = 24000
 JOB_PROMPT_PREVIEW_CHARS = 120
 
@@ -545,16 +546,9 @@ class ContextBuilder:
     def _load_persona(self) -> str:
         path = self._persona_path
         try:
-            if not path.is_file():
-                raise ContextBuilderError(f"Persona file does not exist: {path}")
-            content = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise ContextBuilderError(f"Could not read persona file {path}: {exc}") from exc
-        if not content.strip():
-            raise ContextBuilderError(f"Persona file is empty: {path}")
-        if _persona_version(content) != "1":
-            raise ContextBuilderError(f"Persona file has unknown canonical version: {path}")
-        return content
+            return render_persona(path)
+        except PersonaError as exc:
+            raise ContextBuilderError(str(exc)) from exc
 
     def _build_recent_turn_messages(
         self,

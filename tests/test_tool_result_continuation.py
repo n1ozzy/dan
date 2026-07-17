@@ -165,9 +165,8 @@ def test_one_shot_tool_continues_original_turn_directly(tmp_path: Path) -> None:
         app.close()
 
 
-def test_shell_tool_auto_runs_when_panel_disables_shell_approval(tmp_path: Path) -> None:
-    """Panel toggle off → a model shell tool runs AND continues in a single
-    handle_text_input call, with no manual approval and no turn left awaiting."""
+def test_shell_tool_auto_runs_on_the_direct_model_tool_path(tmp_path: Path) -> None:
+    """A model shell tool runs and continues without a legacy approval row."""
 
     tool = RecordingContinuationTool()  # risk = shell_read
     adapter = SequenceBrainAdapter(
@@ -178,7 +177,6 @@ def test_shell_tool_auto_runs_when_panel_disables_shell_approval(tmp_path: Path)
     app.tool_registry.register(tool)
     try:
         app.start()
-        app.update_settings({"security.require_approval_for_shell": False})
 
         result = app.handle_text_input(text="Check the status")
 
@@ -583,15 +581,6 @@ def test_registered_destructive_tool_uses_the_same_direct_observable_path(
     app.tool_registry.register(tool)
     try:
         app.start()
-        app.update_settings(
-            {
-                "security.auto_approve_mode": "all",
-                "security.destructive_tools_enabled": True,
-                "security.require_approval_for_shell": False,
-                "security.require_approval_for_file_write": False,
-                "security.require_approval_for_network": False,
-            }
-        )
 
         result = app.handle_text_input(text="wipe it")
 

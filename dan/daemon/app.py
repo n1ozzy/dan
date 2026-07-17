@@ -16,6 +16,7 @@ from dan.brain.base import BrainResponse
 from dan.brain.context_builder import ContextBuilder, PERSONA_PROFILE_SETTING_KEY
 from dan.brain.manager import BrainManager, BrainManagerError
 from dan.config import DANConfig, compiled_memory_operator_env_controls, load_config
+from dan.config_registry import ConfigStore, validate_setting_updates
 from dan.events.bus import EventBus
 from dan.events.models import Event, utc_now_iso
 from dan.events.types import EventType
@@ -549,13 +550,23 @@ class DaemonApp:
             close_quietly(conn)
 
     def update_settings(self, updates: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(updates, Mapping) or not updates:
+            raise DaemonAppError("Settings update must be a non-empty mapping.")
+        for key in updates:
+            if not isinstance(key, str) or not key.strip():
+                raise DaemonAppError("Setting keys must be non-empty strings.")
+        installation_updates, runtime_updates = validate_setting_updates(updates)
+        if installation_updates:
+            ConfigStore(self.config.source_path).set_many(installation_updates)
+            self.config = load_config(self.config.source_path)
+            if self.context_builder is not None:
+                self.context_builder._config = self.config
+
         conn = self._connect_existing()
         now = utc_now_iso()
         try:
             with conn:
-                for key, value in updates.items():
-                    if not isinstance(key, str) or not key.strip():
-                        raise DaemonAppError("Setting keys must be non-empty strings.")
+                for key, value in runtime_updates.items():
                     value_json = json.dumps(value, ensure_ascii=False, sort_keys=True)
                     conn.execute(
                         """

@@ -8,6 +8,7 @@ override, oraz fail-safe gdy katalogu/plików brak.
 from __future__ import annotations
 
 import dataclasses
+import warnings
 
 import pytest
 
@@ -17,6 +18,7 @@ from dan.voice.shared_voice import (
     load_personas,
     load_pronunciations,
 )
+from dan.voice.resolver import VoiceResolver
 
 
 def _voice_dir(tmp_path, *, personas="", pronunciations=""):
@@ -107,3 +109,25 @@ def test_result_is_still_frozen_voiceconfig(tmp_path):
     out = apply_shared_voices(VoiceConfig(), directory=tmp_path)
     with pytest.raises(dataclasses.FrozenInstanceError):
         out.enabled = True  # type: ignore[misc]
+
+
+def test_compatibility_loader_delegates_to_authoritative_resolver(
+    tmp_path, monkeypatch
+):
+    _voice_dir(tmp_path, personas='[dan]\nvoice = "M3"\n')
+    cfg = VoiceConfig()
+    calls = []
+
+    def fake_delegate(catalog, voice_cfg):
+        calls.append((catalog, voice_cfg))
+        return voice_cfg
+
+    monkeypatch.setattr(VoiceResolver, "compatibility_voice_config", fake_delegate)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert apply_shared_voices(cfg, directory=tmp_path) is cfg
+
+    assert len(calls) == 1
+    assert calls[0][1] is cfg
+    assert any("VoiceResolver" in str(item.message) for item in caught)

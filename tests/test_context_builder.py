@@ -18,6 +18,7 @@ from dan.brain.context_builder import (
     ContextBuilder,
     ContextBuilderError,
 )
+from dan.persona import render_persona
 from dan.memory import MemoryManager
 from dan.store.db import close_quietly, initialize_database
 from tests.git_guards import assert_schema_and_migrations_unchanged
@@ -377,9 +378,7 @@ def test_environment_cannot_replace_the_shared_dan_persona(
         input_text="Hello",
     ).request
 
-    assert request.context_messages[0].content == DEFAULT_PERSONA_PATH.read_text(
-        encoding="utf-8"
-    )
+    assert request.context_messages[0].content == render_persona(DEFAULT_PERSONA_PATH)
     assert request.context_messages[0].metadata["source"] == str(
         DEFAULT_PERSONA_PATH.resolve()
     )

@@ -184,6 +184,7 @@ class VoiceConfig:
     enabled: bool = False
     speak_responses: bool = False
     broker_enabled: bool = False
+    output_gain: float = 1.0
     default_tts: str = "supertonic"
     default_stt: str = "mlx_whisper"
     ptt_mode: str = "hold"
@@ -486,7 +487,12 @@ def load_config(path: str | Path | None = None) -> DANConfig:
     config_path = _select_config_path(path)
     raw = _read_toml(config_path)
     _require_sections(raw)
+    from dan.config_registry import ConfigRegistryError, validate_registered_config_tree
 
+    try:
+        validate_registered_config_tree(raw, source=config_path)
+    except ConfigRegistryError as exc:
+        raise ConfigError(str(exc)) from exc
     # Wspólne źródło głosów/wymowy (~/.config/dan-voice/voices.toml) scala się
     # jako BAZA pod lokalny [voice]; brak pliku → no-op (import leniwy, bez cyklu).
     from dan.voice.shared_voice import apply_shared_voices

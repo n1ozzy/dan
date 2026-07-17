@@ -6,18 +6,25 @@ from collections.abc import Mapping
 from typing import Any
 
 from dan.daemon.app import DaemonApp, DaemonAppError
+from dan.config_registry import ConfigStore, ConfigWriteRejected
 
 
 ROUTE_GROUP = "settings"
 
 
 def get_settings(app: DaemonApp) -> dict[str, Any]:
-    return {"settings": app.get_settings()}
+    settings = ConfigStore(app.config.source_path).installation_snapshot()
+    settings.update(app.get_settings())
+    return {"settings": settings}
 
 
 def update_settings(app: DaemonApp, request_payload: Mapping[str, Any]) -> dict[str, Any]:
     updates = _settings_from_request(request_payload)
-    return {"settings": app.update_settings(updates)}
+    try:
+        app.update_settings(updates)
+        return get_settings(app)
+    except ConfigWriteRejected as exc:
+        raise DaemonAppError(str(exc)) from exc
 
 
 def _settings_from_request(request_payload: Mapping[str, Any]) -> dict[str, Any]:

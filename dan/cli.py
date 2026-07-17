@@ -13,6 +13,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from dan.config import ConfigError, DANConfig, load_config
+from dan.config_registry import ConfigRegistryError, ConfigStore
 from dan.daemon.app import DaemonAppError, create_daemon_app, create_daemon_app_from_config
 from dan.daemon.lifecycle import DaemonServerError, serve_forever
 from dan.logging import configure_logging
@@ -39,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
     config_parser = subcommands.add_parser("config")
     config_commands = config_parser.add_subparsers(dest="config_command", required=True)
     config_commands.add_parser("show")
+    config_explain = config_commands.add_parser("explain")
+    config_explain.add_argument("key")
 
     paths_parser = subcommands.add_parser("paths")
     paths_commands = paths_parser.add_subparsers(dest="paths_command", required=True)
@@ -183,6 +186,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "config" and args.config_command == "show":
         _print_json(config.to_dict())
+        return 0
+
+    if args.command == "config" and args.config_command == "explain":
+        try:
+            _print_json(ConfigStore(config.source_path).explain(args.key).to_dict())
+        except ConfigRegistryError as exc:
+            print(f"ConfigError: {exc}", file=sys.stderr)
+            return 2
         return 0
 
     if args.command == "paths" and args.paths_command == "show":

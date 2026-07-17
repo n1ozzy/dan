@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from dan.config_registry import ConfigWriteRejected
 from dan.daemon.app import create_daemon_app
 from tests.test_api_smoke import request_json, running_server, write_config
 
@@ -51,7 +54,20 @@ def test_runtime_settings_do_not_project_legacy_approval_rows(
     config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
-        app.update_settings({key: True for key in LEGACY_APPROVAL_SETTING_KEYS})
+        before = app.get_settings()
+        with pytest.raises(ConfigWriteRejected):
+            app.update_settings({key: True for key in LEGACY_APPROVAL_SETTING_KEYS})
+        assert app.get_settings() == before
+
+        # Read compatibility for an already-existing legacy database row is
+        # intentionally separate from the now-rejected write path.
+        with app.conn:
+            for key in LEGACY_APPROVAL_SETTING_KEYS:
+                app.conn.execute(
+                    "INSERT INTO settings(key, value_json, updated_at, source) "
+                    "VALUES (?, 'true', '2026-07-17T00:00:00+00:00', 'legacy')",
+                    (key,),
+                )
 
         with running_server(app) as base_url:
             status, payload = request_json("GET", f"{base_url}/runtime/settings")

@@ -17,9 +17,9 @@ VoiceConfig bez zmian (systemy jadą na swoich wbudowanych mapach).
 
 from __future__ import annotations
 
-import dataclasses
 import os
 import tomllib
+import warnings
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -70,48 +70,17 @@ def _normalize_mastering(value: str) -> str:
 
 
 def apply_shared_voices(voice_cfg: _VOICE_CFG, directory: str | Path | None = None) -> _VOICE_CFG:
-    """Zwróć VoiceConfig wzbogacony o wspólny katalog (baza), z lokalnym override.
+    """Temporary compatibility projection delegated to ``VoiceResolver``."""
 
-    Scala voice/mastering/speed person oraz tts_pronunciations.
-    Nic innego nie rusza — to warstwa danych person + wymowy, nie silnik.
-    """
-    personas = load_personas(directory)
-    pron = load_pronunciations(directory)
-    if not personas and not pron:
-        return voice_cfg
+    from dan.voice.resolver import VoiceCatalog, VoiceResolver
 
-    # ── wymowa: wspólny plik jako baza, lokalne wpisy nadpisują ──
-    merged_pron: dict[str, str] = dict(pron)
-    for key, val in (getattr(voice_cfg, "tts_pronunciations", None) or {}).items():
-        if isinstance(key, str) and isinstance(val, str):
-            merged_pron[key.lower()] = val
-
-    # ── persony: wspólny plik jako baza, lokalne mapy nadpisują ──
-    shared_voices: dict[str, str] = {}
-    shared_master: dict[str, str] = {}
-    shared_speeds: dict[str, float] = {}
-    for name, spec in personas.items():
-        voice = spec.get("voice")
-        master = spec.get("mastering")
-        speed = spec.get("speed")
-        if isinstance(voice, str) and voice.strip():
-            shared_voices[name] = voice.strip()
-        if isinstance(master, str):
-            shared_master[name] = _normalize_mastering(master)
-        if isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0:
-            shared_speeds[name] = float(speed)
-
-    merged_voices = {**shared_voices, **(getattr(voice_cfg, "persona_voices", None) or {})}
-    merged_master = {**shared_master, **(getattr(voice_cfg, "persona_mastering", None) or {})}
-    merged_speeds = {**shared_speeds, **(getattr(voice_cfg, "persona_speeds", None) or {})}
-
-    return dataclasses.replace(
-        voice_cfg,
-        tts_pronunciations=merged_pron,
-        persona_voices=merged_voices,
-        persona_mastering=merged_master,
-        persona_speeds=merged_speeds,
+    warnings.warn(
+        "apply_shared_voices is a compatibility caller; resolution belongs to VoiceResolver",
+        DeprecationWarning,
+        stacklevel=2,
     )
+    catalog = VoiceCatalog.from_directory(_resolve_dir(directory), strict=False)
+    return VoiceResolver.compatibility_voice_config(catalog, voice_cfg)
 
 
 __all__ = [

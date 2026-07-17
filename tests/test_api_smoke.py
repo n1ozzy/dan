@@ -28,7 +28,12 @@ from dan.brain import BrainManager, BrainRequest
 from dan.brain.claude_cli_adapter import ClaudeCliAdapter, apply_claude_system_prompt
 from dan.brain.claude_cli_contract import build_claude_cli_command
 from dan.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
-from dan.config import COMPILED_MEMORY_ENABLED_ENV, COMPILED_MEMORY_FORCE_DISABLED_ENV
+from dan.config import (
+    COMPILED_MEMORY_ENABLED_ENV,
+    COMPILED_MEMORY_FORCE_DISABLED_ENV,
+    ConfigError,
+    load_config,
+)
 from dan.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp, create_daemon_app
 from dan.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
 from dan.daemon.state_machine import RuntimeState
@@ -1690,15 +1695,18 @@ def test_unsupported_methods_return_json_errors_not_html(
     assert "<!doctype" not in body.lower()
 
 
-def test_get_settings_returns_empty_settings_initially(app: DaemonApp) -> None:
+def test_get_settings_returns_registered_installation_settings(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json("GET", f"{base_url}/settings")
 
     assert status == 200
-    assert payload == {"settings": {}}
+    assert payload["settings"]["voice.output_gain"] == 1.0
+    assert payload["settings"]["voice.ptt_hotkey"] == app.config.voice.ptt_hotkey
+    assert "ui.theme" not in payload["settings"]
 
 
-def test_post_settings_upserts_single_key(app: DaemonApp) -> None:
+def test_post_settings_rejects_unregistered_key_without_write(app: DaemonApp) -> None:
+    before = app.get_settings()
     with running_server(app) as base_url:
         status, payload = request_json(
             "POST",
@@ -1706,23 +1714,27 @@ def test_post_settings_upserts_single_key(app: DaemonApp) -> None:
             {"key": "ui.theme", "value": {"mode": "dark"}},
         )
 
-    assert status == 200
-    assert payload["settings"]["ui.theme"] == {"mode": "dark"}
-    row = app.conn.execute("SELECT value_json, source FROM settings WHERE key = ?", ("ui.theme",)).fetchone()
-    assert json.loads(row[0]) == {"mode": "dark"}
-    assert row[1] == "api"
+    assert status == 400
+    assert "unknown configuration key" in payload["error"]
+    assert app.get_settings() == before
 
 
-def test_post_settings_upserts_multiple_keys(app: DaemonApp) -> None:
+def test_post_settings_rejects_mixed_batch_before_file_or_database_write(
+    app: DaemonApp,
+) -> None:
+    before_settings = app.get_settings()
+    before_config = app.config.source_path.read_bytes()
     with running_server(app) as base_url:
         status, payload = request_json(
             "POST",
             f"{base_url}/settings",
-            {"settings": {"ui.theme": "dark", "voice.enabled": False}},
+            {"settings": {"voice.output_gain": 0.92, "ui.theme": "dark"}},
         )
 
-    assert status == 200
-    assert payload["settings"] == {"ui.theme": "dark", "voice.enabled": False}
+    assert status == 400
+    assert "ui.theme" in payload["error"]
+    assert app.get_settings() == before_settings
+    assert app.config.source_path.read_bytes() == before_config
 
 
 def test_post_settings_rejects_malformed_json(app: DaemonApp) -> None:
@@ -3351,7 +3363,7 @@ def test_runtime_settings_warnings_when_tools_are_shown_but_provider_does_not_su
     assert "tools_enabled_provider_unsupported" in warning_ids
 
 
-def test_runtime_settings_warns_invalid_persona_profile_falls_back(
+def test_runtime_settings_rejects_runtime_persona_override(
     app: DaemonApp,
 ) -> None:
     with running_server(app) as base_url:
@@ -3360,17 +3372,12 @@ def test_runtime_settings_warns_invalid_persona_profile_falls_back(
             f"{base_url}/settings",
             {"settings": {"persona.profile": "does-not-exist"}},
         )
-        assert status == 200
-        assert payload["settings"]["persona.profile"] == "does-not-exist"
-
-        status, payload = request_json("GET", f"{base_url}/runtime/settings")
-
-    assert status == 200
-    warnings = _runtime_warning_messages(payload)
-    assert any("Requested persona profile is missing" in message for message in warnings)
+    assert status == 400
+    assert "persona.profile" in payload["error"]
+    assert "persona.profile" not in app.get_settings()
 
 
-def test_runtime_settings_warns_stale_brain_effort_and_fast_settings(
+def test_runtime_settings_warns_stale_brain_model_and_effort_settings(
     tmp_path: Path,
 ) -> None:
     config_path = rewrite_voice_section(
@@ -3387,7 +3394,7 @@ def test_runtime_settings_warns_stale_brain_effort_and_fast_settings(
             status, payload = request_json(
                 "POST",
                 f"{base_url}/settings",
-                {"settings": {"model": "invalid-model", "effort": "x-large", "fast": True}},
+                {"settings": {"model": "invalid-model", "effort": "x-large"}},
             )
             assert status == 200
             assert payload["settings"]["model"] == "invalid-model"
@@ -3401,7 +3408,6 @@ def test_runtime_settings_warns_stale_brain_effort_and_fast_settings(
     assert {
         "brain_model_missing",
         "brain_effort_unsupported",
-        "brain_fast_unsupported",
     }.issubset(warning_ids)
 
 
@@ -3640,7 +3646,7 @@ def test_runtime_settings_rejects_unknown_effort_without_pending_applyable_value
     assert settings_value(app, "effort") is None
 
 
-def test_runtime_settings_stale_warm_config_is_forced_to_cold_claude(
+def test_runtime_settings_rejects_unregistered_stale_warm_provider_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3661,25 +3667,8 @@ def test_runtime_settings_stale_warm_config_is_forced_to_cold_claude(
             "effort = \"high\"\n"
         ),
     )
-    app = create_daemon_app(config_path)
-    try:
-        with running_server(app) as base_url:
-            status, runtime = request_json("GET", f"{base_url}/runtime/settings")
-            assert status == 200
-    finally:
-        app.close()
-
-    provider_ids = {
-        provider["id"]
-        for provider in runtime["capability_graph"]["brain_capabilities"]["providers"]
-    }
-    assert runtime["capability_graph"]["brain_capabilities"]["current_provider"] == "claude_cli"
-    assert provider_ids == {"claude_cli"}
-    brain_section = runtime["settings_preview"]["sections"]["brain_provider"]
-    assert brain_section["apply_semantics"] == "next_turn"
-    assert brain_section["apply_capable"] is True
-    assert brain_section["apply_disabled_reason"] is None
-    assert "brain.model" in brain_section["valid_next_turn_changes"]
+    with pytest.raises(ConfigError, match="brain.claude_cli_warm.enabled"):
+        create_daemon_app(config_path)
 
 
 def test_post_runtime_settings_apply_rejects_mock_as_normal_brain_provider(
@@ -3749,7 +3738,7 @@ def test_post_runtime_settings_apply_blocks_speak_responses_without_tts(tmp_path
     assert "TTS" in payload["error"]
 
 
-def test_post_runtime_settings_apply_blocks_supertonic_tts_without_voice_id(
+def test_post_runtime_settings_apply_rejects_versioned_tts_before_voice_validation(
     tmp_path: Path,
 ) -> None:
     config_path = rewrite_voice_section(
@@ -3774,12 +3763,13 @@ def test_post_runtime_settings_apply_blocks_supertonic_tts_without_voice_id(
     finally:
         daemon_app.close()
 
-    assert status == 422
-    assert "voice_id" in payload["error"] or "voice profile" in payload["error"]
+    assert status == 400
+    assert "voice.default_tts" in payload["error"]
+    assert "read-only" in payload["error"]
     assert refreshed["voice"]["default_tts"]["effective_value"] == "mock"
 
 
-def test_post_runtime_settings_apply_blocks_default_tts_restart_only(
+def test_post_runtime_settings_apply_rejects_versioned_default_tts(
     tmp_path: Path,
 ) -> None:
     config_path = rewrite_voice_section(
@@ -3804,14 +3794,10 @@ def test_post_runtime_settings_apply_blocks_default_tts_restart_only(
     finally:
         daemon_app.close()
 
-    assert status == 409
-    assert "voice engine reload requires daemon restart" in payload["error"]
+    assert status == 400
+    assert "voice.default_tts" in payload["error"]
+    assert "read-only" in payload["error"]
     assert refreshed["voice"]["default_tts"]["effective_value"] == "mock"
-    assert payload["status"] == "requires_restart"
-    assert "voice.default_tts" in payload["requires_restart_keys"]
-    assert "voice.default_tts" in payload["rejected_keys"]
-    assert payload["applied_keys"] == []
-    assert payload["blockers"]
 
 
 def test_post_runtime_settings_apply_rejects_unsupported_ptt_mode(app: DaemonApp) -> None:
@@ -3842,8 +3828,9 @@ def test_post_runtime_settings_apply_updates_ptt_hotkey(app: DaemonApp) -> None:
     assert payload["runtime_settings"]["voice"]["ptt_hotkey"]["effective_value"] == "right_cmd+right_shift"
     ptt_hotkey = refreshed["settings_preview"]["sections"]["endpointing_ptt"]["fields"]["ptt_hotkey"]
     assert ptt_hotkey["current"] == "right_cmd+right_shift"
-    assert ptt_hotkey["source"] == "settings"
+    assert ptt_hotkey["source"] == "config"
     assert ptt_hotkey["apply_capable"] is True
+    assert load_config(app.config.source_path).voice.ptt_hotkey == "right_cmd+right_shift"
 
 
 def test_post_runtime_settings_apply_rejects_invalid_ptt_hotkey(app: DaemonApp) -> None:
@@ -3858,7 +3845,7 @@ def test_post_runtime_settings_apply_rejects_invalid_ptt_hotkey(app: DaemonApp) 
     assert "bad_key" in payload["error"]
 
 
-def test_post_runtime_settings_apply_blocks_merge_window_restart_only(app: DaemonApp) -> None:
+def test_post_runtime_settings_apply_rejects_dead_merge_window(app: DaemonApp) -> None:
     with running_server(app) as base_url:
         status, payload = request_json(
             "POST",
@@ -3866,8 +3853,9 @@ def test_post_runtime_settings_apply_blocks_merge_window_restart_only(app: Daemo
             {"settings": {"voice.merge_window": 2.5}},
         )
 
-    assert status == 409
-    assert "voice gateway reload requires daemon restart" in payload["error"]
+    assert status == 400
+    assert "voice.merge_window" in payload["error"]
+    assert "dead runtime setting" in payload["error"]
 
 
 def test_runtime_settings_tools_internet_projection_uses_registered_network_tool_truth(
@@ -3970,14 +3958,14 @@ def test_post_runtime_settings_apply_rejects_legacy_approval_policy(app: DaemonA
     assert app.get_settings() == before
 
 
-def test_runtime_settings_marks_invalid_stale_effort_and_fast_state_for_current_provider(
+def test_runtime_settings_marks_invalid_stale_effort_state_for_current_provider(
     app: DaemonApp,
 ) -> None:
     with running_server(app) as base_url:
         status, payload = request_json(
             "POST",
             f"{base_url}/settings",
-            {"settings": {"model": "invalid-model", "effort": "x-large", "fast": True}},
+            {"settings": {"model": "invalid-model", "effort": "x-large"}},
         )
         assert status == 200
         assert payload["settings"]["model"] == "invalid-model"

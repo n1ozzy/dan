@@ -213,6 +213,19 @@ def test_raw_failure_id_sanitization_hashes_every_parameter_payload() -> None:
         assert sanitized != node
 
 
+def test_failure_parser_ignores_warning_summary_node_ids() -> None:
+    baseline = _load_baseline_script()
+    output = "\n".join(
+        (
+            "FAILED tests/test_actual.py::test_failure - AssertionError",
+            "tests/test_warning.py::test_emits_deprecation_warning",
+            "  /repo/tests/test_warning.py:10: DeprecationWarning: compatibility caller",
+        )
+    )
+
+    assert baseline._failure_ids(output) == ["tests/test_actual.py::test_failure"]
+
+
 def test_failure_report_comparator_requires_no_new_ids(tmp_path: Path) -> None:
     baseline = _load_baseline_script()
     previous = tmp_path / "previous.json"
