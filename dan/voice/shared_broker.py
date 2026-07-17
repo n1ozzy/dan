@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import uuid
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,11 @@ class SharedBrokerClient:
             raise SharedBrokerError(
                 "SharedBrokerClient requires a caller-supplied VoiceResolver"
             )
+        warnings.warn(
+            "SharedBrokerClient is a compatibility caller; remove it in Task 7",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._resolver = resolver
         self._publish_lock = threading.Lock()
         self._last_published_ns = -1

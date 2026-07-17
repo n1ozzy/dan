@@ -180,6 +180,15 @@ def test_supertonic_with_config_but_without_resolver_fails_loudly(tmp_path: Path
         build_tts_engine("supertonic", config=full_config(tmp_path, binary, player))
 
 
+def test_supertonic_with_resolver_emits_migration_warning(tmp_path: Path) -> None:
+    binary, _ = fake_supertonic(tmp_path)
+    player, _ = fake_player(tmp_path)
+    config = full_config(tmp_path, binary, player)
+
+    with pytest.warns(DeprecationWarning, match="compatibility caller"):
+        build_strict_engine(tmp_path, config)
+
+
 def test_supertonic_builds_from_config(tmp_path: Path) -> None:
     engine, _, _ = build_engine(tmp_path)
     assert isinstance(engine, SupertonicEngine)

@@ -54,6 +54,17 @@ def test_client_requires_caller_supplied_resolver_before_publish(tmp_path: Path)
     assert not (tmp_path / "req").exists()
 
 
+def test_client_with_resolver_emits_migration_warning(tmp_path: Path) -> None:
+    module = _shared_broker_module()
+
+    with pytest.warns(DeprecationWarning, match="compatibility caller"):
+        module.SharedBrokerClient(
+            VoiceConfig(),
+            resolver=_strict_resolver(tmp_path),
+            request_dir=tmp_path / "req",
+        )
+
+
 def test_client_writes_exact_dan_request_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

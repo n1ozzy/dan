@@ -19,6 +19,7 @@ import threading
 import time
 import urllib.request
 import uuid
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -210,6 +211,11 @@ class SupertonicEngine:
             raise TTSEngineError(
                 "SupertonicEngine requires a caller-supplied VoiceResolver"
             )
+        warnings.warn(
+            "SupertonicEngine is a compatibility caller; use snapshot-only TTS in Task 7",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._resolver = resolver
         # Persona binding (2026-07-08): resolve the current persona.profile per
         # chunk so a live persona switch (panel dropdown) changes voice +
