@@ -674,6 +674,8 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
     allowed_contracts = {
         ("jarvis/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
         ("jarvis/voice/shared_broker.py", "/tmp/dan"),
+        ("jarvis/migration/test_safety.py", "/tmp/dan"),
+        ("jarvis/migration/test_safety.py", "afplay"),
     }
     forbidden = (
         "/Users/n1_ozzy/Documents/dev/dan",

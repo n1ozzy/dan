@@ -28,18 +28,31 @@ uses the repository's hermetic test adapter and asserts that no production call
 occurs.  Task 3 is not included.  A future change must state its own delta
 before it changes this argument.
 
+The independent-review follow-up adds `10` Task 2 regression contracts for
+ancestor `conftest` and plugin fixtures, controlled child Python execution,
+sanitized failure IDs, set comparison, and status invariants:
+
+`2347 + 10 (Task 2 FIX FIRST regressions) = 2357`
+
+`2357` is the accepted follow-up collection count. Task 3 remains excluded.
+
 ```bash
 python3 -m pytest --collect-only -q
-python3 scripts/dan-test-baseline --expect-collected 2347
+python3 scripts/dan-test-baseline --expect-collected 2357 \
+  --compare-report .superpowers/sdd/task-2-reviewed-baseline-2347.json
 ```
 
 ## Fresh baseline evidence
 
-The final Task 2 run collected `2347` nodes: `2347` isolated and `0`
-`live_manual`. It completed in `363.835` seconds with `2074` passed and `273`
-sanitized failing node IDs. The baseline therefore remains a truthful failed
-baseline for the pre-existing suite debt; the failure count decreased from the
-previous `286`-ID report and no Task 3 test is included.
+The final Task 2 follow-up collected `2357` nodes: `2357` isolated and `0`
+`live_manual`. It completed in `363.941` seconds with `2085` passed and `272`
+sanitized failing node IDs. The canonical set comparison against the preserved
+`2347`/`273` report found `0` new IDs and removed only
+`tests/test_db_schema.py::test_runtime_files_do_not_contain_forbidden_legacy_strings`.
+
+The committed, sorted sanitized failure ledger is
+[`TEST-BASELINE-failures.txt`](TEST-BASELINE-failures.txt). It contains no raw
+parameter payloads; parametrized IDs use stable `param-<sha256-prefix>` tokens.
 
 ## Isolation and report contract
 

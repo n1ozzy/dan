@@ -7,7 +7,6 @@ import argparse
 import json
 import math
 import os
-import re
 import stat
 import subprocess
 import sys
@@ -25,14 +24,26 @@ from jarvis.migration.test_safety import (  # noqa: E402
     collect_node_ids,
     isolated_node_ids,
     live_manual_node_ids,
+    sanitize_node_id,
     scan_node_ids,
     test_environment,
+    _pytest_command,
 )
 
 
 REPORT_MODE = 0o600
-_NODE_ID = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py::[^\r\n]+$")
-_KEYS = frozenset({"schema_version", "status", "expected_collected", "collected", "isolated", "live_manual", "duration_seconds", "failures"})
+_KEYS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "expected_collected",
+        "collected",
+        "isolated",
+        "live_manual",
+        "duration_seconds",
+        "failures",
+    }
+)
 _STATUSES = frozenset({"passed", "failed", "collection-mismatch", "live-manual-refused"})
 
 
@@ -64,17 +75,40 @@ def _failure_ids(output: str) -> list[str]:
     found: set[str] = set()
     for line in output.splitlines():
         candidate = line.strip().removeprefix("FAILED ").split(" ", 1)[0]
-        if _NODE_ID.fullmatch(candidate):
-            found.add(candidate)
+        try:
+            found.add(sanitize_node_id(candidate))
+        except ValueError:
+            continue
     return sorted(found)
 
 
-def _report(*, status: str, expected: int, collected: int, isolated: int, manual: int, duration: float, failures: list[str]) -> dict[str, Any]:
-    return {"schema_version": 1, "status": status, "expected_collected": expected, "collected": collected, "isolated": isolated, "live_manual": manual, "duration_seconds": round(duration, 3), "failures": failures}
+def _report(
+    *,
+    status: str,
+    expected: int,
+    collected: int,
+    isolated: int,
+    manual: int,
+    duration: float,
+    failures: list[str],
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "status": status,
+        "expected_collected": expected,
+        "collected": collected,
+        "isolated": isolated,
+        "live_manual": manual,
+        "duration_seconds": round(duration, 3),
+        "failures": sorted({sanitize_node_id(node) for node in failures}),
+    }
 
 
-def _verified_report(path: Path) -> dict[str, Any]:
-    if not path.is_file() or path.is_symlink() or stat.S_IMODE(path.stat().st_mode) != REPORT_MODE:
+def _read_report(
+    path: Path, *, require_sanitized_failures: bool, allow_read_only: bool = False
+) -> dict[str, Any]:
+    allowed_modes = {REPORT_MODE, 0o400} if allow_read_only else {REPORT_MODE}
+    if not path.is_file() or path.is_symlink() or stat.S_IMODE(path.stat().st_mode) not in allowed_modes:
         raise ValueError("baseline report must be a regular 0600 file")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict) or set(payload) != _KEYS:
@@ -89,22 +123,74 @@ def _verified_report(path: Path) -> dict[str, Any]:
     duration = payload["duration_seconds"]
     if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration < 0:
         raise ValueError("baseline report duration is invalid")
-    if not isinstance(payload["failures"], list) or not all(isinstance(node, str) and _NODE_ID.fullmatch(node) for node in payload["failures"]):
+    failures = payload["failures"]
+    if not isinstance(failures, list) or not all(isinstance(node, str) for node in failures):
         raise ValueError("baseline report failures are not sanitized node IDs")
-    if payload["status"] in {"passed", "failed"} and (payload["expected_collected"] != payload["collected"] or payload["live_manual"]):
-        raise ValueError("completed baseline report is inconsistent")
-    if payload["status"] == "passed" and payload["failures"]:
-        raise ValueError("passing baseline report contains failures")
-    if payload["status"] == "collection-mismatch" and (payload["expected_collected"] == payload["collected"] or payload["failures"]):
-        raise ValueError("collection mismatch report is inconsistent")
+    try:
+        canonical = [sanitize_node_id(node) for node in failures]
+    except ValueError as error:
+        raise ValueError("baseline report failures are not sanitized node IDs") from error
+    if require_sanitized_failures and canonical != failures:
+        raise ValueError("baseline report failures are not sanitized node IDs")
+    if failures != sorted(set(failures)):
+        raise ValueError("baseline report failures are not stable")
+    status = payload["status"]
+    if status == "passed":
+        if payload["expected_collected"] != payload["collected"] or payload["live_manual"] or failures:
+            raise ValueError("passing baseline report is inconsistent")
+    elif status == "failed":
+        if payload["expected_collected"] != payload["collected"] or payload["live_manual"] or not failures:
+            raise ValueError("failed baseline report is inconsistent")
+    elif status == "collection-mismatch":
+        if payload["expected_collected"] == payload["collected"] or failures:
+            raise ValueError("collection mismatch report is inconsistent")
+    elif (
+        payload["expected_collected"] != payload["collected"]
+        or payload["live_manual"] == 0
+        or not failures
+    ):
+        raise ValueError("live-manual refusal report is inconsistent")
     return payload
+
+
+def _verified_report(path: Path) -> dict[str, Any]:
+    return _read_report(path, require_sanitized_failures=True)
+
+
+def compare_failure_reports(previous_path: Path, current_path: Path) -> dict[str, list[str]]:
+    """Compare canonical failure-ID sets; legacy evidence is canonicalized on read."""
+    previous = _read_report(
+        previous_path.expanduser(), require_sanitized_failures=False, allow_read_only=True
+    )
+    current = _read_report(current_path.expanduser(), require_sanitized_failures=True)
+    previous_ids = {sanitize_node_id(node) for node in previous["failures"]}
+    current_ids = {sanitize_node_id(node) for node in current["failures"]}
+    return {
+        "new": sorted(current_ids - previous_ids),
+        "removed": sorted(previous_ids - current_ids),
+        "unchanged": sorted(previous_ids & current_ids),
+    }
+
+
+def _emit_comparison(previous_path: Path, current_path: Path) -> int:
+    try:
+        comparison = compare_failure_reports(previous_path, current_path)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"invalid baseline comparison: {error}", file=sys.stderr)
+        return 2
+    print(json.dumps(comparison, sort_keys=True))
+    return 2 if comparison["new"] else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expect-collected", type=int)
     parser.add_argument("--verify-report", type=Path)
+    parser.add_argument("--compare-report", type=Path)
+    parser.add_argument("--compare-reports", nargs=2, type=Path, metavar=("PREVIOUS", "CURRENT"))
     args = parser.parse_args(argv)
+    if args.compare_reports:
+        return _emit_comparison(*args.compare_reports)
     if args.verify_report:
         try:
             print(json.dumps(_verified_report(args.verify_report.expanduser()), sort_keys=True))
@@ -118,33 +204,82 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="dan-test-baseline-") as root:
         temporary = Path(root)
-        home, runtime, database = temporary / "home", temporary / "runtime", temporary / "state" / "dan.db"
+        home = temporary / "home"
+        runtime = temporary / "runtime"
+        database = temporary / "state" / "dan.db"
         home.mkdir()
         runtime.mkdir()
         database.parent.mkdir()
         environment = test_environment(home, runtime, database)
         collected_nodes = collect_node_ids(REPO_ROOT, env=environment)
         classified = classify_node_ids(REPO_ROOT, collected_nodes)
-        automatic, manual = isolated_node_ids(classified), live_manual_node_ids(classified)
+        automatic = isolated_node_ids(classified)
+        manual = live_manual_node_ids(classified)
         report_path = _report_path()
         duration = time.monotonic() - started
         if len(collected_nodes) != args.expect_collected:
-            _write_report(report_path, _report(status="collection-mismatch", expected=args.expect_collected, collected=len(collected_nodes), isolated=len(automatic), manual=len(manual), duration=duration, failures=[]))
+            _write_report(
+                report_path,
+                _report(
+                    status="collection-mismatch",
+                    expected=args.expect_collected,
+                    collected=len(collected_nodes),
+                    isolated=len(automatic),
+                    manual=len(manual),
+                    duration=duration,
+                    failures=[],
+                ),
+            )
             print(f"collection mismatch: expected {args.expect_collected}, got {len(collected_nodes)}", file=sys.stderr)
             return 2
         violations = scan_node_ids(REPO_ROOT, collected_nodes)
         if violations or manual:
-            _write_report(report_path, _report(status="live-manual-refused", expected=args.expect_collected, collected=len(collected_nodes), isolated=len(automatic), manual=len(manual), duration=duration, failures=sorted(set(manual))))
-            details = violations or list(manual)
+            refusal_ids = [*manual]
+            _write_report(
+                report_path,
+                _report(
+                    status="live-manual-refused",
+                    expected=args.expect_collected,
+                    collected=len(collected_nodes),
+                    isolated=len(automatic),
+                    manual=len(manual),
+                    duration=duration,
+                    failures=refusal_ids,
+                ),
+            )
+            details = violations or [sanitize_node_id(node) for node in manual]
             print("refusing unsafe tests: " + ", ".join(details), file=sys.stderr)
             return 2
-        completed = subprocess.run([sys.executable, "-m", "pytest", "-q", *automatic], cwd=REPO_ROOT, env=environment, check=False, capture_output=True, start_new_session=True, text=True)
+        completed = subprocess.run(
+            _pytest_command("-q", *automatic),
+            cwd=REPO_ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            start_new_session=True,
+            text=True,
+        )
         duration = time.monotonic() - started
         failures = _failure_ids(completed.stdout + "\n" + completed.stderr)
         status = "passed" if completed.returncode == 0 else "failed"
-        _write_report(report_path, _report(status=status, expected=args.expect_collected, collected=len(collected_nodes), isolated=len(automatic), manual=0, duration=duration, failures=failures))
+        _write_report(
+            report_path,
+            _report(
+                status=status,
+                expected=args.expect_collected,
+                collected=len(collected_nodes),
+                isolated=len(automatic),
+                manual=0,
+                duration=duration,
+                failures=failures,
+            ),
+        )
         sys.stdout.write(completed.stdout)
         sys.stderr.write(completed.stderr)
+        if args.compare_report:
+            comparison_status = _emit_comparison(args.compare_report, report_path)
+            if comparison_status:
+                return comparison_status
         return completed.returncode
 
 

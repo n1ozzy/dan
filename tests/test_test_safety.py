@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -34,6 +33,13 @@ def _write_test_file(root: Path, source: str) -> str:
     path.parent.mkdir(exist_ok=True)
     path.write_text(source, encoding="utf-8")
     return "tests/test_live.py::test_hardware"
+
+
+def _write_source(root: Path, relative_path: str, source: str) -> Path:
+    path = root / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+    return path
 
 
 def _valid_report(**overrides: object) -> dict[str, object]:
@@ -94,6 +100,57 @@ def test_unmarked_live_primitives_are_manual_and_reported(
     assert reason in " ".join(scan_node_ids(tmp_path, (node_id,)))
 
 
+def test_ancestor_conftest_autouse_fixture_is_manual_and_reported(tmp_path: Path) -> None:
+    from jarvis.migration.test_safety import classify_node_ids, scan_node_ids
+
+    _write_source(
+        tmp_path,
+        "conftest.py",
+        "import pytest\nimport subprocess\n\n"
+        "@pytest.fixture(autouse=True)\ndef live_audio():\n"
+        "    subprocess.run(['afplay', 'x.wav'])\n",
+    )
+    node_id = _write_test_file(tmp_path, "def test_hardware():\n    pass\n")
+
+    assert classify_node_ids(tmp_path, (node_id,))[node_id].safety == "live-manual"
+    assert "audio" in " ".join(scan_node_ids(tmp_path, (node_id,)))
+
+
+def test_explicit_local_plugin_fixture_is_manual_and_reported(tmp_path: Path) -> None:
+    from jarvis.migration.test_safety import classify_node_ids, scan_node_ids
+
+    _write_source(
+        tmp_path,
+        "tests/live_plugin.py",
+        "import pytest\nimport subprocess\n\n"
+        "@pytest.fixture\ndef recorder():\n"
+        "    subprocess.run(['launchctl', 'list'])\n",
+    )
+    node_id = _write_test_file(
+        tmp_path,
+        "pytest_plugins = ('tests.live_plugin',)\n\n"
+        "def test_hardware(recorder):\n    assert recorder is None\n",
+    )
+
+    assert classify_node_ids(tmp_path, (node_id,))[node_id].safety == "live-manual"
+    assert "launchctl" in " ".join(scan_node_ids(tmp_path, (node_id,)))
+
+
+def test_unresolved_explicit_plugin_fails_closed(tmp_path: Path) -> None:
+    from jarvis.migration.test_safety import classify_node_ids, scan_node_ids
+
+    node_id = _write_test_file(
+        tmp_path,
+        "pytest_plugins = ('not_in_the_repository',)\n\n"
+        "def test_hardware():\n    pass\n",
+    )
+
+    assert classify_node_ids(tmp_path, (node_id,))[node_id].safety == "live-manual"
+    assert scan_node_ids(tmp_path, (node_id,)) == [
+        "tests/test_live.py::test_hardware: unresolved pytest plugin fixture dependency"
+    ]
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -123,6 +180,61 @@ def test_report_verification_does_not_require_collection(tmp_path: Path) -> None
     assert completed.returncode == 0, completed.stderr
 
 
+def test_report_verifier_rejects_raw_parameter_payload(tmp_path: Path) -> None:
+    report = tmp_path / "report.json"
+    report.write_text(
+        json.dumps(_valid_report(failures=["tests/test_example.py::test_failure[secret-token]" ])),
+        encoding="utf-8",
+    )
+    report.chmod(0o600)
+    completed = subprocess.run(
+        [sys.executable, "scripts/dan-test-baseline", "--verify-report", str(report)],
+        cwd=Path(__file__).resolve().parents[1], check=False, capture_output=True, text=True,
+    )
+    assert completed.returncode == 2
+    assert "secret-token" not in completed.stdout + completed.stderr
+
+
+def test_failure_id_sanitization_hashes_parameter_payload() -> None:
+    baseline = _load_baseline_script()
+
+    node = "tests/test_example.py::test_failure[secret-token-http://[::1]/]"
+    sanitized = baseline.sanitize_node_id(node)
+
+    assert sanitized.startswith("tests/test_example.py::test_failure[param-")
+    assert sanitized.endswith("]")
+    assert "secret-token-http://[::1]/" not in sanitized
+
+
+def test_failure_report_comparator_requires_no_new_ids(tmp_path: Path) -> None:
+    baseline = _load_baseline_script()
+    previous = tmp_path / "previous.json"
+    current = tmp_path / "current.json"
+    previous.write_text(
+        json.dumps(_valid_report(failures=["tests/test_example.py::test_failure[param-a1b2c3d4e5f60708]"])),
+        encoding="utf-8",
+    )
+    current.write_text(
+        json.dumps(
+            _valid_report(
+                failures=[
+                    "tests/test_example.py::test_failure[param-a1b2c3d4e5f60708]",
+                    "tests/test_example.py::test_new_failure",
+                ]
+            )
+        ),
+        encoding="utf-8",
+    )
+    previous.chmod(0o400)
+    current.chmod(0o600)
+
+    comparison = baseline.compare_failure_reports(previous, current)
+
+    assert comparison["new"] == ["tests/test_example.py::test_new_failure"]
+    assert comparison["removed"] == []
+    assert comparison["unchanged"] == ["tests/test_example.py::test_failure[param-a1b2c3d4e5f60708]"]
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -143,6 +255,29 @@ def test_report_verifier_rejects_invalid_schema_without_echoing(
     )
     assert completed.returncode == 2
     assert "DO_NOT_ECHO" not in completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _valid_report(status="failed", failures=[]),
+        _valid_report(status="live-manual-refused", isolated=1, live_manual=0, failures=[]),
+        _valid_report(status="collection-mismatch", expected_collected=1, collected=1),
+    ],
+)
+def test_report_verifier_enforces_status_specific_invariants(
+    tmp_path: Path, payload: dict[str, object]
+) -> None:
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps(payload), encoding="utf-8")
+    report.chmod(0o600)
+
+    completed = subprocess.run(
+        [sys.executable, "scripts/dan-test-baseline", "--verify-report", str(report)],
+        cwd=Path(__file__).resolve().parents[1], check=False, capture_output=True, text=True,
+    )
+
+    assert completed.returncode == 2
 
 
 def test_report_write_is_private_and_does_not_follow_fixed_temp_symlink(tmp_path: Path) -> None:
@@ -187,7 +322,8 @@ def test_baseline_runs_each_isolated_node_explicitly(tmp_path: Path, monkeypatch
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
     monkeypatch.setattr(baseline.subprocess, "run", fake_run)
     assert baseline.main(["--expect-collected", "2"]) == 0
-    assert seen["argv"] == [sys.executable, "-m", "pytest", "-q", *nodes]
+    assert seen["argv"][:3] == [sys.executable, "-I", "-S"]
+    assert seen["argv"][5:] == ["-q", *nodes]
     assert seen["env"]["DAN_DISABLE_AUDIO"] == "1"
 
 
@@ -205,17 +341,44 @@ def test_baseline_refuses_collection_mismatch_before_pytest(
     assert baseline.main(["--expect-collected", "2"]) == 2
 
 
-def test_test_environment_redirects_state_and_preserves_dependencies(
+def test_test_environment_is_minimal_and_blocks_ambient_python_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import jarvis.migration.test_safety as safety
 
-    user_site = tmp_path / "user-site"
-    user_site.mkdir()
-    monkeypatch.setattr(safety.site, "getusersitepackages", lambda: str(user_site))
+    monkeypatch.setenv("PYTHONPATH", "/private/ambient-python")
+    monkeypatch.setenv("PYTHONUSERBASE", "/private/ambient-user-site")
+    monkeypatch.setenv("UNRELATED_SECRET", "must-not-reach-child")
+    monkeypatch.setenv("PATH", "/private/controlled-toolchain")
     environment = safety.test_environment(tmp_path / "home", tmp_path / "runtime", tmp_path / "state" / "dan.db")
+
     assert environment["DAN_TEST_MODE"] == "1"
     assert environment["DAN_DISABLE_AUDIO"] == "1"
     assert environment["DAN_DISABLE_MIC"] == "1"
     assert environment["HOME"] == str(tmp_path / "home")
-    assert str(user_site) in environment["PYTHONPATH"].split(os.pathsep)
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
+    assert environment["PATH"] == "/private/controlled-toolchain"
+    assert "PYTHONPATH" not in environment
+    assert "PYTHONUSERBASE" not in environment
+    assert "UNRELATED_SECRET" not in environment
+
+
+def test_collection_uses_isolated_controlled_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jarvis.migration.test_safety as safety
+
+    seen: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen["argv"] = argv
+        seen["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(argv, 0, stdout="tests/test_live.py::test_hardware\n", stderr="")
+
+    monkeypatch.setattr(safety.subprocess, "run", fake_run)
+    environment = safety.test_environment(tmp_path / "home", tmp_path / "runtime", tmp_path / "state" / "dan.db")
+
+    assert safety.collect_node_ids(tmp_path, env=environment) == ("tests/test_live.py::test_hardware",)
+    assert seen["argv"][:3] == [sys.executable, "-I", "-S"]
+    assert seen["env"] == environment

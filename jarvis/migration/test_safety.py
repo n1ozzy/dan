@@ -1,19 +1,15 @@
-"""Static safety classification for the Release 1 test baseline.
-
-No function in this module imports test modules or starts a runtime.  Explicitly
-marked hardware tests and unmarked direct live primitives are excluded from the
-automatic baseline; the latter are additionally reported as an audit failure.
-"""
+"""Static safety classification for the Release 1 test baseline."""
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 import re
 import shlex
-import site
 import subprocess
 import sys
+import sysconfig
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,8 +17,13 @@ from typing import Literal
 
 
 Safety = Literal["isolated", "live-manual"]
-_NODE_ID = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py::[^\r\n]+$")
-_AUDIO_COMMANDS = frozenset({"afplay", "aplay", "arecord", "ffmpeg", "ffplay", "parec", "play", "pw-record", "rec", "sox"})
+_TEST_PATH = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py$")
+_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+_SANITIZED_PARAM = re.compile(r"^param-[0-9a-f]{16}$")
+_AUDIO_COMMANDS = frozenset(
+    {"afplay", "aplay", "arecord", "ffmpeg", "ffplay", "parec", "play", "pw-record", "rec", "sox"}
+)
 _TMP_DAN = re.compile(r"/tmp/dan-[A-Za-z0-9_.-]*")
 _LIVE_PORT = re.compile(r"(?:localhost|127\.0\.0\.1|0\.0\.0\.0):7788\b|\bport\s*=\s*7788\b")
 
@@ -35,10 +36,69 @@ class SafetyClassification:
     explicit_manual: bool = False
 
 
-def _node_file(repo_root: Path, node_id: str) -> Path:
-    if not _NODE_ID.fullmatch(node_id):
+@dataclass(frozen=True)
+class SourceModule:
+    path: Path
+    tree: ast.Module
+
+
+def _node_parts(node_id: str, *, sanitized: bool = False) -> tuple[str, tuple[str, ...]]:
+    path, separator, tail = node_id.partition("::")
+    if not separator or not _TEST_PATH.fullmatch(path):
         raise ValueError(f"unsupported pytest node id: {node_id!r}")
-    path = (repo_root / node_id.split("::", 1)[0]).resolve()
+    parameter_index = tail.find("[")
+    if parameter_index >= 0:
+        prefix, parameter = tail[:parameter_index], tail[parameter_index:]
+        if not parameter.endswith("]"):
+            raise ValueError(f"unsupported pytest node id: {node_id!r}")
+        parts = prefix.split("::")
+        if not parts or not parts[-1]:
+            raise ValueError(f"unsupported pytest node id: {node_id!r}")
+        parts[-1] = f"{parts[-1]}{parameter}"
+    else:
+        parts = tail.split("::")
+    if not parts or any(not part for part in parts):
+        raise ValueError(f"unsupported pytest node id: {node_id!r}")
+    names: list[str] = []
+    for part in parts:
+        if not part or "\n" in part or "\r" in part:
+            raise ValueError(f"unsupported pytest node id: {node_id!r}")
+        name, separator, parameter = part.partition("[")
+        if not _NAME.fullmatch(name):
+            raise ValueError(f"unsupported pytest node id: {node_id!r}")
+        if separator:
+            if not parameter.endswith("]"):
+                raise ValueError(f"unsupported pytest node id: {node_id!r}")
+            payload = parameter[:-1]
+            if sanitized and not _SANITIZED_PARAM.fullmatch(payload):
+                raise ValueError(f"unsanitized pytest node id: {node_id!r}")
+            names.append(f"{name}[{payload}]")
+        else:
+            names.append(name)
+    return path, tuple(names)
+
+
+def sanitize_node_id(node_id: str) -> str:
+    """Keep a stable node identity without persisting parametrized payloads."""
+    path, parts = _node_parts(node_id)
+    sanitized: list[str] = []
+    for part in parts:
+        name, separator, parameter = part.partition("[")
+        if not separator:
+            sanitized.append(name)
+            continue
+        payload = parameter[:-1]
+        if _SANITIZED_PARAM.fullmatch(payload):
+            sanitized.append(part)
+            continue
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+        sanitized.append(f"{name}[param-{digest}]")
+    return "::".join((path, *sanitized))
+
+
+def _node_file(repo_root: Path, node_id: str) -> Path:
+    relative, _ = _node_parts(node_id)
+    path = (repo_root / relative).resolve()
     tests = (repo_root / "tests").resolve()
     if tests not in path.parents or path.suffix != ".py":
         raise ValueError(f"node id outside tests/: {node_id!r}")
@@ -64,13 +124,19 @@ def _explicit_manual(tree: ast.Module, node_id: str) -> bool:
             if any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets):
                 if statement.value is not None and _is_live_marker(statement.value):
                     return True
-    parts = node_id.split("::")[1:]
-    if not parts:
-        return False
-    parts[-1] = parts[-1].split("[", 1)[0]
+    _, parts = _node_parts(node_id)
     body = tree.body
     for part in parts:
-        definition = next((item for item in body if isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == part), None)
+        name = part.partition("[")[0]
+        definition = next(
+            (
+                item
+                for item in body
+                if isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.name == name
+            ),
+            None,
+        )
         if definition is None:
             return False
         if any(_is_live_marker(decorator) for decorator in definition.decorator_list):
@@ -90,14 +156,20 @@ def _literal_command(node: ast.expr) -> str | None:
 
 
 def _definition(tree: ast.Module, node_id: str) -> ast.AST | None:
-    parts = node_id.split("::")[1:]
-    if not parts:
-        return None
-    parts[-1] = parts[-1].split("[", 1)[0]
+    _, parts = _node_parts(node_id)
     body = tree.body
     definition: ast.AST | None = None
     for part in parts:
-        definition = next((item for item in body if isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == part), None)
+        name = part.partition("[")[0]
+        definition = next(
+            (
+                item
+                for item in body
+                if isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.name == name
+            ),
+            None,
+        )
         if definition is None:
             return None
         body = definition.body  # type: ignore[union-attr]
@@ -106,29 +178,35 @@ def _definition(tree: ast.Module, node_id: str) -> ast.AST | None:
 
 def _is_fixture_decorator(decorator: ast.expr) -> bool:
     target = decorator.func if isinstance(decorator, ast.Call) else decorator
-    return isinstance(target, ast.Attribute) and target.attr == "fixture"
+    return (
+        isinstance(target, ast.Name)
+        and target.id == "fixture"
+        or isinstance(target, ast.Attribute)
+        and target.attr == "fixture"
+    )
 
 
-def _fixture_definitions(tree: ast.Module) -> tuple[dict[str, ast.AST], set[str]]:
+def _fixture_definitions(sources: Sequence[SourceModule]) -> tuple[dict[str, ast.AST], set[str]]:
     fixtures: dict[str, ast.AST] = {}
     autouse: set[str] = set()
-    for statement in tree.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        decorator = next(
-            (item for item in statement.decorator_list if _is_fixture_decorator(item)),
-            None,
-        )
-        if decorator is None:
-            continue
-        fixtures[statement.name] = statement
-        if isinstance(decorator, ast.Call) and any(
-            keyword.arg == "autouse"
-            and isinstance(keyword.value, ast.Constant)
-            and keyword.value.value is True
-            for keyword in decorator.keywords
-        ):
-            autouse.add(statement.name)
+    for source in sources:
+        for statement in source.tree.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            decorator = next(
+                (item for item in statement.decorator_list if _is_fixture_decorator(item)),
+                None,
+            )
+            if decorator is None:
+                continue
+            fixtures[statement.name] = statement
+            if isinstance(decorator, ast.Call) and any(
+                keyword.arg == "autouse"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in decorator.keywords
+            ):
+                autouse.add(statement.name)
     return fixtures, autouse
 
 
@@ -142,14 +220,105 @@ def _fixture_arguments(definition: ast.AST) -> set[str]:
     }
 
 
-def _live_reasons(tree: ast.Module, node_id: str) -> tuple[str, ...]:
-    definition = _definition(tree, node_id)
-    scope: list[ast.AST] = [item for item in tree.body if not isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))]
+def _pytest_plugins(tree: ast.Module) -> tuple[tuple[str, ...], bool]:
+    names: list[str] = []
+    unresolved = False
+    for statement in tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        if not any(isinstance(target, ast.Name) and target.id == "pytest_plugins" for target in targets):
+            continue
+        try:
+            value = ast.literal_eval(statement.value)
+        except ValueError:
+            unresolved = True
+            continue
+        candidates = (value,) if isinstance(value, str) else value
+        if not isinstance(candidates, (tuple, list)) or not all(isinstance(name, str) for name in candidates):
+            unresolved = True
+            continue
+        names.extend(candidates)
+    return tuple(names), unresolved
+
+
+def _local_plugin_path(repo_root: Path, plugin_name: str) -> Path | None:
+    if not _MODULE_NAME.fullmatch(plugin_name):
+        return None
+    candidate = (repo_root / Path(*plugin_name.split("."))).with_suffix(".py").resolve()
+    if repo_root not in candidate.parents or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _load_module(path: Path, cache: dict[Path, SourceModule]) -> SourceModule:
+    resolved = path.resolve()
+    if resolved not in cache:
+        cache[resolved] = SourceModule(
+            resolved,
+            ast.parse(resolved.read_text(encoding="utf-8"), filename=str(resolved)),
+        )
+    return cache[resolved]
+
+
+def _source_modules(
+    repo_root: Path, test_path: Path, cache: dict[Path, SourceModule]
+) -> tuple[tuple[SourceModule, ...], tuple[str, ...]]:
+    root = repo_root.resolve()
+    ancestors: list[SourceModule] = []
+    root_conftest = root / "conftest.py"
+    if root_conftest.is_file():
+        ancestors.append(_load_module(root_conftest, cache))
+
+    current = root
+    for part in test_path.resolve().parent.relative_to(root).parts:
+        current /= part
+        conftest = current / "conftest.py"
+        if conftest.is_file():
+            ancestors.append(_load_module(conftest, cache))
+    test_module = _load_module(test_path, cache)
+    plugins: list[SourceModule] = []
+    queue = [*ancestors, test_module]
+    unresolved: set[str] = set()
+    while queue:
+        source = queue.pop(0)
+        names, invalid = _pytest_plugins(source.tree)
+        if invalid:
+            unresolved.add("unresolved pytest plugin fixture dependency")
+        for name in names:
+            plugin_path = _local_plugin_path(root, name)
+            if plugin_path is None:
+                unresolved.add("unresolved pytest plugin fixture dependency")
+                continue
+            plugin = _load_module(plugin_path, cache)
+            if plugin not in plugins and plugin not in ancestors and plugin != test_module:
+                plugins.append(plugin)
+                queue.append(plugin)
+    return tuple((*ancestors, *plugins, test_module)), tuple(sorted(unresolved))
+
+
+def _module_scope(tree: ast.Module) -> list[ast.AST]:
+    return [
+        item
+        for item in tree.body
+        if not isinstance(item, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+
+
+def _live_reasons(
+    repo_root: Path,
+    test_path: Path,
+    test_tree: ast.Module,
+    node_id: str,
+    cache: dict[Path, SourceModule],
+) -> tuple[str, ...]:
+    sources, unresolved = _source_modules(repo_root, test_path, cache)
+    definition = _definition(test_tree, node_id)
+    scope = [node for source in sources for node in _module_scope(source.tree)]
+    reasons: set[str] = set(unresolved)
     if isinstance(definition, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-        # Decorators carry parametrized fixture source in our contract tests;
-        # only executable test/module bodies are subject to the primitive scan.
         scope.extend(definition.body)
-        fixtures, pending = _fixture_definitions(tree)
+        fixtures, pending = _fixture_definitions(sources)
         pending.update(_fixture_arguments(definition))
         scanned: set[str] = set()
         while pending:
@@ -160,53 +329,106 @@ def _live_reasons(tree: ast.Module, node_id: str) -> tuple[str, ...]:
             scanned.add(name)
             scope.extend(fixture.body)  # type: ignore[union-attr]
             pending.update(_fixture_arguments(fixture))
-    reasons: set[str] = set()
     for root in scope:
-      for node in ast.walk(root):
-        if isinstance(node, ast.Call):
-            name = _call_name(node)
-            if name == "home":
-                reasons.add("real home database path")
-            if name in {"call", "check_call", "check_output", "Popen", "run", "system", "execv", "execve", "create_subprocess_exec", "create_subprocess_shell"}:
-                argument = node.args[0] if node.args else next((kw.value for kw in node.keywords if kw.arg == "args"), None)
-                if argument is not None:
-                    command = _literal_command(argument)
-                    if command:
-                        try:
-                            executable = Path(shlex.split(command)[0]).name
-                        except (IndexError, ValueError):
-                            executable = ""
-                        if executable in _AUDIO_COMMANDS:
-                            reasons.add(f"unmocked audio or microphone binary: {executable}")
-                        if executable == "launchctl":
-                            reasons.add("unmocked launchctl invocation")
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and "\n" not in node.value:
-            if _TMP_DAN.search(node.value):
-                reasons.add("legacy /tmp/dan-* runtime path")
-            if _LIVE_PORT.search(node.value):
-                reasons.add("live DAN voice port 7788")
+        for node in ast.walk(root):
+            if isinstance(node, ast.Call):
+                name = _call_name(node)
+                if name == "home":
+                    reasons.add("real home database path")
+                if name in {
+                    "call",
+                    "check_call",
+                    "check_output",
+                    "Popen",
+                    "run",
+                    "system",
+                    "execv",
+                    "execve",
+                    "create_subprocess_exec",
+                    "create_subprocess_shell",
+                }:
+                    argument = node.args[0] if node.args else next(
+                        (keyword.value for keyword in node.keywords if keyword.arg == "args"),
+                        None,
+                    )
+                    if argument is not None:
+                        command = _literal_command(argument)
+                        if command:
+                            try:
+                                executable = Path(shlex.split(command)[0]).name
+                            except (IndexError, ValueError):
+                                executable = ""
+                            if executable in _AUDIO_COMMANDS:
+                                reasons.add(f"unmocked audio or microphone binary: {executable}")
+                            if executable == "launchctl":
+                                reasons.add("unmocked launchctl invocation")
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and "\n" not in node.value:
+                if _TMP_DAN.search(node.value):
+                    reasons.add("legacy /tmp/dan-* runtime path")
+                if _LIVE_PORT.search(node.value):
+                    reasons.add("live DAN voice port 7788")
     return tuple(sorted(reasons))
 
 
+def _controlled_python_paths() -> tuple[str, ...]:
+    paths = {
+        path
+        for key in ("purelib", "platlib")
+        if (path := sysconfig.get_path(key)) is not None
+    }
+    return tuple(sorted(paths))
+
+
+def _pytest_command(*arguments: str) -> list[str]:
+    bootstrap = (
+        "import sys; "
+        f"sys.path.extend({list(_controlled_python_paths())!r}); "
+        "import pytest; raise SystemExit(pytest.main(sys.argv[1:]))"
+    )
+    return [sys.executable, "-I", "-S", "-c", bootstrap, *arguments]
+
+
+def _collection_environment(env: Mapping[str, str] | None) -> dict[str, str]:
+    if env is not None:
+        return dict(env)
+    return {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "PYTHONNOUSERSITE": "1",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    }
+
+
 def collect_node_ids(repo_root: Path, *, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
-    completed = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q"], cwd=repo_root, env=dict(env) if env else None, check=False, capture_output=True, text=True)
+    completed = subprocess.run(
+        _pytest_command("--collect-only", "-q"),
+        cwd=repo_root,
+        env=_collection_environment(env),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
     if completed.returncode != 0:
         raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "pytest collection failed")
-    nodes = tuple(line.strip() for line in completed.stdout.splitlines() if _NODE_ID.fullmatch(line.strip()))
+    nodes: list[str] = []
+    for line in completed.stdout.splitlines():
+        node_id = line.strip()
+        try:
+            _node_parts(node_id)
+        except ValueError:
+            continue
+        nodes.append(node_id)
     if not nodes:
         raise RuntimeError("pytest collection returned no node IDs")
-    return nodes
+    return tuple(nodes)
 
 
 def classify_node_ids(repo_root: Path, node_ids: Sequence[str]) -> dict[str, SafetyClassification]:
-    cached: dict[Path, ast.Module] = {}
+    cached: dict[Path, SourceModule] = {}
     result: dict[str, SafetyClassification] = {}
     for node_id in node_ids:
         path = _node_file(repo_root, node_id)
-        if path not in cached:
-            cached[path] = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        tree = cached[path]
-        reasons = _live_reasons(tree, node_id)
+        tree = _load_module(path, cached).tree
+        reasons = _live_reasons(repo_root, path, tree, node_id, cached)
         marked = _explicit_manual(tree, node_id)
         safety: Safety = "live-manual" if marked or reasons else "isolated"
         result[node_id] = SafetyClassification(node_id, safety, reasons, marked)
@@ -214,9 +436,14 @@ def classify_node_ids(repo_root: Path, node_ids: Sequence[str]) -> dict[str, Saf
 
 
 def scan_node_ids(repo_root: Path, node_ids: Sequence[str]) -> list[str]:
-    """List unmarked direct live primitives; marker-only tests are intentional manual work."""
+    """List unmarked direct live primitives with sanitized node IDs only."""
     classified = classify_node_ids(repo_root, node_ids)
-    return sorted(f"{node}: {reason}" for node, row in classified.items() if row.reasons and not row.explicit_manual for reason in row.reasons)
+    return sorted(
+        f"{sanitize_node_id(node)}: {reason}"
+        for node, row in classified.items()
+        if row.reasons and not row.explicit_manual
+        for reason in row.reasons
+    )
 
 
 def scan_automatic_tests(repo_root: Path) -> list[str]:
@@ -232,9 +459,20 @@ def live_manual_node_ids(classified: Mapping[str, SafetyClassification]) -> tupl
 
 
 def test_environment(home: Path, runtime: Path, database: Path) -> dict[str, str]:
-    environment = dict(os.environ)
-    environment.update({"HOME": str(home), "XDG_CACHE_HOME": str(home / ".cache"), "XDG_CONFIG_HOME": str(home / ".config"), "XDG_DATA_HOME": str(home / ".local" / "share"), "XDG_RUNTIME_DIR": str(runtime), "TMPDIR": str(runtime), "DAN_RUNTIME_DIR": str(runtime), "DAN_DB_PATH": str(database), "JARVIS_DB_PATH": str(database), "DAN_TEST_MODE": "1", "DAN_DISABLE_AUDIO": "1", "DAN_DISABLE_MIC": "1"})
-    user_site = Path(site.getusersitepackages())
-    if user_site.is_dir():
-        environment["PYTHONPATH"] = os.pathsep.join(filter(None, (str(user_site), environment.get("PYTHONPATH", ""))))
-    return environment
+    return {
+        "HOME": str(home),
+        "PATH": os.environ.get("PATH", os.defpath),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "XDG_RUNTIME_DIR": str(runtime),
+        "TMPDIR": str(runtime),
+        "DAN_RUNTIME_DIR": str(runtime),
+        "DAN_DB_PATH": str(database),
+        "JARVIS_DB_PATH": str(database),
+        "DAN_TEST_MODE": "1",
+        "DAN_DISABLE_AUDIO": "1",
+        "DAN_DISABLE_MIC": "1",
+        "PYTHONNOUSERSITE": "1",
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    }
