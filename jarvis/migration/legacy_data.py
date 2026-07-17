@@ -509,9 +509,27 @@ def _equivalent_memory_block(
 def _normalized_json(value: Any) -> tuple[str, Any]:
     raw = _text(value)
     try:
-        return "json", json.loads(raw)
+        return "json", _canonical_json_value(json.loads(raw))
     except (json.JSONDecodeError, TypeError):
         return "raw", raw
+
+
+def _canonical_json_value(value: Any) -> tuple[Any, ...]:
+    if value is None:
+        return ("null",)
+    if isinstance(value, bool):
+        return "boolean", value
+    if isinstance(value, (int, float)):
+        return "number", value
+    if isinstance(value, str):
+        return "string", value
+    if isinstance(value, list):
+        return "array", tuple(_canonical_json_value(item) for item in value)
+    if isinstance(value, dict):
+        return "object", tuple(
+            (key, _canonical_json_value(item)) for key, item in sorted(value.items())
+        )
+    raise TypeError(f"unsupported JSON value: {type(value).__name__}")
 
 
 def _outcome_classes(

@@ -180,6 +180,97 @@ def test_same_title_and_body_only_merge_when_all_semantics_match(
     assert mapping == ("imported",)
 
 
+@pytest.mark.parametrize(
+    ("target_metadata", "source_metadata"),
+    [
+        ('{"flag":1}', '{"flag":true}'),
+        ('{"flag":0}', '{"flag":false}'),
+        (
+            '{"items":[{"flag":1},0]}',
+            '{"items":[{"flag":true},false]}',
+        ),
+    ],
+)
+def test_json_metadata_preserves_boolean_and_number_types_recursively(
+    tmp_path: Path,
+    target_metadata: str,
+    source_metadata: str,
+) -> None:
+    from jarvis.migration.legacy_data import migrate_databases
+
+    jarvis = _create_jarvis_fixture(tmp_path / "jarvis.db")
+    target_connection = sqlite3.connect(jarvis)
+    try:
+        target_connection.execute(
+            "UPDATE memory_blocks SET metadata_json = ? WHERE id = 'jarvis-existing'",
+            (target_metadata,),
+        )
+        target_connection.commit()
+    finally:
+        target_connection.close()
+
+    memory = _create_memory_fixture(tmp_path / "memory.db")
+    source_connection = sqlite3.connect(memory)
+    try:
+        source_connection.execute(
+            "UPDATE memory_blocks SET metadata = ? WHERE id = 'memory-2'",
+            (source_metadata,),
+        )
+        source_connection.commit()
+    finally:
+        source_connection.close()
+
+    target, report = migrate_databases(jarvis, memory, tmp_path / "dan.db")
+
+    assert (report.memory.imported, report.memory.merged, report.memory.rejected) == (7, 0, 0)
+    connection = sqlite3.connect(target)
+    try:
+        mapping = connection.execute(
+            "SELECT outcome FROM migration_record_map "
+            "WHERE source_table = 'memory_blocks' AND source_record_id = 'memory-2'"
+        ).fetchone()
+        imported_metadata = connection.execute(
+            "SELECT metadata_json FROM memory_blocks WHERE metadata_json LIKE ?",
+            ('%\"legacy_record_id\":\"memory-2\"%',),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert mapping == ("imported",)
+    assert imported_metadata is not None
+    assert json.loads(imported_metadata[0])["legacy_metadata"] == source_metadata
+
+
+def test_json_metadata_object_key_order_remains_semantically_equivalent(tmp_path: Path) -> None:
+    from jarvis.migration.legacy_data import migrate_databases
+
+    jarvis = _create_jarvis_fixture(tmp_path / "jarvis.db")
+    target_connection = sqlite3.connect(jarvis)
+    try:
+        target_connection.execute(
+            "UPDATE memory_blocks SET metadata_json = ? WHERE id = 'jarvis-existing'",
+            ('{"alpha":1,"nested":{"first":true,"second":[1,false]}}',),
+        )
+        target_connection.commit()
+    finally:
+        target_connection.close()
+
+    memory = _create_memory_fixture(tmp_path / "memory.db")
+    source_connection = sqlite3.connect(memory)
+    try:
+        source_connection.execute(
+            "UPDATE memory_blocks SET metadata = ? WHERE id = 'memory-2'",
+            ('{"nested":{"second":[1,false],"first":true},"alpha":1}',),
+        )
+        source_connection.commit()
+    finally:
+        source_connection.close()
+
+    _, report = migrate_databases(jarvis, memory, tmp_path / "dan.db")
+
+    assert (report.memory.imported, report.memory.merged, report.memory.rejected) == (6, 1, 0)
+
+
 def test_fractional_source_timestamps_preserve_microseconds(tmp_path: Path) -> None:
     from jarvis.migration.legacy_data import migrate_databases
 

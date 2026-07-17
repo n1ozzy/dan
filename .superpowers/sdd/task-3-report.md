@@ -1,6 +1,6 @@
 # Task 3 fix report
 
-Status: DONE_WITH_CONCERNS
+Status: DONE
 
 Base commit: `632c66a1e19ad08d3db5c46007ae56314421a3ce`
 
@@ -139,3 +139,46 @@ git diff --check
 - The gate proves migration of a real offline Jarvis schema/data snapshot and the current real legacy
   memory schema/data. It deliberately does not claim a migration rehearsal of the currently active
   live Jarvis database.
+
+## Fix 2: recursive JSON type preservation
+
+Re-review after `8b660e0` found one remaining Critical: `_normalized_json()` returned raw
+`json.loads()` structures, so Python equality treated JSON booleans as equal to numbers
+(`True == 1`, `False == 0`). This could falsely merge metadata and discard source semantics.
+
+RED regressions were added before the implementation change:
+
+- top-level object value `true` versus `1`;
+- top-level object value `false` versus `0`;
+- the same collisions nested recursively inside an object and array;
+- a positive guard proving reordered object keys remain semantically equivalent.
+
+```bash
+pytest -q tests/test_legacy_data_migration.py -k 'json_metadata'
+# RED: 3 failed, 1 passed, 12 deselected in 0.44s
+```
+
+The minimal fix canonicalizes every parsed JSON node recursively with an explicit type tag:
+`null`, `boolean`, `number`, `string`, `array`, or `object`. Boolean is checked before number;
+arrays retain order; objects become sorted key/canonical-value tuples. Therefore nested boolean and
+number values remain distinct while JSON object key order remains irrelevant.
+
+```bash
+pytest -q tests/test_legacy_data_migration.py -k 'json_metadata'
+# GREEN: 4 passed, 12 deselected in 0.41s
+
+pytest -q tests/test_sqlite_backup.py tests/test_legacy_data_migration.py \
+  tests/test_db_schema.py tests/test_daemon_db_concurrency.py
+# 45 passed in 2.33s
+
+python -m compileall -q jarvis/migration \
+  tests/test_sqlite_backup.py tests/test_legacy_data_migration.py
+# COMPILE_OK
+
+git diff --check
+# exit 0
+```
+
+Fix 2 changed only `jarvis/migration/legacy_data.py`,
+`tests/test_legacy_data_migration.py`, and this Task 3 report. Previously closed findings and Task 4
+were not modified.
