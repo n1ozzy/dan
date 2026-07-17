@@ -1,4 +1,4 @@
-# Jarvis Roadmap
+# DAN Roadmap
 
 Classification: planning.
 This document does not override code, tests, `AGENTS.md`, or project rules.
@@ -18,7 +18,7 @@ This document does not override code, tests, `AGENTS.md`, or project rules.
 ### Brain and text pipeline
 
 - Brain adapter interface.
-- Jarvis-owned ContextBuilder.
+- DAN-owned ContextBuilder.
 - Conversation and turn repositories.
 - Text turn pipeline.
 - CLI text input.

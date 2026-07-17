@@ -322,13 +322,17 @@ rg -n -i '\bjarvis\b|JARVIS_|\.jarvis|jarvisd|com\.ozzy\.jarvis' \
   dan config scripts launchd README.md CLAUDE.md docs/runbooks tests
 ```
 
-Result: 154 matching lines across the paths below. There are zero matches in
-active `config`, `scripts`, `launchd`, `README.md`, or `docs/runbooks` files.
+Result after the re-review corrections: 153 matching lines across the paths
+below. There are zero matches in active `config`, `scripts`, `launchd`, or
+`README.md` files. The one active-runbook match is the exact external operator
+source path documented below.
 Every remaining path has this explicit disposition:
 
-- Physical current dependency path: `CLAUDE.md` (1) names the real external
-  broker at `Documents/dev/dan/tools/jarvis/voice_broker.py`; renaming text
-  would make the operator command false.
+- Physical current dependency paths: `CLAUDE.md` (1) names the real external
+  broker at `Documents/dev/dan/tools/jarvis/voice_broker.py`, and
+  `docs/runbooks/G4_LIVE_GATE.md` (1) names the real operator source at
+  `Desktop/Jarvis/JARVIS-NEXT-STEPS-FOR-OZZY.md`; renaming either text would
+  make the operator command false.
 - Legacy diagnostics: `dan/diagnostics/legacy_dan.py` (16) and
   `tests/test_legacy_dan_report.py` (12) identify historical assets and the
   compatibility launcher by their real names.
@@ -349,10 +353,22 @@ Every remaining path has this explicit disposition:
   the legacy tool-call tag.
 - Negative product-contract assertions and legacy fixtures:
   `tests/test_imports.py` (3), `tests/test_launchd_assets.py` (2),
-  `tests/test_memory_compiler_contract.py` (4),
-  `tests/test_memory_contract.py` (1), `tests/test_scaffold_contracts.py` (7),
+  `tests/test_memory_contract.py` (1), `tests/test_scaffold_contracts.py` (9),
   and `tests/test_test_safety.py` (1). These matches either reject old active
   names or model old input that must remain detectable.
 
 The earlier 90-line inventory in this report is superseded by this broader,
 case-insensitive final inventory and its path-by-path dispositions.
+
+### Re-review minor closure
+
+- Active memory project contracts were renamed from `JARVIS_*.md` to
+  `DAN_*.md`; their product titles, package paths, daemon name, and config path
+  now use the final DAN surface. Historical handoffs not used as current
+  contracts remain explicitly historical.
+- The G4 live gate now points to the actual external operator source
+  `~/Desktop/Jarvis/JARVIS-NEXT-STEPS-FOR-OZZY.md`. Its exact legacy name is a
+  physical dependency exception, not a product rename leak.
+- Focused contract verification: `40 passed in 0.05s`.
+- Full collection remains exactly `2400 tests`; no node was added or removed by
+  the documentation corrections.

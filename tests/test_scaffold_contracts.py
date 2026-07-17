@@ -86,14 +86,19 @@ def test_active_docs_use_final_dan_product_names() -> None:
     active_docs = [ROOT / "README.md"]
     active_docs.extend(sorted((ROOT / "docs" / "runbooks").glob("*.md")))
     legacy = re.compile(r"\b(?:jarvis|Jarvis|JARVIS|DANv2)\b")
+    external_operator_source = "~/Desktop/Jarvis/JARVIS-NEXT-STEPS-FOR-OZZY.md"
 
     matches = {
-        str(path.relative_to(ROOT)): sorted(set(legacy.findall(path.read_text(encoding="utf-8"))))
+        str(path.relative_to(ROOT)): sorted(
+            set(legacy.findall(path.read_text(encoding="utf-8").replace(external_operator_source, "")))
+        )
         for path in active_docs
-        if legacy.search(path.read_text(encoding="utf-8"))
+        if legacy.search(path.read_text(encoding="utf-8").replace(external_operator_source, ""))
     }
 
     assert matches == {}
+    gate = (ROOT / "docs" / "runbooks" / "G4_LIVE_GATE.md").read_text(encoding="utf-8")
+    assert "~/Desktop/Jarvis/JARVIS-NEXT-STEPS-FOR-OZZY.md" in gate
 
 
 def test_claude_agent_contract_uses_final_runtime_names() -> None:

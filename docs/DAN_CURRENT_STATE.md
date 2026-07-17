@@ -1,4 +1,4 @@
-# Jarvis Current State
+# DAN Current State
 
 Classification: current handoff.
 Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `58cca12 docs: finalize Memory OS rollout handoff` in the local checkout.
@@ -6,7 +6,7 @@ Public reference: `https://github.com/n1ozzy/jarvis` public `main`, used only as
 
 ## Overview
 
-Jarvis is a local, single-user runtime centered on `jarvisd`. The daemon owns durable truth: conversations, turns, events, memory, approvals, tool runs, worker jobs, voice queue, listening leases, settings, and runtime state. UI surfaces such as the panel or cockpit are clients only.
+DAN is a local, single-user runtime centered on `dand`. The daemon owns durable truth: conversations, turns, events, memory, approvals, tool runs, worker jobs, voice queue, listening leases, settings, and runtime state. UI surfaces such as the panel or cockpit are clients only.
 
 The active local branch is not public `main`. The branch under review is `rescue/audt-gpt5.5pro-limit-cdn`. The branch contains the Memory OS rollout line after the v4.2 runtime work.
 
@@ -27,7 +27,7 @@ The active local branch is not public `main`. The branch under review is `rescue
 - HTTP daemon API exists.
 - Runtime supervisor endpoints exist.
 - Brain adapter interface exists.
-- Jarvis-owned context builder exists.
+- DAN-owned context builder exists.
 - Conversation and turn repositories exist.
 - Text turn pipeline exists.
 - CLI text input exists.
@@ -81,7 +81,7 @@ Runtime/config/ContextBuilder/test work is complete through session/profile scop
 
 ### Core runtime
 
-- `jarvisd` daemon startup through scripts and package entry point.
+- `dand` daemon startup through scripts and package entry point.
 - Local API routes for health, runtime, state, settings, history, input, brain, tools, approvals, workers, memory, audio, and voice.
 - Event store and event bus.
 - Conversation and turn persistence.
@@ -138,9 +138,9 @@ Runtime/config/ContextBuilder/test work is complete through session/profile scop
 - Session/profile scoped enablement and request-scoped override support exist as internal-only wiring and do not persist a public user setting.
 - No env, panel, public API, user-facing, or global production enablement exists for compiled memory.
 - Provider CLI adapters are configured disabled by default unless enabled in config.
-- Voice is configured disabled by default in `config/jarvis.example.toml`, but enabled in local development with M2 voice and clean mastering profile.
+- Voice is configured disabled by default in `config/dan.example.toml`, but enabled in local development with M2 voice and clean mastering profile.
 - Launchd auto-install is disabled by default.
-- Destructive tools are disabled by default in `config/jarvis.example.toml`, but enabled in local development.
+- Destructive tools are disabled by default in `config/dan.example.toml`, but enabled in local development.
 - Network access through tools requires explicit approval by default, but is enabled without approval in local development.
 
 ## Not implemented yet
@@ -168,7 +168,7 @@ Runtime/config/ContextBuilder/test work is complete through session/profile scop
 
 Current safety posture is conservative in default configuration; local development configuration is permissive (destructive tools and network enabled, auto-approval for all operations).
 
-- Jarvis-owned state is assembled from DB/config/request data.
+- DAN-owned state is assembled from DB/config/request data.
 - Provider sessions are not memory.
 - Model-originated tool calls pass through permission policy and approval.
 - Model-originated memory writes become candidates, not hidden active facts.

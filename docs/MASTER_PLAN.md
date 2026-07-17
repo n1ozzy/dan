@@ -189,7 +189,7 @@ Uwaga operacyjna: legacy DAN **nadal działa** na tym Macu (voice_broker.py,
 auto_jarvis.py, listen_ozzy.py loop + com.dan.voice-broker.plist w LaunchAgents,
 stan na 2026-07-02). Zgodnie z ADR-013 nie ubijamy automatycznie. **Warunek
 wejścia w FAZĘ G: Ozzy ręcznie wygasza legacy runtime** (komendy w
-`~/Desktop/JARVIS-NEXT-STEPS-FOR-OZZY.md` §5) — inaczej dwa systemy będą się
+`~/Desktop/Jarvis/JARVIS-NEXT-STEPS-FOR-OZZY.md` §5) — inaczej dwa systemy będą się
 gryźć o mikrofon i głośnik.
 
 ---

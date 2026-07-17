@@ -13,7 +13,7 @@ testowane na mockach — progi bramki energii (`stt_min_*`), filtr śmieci,
 ## 0. Warunki wstępne (bez nich nie startować)
 
 - [ ] **Legacy DAN wygaszony ręcznie** (MASTER_PLAN §4a, uwaga operacyjna;
-      komendy w `~/Desktop/DAN-NEXT-STEPS-FOR-OZZY.md` §5). Dwa systemy
+      komendy w `~/Desktop/Jarvis/JARVIS-NEXT-STEPS-FOR-OZZY.md` §5). Dwa systemy
       będą się gryźć o mikrofon i głośnik — sprawdź
       `launchctl list | grep dan` i `GET /runtime/processes`.
 - [ ] `pytest` zielony i **22/22 smoke** PASS na HEAD, z którego startujesz.

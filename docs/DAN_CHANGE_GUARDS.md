@@ -1,4 +1,4 @@
-# Jarvis Change Guards
+# DAN Change Guards
 
 Classification: operational guard catalogue.
 
@@ -28,7 +28,7 @@ git diff --check
 Use when schema is forbidden.
 
 ```sh
-git diff --name-only | grep -E '^jarvis/store/schema.sql|^jarvis/store/migrations.py' \
+git diff --name-only | grep -E '^dan/store/schema.sql|^dan/store/migrations.py' \
   && echo "ERROR: schema/migrations changed unexpectedly" && exit 1 || true
 ```
 
@@ -37,28 +37,28 @@ git diff --name-only | grep -E '^jarvis/store/schema.sql|^jarvis/store/migration
 Use when preview/API routes are forbidden.
 
 ```sh
-git diff --name-only | grep -E '^jarvis/api/' \
+git diff --name-only | grep -E '^dan/api/' \
   && echo "ERROR: API files changed unexpectedly" && exit 1 || true
 ```
 
 For MemoryCompiler preview-only protection:
 
 ```sh
-git diff --name-only | grep -E '^jarvis/api/routes_memory.py' \
+git diff --name-only | grep -E '^dan/api/routes_memory.py' \
   && echo "ERROR: memory API changed unexpectedly" && exit 1 || true
 ```
 
 ## Runtime/config/CI guard
 
 ```sh
-git diff --name-only | grep -E '^jarvis/(daemon|runtime|tools|voice|panel)/|^config/|^\.github/|^scripts/|^launchd/' \
+git diff --name-only | grep -E '^dan/(daemon|runtime|tools|voice|panel)/|^config/|^\.github/|^scripts/|^launchd/' \
   && echo "ERROR: runtime/config/CI files changed unexpectedly" && exit 1 || true
 ```
 
 ## Provider guard
 
 ```sh
-git diff --name-only | grep -E '^jarvis/brain/(claude|codex|openai|.*adapter)' \
+git diff --name-only | grep -E '^dan/brain/(claude|codex|openai|.*adapter)' \
   && echo "ERROR: provider adapter changed unexpectedly" && exit 1 || true
 ```
 
@@ -76,7 +76,7 @@ git diff --name-only | grep -E '^docs/|^README.md|^AGENTS.md|^FIXME.md' \
 Use for docs-only tasks.
 
 ```sh
-git diff --name-only | grep -E '^(jarvis/|tests/|config/|\.github/|scripts/|launchd/|README.md|pyproject.toml|package|.*lock)' \
+git diff --name-only | grep -E '^(dan/|tests/|config/|\.github/|scripts/|launchd/|README.md|pyproject.toml|package|.*lock)' \
   && echo "ERROR: non-docs files changed unexpectedly" && exit 1 || true
 ```
 
@@ -94,7 +94,7 @@ git diff --name-only | grep -vE '^tests/' \
 Use when ContextBuilder or tests may change but storage/API/compiler must not.
 
 ```sh
-git diff --name-only | grep -E '^jarvis/store/|^jarvis/api/routes_memory.py|^jarvis/memory/compiler.py' \
+git diff --name-only | grep -E '^dan/store/|^dan/api/routes_memory.py|^dan/memory/compiler.py' \
   && echo "ERROR: storage/API/compiler changed unexpectedly" && exit 1 || true
 ```
 
@@ -104,8 +104,8 @@ git diff --name-only | grep -E '^jarvis/store/|^jarvis/api/routes_memory.py|^jar
 
 Allowed:
 
-- `jarvis/store/schema.sql`
-- `jarvis/store/migrations.py`
+- `dan/store/schema.sql`
+- `dan/store/migrations.py`
 - schema tests
 - docs only if explicitly scoped
 
@@ -120,7 +120,7 @@ Forbidden by default:
 
 Allowed by explicit scope only:
 
-- `jarvis/memory/compiler.py`
+- `dan/memory/compiler.py`
 - `tests/test_memory_compiler*.py`
 - small fixture updates
 
@@ -137,7 +137,7 @@ Forbidden by default:
 
 Allowed by explicit scope only:
 
-- `jarvis/brain/context_builder.py`
+- `dan/brain/context_builder.py`
 - `tests/test_context_builder.py`
 - `tests/test_memory_compiler_wire.py`
 
@@ -169,7 +169,7 @@ Forbidden by default:
 Use this guard set unless the task gives a stricter one:
 
 ```sh
-git diff --name-only | grep -E '^jarvis/brain/context_builder.py|^jarvis/memory/compiler.py|^jarvis/store/|^jarvis/api/|^config/|^jarvis/(tools|voice|panel)/|^jarvis/brain/provider|^\.github/|^scripts/|^launchd/|^README.md' \
+git diff --name-only | grep -E '^dan/brain/context_builder.py|^dan/memory/compiler.py|^dan/store/|^dan/api/|^config/|^dan/(tools|voice|panel)/|^dan/brain/provider|^\.github/|^scripts/|^launchd/|^README.md' \
   && echo "ERROR: compiled memory policy boundary changed unexpectedly" && exit 1 || true
 ```
 
@@ -177,8 +177,8 @@ git diff --name-only | grep -E '^jarvis/brain/context_builder.py|^jarvis/memory/
 
 Allowed by explicit scope only:
 
-- `jarvis/daemon/`
-- `jarvis/runtime/`
+- `dan/daemon/`
+- `dan/runtime/`
 - selected API smoke tests
 
 Forbidden by default:
@@ -192,7 +192,7 @@ Forbidden by default:
 
 Allowed by explicit scope only:
 
-- `jarvis/api/routes_memory.py`
+- `dan/api/routes_memory.py`
 - daemon route registration if required
 - preview API tests
 
@@ -206,8 +206,8 @@ Forbidden by default:
 
 Allowed by explicit scope only:
 
-- `jarvis/voice/`
-- `jarvis/audio/`
+- `dan/voice/`
+- `dan/audio/`
 - voice tests
 - voice runbooks if scoped
 
@@ -222,7 +222,7 @@ Forbidden by default:
 
 Allowed by explicit scope only:
 
-- `jarvis/panel/`
+- `dan/panel/`
 - panel assets/tests
 
 Forbidden by default:

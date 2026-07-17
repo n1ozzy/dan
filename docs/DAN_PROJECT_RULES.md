@@ -1,4 +1,4 @@
-# Jarvis Project Rules
+# DAN Project Rules
 
 Classification: authoritative project rules proposed for this branch.
 This document is stricter than a roadmap. It defines how work must be done.
@@ -162,18 +162,18 @@ Examples:
 - No raw evidence, observations, IDs, skipped items, diagnostics internals, compiler internals, or secrets in prompt-visible memory.
 - No writes during context build.
 - No bypassing MemoryCompiler governance exclusions.
-- Provider sessions are not Jarvis memory.
+- Provider sessions are not DAN memory.
 - Workers cannot commit facts or speak.
 - Panel cannot own canonical state.
 - `/tmp` cannot be source of truth.
 
 ## What never changes casually
 
-- `jarvis/store/schema.sql`
-- `jarvis/store/migrations.py`
-- transport security in `jarvis/daemon/lifecycle.py`
-- permission policy in `jarvis/tools/permissions.py`
-- approval execution path in `jarvis/tools/registry.py`
+- `dan/store/schema.sql`
+- `dan/store/migrations.py`
+- transport security in `dan/daemon/lifecycle.py`
+- permission policy in `dan/tools/permissions.py`
+- approval execution path in `dan/tools/registry.py`
 - ContextBuilder prompt-visible output
 - compiled memory enablement precedence
 - compiled memory force-disable / kill-switch precedence
