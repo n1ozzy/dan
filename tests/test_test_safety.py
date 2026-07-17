@@ -14,6 +14,9 @@ from types import ModuleType
 import pytest
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 @pytest.fixture
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -434,6 +437,54 @@ def test_compare_accepts_known_failures_and_current_collection_delta(
     assert current["collected"] == 2
 
 
+@pytest.mark.parametrize(
+    "conflicting_args",
+    (
+        ("--verify-report", "{report}", "--compare", "{report}"),
+        ("--compare-reports", "{report}", "{report}", "--compare", "{report}"),
+        (
+            "--verify-report",
+            "{report}",
+            "--compare-reports",
+            "{report}",
+            "{report}",
+        ),
+        ("--verify-report", "{report}", "--expect-collected", "1"),
+        ("--verify-report", "{report}", "--compare-report", "{output}"),
+        (
+            "--compare-reports",
+            "{report}",
+            "{report}",
+            "--compare-report",
+            "{output}",
+        ),
+    ),
+)
+def test_cli_rejects_conflicting_operational_modes_before_shortcuts(
+    tmp_path: Path,
+    conflicting_args: tuple[str, ...],
+) -> None:
+    report = tmp_path / "baseline.json"
+    report.write_text(json.dumps(_valid_report()), encoding="utf-8")
+    report.chmod(0o600)
+    output = tmp_path / "comparison.json"
+    argv = [argument.format(report=report, output=output) for argument in conflicting_args]
+
+    completed = subprocess.run(
+        [sys.executable, "scripts/dan-test-baseline", *argv],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert (
+        "not allowed with argument" in completed.stderr
+        or "require a baseline run" in completed.stderr
+    )
+
+
 def test_baseline_refuses_collection_mismatch_before_pytest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -466,6 +517,8 @@ def test_test_environment_is_minimal_and_blocks_ambient_python_state(
     assert environment["PYTHONNOUSERSITE"] == "1"
     assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
     assert environment["PATH"] == "/private/controlled-toolchain"
+    assert environment["DAN_DB_PATH"] == str(tmp_path / "state" / "dan.db")
+    assert "JARVIS_DB_PATH" not in environment
     assert "PYTHONPATH" not in environment
     assert "PYTHONUSERBASE" not in environment
     assert "UNRELATED_SECRET" not in environment

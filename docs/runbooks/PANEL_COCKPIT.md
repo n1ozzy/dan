@@ -1,6 +1,6 @@
 # Static Panel Cockpit
 
-This cockpit is a static development view for inspecting a local Jarvis v4.1
+This cockpit is a static development view for inspecting a local DAN v4.1
 daemon. It is not the final macOS MenuBar panel, and it is not a source of truth.
 The daemon owns state; the page renders daemon responses and sends only
 explicit user intents to existing localhost API routes.
@@ -11,7 +11,7 @@ For browser development, serve the static cockpit from the fixed local
 development origin:
 
 ```bash
-cd jarvis/panel/assets
+cd dan/panel/assets
 python3 -m http.server 41800
 ```
 
@@ -21,7 +21,7 @@ Then open:
 http://127.0.0.1:41800
 ```
 
-Opening `jarvis/panel/assets/index.html` directly is also supported for manual
+Opening `dan/panel/assets/index.html` directly is also supported for manual
 inspection. Browsers send that as `Origin: null`, which the local daemon accepts
 only for this static cockpit development path.
 
@@ -35,7 +35,7 @@ http://127.0.0.1:<daemon-port>
 
 A bare value such as `127.0.0.1:<daemon-port>` is invalid in the browser. It is
 treated as a relative URL and will hit the static cockpit server instead of the
-Jarvis daemon.
+DAN daemon.
 
 ## Start A Temporary Daemon
 
@@ -47,7 +47,7 @@ scripts/smoke-tools-approvals.sh
 scripts/smoke-memory-runtime.sh
 ```
 
-For normal local development, start `jarvisd` through the existing CLI/runtime
+For normal local development, start `dand` through the existing CLI/runtime
 entry point for this repo and then open the static file above. The cockpit does
 not start, stop, supervise, or clean up any process.
 
@@ -84,7 +84,7 @@ not start, stop, supervise, or clean up any process.
 - History: lists conversations from `GET /conversations` (titled from the
   first turn's `input_text`, fetched once per conversation with
   `GET /turns?...&limit=1` and cached) and renders the selected conversation
-  as a chat: user bubbles from `input_text`, Jarvis bubbles from `final_text`,
+  as a chat: user bubbles from `input_text`, DAN bubbles from `final_text`,
   source/status/relative-time meta per turn. Timestamps render as relative
   labels ("2 min temu") with the full date in the tooltip.
 - Memory: lists active blocks from `GET /memory?active_only=true`, creates a
@@ -118,9 +118,9 @@ the state pill on `state.changed`, and triggers a pending-approvals re-fetch
 on `approval.*`/`tool.*` events. All approvals and actions still go through
 the existing POST endpoints — the socket never carries a mutation.
 
-Browsers cannot set `X-Jarvis-Token` on a WebSocket handshake, so the token
-from local storage rides along as a `jarvis-token.<token>` subprotocol entry
-next to `jarvis.v1`. When `security.api_token_required` is on (default) and
+Browsers cannot set `X-DAN-Token` on a WebSocket handshake, so the token
+from local storage rides along as a `dan-token.<token>` subprotocol entry
+next to `dan.v1`. When `security.api_token_required` is on (default) and
 no token is stored yet, the stream shows `stream off (token?)` — perform any
 mutating action once (the cockpit prompts for the token) and the stream
 reconnects with it. Streamed `tool.finished` events never include the bulk
@@ -157,7 +157,7 @@ needs proper transport protection and request authorization.
 - Daemon offline: verify the daemon is running and that the Base field matches
   the daemon host and port.
 - Browser dev CORS: serve the cockpit with `python3 -m http.server 41800` from
-  `jarvis/panel/assets`, then open `http://127.0.0.1:41800`.
+  `dan/panel/assets`, then open `http://127.0.0.1:41800`.
 - Wrong API base shape: include `http://` in the Base field. Bare
   `127.0.0.1:<port>` is a relative URL, not a daemon URL.
 - CORS or local file fetch errors: use the same localhost API base that the

@@ -253,4 +253,6 @@ class TestLauncher:
         text = launcher.read_text(encoding="utf-8")
 
         assert "dan.diagnostics.legacy_dan" in text
+        assert "DAN_REPO" in text
+        assert "JARVIS_REPO" not in text
         assert launcher.stat().st_mode & stat.S_IXUSR

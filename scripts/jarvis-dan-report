@@ -5,11 +5,11 @@
 # decision list. Never deletes, stops, or unloads anything.
 set -eu
 
-if [ -z "${JARVIS_REPO:-}" ]; then
-  JARVIS_REPO="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -z "${DAN_REPO:-}" ]; then
+  DAN_REPO="$(cd "$(dirname "$0")/.." && pwd)"
 fi
 
-PYTHON="$JARVIS_REPO/.venv/bin/python"
+PYTHON="$DAN_REPO/.venv/bin/python"
 if [ ! -x "$PYTHON" ]; then
   PYTHON="$(command -v python3)"
 fi

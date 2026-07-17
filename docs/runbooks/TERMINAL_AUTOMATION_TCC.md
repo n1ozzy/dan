@@ -3,7 +3,7 @@
 FAZA D5 ships the terminal operator tools (`terminal_read_screen`,
 `terminal_paste`). The `osascript` backend talks to Terminal.app / iTerm2
 with fixed AppleScript, which works only when TCC grants the process
-hosting jarvisd the **Automation (Apple Events)** permission *for each
+hosting dand the **Automation (Apple Events)** permission *for each
 target app*. Without the grant nothing crashes: every call fails cleanly
 (osascript error `-1743`) with a pointer to this runbook, and the daemon
 keeps running.
@@ -11,12 +11,12 @@ keeps running.
 ## 1. Which process needs the grant
 
 Automation grants are per **(host app → target app)** pair. The host is
-the responsible application of the process running jarvisd — same
+the responsible application of the process running dand — same
 responsibility rule as Accessibility ([ACCESSIBILITY_TCC.md](ACCESSIBILITY_TCC.md))
 and Screen Recording ([SCREEN_RECORDING_TCC.md](SCREEN_RECORDING_TCC.md)),
 and none of the three grants implies another:
 
-- **Dev runs from a terminal** (`scripts/jarvisd`, `python -m jarvis.cli …
+- **Dev runs from a terminal** (`scripts/dand`, `python -m dan.cli …
   daemon run`): the host is the terminal app / IDE hosting the shell.
 - **launchd runs** (FAZA F2): the host is the binary launchd executes —
   the venv `python3` under the repo's `.venv`.
@@ -35,7 +35,7 @@ target app. So:
 3. Review or revoke later under System Settings → Privacy & Security →
    **Automation** (host app → toggles per target).
 
-Restart jarvisd after changing grants (TCC applies to freshly started
+Restart dand after changing grants (TCC applies to freshly started
 processes).
 
 **Known trap (D4 lesson, runbook §4 of SCREEN_RECORDING_TCC.md):** when
@@ -54,8 +54,8 @@ timed out"); answer the dialog — or find who swallowed it — and re-run.
 ## 3. Verifying — the probe
 
 ```bash
-.venv/bin/python -m jarvis.macos.terminal            # first running supported app
-.venv/bin/python -m jarvis.macos.terminal iTerm2     # explicit target
+.venv/bin/python -m dan.macos.terminal            # first running supported app
+.venv/bin/python -m dan.macos.terminal iTerm2     # explicit target
 ```
 
 - **exit 0** — granted; reads the target's front session and prints a

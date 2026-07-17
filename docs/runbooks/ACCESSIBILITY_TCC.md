@@ -4,7 +4,7 @@ FAZA D1 ships the read-only Accessibility tools (`ui_active_app`,
 `ui_read_window`); FAZA D2 adds the action tools (`ui_click`, `ui_type`,
 `ui_focus_app`) — one and the same **Accessibility** grant covers both.
 The real `ax` backend talks to AXUIElement and works only
-when the process hosting jarvisd holds the Accessibility grant in TCC.
+when the process hosting dand holds the Accessibility grant in TCC.
 Without the grant nothing crashes: every read fails cleanly with a pointer to
 this runbook, and the daemon keeps running.
 
@@ -13,7 +13,7 @@ this runbook, and the daemon keeps running.
 TCC attributes the grant to the *responsible application*, not to the Python
 interpreter path:
 
-- **Dev runs from a terminal** (`scripts/jarvisd`, `python -m jarvis.cli …
+- **Dev runs from a terminal** (`scripts/dand`, `python -m dan.cli …
   daemon run`): grant Accessibility to the terminal app (iTerm2 / Terminal /
   the IDE hosting the shell).
 - **launchd runs** (FAZA F2): grant Accessibility to the binary launchd
@@ -21,7 +21,7 @@ interpreter path:
   prompt for it after the first denied AX call; you can also add it manually.
 
 Per **ADR-014** all runtime artifacts (logs, pid, api-token, DB by default)
-live under `~/.jarvis`, never `~/Documents` — the launchd agent must not
+live under `~/.dan`, never `~/Documents` — the launchd agent must not
 trip the `~/Documents` TCC sandbox on top of the Accessibility grant.
 
 ## 2. Granting
@@ -29,12 +29,12 @@ trip the `~/Documents` TCC sandbox on top of the Accessibility grant.
 1. System Settings → Privacy & Security → **Accessibility**.
 2. Add (or enable) the responsible app from §1. Use the `+` button and pick
    the app/binary if it is not listed yet.
-3. Restart jarvisd (TCC grants apply to freshly started processes).
+3. Restart dand (TCC grants apply to freshly started processes).
 
 ## 3. Verifying — the probe
 
 ```bash
-.venv/bin/python -m jarvis.macos.accessibility
+.venv/bin/python -m dan.macos.accessibility
 ```
 
 - **exit 0** — trusted; prints a sanitized JSON snapshot of the frontmost

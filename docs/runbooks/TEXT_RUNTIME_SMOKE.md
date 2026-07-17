@@ -1,6 +1,6 @@
 # Text Runtime Smoke
 
-This runbook covers the manual text-only smoke for Jarvis v4.1:
+This runbook covers the manual text-only smoke for DAN v4.1:
 
 ```bash
 scripts/smoke-text-runtime.sh
@@ -14,14 +14,14 @@ SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-text-runtime.sh
 
 ## What It Proves
 
-- A temporary `jarvisd` can start from a temporary config.
+- A temporary `dand` can start from a temporary config.
 - The CLI can send text through `POST /input/text`.
-- The mock brain returns a `Jarvis mock response`.
+- The mock brain returns a `DAN mock response`.
 - CLI conversation history shows the created conversation.
 - CLI turn history shows the created turn.
 - Events are visible through `events after`.
 - The smoke uses a temporary DB and temporary runtime under its smoke directory.
-- The smoke does not touch real ~/.jarvis.
+- The smoke does not touch real ~/.dan.
 - The smoke stops only the daemon child process it started.
 
 ## What It Does Not Test
@@ -38,11 +38,11 @@ SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-text-runtime.sh
 
 With `SMOKE_KEEP_ARTIFACTS=1`, the script prints the smoke directory and leaves it in place. Inspect:
 
-- `jarvis-smoke.toml` for the temporary config.
-- `home/jarvis.db` for the temporary SQLite database.
+- `dan-smoke.toml` for the temporary config.
+- `home/dan.db` for the temporary SQLite database.
 - `logs/` and `runtime/` for temporary runtime paths.
 - `input.json`, `conversations.json`, `turns.json`, and `events.json` for CLI responses.
-- `jarvisd.log` for daemon output.
+- `dand.log` for daemon output.
 
 Without `SMOKE_KEEP_ARTIFACTS=1`, the script removes only its own temporary smoke directory.
 
@@ -50,7 +50,7 @@ Without `SMOKE_KEEP_ARTIFACTS=1`, the script removes only its own temporary smok
 
 - Port already in use: the fixed smoke port `127.0.0.1:41749` is occupied.
 - `.venv` missing: the script falls back to `python3`; create the venv if dependencies are not available there.
-- Daemon health timeout: inspect `jarvisd.log` in a kept smoke directory.
+- Daemon health timeout: inspect `dand.log` in a kept smoke directory.
 - Permission denied on script: run `chmod +x scripts/smoke-text-runtime.sh`.
 
 Reminder: this is a text-only mock brain smoke.

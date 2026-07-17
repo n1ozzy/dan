@@ -13,7 +13,7 @@ testowane na mockach — progi bramki energii (`stt_min_*`), filtr śmieci,
 ## 0. Warunki wstępne (bez nich nie startować)
 
 - [ ] **Legacy DAN wygaszony ręcznie** (MASTER_PLAN §4a, uwaga operacyjna;
-      komendy w `~/Desktop/JARVIS-NEXT-STEPS-FOR-OZZY.md` §5). Dwa systemy
+      komendy w `~/Desktop/DAN-NEXT-STEPS-FOR-OZZY.md` §5). Dwa systemy
       będą się gryźć o mikrofon i głośnik — sprawdź
       `launchctl list | grep dan` i `GET /runtime/processes`.
 - [ ] `pytest` zielony i **22/22 smoke** PASS na HEAD, z którego startujesz.
@@ -26,12 +26,12 @@ testowane na mockach — progi bramki energii (`stt_min_*`), filtr śmieci,
       `supertonic` i `sox`/`play` w venv/PATH — daemon i tak zabije się na
       starcie, jeśli czegoś brakuje (fail-closed, to jest oczekiwane).
 
-## 1. Realna transkrypcja (ja mówię — Jarvis transkrybuje)
+## 1. Realna transkrypcja (ja mówię — DAN transkrybuje)
 
 - [ ] PTT down (`POST /voice/ptt/down`) → powiedz po polsku jedno pełne
       zdanie → PTT up. Sprawdź w eventach dokładnie **jeden**
       `input.voice.transcribed` z sensownym `text`, `rms`, `voiced_seconds`.
-- [ ] Transkrypt stał się **jednym** turnem `source="voice"` i Jarvis
+- [ ] Transkrypt stał się **jednym** turnem `source="voice"` i DAN
       odpowiedział głosem (rows w `voice_queue` → `done`).
 - [ ] Odpowiedź zaczyna grać szybko (cel: pierwszy dźwięk ≤ ~2 s od
       `brain.requested`; streaming zdaniami z G4d + filler ma to dawać).
@@ -67,7 +67,7 @@ Kręć jednym pokrętłem naraz; po każdej zmianie config → restart daemona
 
 ## 4. Anti-echo na żywo (echo własnego TTS ≠ turn)
 
-- [ ] Zadaj pytanie, na które Jarvis odpowie długo. W trakcie jego mowy
+- [ ] Zadaj pytanie, na które DAN odpowie długo. W trakcie jego mowy
       trzymaj PTT przy głośniku tak, by mikrofon zbierał **jego własny głos**.
       Ma NIE powstać żaden nowy turn (event `input.voice.transcribed` może
       być — bramka anti-echo tnie dalej; w logu `transcript rejected as echo`).
@@ -80,10 +80,10 @@ Kręć jednym pokrętłem naraz; po każdej zmianie config → restart daemona
 
 ## 5. Barge-in na żywo (3 nogi z VOICE_STREAMING §7)
 
-- [ ] Jarvis mówi długą odpowiedź → PTT i powiedz **coś innego** niż on.
+- [ ] DAN mówi długą odpowiedź → PTT i powiedz **coś innego** niż on.
       Oczekiwane, w tej kolejności: generacja ubita (jeśli jeszcze trwała),
       wiersze kolejki `cancelled` (+ eventy `voice.speak.cancelled`),
-      playback ucichł natychmiast (kill procesu `play`), po czym Jarvis
+      playback ucichł natychmiast (kill procesu `play`), po czym DAN
       podejmuje TWÓJ nowy temat jako nowy turn `source="voice"`.
 - [ ] Idempotencja w praktyce: dwa szybkie barge-iny pod rząd nie wywalają
       daemona i nie zostawiają wiszącego audio.

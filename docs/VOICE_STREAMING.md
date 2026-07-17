@@ -1,4 +1,4 @@
-# Jarvis v4.2 — Voice Sentence-Streaming Contract (G0)
+# DAN v4.2 — Voice Sentence-Streaming Contract (G0)
 
 Status: DESIGN (G0, docs-only). This document is the contract that G3 (TTS
 broker + queue) and G4 (STT/anti-echo/barge-in) implement. It changes **no
@@ -23,7 +23,7 @@ breaking any frozen contract:
 - `BrainResponse.text` stays **canonical** (CONTRACTS §5 already allows
   "may stream in deltas; final text is canonical" — G0 exploits that
   allowance instead of amending the contract).
-- jarvisd owns truth; adapters stay stateless; **only the broker speaks**
+- dand owns truth; adapters stay stateless; **only the broker speaks**
   (ADR-005). The model never gains any new authority.
 
 ## 2. Adapter surface: optional `on_delta`
@@ -51,10 +51,10 @@ def generate(self, request: BrainRequest, *, on_delta=None) -> BrainResponse
 Claude CLI (`--output-format stream-json`) and Codex CLI streaming arrive
 with G3/G4; G0 only fixes the shape they must fit.
 
-## 3. SentenceChunker (jarvisd-owned, deterministic)
+## 3. SentenceChunker (dand-owned, deterministic)
 
-A pure, deterministic state machine living in jarvisd (module planned as
-`jarvis/voice/chunker.py` in G3) — not in the adapter (adapters stay dumb
+A pure, deterministic state machine living in dand (module planned as
+`dan/voice/chunker.py` in G3) — not in the adapter (adapters stay dumb
 pipes) and not in the broker (the broker only plays what is queued):
 
 - Input: a sequence of delta strings (or one final string). Output: a
@@ -71,24 +71,27 @@ pipes) and not in the broker (the broker only plays what is queued):
 
 ## 4. Tool-call safety on a stream (fail-closed)
 
-`<jarvis_tool_call>` blocks flow **inside** model text. On a stream they can
-arrive split across deltas. The rule is **fail-closed hold**:
+Canonical `<dan_tool_call>` blocks flow **inside** model text. The legacy
+`<jarvis_tool_call>` form is accepted as input compatibility but is never
+emitted. On a stream either form can arrive split across deltas. The rule is
+**fail-closed hold**:
 
 - The moment the chunker's buffer tail could be the beginning of
-  `<jarvis_tool_call>` (any prefix of the tag), sentence emission **holds**:
+  either tool-call tag (any prefix of either tag), sentence emission **holds**:
   nothing from the suspicious point onward is emitted until the buffer
   resolves the suspicion (it was ordinary text) or completes the block.
 - A completed tool-call block is **never spoken** and never lands in a
   sentence chunk. Text before the block is speakable; the block itself is
-  handed to the existing tool-call parser path (which drives the approval
-  loop exactly as today — nothing about approvals changes here).
-- A turn that produced tool calls typically parks in `awaiting_approval`;
-  speech for that turn simply stops at whatever was safely emitted. The
-  continuation after execute-approved is a new brain call and streams again.
+  handed to the existing tool-call parser path. The parser validates the
+  payload, the registered tool remains authoritative, and raw JSON never
+  reaches speech.
+- A turn that produced tool calls stops speech at whatever was safely emitted.
+  Direct tool execution and its continuation use the normal runtime path; no
+  approval row or awaiting-approval turn is inserted.
 
 This mirrors, on the stream, the same source-of-truth rule as everywhere
-else: the model proposes, jarvisd decides; a spoken tool block would be the
-voice-track version of auto-execution and is therefore forbidden.
+else: the model proposes, dand validates and executes; a spoken tool block
+would leak control payload into the voice track and is therefore forbidden.
 
 ## 5. Sentence → VoiceRequest mapping (no schema change)
 

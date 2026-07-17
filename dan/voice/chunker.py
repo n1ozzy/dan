@@ -2,9 +2,10 @@
 
 Deltas in, sentence chunks out. Lives in dand — adapters stay dumb pipes
 and the broker only plays what is queued. Tool-call blocks hold emission
-fail-closed: from the first character that could open `<dan_tool_call>`
-nothing is emitted until the suspicion resolves, and a completed block is
-never spoken.
+fail-closed: from the first character that could open a canonical or legacy
+tool-call block nothing is emitted until the suspicion resolves, and a
+completed block is never spoken. DAN emits only the canonical form; the
+legacy form remains input compatibility.
 """
 
 from __future__ import annotations
@@ -12,6 +13,12 @@ from __future__ import annotations
 
 TOOL_CALL_OPEN = "<dan_tool_call>"
 TOOL_CALL_CLOSE = "</dan_tool_call>"
+_LEGACY_TOOL_CALL_OPEN = "<jarvis_tool_call>"
+_LEGACY_TOOL_CALL_CLOSE = "</jarvis_tool_call>"
+_TOOL_CALL_TAGS = (
+    (TOOL_CALL_OPEN, TOOL_CALL_CLOSE),
+    (_LEGACY_TOOL_CALL_OPEN, _LEGACY_TOOL_CALL_CLOSE),
+)
 DEFAULT_MIN_CHARS = 12
 SENTENCE_TERMINATORS = (".", "!", "?", "…")
 
@@ -84,14 +91,19 @@ class SentenceChunker:
 
     def _strip_complete_tool_calls(self) -> None:
         while True:
-            start = self._buffer.find(TOOL_CALL_OPEN)
-            if start < 0:
+            starts = [
+                (start, opening, closing)
+                for opening, closing in _TOOL_CALL_TAGS
+                if (start := self._buffer.find(opening)) >= 0
+            ]
+            if not starts:
                 return
-            end = self._buffer.find(TOOL_CALL_CLOSE, start)
+            start, opening, closing = min(starts, key=lambda item: item[0])
+            end = self._buffer.find(closing, start + len(opening))
             if end < 0:
                 return
             self._buffer = (
-                self._buffer[:start] + " " + self._buffer[end + len(TOOL_CALL_CLOSE) :]
+                self._buffer[:start] + " " + self._buffer[end + len(closing) :]
             )
 
     def _next_sentence(self, text: str) -> tuple[str | None, str]:
@@ -132,15 +144,19 @@ class SentenceChunker:
     def _suspicion_index(self, text: str) -> int:
         """Index from which the buffer tail could open a tool-call block."""
 
-        start = text.find(TOOL_CALL_OPEN)
-        if start >= 0:
-            return start
-        # A trailing prefix of the opening tag is suspicious as well.
-        max_prefix = min(len(TOOL_CALL_OPEN) - 1, len(text))
-        for length in range(max_prefix, 0, -1):
-            if text.endswith(TOOL_CALL_OPEN[:length]):
-                return len(text) - length
-        return len(text)
+        suspicion = len(text)
+        for opening, _closing in _TOOL_CALL_TAGS:
+            start = text.find(opening)
+            if start >= 0:
+                suspicion = min(suspicion, start)
+                continue
+            # A trailing prefix of either opening tag is suspicious as well.
+            max_prefix = min(len(opening) - 1, len(text))
+            for length in range(max_prefix, 0, -1):
+                if text.endswith(opening[:length]):
+                    suspicion = min(suspicion, len(text) - length)
+                    break
+        return suspicion
 
     def _suspicious(self, text: str) -> bool:
         return self._suspicion_index(text) < len(text)

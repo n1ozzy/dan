@@ -542,7 +542,7 @@ def test_smoke_runbook_documents_temp_database_and_runtime() -> None:
 
     assert "temporary db" in text
     assert "temporary runtime" in text
-    assert "real ~/.jarvis" in text
+    assert "real ~/.dan" in text
 
 
 def test_provider_smoke_runbook_documents_safe_claude_cli_smoke() -> None:
@@ -551,7 +551,7 @@ def test_provider_smoke_runbook_documents_safe_claude_cli_smoke() -> None:
 
     assert "temporary config" in lowered
     assert "temporary db" in lowered
-    assert "real `~/.jarvis`" in lowered
+    assert "real `~/.dan`" in lowered
     assert 'default_adapter = "claude_cli"' in text
     assert 'command = "claude"' in text
     assert 'args = ["-p"]' in text
@@ -600,7 +600,7 @@ def test_memory_smoke_runbook_documents_manual_harness_scope() -> None:
     assert "scripts/smoke-memory-runtime.sh" in text
     assert "SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-memory-runtime.sh" in text
     assert "manual smoke" in lowered
-    assert "real `~/.jarvis`" in lowered
+    assert "real `~/.dan`" in lowered
     assert "does not use launchd" in lowered
     assert "does not use voice" in lowered
     assert "does not use workers" in lowered

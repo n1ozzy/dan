@@ -45,7 +45,9 @@ def test_design_pins_sentence_chunker_and_tool_call_safety() -> None:
     body = text()
 
     assert "SentenceChunker" in body
+    assert "<dan_tool_call>" in body
     assert "<jarvis_tool_call>" in body
+    assert "input compatibility" in body
     lowered = body.lower()
     assert "fail-closed" in lowered
     # Tool-call blocks must never be spoken.

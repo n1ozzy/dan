@@ -17,7 +17,7 @@ requests, operator sessions, or a global `WAITING_APPROVAL` runtime state.
 
 ## ToolRegistry
 
-`ToolRegistry` is the only in-process registry for Jarvis tools. It stores tool
+`ToolRegistry` is the only in-process registry for DAN tools. It stores tool
 metadata, exposes tool specs, classifies requests with `ToolPermissionPolicy`,
 and runs a handler only when the direct request permission decision is `allow`.
 
@@ -29,7 +29,7 @@ adapters can populate those calls by parsing explicit blocks from provider
 stdout:
 
 ```text
-<jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"demo"}}</jarvis_tool_call>
+<dan_tool_call>{"name":"approval_probe","arguments":{"reason":"demo"}}</dan_tool_call>
 ```
 
 The parser accepts `name` as a required string plus optional `arguments`,
@@ -57,7 +57,7 @@ The daemon default registry contains:
 
 ## Permission Categories
 
-Jarvis v4.1 uses these risk values:
+DAN v4.1 uses these risk values:
 
 - `safe_read`: allowed.
 - `safe_status`: allowed.
@@ -168,7 +168,7 @@ model intent separate from actual execution.
 ## Model-Originated Tool Requests
 
 `POST /input/text` may receive a `BrainResponse` containing `tool_calls`.
-Jarvis captures those calls after `brain.responded` and before the active turn
+DAN captures those calls after `brain.responded` and before the active turn
 processing closes.
 
 The capture policy is conservative:
@@ -199,8 +199,8 @@ for approval plus explicit execution when the policy permits an approval.
 
 Prompt 15A enables explicit CLI stdout parsing into structured
 `BrainResponse.tool_calls`. Valid tool-call blocks are removed from visible
-response text. If a response contains only tool-call blocks, Jarvis uses the
-deterministic visible text `Jarvis requested tool approval.` Malformed blocks
+response text. If a response contains only tool-call blocks, DAN uses the
+deterministic visible text `DAN requested tool approval.` Malformed blocks
 are also removed from visible text and recorded in
 `raw_metadata["tool_call_parse_errors"]`.
 
@@ -210,7 +210,7 @@ approval records only. Approved tools require a later explicit
 `awaiting_approval` does not execute a tool and does not resume itself on
 approval. After explicit execute-approved, if the approval has a turn ID, the
 original turn is still `awaiting_approval`, the tool result is successful, and
-the result is continuation-eligible one-shot output, Jarvis builds a
+the result is continuation-eligible one-shot output, DAN builds a
 continuation brain request from the original user input plus the redacted tool
 name, arguments, and output.
 
@@ -271,7 +271,7 @@ failed tool results, blocked tools, and reserved non-one-shot result classes
 preserve the existing execute-approved response shape without forcing
 continuation.
 
-If the continuation brain call fails, Jarvis leaves the `ToolRun` as recorded,
+If the continuation brain call fails, DAN leaves the `ToolRun` as recorded,
 does not retry or execute the tool again, appends `brain.failed` and
 `error.raised`, and leaves the original turn in `awaiting_approval` with
 `tool_result_continuation.status=failed`,
@@ -326,7 +326,7 @@ To keep the temporary runtime and logs for inspection:
 SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-tools-approvals.sh
 ```
 
-The smoke starts a temporary `jarvisd` with a temporary config, database,
+The smoke starts a temporary `dand` with a temporary config, database,
 runtime home, logs directory, runtime directory, and PID file. It uses the mock
 brain adapter, disables voice, disables launch supervision, disables destructive
 tools, and makes localhost HTTP requests only.
@@ -348,7 +348,7 @@ It proves:
 - A rejected approval cannot execute.
 - `GET /events` exposes tool and approval events.
 - `worker_jobs` and `voice_queue` stay empty.
-- The temporary database and runtime home are used instead of real `~/.jarvis`.
+- The temporary database and runtime home are used instead of real `~/.dan`.
 - The script stops only the child daemon PID it started.
 
 It does not prove:
@@ -376,7 +376,7 @@ To keep the temporary runtime and logs for inspection:
 SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-tool-continuation.sh
 ```
 
-The smoke starts a temporary `jarvisd` with a temporary config, database,
+The smoke starts a temporary `dand` with a temporary config, database,
 runtime home, logs directory, runtime directory, and PID file. The brain is a
 deterministic fake local CLI brain script created inside the smoke directory
 and wired through the `claude_cli` adapter config. No real providers run: no
@@ -404,7 +404,7 @@ It proves the full 19D-mini loop end to end:
 - A duplicate execute returns `409`, creates no duplicate `tool_runs` row, and
   triggers no second continuation.
 - `worker_jobs` and `voice_queue` stay empty.
-- The temporary database and runtime home are used instead of real `~/.jarvis`.
+- The temporary database and runtime home are used instead of real `~/.dan`.
 - The script stops only the child daemon PID it started.
 
 It does not prove:

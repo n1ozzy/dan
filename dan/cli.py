@@ -234,7 +234,7 @@ def daemon_main(argv: list[str] | None = None) -> int:
     """Run the daemon entrypoint without exposing the command hierarchy."""
 
     daemon_args = sys.argv[1:] if argv is None else argv
-    return main(["daemon", "run", *daemon_args])
+    return main([*daemon_args, "daemon", "run"])
 
 
 def _config_path_from_args(args: argparse.Namespace) -> str | None:

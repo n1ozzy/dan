@@ -270,3 +270,89 @@ migration provenance or a narrow regression test:
   here would erase source provenance or cross into Task 5/later documentation.
 - No daemon, launchd job, audio, TTS, microphone, or live migration was started.
   Runtime cutover is therefore deliberately unperformed and unclaimed.
+
+## Independent review fix wave
+
+Review verdict `FIX FIRST` was addressed after commit `155ce99`.
+
+### Corrections
+
+- `test_active_runtime_payloads_do_not_advertise_approvals` now installs a
+  hermetic brain manager before starting the app and carries a tripwire that
+  fails if the production Claude CLI adapter is reached. The production
+  configuration remains cold-Claude-only; only the automatic test is isolated.
+- `dan-test-baseline` now uses mutually exclusive operational modes, so report
+  verification/comparison cannot bypass a requested collection run.
+- `dand --config PATH` and `dand --config=PATH` place global options before the
+  hidden `daemon run` hierarchy and pass the selected path to the daemon
+  handler.
+- The runtime emits only `<dan_tool_call>`. The parser and speech chunker accept
+  legacy `<jarvis_tool_call>` input and suppress complete, split, and malformed
+  legacy payloads fail-closed so raw JSON is never spoken.
+- Active runbooks, README, CLAUDE contract, script variables, runtime-test
+  environment, and active assertions use final DAN names. `JARVIS_REPO` and
+  `JARVIS_DB_PATH` are gone from those active surfaces.
+
+### Test evidence
+
+- Regression nodes covering all review findings: `22 passed in 0.42s`.
+- Broader safety/CLI/parser/chunker/import/contracts package:
+  `173 passed, 1 deselected in 4.66s`. The deselected node is a pre-existing
+  forbidden-string baseline failure; the full comparison below is the
+  authoritative regression gate.
+- `python -m compileall -q dan tests`: passed.
+- `git diff --check`: passed.
+- Full hermetic baseline comparison against the verified `2385 / 271`
+  reference: `2400 collected`, `2400 isolated`, `0 live-manual`, `270`
+  failures, `0` new failure IDs, `1` removed failure ID. The removed ID is
+  `tests/test_no_approval_surface.py::test_active_runtime_payloads_do_not_advertise_approvals`.
+- A final comparison after adding three extra CLI conflict cases used the
+  intermediate `2397 / 270` report and returned `0` new, `0` removed, and
+  `270` unchanged failure IDs.
+- Canonical report: `~/.dan/migration/test-baseline.json`, mode `0600`.
+- Immutable task snapshot:
+  `.superpowers/sdd/task-4-fix-baseline-2400.json`, mode `0400`.
+
+### Final legacy-name inventory
+
+Command:
+
+```text
+rg -n -i '\bjarvis\b|JARVIS_|\.jarvis|jarvisd|com\.ozzy\.jarvis' \
+  dan config scripts launchd README.md CLAUDE.md docs/runbooks tests
+```
+
+Result: 154 matching lines across the paths below. There are zero matches in
+active `config`, `scripts`, `launchd`, `README.md`, or `docs/runbooks` files.
+Every remaining path has this explicit disposition:
+
+- Physical current dependency path: `CLAUDE.md` (1) names the real external
+  broker at `Documents/dev/dan/tools/jarvis/voice_broker.py`; renaming text
+  would make the operator command false.
+- Legacy diagnostics: `dan/diagnostics/legacy_dan.py` (16) and
+  `tests/test_legacy_dan_report.py` (12) identify historical assets and the
+  compatibility launcher by their real names.
+- Migration provenance/input: `dan/migration/inventory.py` (20),
+  `dan/migration/legacy_data.py` (27), `dan/migration/db_report.py` (1),
+  `tests/test_legacy_data_migration.py` (30),
+  `tests/test_migration_inventory.py` (6),
+  `tests/test_migration_inventory_fix_first.py` (4), and
+  `tests/test_migration_inventory_review.py` (3) preserve donor paths,
+  schemas, source IDs, branch refs, and audit messages.
+- Legacy runtime detection: `dan/runtime/supervisor.py` (2) and
+  `tests/test_runtime_supervisor.py` (1) detect obsolete process/launchd names
+  so cutover can report them.
+- Provider input compatibility: `dan/brain/tool_call_parser.py` (2),
+  `dan/voice/chunker.py` (2), `tests/test_brain_cli_adapters.py` (5),
+  `tests/test_sentence_chunker.py` (3), and
+  `tests/test_voice_streaming_contract.py` (1) accept but never emit or speak
+  the legacy tool-call tag.
+- Negative product-contract assertions and legacy fixtures:
+  `tests/test_imports.py` (3), `tests/test_launchd_assets.py` (2),
+  `tests/test_memory_compiler_contract.py` (4),
+  `tests/test_memory_contract.py` (1), `tests/test_scaffold_contracts.py` (7),
+  and `tests/test_test_safety.py` (1). These matches either reject old active
+  names or model old input that must remain detectable.
+
+The earlier 90-line inventory in this report is superseded by this broader,
+case-insensitive final inventory and its path-by-path dispositions.

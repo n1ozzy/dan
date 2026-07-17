@@ -1,11 +1,11 @@
 # Memory API and CLI
 
-Jarvis-owned memory blocks are durable rows in `memory_blocks`. They are small
-pieces of local context that `jarvisd` can include in later brain requests when
+DAN-owned memory blocks are durable rows in `memory_blocks`. They are small
+pieces of local context that `dand` can include in later brain requests when
 they are active and fit the configured context budget.
 
 Memory blocks are not provider session memory. Claude, Codex, OpenAI and other
-brain adapters remain stateless from Jarvis's point of view. This is also not
+brain adapters remain stateless from DAN's point of view. This is also not
 semantic memory or vector search; Prompt 16 exposes explicit CRUD-style
 management for the existing SQLite-backed blocks.
 
@@ -102,23 +102,23 @@ from future brain requests.
 
 Workers do not write committed memory facts directly. Worker output can be a
 candidate for later promotion, but committed memory remains explicitly managed
-through Jarvis-owned paths.
+through DAN-owned paths.
 
 ## CLI
 
-The CLI talks to a running daemon over HTTP. It does not start `jarvisd`, does
+The CLI talks to a running daemon over HTTP. It does not start `dand`, does
 not initialize SQLite, and does not call `MemoryManager` directly.
 
 List memory:
 
 ```bash
-python -m jarvis.cli memory list --active-only --kind fact --limit 50
+python -m dan.cli memory list --active-only --kind fact --limit 50
 ```
 
 Create memory:
 
 ```bash
-python -m jarvis.cli memory create \
+python -m dan.cli memory create \
   --kind fact \
   --title "Some title" \
   --body "Some body" \
@@ -129,13 +129,13 @@ python -m jarvis.cli memory create \
 Show one block:
 
 ```bash
-python -m jarvis.cli memory show --id MEMORY_ID
+python -m dan.cli memory show --id MEMORY_ID
 ```
 
 Update a block:
 
 ```bash
-python -m jarvis.cli memory update \
+python -m dan.cli memory update \
   --id MEMORY_ID \
   --title "Updated title" \
   --body "Updated body" \
@@ -147,7 +147,7 @@ python -m jarvis.cli memory update \
 Disable a block:
 
 ```bash
-python -m jarvis.cli memory disable --id MEMORY_ID
+python -m dan.cli memory disable --id MEMORY_ID
 ```
 
 All memory CLI commands accept:
@@ -172,15 +172,15 @@ To keep the temporary smoke directory for inspection:
 SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-memory-runtime.sh
 ```
 
-The harness starts one temporary `jarvisd` child process with a temporary
+The harness starts one temporary `dand` child process with a temporary
 config, temporary DB and temporary runtime home. It does not touch the real
-`~/.jarvis`; in other words, it does not touch real `~/.jarvis`. The config
+`~/.dan`; in other words, it does not touch real `~/.dan`. The config
 binds to `127.0.0.1:41789`, uses `claude_cli`, disables voice and launchd, and
 points every runtime path at the smoke directory.
 
 What it proves:
 
-- `jarvisd` can start against an isolated memory smoke config.
+- `dand` can start against an isolated memory smoke config.
 - `memory create` writes one active fact block through the CLI/API.
 - Active memory reaches ContextBuilder and is visible to the Claude CLI brain
   request.
@@ -200,7 +200,7 @@ What it intentionally does not prove:
 - It does not use tools or tool execution.
 - It does not use the panel, WebSocket or SSE runtime.
 - It does not prove old provider session memory; provider sessions are still
-  outside Jarvis memory.
+  outside DAN memory.
 
 After disabling the memory block, the second model response is not required to
 omit the phrase. The phrase may still appear through recent conversation history
@@ -215,7 +215,7 @@ Troubleshooting:
 - Missing Claude CLI/auth: install and authenticate the `claude` CLI, then
   rerun the smoke.
 - Health timeout: rerun with `SMOKE_KEEP_ARTIFACTS=1` and inspect
-  `jarvisd.log` in the printed smoke directory.
+  `dand.log` in the printed smoke directory.
 - First response does not mention the phrase: verify Claude CLI auth and rerun;
   the smoke phrase must be present in active memory and in the first response.
 - Permission denied on script: run `chmod +x scripts/smoke-memory-runtime.sh`.

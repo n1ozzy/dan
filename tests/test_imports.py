@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tomllib
+from types import SimpleNamespace
 
 import pytest
 
@@ -123,6 +124,35 @@ def test_console_entrypoints_are_final_names() -> None:
     assert scripts["dand"] == "dan.cli:daemon_main"
     assert scripts["dan-memory-mcp"] == "dan.mcp.memory_server:main"
     assert not any("jarvis" in name for name in scripts)
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_config"),
+    (
+        ([], None),
+        (["--config", "/tmp/dan-test.toml"], "/tmp/dan-test.toml"),
+        (["--config=/tmp/dan-test.toml"], "/tmp/dan-test.toml"),
+    ),
+)
+def test_dand_shorthand_passes_config_to_daemon_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    expected_config: str | None,
+) -> None:
+    import dan.cli as cli
+
+    seen: list[str | None] = []
+    monkeypatch.setattr(cli, "load_config", lambda path: SimpleNamespace())
+    monkeypatch.setattr(cli, "resolve_runtime_paths", lambda config: SimpleNamespace())
+    monkeypatch.setattr(cli, "_configure_transport_token", lambda paths: None)
+    monkeypatch.setattr(
+        cli,
+        "_handle_daemon_run",
+        lambda config_path: seen.append(config_path) or 17,
+    )
+
+    assert cli.daemon_main(argv) == 17
+    assert seen == [expected_config]
 
 
 def test_import_does_not_move_or_create_runtime_state(tmp_path: Path) -> None:

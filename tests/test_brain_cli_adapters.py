@@ -13,10 +13,13 @@ from dan.brain import (
     BrainMemoryBlock,
     BrainMessage,
     BrainRequest,
+    BrainResponse,
+    BrainToolCall,
     BrainToolSpec,
 )
 from dan.brain.claude_cli_adapter import (
     ClaudeCliAdapter,
+    _format_completed_checkpoint,
     format_cli_prompt,
     format_cli_system_prompt,
     format_cli_user_prompt,
@@ -263,6 +266,29 @@ def test_parser_extracts_one_valid_tool_call_block() -> None:
     # the authoritative risk is derived downstream from the registered spec.
     assert parsed.tool_calls[0].risk == "destructive"
     assert parsed.parse_errors == []
+
+
+def test_parser_accepts_legacy_tool_call_block_without_exposing_payload() -> None:
+    # Compatibility input only: DAN never emits the legacy provider tag.
+    parsed = parse_tool_call_blocks(
+        'Before.<jarvis_tool_call>{"name":"echo","arguments":{"text":"legacy"}}'
+        "</jarvis_tool_call>After."
+    )
+
+    assert parsed.text == "Before.After."
+    assert [call.name for call in parsed.tool_calls] == ["echo"]
+    assert parsed.tool_calls[0].arguments == {"text": "legacy"}
+    assert parsed.parse_errors == []
+
+
+def test_parser_suppresses_malformed_legacy_tool_call_json_fail_closed() -> None:
+    parsed = parse_tool_call_blocks(
+        '<jarvis_tool_call>{"name":"echo","arguments":</jarvis_tool_call>'
+    )
+
+    assert parsed.text == ""
+    assert parsed.tool_calls == []
+    assert any("invalid JSON" in error for error in parsed.parse_errors)
 
 
 def test_parser_ignores_model_declared_risk_and_fails_safe() -> None:
@@ -526,6 +552,28 @@ def test_prompt_formatter_documents_tool_call_block_syntax() -> None:
     prompt = format_cli_prompt(make_request())
 
     assert '<dan_tool_call>{"name":"tool_name","arguments":{...}}</dan_tool_call>' in prompt
+    assert "<jarvis_tool_call>" not in prompt
+
+
+def test_completed_checkpoint_emits_only_canonical_tool_call_tag() -> None:
+    checkpoint = _format_completed_checkpoint(
+        make_request(),
+        BrainResponse(
+            text="Sprawdzam.",
+            model="claude-test",
+            tool_calls=[
+                BrainToolCall(
+                    id="call-1",
+                    name="echo",
+                    arguments={"text": "canonical"},
+                    risk="destructive",
+                )
+            ],
+        ),
+    )
+
+    assert '<dan_tool_call>{"arguments": {"text": "canonical"}, "name": "echo"}</dan_tool_call>' in checkpoint
+    assert "<jarvis_tool_call>" not in checkpoint
 
 
 def test_prompt_formatter_says_not_to_claim_a_tool_already_executed() -> None:

@@ -13,8 +13,11 @@ from dan.brain.base import BrainToolCall
 
 TOOL_CALL_OPEN = "<dan_tool_call>"
 TOOL_CALL_CLOSE = "</dan_tool_call>"
+_LEGACY_TOOL_CALL_OPEN = "<jarvis_tool_call>"
+_LEGACY_TOOL_CALL_CLOSE = "</jarvis_tool_call>"
 TOOL_CALL_PATTERN = re.compile(
-    rf"{re.escape(TOOL_CALL_OPEN)}(.*?){re.escape(TOOL_CALL_CLOSE)}",
+    rf"(?:{re.escape(TOOL_CALL_OPEN)}(?P<dan_payload>.*?){re.escape(TOOL_CALL_CLOSE)}"
+    rf"|{re.escape(_LEGACY_TOOL_CALL_OPEN)}(?P<legacy_payload>.*?){re.escape(_LEGACY_TOOL_CALL_CLOSE)})",
     re.DOTALL,
 )
 # The model cannot declare its own risk. The registered DAN tool remains the
@@ -47,7 +50,10 @@ def parse_tool_call_blocks(provider_output: str) -> ToolCallParseResult:
     for block_index, match in enumerate(matches, start=1):
         visible_parts.append(provider_output[cursor : match.start()])
         cursor = match.end()
-        call, error = _parse_single_block(match.group(1), block_index)
+        payload = match.group("dan_payload")
+        if payload is None:
+            payload = match.group("legacy_payload")
+        call, error = _parse_single_block(payload, block_index)
         if error is not None:
             parse_errors.append(error)
             continue

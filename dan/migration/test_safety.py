@@ -472,7 +472,6 @@ def test_environment(home: Path, runtime: Path, database: Path) -> dict[str, str
         "TMPDIR": str(runtime),
         "DAN_RUNTIME_DIR": str(runtime),
         "DAN_DB_PATH": str(database),
-        "JARVIS_DB_PATH": str(database),
         "DAN_TEST_MODE": "1",
         "DAN_DISABLE_AUDIO": "1",
         "DAN_DISABLE_MIC": "1",

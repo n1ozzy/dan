@@ -234,11 +234,20 @@ def _snapshot_verified_reference(reference_path: Path, directory: Path) -> Path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expect-collected", type=int)
-    parser.add_argument("--verify-report", type=Path)
-    parser.add_argument("--compare", type=Path)
     parser.add_argument("--compare-report", type=Path)
-    parser.add_argument("--compare-reports", nargs=2, type=Path, metavar=("PREVIOUS", "CURRENT"))
+    operational_mode = parser.add_mutually_exclusive_group()
+    operational_mode.add_argument("--verify-report", type=Path)
+    operational_mode.add_argument("--compare", type=Path)
+    operational_mode.add_argument(
+        "--compare-reports",
+        nargs=2,
+        type=Path,
+        metavar=("PREVIOUS", "CURRENT"),
+    )
     args = parser.parse_args(argv)
+    offline_mode = args.verify_report is not None or args.compare_reports is not None
+    if offline_mode and (args.expect_collected is not None or args.compare_report is not None):
+        parser.error("--expect-collected and --compare-report require a baseline run")
     if args.compare_reports:
         return _emit_comparison(*args.compare_reports)
     if args.verify_report:

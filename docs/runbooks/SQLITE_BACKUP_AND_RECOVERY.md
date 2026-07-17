@@ -2,11 +2,11 @@
 
 Classification: runbook.
 
-Ten runbook opisuje backup i odtworzenie `jarvis.db` w środowisku produkcyjnym Jarvisa.
+Ten runbook opisuje backup i odtworzenie `dan.db` w środowisku produkcyjnym DANa.
 
 ## Dlaczego to robimy
 
-`~/.jarvis/jarvis.db` jest source of truth dla:
+`~/.dan/dan.db` jest source of truth dla:
 
 - historii konwersacji i tur,
 - zdarzeń audytowych i narzędzi,
@@ -17,13 +17,13 @@ Awaria DB musi mieć prostą, odtwarzalną ścieżkę powrotu.
 
 ## Backup operacyjny (ręczny, zalecany)
 
-1. Zatrzymaj pracę z daemonem (`jarvisd`) i upewnij się, że żaden proces nie modyfikuje DB.
+1. Zatrzymaj pracę z daemonem (`dand`) i upewnij się, że żaden proces nie modyfikuje DB.
 2. Wykonaj `backup` z `sqlite3`:
 
 ```bash
-DB="${HOME}/.jarvis/jarvis.db"
-mkdir -p "${HOME}/.jarvis/backups"
-sqlite3 "$DB" ".backup '${HOME}/.jarvis/backups/jarvis-$(date +%F-%H%M%S).db'"
+DB="${HOME}/.dan/dan.db"
+mkdir -p "${HOME}/.dan/backups"
+sqlite3 "$DB" ".backup '${HOME}/.dan/backups/dan-$(date +%F-%H%M%S).db'"
 sqlite3 "$DB" "PRAGMA quick_check;"
 ```
 
@@ -34,15 +34,15 @@ sqlite3 "$DB" "PRAGMA quick_check;"
 Jeśli potrzebujesz automatyki, uruchom planowane zadanie (np. launchd launchctl start/cron):
 
 ```bash
-sqlite3 "$HOME/.jarvis/jarvis.db" ".backup '$HOME/.jarvis/backups/jarvis-auto.db'"
+sqlite3 "$HOME/.dan/dan.db" ".backup '$HOME/.dan/backups/dan-auto.db'"
 ```
 
 Przykład z limitem czasu:
 
 ```bash
 for i in {1..30}; do
-  flock -n "$HOME/.jarvis/jarvis.db.lock" \
-    sqlite3 "$HOME/.jarvis/jarvis.db" ".backup '$HOME/.jarvis/backups/jarvis-latest.db'" \
+  flock -n "$HOME/.dan/dan.db.lock" \
+    sqlite3 "$HOME/.dan/dan.db" ".backup '$HOME/.dan/backups/dan-latest.db'" \
     && break || sleep 5
 done
 ```
@@ -56,24 +56,24 @@ Po backupie wykonaj:
 
 ## Odtwarzanie z backupu
 
-1. Zatrzymaj daemon i upewnij się, że żaden proces nie trzyma otwartego `jarvis.db`.
+1. Zatrzymaj daemon i upewnij się, że żaden proces nie trzyma otwartego `dan.db`.
 2. Wykonaj kopię obecnego pliku (na wypadek analizy po-incydentowej):
 
 ```bash
-cp "$HOME/.jarvis/jarvis.db" "$HOME/.jarvis/jarvis.db.corrupt-$(date +%F-%H%M%S)"
+cp "$HOME/.dan/dan.db" "$HOME/.dan/dan.db.corrupt-$(date +%F-%H%M%S)"
 ```
 
 3. Podmień bazę:
 
 ```bash
-cp "<path-do-backupu>/jarvis-YYYY-MM-DD-HHMMSS.db" "$HOME/.jarvis/jarvis.db"
+cp "<path-do-backupu>/dan-YYYY-MM-DD-HHMMSS.db" "$HOME/.dan/dan.db"
 ```
 
 4. Zweryfikuj:
 
 ```bash
-sqlite3 "$HOME/.jarvis/jarvis.db" "PRAGMA integrity_check;"
-sqlite3 "$HOME/.jarvis/jarvis.db" "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations';"
+sqlite3 "$HOME/.dan/dan.db" "PRAGMA integrity_check;"
+sqlite3 "$HOME/.dan/dan.db" "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations';"
 ```
 
 5. Uruchom ponownie daemona i sprawdź podstawowe health:

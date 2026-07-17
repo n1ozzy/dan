@@ -289,7 +289,7 @@ class TestRunbook:
         lowered = text.lower()
 
         assert ".[panel]" in text
-        assert "scripts/jarvis-panel" in text
+        assert "scripts/dan-panel" in text
         assert "thin client" in lowered
         assert "adr-002" in lowered
         assert "quit" in lowered

@@ -4750,7 +4750,7 @@ def test_panel_cockpit_runbook_documents_read_only_stream() -> None:
     assert "/stream" in text
     assert "adr-019" in lowered
     assert "read-only" in lowered
-    assert "jarvis-token." in text
+    assert "dan-token." in text
     assert "output_omitted" in text
 
 

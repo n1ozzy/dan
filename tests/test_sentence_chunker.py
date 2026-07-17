@@ -136,6 +136,24 @@ def test_tool_call_split_across_deltas_is_never_spoken() -> None:
     assert chunks[0] == "Sprawdzam to od razu dla ciebie."
 
 
+def test_legacy_tool_call_split_across_deltas_never_speaks_raw_json() -> None:
+    # Compatibility input only: a legacy provider block must be consumed,
+    # while all runtime output remains on the canonical DAN tag.
+    deltas = [
+        "Sprawdzam stary format bez wycieku. <jarvis_",
+        'tool_call>{"name":"echo","arguments":{"text":"SECRET_RAW_JSON"}}</jarvis_',
+        "tool_call> Gotowe po zgodności wstecznej.",
+    ]
+
+    chunks = collect(SentenceChunker(), deltas)
+    joined = " ".join(chunks)
+    assert "jarvis_tool_call" not in joined
+    assert "SECRET_RAW_JSON" not in joined
+    assert '"arguments"' not in joined
+    assert chunks[0] == "Sprawdzam stary format bez wycieku."
+    assert any("Gotowe po zgodności" in chunk for chunk in chunks)
+
+
 def test_false_prefix_is_released_as_ordinary_text() -> None:
     chunks = collect(
         SentenceChunker(),

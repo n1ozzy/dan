@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,6 +80,31 @@ ALLOWED_RUNTIME_SNIPPETS = {
 def test_required_docs_exist() -> None:
     missing = [path for path in REQUIRED_DOCS if not (ROOT / path).is_file()]
     assert missing == []
+
+
+def test_active_docs_use_final_dan_product_names() -> None:
+    active_docs = [ROOT / "README.md"]
+    active_docs.extend(sorted((ROOT / "docs" / "runbooks").glob("*.md")))
+    legacy = re.compile(r"\b(?:jarvis|Jarvis|JARVIS|DANv2)\b")
+
+    matches = {
+        str(path.relative_to(ROOT)): sorted(set(legacy.findall(path.read_text(encoding="utf-8"))))
+        for path in active_docs
+        if legacy.search(path.read_text(encoding="utf-8"))
+    }
+
+    assert matches == {}
+
+
+def test_claude_agent_contract_uses_final_runtime_names() -> None:
+    contract = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+
+    assert "# CLAUDE.md — dan-runtime" in contract
+    assert "`dan-runtime` v4.2.0a0" in contract
+    assert "`dand` (`dan.cli:daemon_main`)" in contract
+    assert "`com.dan.dand` → `~/.dan/bin/dand`" in contract
+    assert "`jarvis-runtime`" not in contract
+    assert "`com.ozzy.jarvisd`" not in contract
 
 
 def test_review_handoff_contains_required_orientation() -> None:

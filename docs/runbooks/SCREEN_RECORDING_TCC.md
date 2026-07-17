@@ -3,7 +3,7 @@
 FAZA D4 ships the read-only screen tools (`screen_read_window`,
 `screen_ocr_region`). The `native` backend captures with Apple's
 `/usr/sbin/screencapture` and OCRs on-device with Vision; both work only
-when the process hosting jarvisd holds the **Screen Recording** grant in
+when the process hosting dand holds the **Screen Recording** grant in
 TCC. Without the grant nothing crashes: every capture fails cleanly with a
 pointer to this runbook, and the daemon keeps running.
 
@@ -12,7 +12,7 @@ pointer to this runbook, and the daemon keeps running.
 TCC attributes the grant to the *responsible application*, not to the Python
 interpreter path:
 
-- **Dev runs from a terminal** (`scripts/jarvisd`, `python -m jarvis.cli …
+- **Dev runs from a terminal** (`scripts/dand`, `python -m dan.cli …
   daemon run`): grant Screen Recording to the terminal app (iTerm2 /
   Terminal / the IDE hosting the shell).
 - **launchd runs** (FAZA F2): grant Screen Recording to the binary launchd
@@ -27,12 +27,12 @@ toggles and one never implies the other.
 1. System Settings → Privacy & Security → **Screen & System Audio
    Recording** (older macOS: **Screen Recording**).
 2. Add (or enable) the responsible app from §1.
-3. Restart jarvisd (TCC grants apply to freshly started processes).
+3. Restart dand (TCC grants apply to freshly started processes).
 
 ## 3. Verifying — the probe
 
 ```bash
-.venv/bin/python -m jarvis.macos.screen
+.venv/bin/python -m dan.macos.screen
 ```
 
 - **exit 0** — granted; captures the frontmost window, OCRs it and prints a
@@ -47,7 +47,7 @@ deleted right after OCR — the same lifecycle the daemon uses (ADR-020).
 The OCR bridge alone (no TCC needed) can be exercised on any PNG:
 
 ```bash
-.venv/bin/python -m jarvis.macos.screen --ocr /path/to/image.png
+.venv/bin/python -m dan.macos.screen --ocr /path/to/image.png
 ```
 
 ## 4. Revoking / troubleshooting

@@ -1,6 +1,6 @@
 # Brain Adapters
 
-Jarvis v4.1 brain adapters are stateless text generators. Jarvis owns
+DAN v4.1 brain adapters are stateless text generators. DAN owns
 conversation history, memory, events, turns, tools, workers, and voice. A brain
 adapter receives a full `BrainRequest` each turn and returns only a
 `BrainResponse`.
@@ -9,8 +9,8 @@ adapter receives a full `BrainRequest` each turn and returns only a
 
 - `mock` is the default adapter.
 - `claude_cli` and `codex_cli` are optional.
-- Provider sessions are not Jarvis memory.
-- Jarvis sends full context each turn.
+- Provider sessions are not DAN memory.
+- DAN sends full context each turn.
 - Adapters do not write the database, append events, enqueue voice, run tools,
   run workers, mutate the panel, or preserve provider-side session state.
 - Do not use `--dangerously-skip-permissions`.
@@ -35,8 +35,8 @@ model = "claude-cli"
 timeout_seconds = 120
 ```
 
-The adapter sends the formatted Jarvis request to the command on stdin and uses
-stdout as the final response text after removing any valid Jarvis tool-call
+The adapter sends the formatted DAN request to the command on stdin and uses
+stdout as the final response text after removing any valid DAN tool-call
 blocks.
 
 ## Enable Codex CLI
@@ -68,7 +68,7 @@ Claude CLI and Codex CLI adapters parse explicit tool requests from stdout
 using this block syntax:
 
 ```text
-<jarvis_tool_call>{"name":"tool_name","arguments":{...}}</jarvis_tool_call>
+<dan_tool_call>{"name":"tool_name","arguments":{...}}</dan_tool_call>
 ```
 
 Accepted JSON fields are:
@@ -81,7 +81,7 @@ Accepted JSON fields are:
 
 Valid blocks become `BrainResponse.tool_calls` and are removed from the visible
 response text. If the visible text would be empty, the adapter returns
-`Jarvis requested tool approval.` as deterministic text. Adapter metadata
+`DAN requested tool approval.` as deterministic text. Adapter metadata
 includes `parsed_tool_call_count`.
 
 Malformed blocks, missing `name`, and non-object `arguments` are not fatal.
@@ -108,10 +108,10 @@ scripts/smoke-text-runtime.sh
 
 For a provider smoke, use [PROVIDER_SMOKE.md](PROVIDER_SMOKE.md). The smoke
 uses a temporary config, DB, runtime, and logs; it does not touch real
-`~/.jarvis`. Send one text input with a long client timeout:
+`~/.dan`. Send one text input with a long client timeout:
 
 ```bash
-python -m jarvis.cli --config "$CONFIG" input text "Kim jesteś?" --url "$BASE_URL" --timeout 180
+python -m dan.cli --config "$CONFIG" input text "Kim jesteś?" --url "$BASE_URL" --timeout 180
 ```
 
 Stop only the daemon process you started for that smoke.

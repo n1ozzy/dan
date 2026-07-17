@@ -51,6 +51,6 @@ Set `SMOKE_KEEP_ARTIFACTS=1` to keep the temp directory for inspection.
 ## Safety
 
 The harness runs entirely against a temporary daemon with a temp database
-and temp runtime directory. It never touches `~/.jarvis`, never loads
+and temp runtime directory. It never touches `~/.dan`, never loads
 launchd, never calls a real provider, and never reads outside its own
 workspace (the out-of-roots read is expected to come back `blocked`).
