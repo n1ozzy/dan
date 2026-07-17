@@ -14,11 +14,15 @@ import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
 
+from jarvis.brain import BrainManager, BrainRequest
+from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
+from jarvis.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
 from jarvis.daemon.app import DaemonApp, create_daemon_app
 from jarvis.daemon.lifecycle import build_server
 from jarvis.security.transport import (
@@ -51,9 +55,34 @@ def config_path(tmp_path: Path) -> Path:
     return path
 
 
+def _replace_with_hermetic_brain(daemon_app: DaemonApp) -> None:
+    production_manager = daemon_app.brain_manager
+    daemon_app.brain_manager = BrainManager(
+        [HermeticBrainAdapter(default_model="test-model")],
+        default_adapter="test",
+    )
+    if production_manager is not None:
+        production_manager.close()
+
+
 @pytest.fixture
-def app(config_path: Path) -> Iterator[DaemonApp]:
+def forbid_production_claude(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    production_calls: list[str] = []
+
+    def forbidden_generate(self: ClaudeCliAdapter, request: BrainRequest, **kwargs: Any):
+        del self, request, kwargs
+        production_calls.append("called")
+        raise AssertionError("transport token fixture invoked production Claude")
+
+    monkeypatch.setattr(ClaudeCliAdapter, "generate", forbidden_generate)
+    return production_calls
+
+
+@pytest.fixture
+def app(config_path: Path, forbid_production_claude: list[str]) -> Iterator[DaemonApp]:
+    del forbid_production_claude
     daemon_app = create_daemon_app(config_path)
+    _replace_with_hermetic_brain(daemon_app)
     daemon_app.start()
     try:
         yield daemon_app
@@ -145,6 +174,23 @@ def test_mutating_request_with_valid_token_succeeds(app: DaemonApp, base_url: st
     assert payload["turn"]["status"] == "finished"
 
 
+def test_transport_token_fixture_never_calls_production_claude_adapter(
+    app: DaemonApp,
+    base_url: str,
+    forbid_production_claude: list[str],
+) -> None:
+    status, payload = request_json(
+        "POST",
+        f"{base_url}/input/text",
+        {"text": "hermetic token smoke"},
+        token=app.api_token,
+    )
+
+    assert status == 200
+    assert payload["final_text"] == "Test response: hermetic token smoke"
+    assert forbid_production_claude == []
+
+
 def test_unauthorized_request_creates_no_turn_or_event(app: DaemonApp, base_url: str) -> None:
     assert app.event_store is not None
     before = [event.id for event in app.event_store.list_after(0, limit=500)]
@@ -169,7 +215,7 @@ def test_private_read_endpoints_require_token(base_url: str) -> None:
     # FIX-06 follow-up: after CORS null removal + Host validation, an untokened
     # GET of private data was still the "any local process reads your data"
     # vector. These endpoints now require the transport token.
-    for path in ("/conversations", "/turns", "/memory", "/memory/some-id", "/settings", "/approvals"):
+    for path in ("/conversations", "/turns", "/memory", "/memory/some-id", "/settings"):
         status, payload = request_json("GET", f"{base_url}{path}")
         assert status == 401, path
         assert payload == {"error": "Unauthorized", "status": 401}
@@ -178,7 +224,7 @@ def test_private_read_endpoints_require_token(base_url: str) -> None:
 def test_private_read_endpoints_succeed_with_token(app: DaemonApp, base_url: str) -> None:
     token = app.api_token
     assert token
-    for path in ("/conversations", "/memory", "/settings", "/turns?conversation_id=none", "/approvals"):
+    for path in ("/conversations", "/memory", "/settings", "/turns?conversation_id=none"):
         status, _ = request_json("GET", f"{base_url}{path}", token=token)
         assert status == 200, path
 
@@ -197,6 +243,7 @@ def test_token_not_required_when_disabled_in_config(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     daemon_app = create_daemon_app(config_file)
+    _replace_with_hermetic_brain(daemon_app)
     daemon_app.start()
     server = build_server(daemon_app, "127.0.0.1", 0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)

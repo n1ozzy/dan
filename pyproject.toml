@@ -45,6 +45,9 @@ jarvis-memory-mcp = "jarvis.mcp.memory_server:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "live_manual: requires live hardware or runtime and is refused by dan-test-baseline",
+]
 
 [tool.ruff]
 target-version = "py311"
