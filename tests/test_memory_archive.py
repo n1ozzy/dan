@@ -47,7 +47,7 @@ def test_migration_adds_memory_archive_without_replacing_existing_data() -> None
 
     apply_migrations(conn)
 
-    assert LATEST_SCHEMA_VERSION == 3
+    assert LATEST_SCHEMA_VERSION == 4
     assert "memory_archive_documents" in table_names(conn)
     assert "memory_archive_sync_state" in table_names(conn)
     assert conn.execute("SELECT value FROM existing_user_data").fetchone()[0] == "keep me"
