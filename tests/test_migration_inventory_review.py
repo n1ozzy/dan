@@ -70,6 +70,8 @@ def manifest_shell() -> dict[str, Any]:
             "repository": "/fixture/repo",
             "ref": "fixture",
             "head": "a" * 40,
+            "head_state": "resolved",
+            "required": True,
         },
         "roots": {
             "home": "/fixture/home",
@@ -123,8 +125,7 @@ def test_current_claude_and_openclaw_memory_roots_are_classified_as_history(
     tmp_path: Path,
 ) -> None:
     roots = fixture_roots(tmp_path)
-    encoded_repo = "-" + str(roots.repo_root.absolute()).lstrip("/").replace("/", "-")
-    claude_memory = roots.home / ".claude/projects" / encoded_repo / "memory/MEMORY.md"
+    claude_memory = roots.claude_project_memory_roots()[0] / "MEMORY.md"
     openclaw_memory = roots.home / ".openclaw/workspace/memory/2026-07-17.md"
     for path in (claude_memory, openclaw_memory):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,8 +142,7 @@ def test_current_claude_and_openclaw_memory_roots_are_classified_as_history(
 
 def test_session_history_is_not_scanned_as_active_reference(tmp_path: Path) -> None:
     roots = fixture_roots(tmp_path)
-    encoded_repo = "-" + str(roots.repo_root.absolute()).lstrip("/").replace("/", "-")
-    project = roots.home / ".claude/projects" / encoded_repo
+    project = roots.claude_project_memory_roots()[0].parent
     memory = project / "memory/MEMORY.md"
     session = project / "session-SECRET_SENTINEL.jsonl"
     memory.parent.mkdir(parents=True)

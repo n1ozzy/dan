@@ -93,8 +93,34 @@ _SKIP_DIRECTORY_NAMES = {
 }
 _MAX_DISCOVERY_FILE_BYTES = 4 * 1024 * 1024
 _MAX_SYMLINK_TARGET_BYTES = 64 * 1024 * 1024
+_DAN_TMP_ALLOWED_NAMES = {
+    "dan-feeder.lock",
+    "dan-listen",
+    "dan-say.lock",
+    "dan-trio-live",
+    "dan-voice",
+    "dan-voice-queue",
+}
+_PRIVACY_DENIED_COMPONENTS = {
+    ".git",
+    ".hg",
+    ".svn",
+    "archive",
+    "archives",
+    "logs",
+    "rollout_summaries",
+    "sessions",
+}
 _DECISION_PLACEHOLDER = re.compile(r"\b(?:pending|tbd|todo)\b", re.IGNORECASE)
 _SAFE_EXECUTABLE = re.compile(r"[^A-Za-z0-9._+-]")
+_SAFE_EXECUTABLE_VALUE = re.compile(r"[A-Za-z0-9._+-]{1,128}\Z")
+_HIGH_CONFIDENCE_SECRET_PATTERNS = (
+    re.compile(r"\bghp_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+)
 _PROCESS_ROLES: tuple[tuple[str, str], ...] = (
     ("voice_broker", "legacy-broker"),
     ("feeder", "legacy-feeder"),
@@ -216,7 +242,7 @@ class InventoryRoots:
     def claude_project_memory_roots(self) -> tuple[Path, ...]:
         projects = self.home / ".claude/projects"
         return _unique_paths(
-            projects / ("-" + str(path.absolute()).lstrip("/").replace("/", "-")) / "memory"
+            projects / _claude_project_slug(path) / "memory"
             for path in self.repository_paths()
         )
 
@@ -334,22 +360,42 @@ class InventoryRoots:
 
         return _unique_paths(
             self.repository_paths()
+            + self.claude_project_memory_roots()
             + (
-                self.home / ".dan",
-                self.home / ".jarvis",
+                self.home / ".dan/config.toml",
+                self.home / ".jarvis/jarvis.toml",
+                self.home / ".jarvis/bin",
+                self.home / ".jarvis/model_cache.json",
                 self.home / ".config/voice",
                 self.home / ".cache/supertonic3/custom_styles",
-                self.home / ".agents",
-                self.home / ".claude",
-                self.home / ".codex",
-                self.home / ".openclaw",
+                self.home / ".agents/skills",
+                self.home / ".agents/.skill-lock.json",
+                self.home / ".claude/skills",
+                self.home / ".claude/hooks",
+                self.home / ".claude/bin",
+                self.home / ".claude/agents",
+                self.home / ".claude/plugins/cache",
+                self.home / ".claude/settings.json",
+                self.home / ".claude/settings.local.json",
+                self.home / ".codex/skills",
+                self.home / ".codex/rules",
+                self.home / ".codex/plugins/cache",
+                self.home / ".codex/memories/skills",
+                self.home / ".codex/memories/MEMORY.md",
+                self.home / ".codex/AGENTS.md",
+                self.home / ".codex/config.toml",
+                self.home / ".openclaw/plugin-skills",
+                self.home / ".openclaw/workspace/skills",
+                self.home / ".openclaw/workspace/memory",
+                self.home / ".openclaw/openclaw.json",
                 self.home / "Library/LaunchAgents",
                 self.home / "Documents/summary.md",
                 self.home / "Documents/opinia-planu.md",
                 self.home / "Desktop/djdan-visualizer.html",
                 self.home / "AGENTS.md",
-                self.tmp_root,
+                self.home / ".claude/CLAUDE.md",
             )
+            + tuple(self.tmp_root / name for name in sorted(_DAN_TMP_ALLOWED_NAMES))
         )
 
     def is_required(self, path: Path) -> bool:
@@ -384,13 +430,17 @@ class InventoryReport:
     surfaces: Mapping[str, list[Mapping[str, object]]]
 
     def to_mapping(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "schema_version": self.schema_version,
             "generated_at": self.generated_at,
             "selected_base": dict(self.selected_base),
             "roots": dict(self.roots),
             "surfaces": {name: list(self.surfaces[name]) for name in SURFACE_NAMES},
         }
+        redacted = _redact_manifest_value(result)
+        if not isinstance(redacted, dict):  # pragma: no cover - structural invariant
+            raise TypeError("redacted manifest root must remain an object")
+        return redacted
 
 
 def _unique_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
@@ -404,6 +454,35 @@ def _unique_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
         seen.add(key)
         result.append(expanded)
     return tuple(result)
+
+
+def _claude_project_slug(path: Path) -> str:
+    """Return Claude's on-disk project key for an absolute repository path."""
+
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path.expanduser().absolute()))
+
+
+def _contains_high_confidence_secret(value: str) -> bool:
+    return any(pattern.search(value) for pattern in _HIGH_CONFIDENCE_SECRET_PATTERNS)
+
+
+def _redact_sensitive_text(value: str) -> str:
+    redacted = value
+    for pattern in _HIGH_CONFIDENCE_SECRET_PATTERNS:
+        redacted = pattern.sub("REDACTED", redacted)
+    return redacted
+
+
+def _redact_manifest_value(value: object) -> object:
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
+    if isinstance(value, Mapping):
+        return {key: _redact_manifest_value(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_redact_manifest_value(child) for child in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_manifest_value(child) for child in value)
+    return value
 
 
 def _error_payload(error_type: str, operation: str) -> dict[str, object]:
@@ -434,6 +513,7 @@ def _hash_regular_path(
     path: Path,
     *,
     expected: os.stat_result,
+    max_bytes: int | None = None,
 ) -> tuple[str | None, Mapping[str, object] | None]:
     flags = os.O_RDONLY
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -457,10 +537,21 @@ def _hash_regular_path(
             error = _error_payload("FileChangedDuringScan", "open")
         if opened is not None and error is None:
             digest = hashlib.sha256()
+            total = 0
             try:
                 while True:
-                    chunk = os.read(descriptor, 1024 * 1024)
+                    read_size = 1024 * 1024
+                    if max_bytes is not None:
+                        read_size = min(read_size, max_bytes + 1 - total)
+                    chunk = os.read(descriptor, read_size)
                     if not chunk:
+                        break
+                    total += len(chunk)
+                    if max_bytes is not None and total > max_bytes:
+                        error = _error_payload(
+                            "FileTooLargeDuringRead",
+                            "hash-size-limit",
+                        )
                         break
                     digest.update(chunk)
             except OSError as exc:
@@ -516,6 +607,14 @@ def _inside_allowed_roots(
     excluded_roots: Iterable[Path],
 ) -> bool:
     normalized = path.resolve(strict=False)
+    lowered_parts = {part.lower() for part in normalized.parts}
+    lowered_name = normalized.name.lower()
+    if lowered_parts & _PRIVACY_DENIED_COMPONENTS:
+        return False
+    if lowered_name == "history.jsonl" or (
+        lowered_name.startswith("session-") and lowered_name.endswith(".jsonl")
+    ):
+        return False
     if any(_is_under(normalized, excluded.resolve(strict=False)) for excluded in excluded_roots):
         return False
     return any(_is_under(normalized, root.resolve(strict=False)) for root in allowed_roots)
@@ -696,10 +795,18 @@ def inspect_path(
         elif target_size is not None and target_size > max_symlink_target_bytes:
             scope_decision = "target-too-large"
         elif target_stat is not None:
-            target_hash, error = _hash_regular_path(target, expected=target_stat)
+            target_hash, error = _hash_regular_path(
+                target,
+                expected=target_stat,
+                max_bytes=max_symlink_target_bytes,
+            )
             if error is not None:
                 link_status = "path-error"
-                scope_decision = "target-read-error"
+                scope_decision = (
+                    "target-too-large-during-read"
+                    if error.get("type") == "FileTooLargeDuringRead"
+                    else "target-read-error"
+                )
 
         if target_hash is not None:
             try:
@@ -927,9 +1034,22 @@ def _run(
     )
 
 
-def _git_output(runner: Runner, repo: Path, args: Sequence[str]) -> tuple[int, str]:
+_GIT_OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+
+
+def _is_git_object_id(value: str) -> bool:
+    return bool(_GIT_OBJECT_ID.fullmatch(value))
+
+
+def _git_output(runner: Runner, repo: Path, args: Sequence[str]) -> RunResult:
     result = _run(runner, ("git", "--no-optional-locks", "-C", str(repo), *args))
-    return result.returncode, result.stdout.strip()
+    return RunResult(
+        returncode=result.returncode,
+        stdout=result.stdout.strip(),
+        stdout_bytes=result.stdout_bytes,
+        decode_error=result.decode_error,
+        error_type=result.error_type,
+    )
 
 
 def _sha256_text(value: str) -> str:
@@ -940,43 +1060,67 @@ def _git_diff_sha256(
     runner: Runner,
     repo: Path,
     args: Sequence[str],
-) -> tuple[str | None, str]:
+) -> tuple[str | None, str, RunResult]:
     result = _run(runner, ("git", "--no-optional-locks", "-C", str(repo), *args))
-    if result.returncode != 0:
-        return None, ""
-    return hashlib.sha256(result.stdout_bytes).hexdigest(), result.stdout
+    if result.returncode != 0 or result.decode_error or result.error_type is not None:
+        return None, "", result
+    return hashlib.sha256(result.stdout_bytes).hexdigest(), result.stdout, result
 
 
-def _parse_porcelain_v1_z(output: str, repo: Path) -> list[Mapping[str, object]]:
-    chunks = output.split("\0")
+def _parse_porcelain_v1_z(
+    output: str,
+    repo: Path,
+) -> tuple[list[Mapping[str, object]], Mapping[str, object] | None]:
+    if not output:
+        return [], None
+    if not output.endswith("\0"):
+        return [], _error_payload("MalformedGitStatusRecord", "git-status-parse")
+    chunks = output[:-1].split("\0")
     records: list[Mapping[str, object]] = []
     index = 0
     while index < len(chunks):
         chunk = chunks[index]
         index += 1
-        if len(chunk) < 4:
-            continue
+        if len(chunk) < 4 or chunk[2] != " " or not chunk[3:]:
+            return [], _error_payload("MalformedGitStatusRecord", "git-status-parse")
         status = chunk[:2]
+        if any(character not in " MTADRCU?!" for character in status):
+            return [], _error_payload("MalformedGitStatusRecord", "git-status-parse")
         relative_path = chunk[3:]
         original_path: str | None = None
         if "R" in status or "C" in status:
-            if index < len(chunks) and chunks[index]:
-                original_path = chunks[index]
-                index += 1
+            if index >= len(chunks) or not chunks[index]:
+                return [], _error_payload("MalformedGitStatusRecord", "git-status-parse")
+            original_path = chunks[index]
+            index += 1
 
         item = inspect_path(repo / relative_path)
         record: dict[str, object] = {
             "status": status,
             "path": relative_path,
+            "path_status": item.status,
             "kind": item.kind,
             "sha256": item.sha256,
         }
+        if item.status == "missing":
+            if "D" in status:
+                record["path_status"] = "deleted"
+            else:
+                record["path_status"] = "path-error"
+                record["error"] = _error_payload("WipPathMissing", "git-wip-inspect")
+        elif item.error is not None:
+            record["error"] = dict(item.error)
+        if item.symlink is not None:
+            record["symlink"] = dict(item.symlink)
         if original_path is not None:
             record["original_path"] = original_path
         if item.target is not None:
             record["target"] = item.target
         records.append(record)
-    return sorted(records, key=lambda row: (str(row["path"]), str(row["status"])))
+    return (
+        sorted(records, key=lambda row: (str(row["path"]), str(row["status"]))),
+        None,
+    )
 
 
 def _untracked_tree_sha256(entries: Iterable[Mapping[str, object]]) -> str:
@@ -1033,12 +1177,146 @@ def _repository_record(
     result = item.to_mapping()
     if item.status != "present":
         return result
-    code, top = _git_output(runner, path, ("rev-parse", "--show-toplevel"))
-    if code != 0:
+    top_result = _git_output(runner, path, ("rev-parse", "--show-toplevel"))
+    git_marker = path / ".git"
+    if (
+        top_result.returncode != 0
+        and not top_result.decode_error
+        and top_result.error_type is None
+        and not git_marker.exists()
+    ):
         result["status"] = "present-not-git"
         return result
-    head_code, head = _git_output(runner, path, ("rev-parse", "HEAD"))
-    _, branch = _git_output(runner, path, ("branch", "--show-current"))
+    if (
+        top_result.returncode != 0
+        or top_result.decode_error
+        or top_result.error_type is not None
+        or not top_result.stdout
+        or not Path(top_result.stdout).is_absolute()
+        or os.path.normpath(top_result.stdout) != top_result.stdout
+    ):
+        result["status"] = "git-toplevel-probe-error"
+        result["metadata"] = {
+            "branch": None,
+            "head": None,
+            "head_state": "probe-error",
+            "toplevel": None,
+            "probe": "git rev-parse --show-toplevel",
+            "returncode": top_result.returncode,
+        }
+        result["required"] = required
+        top_error_type = (
+            "UnicodeDecodeError"
+            if top_result.decode_error
+            else top_result.error_type
+            or ("NonZeroExit" if top_result.returncode != 0 else "MalformedGitPath")
+        )
+        result["error"] = _error_payload(top_error_type, "git-toplevel")
+        return result
+    top = top_result.stdout
+
+    branch_result = _git_output(runner, path, ("branch", "--show-current"))
+    if (
+        branch_result.returncode != 0
+        or branch_result.decode_error
+        or branch_result.error_type is not None
+        or _has_control_characters(branch_result.stdout)
+    ):
+        result["status"] = "git-branch-probe-error"
+        result["metadata"] = {
+            "branch": None,
+            "head": None,
+            "head_state": "probe-error",
+            "toplevel": top,
+            "probe": "git branch --show-current",
+            "returncode": branch_result.returncode,
+        }
+        result["required"] = required
+        result["error"] = _error_payload(
+            "UnicodeDecodeError"
+            if branch_result.decode_error
+            else branch_result.error_type
+            or (
+                "MalformedGitBranchName"
+                if _has_control_characters(branch_result.stdout)
+                else "NonZeroExit"
+            ),
+            "git-branch",
+        )
+        return result
+    branch = branch_result.stdout
+
+    head_result = _git_output(runner, path, ("rev-parse", "HEAD"))
+    head: str | None = None
+    head_state = "resolved"
+    head_error_type: str | None = None
+    if (
+        head_result.returncode == 0
+        and not head_result.decode_error
+        and head_result.error_type is None
+    ):
+        if _is_git_object_id(head_result.stdout):
+            head = head_result.stdout
+        else:
+            head_state = "probe-error"
+            head_error_type = "MalformedGitObjectId"
+    elif head_result.decode_error:
+        head_state = "probe-error"
+        head_error_type = "UnicodeDecodeError"
+    elif head_result.error_type is not None:
+        head_state = "probe-error"
+        head_error_type = head_result.error_type
+    else:
+        symbolic = _git_output(runner, path, ("symbolic-ref", "--quiet", "HEAD"))
+        if (
+            symbolic.returncode == 0
+            and not symbolic.decode_error
+            and symbolic.error_type is None
+            and symbolic.stdout.startswith("refs/heads/")
+            and not _has_control_characters(symbolic.stdout)
+        ):
+            referenced_head = _git_output(
+                runner,
+                path,
+                ("show-ref", "--verify", "--quiet", symbolic.stdout),
+            )
+            if (
+                referenced_head.returncode == 1
+                and not referenced_head.decode_error
+                and referenced_head.error_type is None
+            ):
+                head_state = "unborn"
+            else:
+                head_state = "probe-error"
+                head_error_type = (
+                    "UnicodeDecodeError"
+                    if referenced_head.decode_error
+                    else referenced_head.error_type or "NonZeroExit"
+                )
+        else:
+            head_state = "probe-error"
+            head_error_type = (
+                "UnicodeDecodeError"
+                if symbolic.decode_error
+                else symbolic.error_type or "NonZeroExit"
+            )
+    if head_state == "probe-error":
+        result["status"] = "git-head-probe-error"
+        result["metadata"] = {
+            "branch": branch or None,
+            "head": None,
+            "head_state": head_state,
+            "toplevel": top,
+            "probe": "git rev-parse HEAD",
+            "returncode": head_result.returncode,
+        }
+        result["required"] = required
+        result["error"] = _error_payload(
+            head_error_type or "NonZeroExit",
+            "git-head",
+        )
+        return result
+
     pathspecs = _repository_exclusion_pathspecs(path, excludes)
     status_result = _run(
         runner,
@@ -1059,7 +1337,8 @@ def _repository_record(
         result["status"] = "git-status-probe-error"
         result["metadata"] = {
             "branch": branch or None,
-            "head": head if head_code == 0 and head else None,
+            "head": head,
+            "head_state": head_state,
             "toplevel": top,
             "probe": "git status --porcelain=v1 -z",
             "returncode": status_result.returncode,
@@ -1075,80 +1354,89 @@ def _repository_record(
         )
         return result
     porcelain = status_result.stdout
-    wip_entries = _parse_porcelain_v1_z(porcelain, path)
-    staged_sha, staged_patch = _git_diff_sha256(
+    wip_entries, porcelain_error = _parse_porcelain_v1_z(porcelain, path)
+    if porcelain_error is not None:
+        result["status"] = "git-status-probe-error"
+        result["metadata"] = {
+            "branch": branch or None,
+            "head": head,
+            "head_state": head_state,
+            "toplevel": top,
+            "probe": "git status --porcelain=v1 -z",
+            "returncode": status_result.returncode,
+        }
+        result["required"] = required
+        result["error"] = porcelain_error
+        return result
+
+    staged_args = (
+        "diff",
+        "--cached",
+        "--binary",
+        "--full-index",
+        "--no-ext-diff",
+        "--no-textconv",
+        *(("HEAD",) if head_state == "resolved" else ()),
+        "--",
+        *pathspecs,
+    )
+    staged_sha, staged_patch, staged_result = _git_diff_sha256(
+        runner,
+        path,
+        staged_args,
+    )
+    unstaged_sha, unstaged_patch, unstaged_result = _git_diff_sha256(
         runner,
         path,
         (
             "diff",
-            "--cached",
             "--binary",
             "--full-index",
             "--no-ext-diff",
             "--no-textconv",
-            "HEAD",
             "--",
             *pathspecs,
         ),
     )
-    if staged_sha is None and head_code != 0:
-        staged_sha, staged_patch = _git_diff_sha256(
+    tracked_result = RunResult(0, "", b"")
+    if head_state == "resolved":
+        tracked_sha, _, tracked_result = _git_diff_sha256(
             runner,
             path,
             (
                 "diff",
-                "--cached",
                 "--binary",
                 "--full-index",
                 "--no-ext-diff",
                 "--no-textconv",
+                "HEAD",
                 "--",
                 *pathspecs,
             ),
         )
-    unstaged_sha, unstaged_patch = _git_diff_sha256(
-        runner,
-        path,
-        (
-            "diff",
-            "--binary",
-            "--full-index",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--",
-            *pathspecs,
-        ),
-    )
-    tracked_sha, _ = _git_diff_sha256(
-        runner,
-        path,
-        (
-            "diff",
-            "--binary",
-            "--full-index",
-            "--no-ext-diff",
-            "--no-textconv",
-            "HEAD",
-            "--",
-            *pathspecs,
-        ),
-    )
-    tracked_basis = "HEAD"
-    if tracked_sha is None and head_code != 0:
-        tracked_sha = _sha256_text(f"staged\0{staged_patch}\0unstaged\0{unstaged_patch}")
+        tracked_basis = "HEAD"
+    else:
+        tracked_sha = None
         tracked_basis = "unborn-staged-and-unstaged"
+        if staged_sha is not None and unstaged_sha is not None:
+            tracked_sha = _sha256_text(
+                f"staged\0{staged_patch}\0unstaged\0{unstaged_patch}"
+            )
 
     diff_probe_error = any(
         digest is None for digest in (staged_sha, unstaged_sha, tracked_sha)
     )
-    result["status"] = (
-        "git-diff-probe-error"
-        if diff_probe_error
-        else ("dirty" if wip_entries else "clean")
-    )
+    wip_probe_error = any("error" in entry for entry in wip_entries)
+    if diff_probe_error:
+        result["status"] = "git-diff-probe-error"
+    elif wip_probe_error:
+        result["status"] = "git-wip-inspection-error"
+    else:
+        result["status"] = "dirty" if wip_entries else "clean"
     result["metadata"] = {
         "branch": branch or None,
-        "head": head if head_code == 0 and head else None,
+        "head": head,
+        "head_state": head_state,
         "toplevel": top,
         "dirty_entry_count": len(wip_entries),
         "wip_entries": wip_entries,
@@ -1160,7 +1448,24 @@ def _repository_record(
     }
     if diff_probe_error:
         result["required"] = required
-        result["error"] = _error_payload("NonZeroExit", "git-diff")
+        failed_result = next(
+            probe
+            for digest, probe in (
+                (staged_sha, staged_result),
+                (unstaged_sha, unstaged_result),
+                (tracked_sha, tracked_result),
+            )
+            if digest is None
+        )
+        result["error"] = _error_payload(
+            "UnicodeDecodeError"
+            if failed_result.decode_error
+            else failed_result.error_type or "NonZeroExit",
+            "git-diff",
+        )
+    elif wip_probe_error:
+        result["required"] = required
+        result["error"] = _error_payload("WipInspectionError", "git-wip-inspection")
     return result
 
 
@@ -1171,8 +1476,54 @@ def _git_ref_records(
 ) -> list[Mapping[str, object]]:
     records: list[Mapping[str, object]] = []
     for repo in repositories:
-        code, _ = _git_output(runner, repo, ("rev-parse", "--git-dir"))
-        if code != 0:
+        try:
+            repo_stat = os.lstat(repo)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            records.append(
+                {
+                    "kind": "probe_error",
+                    "repository": str(repo.absolute()),
+                    "status": "git-ref-probe-error",
+                    "probe": "git rev-parse --git-dir",
+                    "required": True,
+                    "error": _error_payload(type(exc).__name__, "git-ref-repository-lstat"),
+                }
+            )
+            continue
+        if not stat.S_ISDIR(repo_stat.st_mode):
+            continue
+        git_dir_result = _git_output(runner, repo, ("rev-parse", "--git-dir"))
+        if (
+            git_dir_result.returncode != 0
+            and not git_dir_result.decode_error
+            and git_dir_result.error_type is None
+            and not (repo / ".git").exists()
+        ):
+            continue
+        if (
+            git_dir_result.returncode != 0
+            or git_dir_result.decode_error
+            or git_dir_result.error_type is not None
+            or not git_dir_result.stdout
+        ):
+            records.append(
+                {
+                    "kind": "probe_error",
+                    "repository": str(repo.absolute()),
+                    "status": "git-ref-probe-error",
+                    "probe": "git rev-parse --git-dir",
+                    "returncode": git_dir_result.returncode,
+                    "required": True,
+                    "error": _error_payload(
+                        "UnicodeDecodeError"
+                        if git_dir_result.decode_error
+                        else git_dir_result.error_type or "NonZeroExit",
+                        "git-rev-parse-git-dir",
+                    ),
+                }
+            )
             continue
         refs_result = _run(
             runner,
@@ -1210,12 +1561,52 @@ def _git_ref_records(
             )
             continue
         refs = refs_result.stdout
-        base_code, base_sha = _git_output(runner, repo, ("rev-parse", "--verify", base_ref))
-        if base_code != 0:
-            _, base_sha = _git_output(runner, repo, ("rev-parse", "HEAD"))
+        base_result = _git_output(runner, repo, ("rev-parse", "--verify", base_ref))
+        if (
+            base_result.returncode != 0
+            or base_result.decode_error
+            or base_result.error_type is not None
+            or not _is_git_object_id(base_result.stdout)
+        ):
+            base_result = _git_output(runner, repo, ("rev-parse", "HEAD"))
+        base_sha = (
+            base_result.stdout
+            if base_result.returncode == 0
+            and not base_result.decode_error
+            and base_result.error_type is None
+            and _is_git_object_id(base_result.stdout)
+            else ""
+        )
+        if refs.strip() and not base_sha:
+            records.append(
+                {
+                    "kind": "probe_error",
+                    "repository": str(repo.absolute()),
+                    "status": "git-ref-probe-error",
+                    "probe": "git rev-parse --verify base",
+                    "returncode": base_result.returncode,
+                    "required": True,
+                    "error": _error_payload(
+                        "UnicodeDecodeError"
+                        if base_result.decode_error
+                        else base_result.error_type
+                        or (
+                            "MalformedGitObjectId"
+                            if base_result.returncode == 0
+                            else "NonZeroExit"
+                        ),
+                        "git-ref-base",
+                    ),
+                }
+            )
+            continue
         for line_index, line in enumerate(refs.splitlines(), start=1):
             parts = line.split("\0")
-            if len(parts) < 2:
+            if (
+                len(parts) != 3
+                or not parts[0].startswith("refs/")
+                or not _is_git_object_id(parts[1])
+            ):
                 records.append(
                     {
                         "kind": "probe_error",
@@ -1232,16 +1623,26 @@ def _git_ref_records(
                 )
                 continue
             ref_name, head = parts[:2]
-            upstream = parts[2] if len(parts) > 2 else ""
+            upstream = parts[2]
             unreachable: list[str] = []
-            if base_sha:
-                unique_code, unique_output = _git_output(
-                    runner,
-                    repo,
-                    ("rev-list", ref_name, "--not", base_sha),
-                )
-                if unique_code == 0 and unique_output:
-                    unreachable = unique_output.splitlines()
+            unique_result = _git_output(
+                runner,
+                repo,
+                ("rev-list", ref_name, "--not", base_sha),
+            )
+            if (
+                unique_result.returncode == 0
+                and not unique_result.decode_error
+                and unique_result.error_type is None
+            ):
+                unreachable = unique_result.stdout.splitlines() if unique_result.stdout else []
+                if not all(_is_git_object_id(value) for value in unreachable):
+                    unique_result = RunResult(
+                        returncode=unique_result.returncode,
+                        stdout=unique_result.stdout,
+                        stdout_bytes=unique_result.stdout_bytes,
+                        error_type="MalformedGitObjectId",
+                    )
             record: dict[str, object] = {
                 "repository": str(repo.absolute()),
                 "ref": ref_name,
@@ -1250,11 +1651,20 @@ def _git_ref_records(
                 "chosen_base": base_sha or None,
                 "unreachable_from_base": unreachable,
             }
-            if base_sha and unique_code != 0:
+            if (
+                unique_result.returncode != 0
+                or unique_result.decode_error
+                or unique_result.error_type is not None
+            ):
                 record["status"] = "git-ref-ancestry-probe-error"
-                record["returncode"] = unique_code
+                record["returncode"] = unique_result.returncode
                 record["required"] = True
-                record["error"] = _error_payload("NonZeroExit", "git-rev-list")
+                record["error"] = _error_payload(
+                    "UnicodeDecodeError"
+                    if unique_result.decode_error
+                    else unique_result.error_type or "NonZeroExit",
+                    "git-rev-list",
+                )
             records.append(record)
     return sorted(
         records,
@@ -1301,7 +1711,7 @@ def _process_executable(command: str) -> str:
         return "unknown"
     executable = Path(argv[0]).name or "unknown"
     sanitized = _SAFE_EXECUTABLE.sub("_", executable)
-    return sanitized[:128] or "unknown"
+    return _redact_sensitive_text(sanitized[:128] or "unknown")
 
 
 def _process_records(
@@ -1419,6 +1829,7 @@ def _launchd_records(runner: Runner, roots: InventoryRoots) -> list[Mapping[str,
                     returncode=result.returncode,
                 )
             )
+            return records
         for line_index, line in enumerate(result.stdout.splitlines(), start=1):
             fields = line.split(maxsplit=2)
             label = fields[2] if len(fields) > 2 else line.strip()
@@ -1434,11 +1845,35 @@ def _launchd_records(runner: Runner, roots: InventoryRoots) -> list[Mapping[str,
                     )
                 )
                 continue
+            pid_text, exit_text, _ = fields
+            try:
+                pid = None if pid_text == "-" else int(pid_text)
+                last_exit_status = None if exit_text == "-" else int(exit_text)
+            except ValueError:
+                records.append(
+                    _probe_error_record(
+                        "launchctl-list",
+                        error_type="MalformedLaunchdRecord",
+                        required=True,
+                        line_index=line_index,
+                    )
+                )
+                continue
+            if pid is not None and pid <= 0:
+                records.append(
+                    _probe_error_record(
+                        "launchctl-list",
+                        error_type="MalformedLaunchdRecord",
+                        required=True,
+                        line_index=line_index,
+                    )
+                )
+                continue
             records.append(
                 {
                     "kind": "launchd",
-                    "pid": None if not fields or fields[0] == "-" else fields[0],
-                    "last_exit_status": fields[1] if len(fields) > 1 else None,
+                    "pid": pid,
+                    "last_exit_status": last_exit_status,
                     "label": label,
                     "status": "loaded",
                 }
@@ -1851,11 +2286,60 @@ def _is_active_instruction(path: Path) -> bool:
     return path.name in {"AGENTS.md", "CLAUDE.md", "SKILL.md"} or path.suffix == ".rules"
 
 
-def _line_invokes_candidate(line: str, candidate: Path) -> bool:
-    if str(candidate) not in line and candidate.name not in line:
+def _reference_argument_matches(
+    argument: str,
+    candidate: Path,
+    *,
+    source: Path | None,
+    candidates: Iterable[Path],
+) -> bool:
+    cleaned = argument.strip("`'\"()[]{}:,;")
+    if not cleaned or "/" not in cleaned:
         return False
+    candidate_normalized = candidate.expanduser().resolve(strict=False)
+
+    def matches_candidate(reference_path: Path) -> bool:
+        normalized = reference_path.resolve(strict=False)
+        if normalized == candidate_normalized:
+            return True
+        try:
+            candidate_stat = os.lstat(candidate)
+        except OSError:
+            return False
+        return stat.S_ISDIR(candidate_stat.st_mode) and _is_under(
+            normalized,
+            candidate_normalized,
+        )
+
+    reference = Path(cleaned)
+    if reference.is_absolute():
+        return matches_candidate(reference)
+    if source is not None:
+        resolved_from_source = source.parent / reference
+        if matches_candidate(resolved_from_source):
+            return True
+    normalized_relative = Path(os.path.normpath(cleaned)).as_posix().lstrip("./")
+    if not normalized_relative or normalized_relative == candidate.name:
+        return False
+    matches = {
+        path.expanduser().resolve(strict=False)
+        for path in candidates
+        if path.expanduser().resolve(strict=False).as_posix().endswith(
+            f"/{normalized_relative}"
+        )
+    }
+    return matches == {candidate_normalized}
+
+
+def _line_invokes_candidate(
+    line: str,
+    candidate: Path,
+    *,
+    source: Path | None = None,
+    candidates: Iterable[Path] = (),
+) -> bool:
     lowered = line.lower()
-    return any(
+    if not any(
         marker in lowered
         for marker in (
             "run:",
@@ -1869,22 +2353,63 @@ def _line_invokes_candidate(line: str, candidate: Path) -> bool:
             "command:",
             "$(",
         )
+    ):
+        return False
+    try:
+        arguments = shlex.split(line, posix=True)
+    except ValueError:
+        arguments = line.split()
+    candidate_set = tuple(candidates) or (candidate,)
+    return any(
+        _reference_argument_matches(
+            argument,
+            candidate,
+            source=source,
+            candidates=candidate_set,
+        )
+        for argument in arguments
     )
 
 
-def _payload_invokes_candidate(payload: bytes, candidate: Path) -> bool:
+def _payload_invokes_candidate(
+    payload: bytes,
+    candidate: Path,
+    *,
+    source: Path | None = None,
+    candidates: Iterable[Path] = (),
+) -> bool:
     text = payload.decode("utf-8", errors="ignore")
-    return any(_line_invokes_candidate(line, candidate) for line in text.splitlines())
+    return any(
+        _line_invokes_candidate(
+            line,
+            candidate,
+            source=source,
+            candidates=candidates,
+        )
+        for line in text.splitlines()
+    )
 
 
-def _process_invokes_candidate(observation: ProcessObservation, candidate: Path) -> bool:
-    if str(candidate) in observation.command:
-        return True
+def _process_invokes_candidate(
+    observation: ProcessObservation,
+    candidate: Path,
+    *,
+    candidates: Iterable[Path] = (),
+) -> bool:
     try:
         argv = shlex.split(observation.command, posix=True)
     except ValueError:
         argv = observation.command.split()
-    return candidate.name in {Path(argument).name for argument in argv}
+    candidate_set = tuple(candidates) or (candidate,)
+    return any(
+        _reference_argument_matches(
+            argument,
+            candidate,
+            source=None,
+            candidates=candidate_set,
+        )
+        for argument in argv
+    )
 
 
 def _call_evidence_kind(source: Path) -> str | None:
@@ -1910,10 +2435,12 @@ def _runtime_activity_evidence(
     candidate: Path,
     scanned_files: Iterable[ScannedReferenceFile],
     process_observations: Iterable[ProcessObservation],
+    candidate_paths: Iterable[Path] = (),
 ) -> tuple[Mapping[str, str], ...]:
     evidence: list[Mapping[str, str]] = []
+    candidates = tuple(candidate_paths) or (candidate,)
     for process in process_observations:
-        if _process_invokes_candidate(process, candidate):
+        if _process_invokes_candidate(process, candidate, candidates=candidates):
             evidence.append(
                 {
                     "kind": "process",
@@ -1921,7 +2448,12 @@ def _runtime_activity_evidence(
                 }
             )
     for source in scanned_files:
-        if source.path == candidate or not _payload_invokes_candidate(source.payload, candidate):
+        if source.path == candidate or not _payload_invokes_candidate(
+            source.payload,
+            candidate,
+            source=source.path,
+            candidates=candidates,
+        ):
             continue
         evidence_kind = _call_evidence_kind(source.path)
         if evidence_kind is not None:
@@ -1938,8 +2470,14 @@ def _classify_reference(
     roots: InventoryRoots,
     scanned_files: Iterable[ScannedReferenceFile],
     process_observations: Iterable[ProcessObservation],
+    candidate_paths: Iterable[Path] = (),
 ) -> tuple[str, tuple[Mapping[str, str], ...]]:
-    runtime_evidence = _runtime_activity_evidence(path, scanned_files, process_observations)
+    runtime_evidence = _runtime_activity_evidence(
+        path,
+        scanned_files,
+        process_observations,
+        candidate_paths,
+    )
     if runtime_evidence:
         return "active-runtime-producer", runtime_evidence
     if _is_memory_reference(path, roots):
@@ -2053,12 +2591,14 @@ def _producer_records(
 
     process_snapshot = tuple(process_observations)
     scanned_snapshot = tuple(scanned_files)
+    candidate_paths = tuple(path for path, _, _ in signature_candidates)
     for path, signatures, required in signature_candidates:
         reference_class, activity_evidence = _classify_reference(
             path,
             roots,
             scanned_snapshot,
             process_snapshot,
+            candidate_paths,
         )
         item = inspect_path(
             path,
@@ -2293,7 +2833,12 @@ def _find_consumers(
             continue
         if not any(needle and needle in scanned.payload for needle in needles):
             continue
-        if not _payload_invokes_candidate(scanned.payload, candidate):
+        if not _payload_invokes_candidate(
+            scanned.payload,
+            candidate,
+            source=scanned.path,
+            candidates=(candidate,),
+        ):
             continue
         evidence_kind = _call_evidence_kind(path)
         if evidence_kind is None:
@@ -2302,7 +2847,7 @@ def _find_consumers(
         consumers.append(source)
         evidence.append({"kind": evidence_kind, "source": source})
     for process in process_records:
-        if _process_invokes_candidate(process, candidate):
+        if _process_invokes_candidate(process, candidate, candidates=(candidate,)):
             consumers.append(f"process:{process.pid}")
             evidence.append(
                 {
@@ -2330,7 +2875,7 @@ def _runtime_path_records(roots: InventoryRoots) -> list[Mapping[str, object]]:
     candidates.extend(
         _directory_named_paths(
             roots.tmp_root,
-            predicate=lambda name: name.startswith("dan-"),
+            predicate=lambda name: name in _DAN_TMP_ALLOWED_NAMES,
             error_sink=discovery_errors,
             required=roots.is_required(roots.tmp_root),
         )
@@ -2520,9 +3065,39 @@ class InventoryBuilder:
             )
             for path in repository_paths
         ]
-        _, branch = _git_output(self._runner, self._roots.repo_root, ("branch", "--show-current"))
-        _, head = _git_output(self._runner, self._roots.repo_root, ("rev-parse", "HEAD"))
+        selected_repository = next(
+            row
+            for row in repositories
+            if row.get("path") == str(self._roots.repo_root.absolute())
+        )
+        selected_metadata = selected_repository.get("metadata", {})
+        if not isinstance(selected_metadata, Mapping):
+            selected_metadata = {}
+        branch = str(selected_metadata.get("branch") or "")
+        head_value = selected_metadata.get("head")
+        head = head_value if isinstance(head_value, str) else None
+        head_state_value = selected_metadata.get("head_state")
+        if isinstance(head_state_value, str):
+            head_state = head_state_value
+        elif selected_repository.get("status") == "present-not-git":
+            head_state = "not-git"
+        else:
+            head_state = "probe-error"
         selected_base_ref = branch or "HEAD"
+        selected_base: dict[str, object] = {
+            "repository": str(self._roots.repo_root.absolute()),
+            "ref": selected_base_ref,
+            "head": head,
+            "head_state": head_state,
+            "required": head_state != "not-git",
+        }
+        selected_error = selected_repository.get("error")
+        if head_state == "probe-error":
+            selected_base["error"] = (
+                dict(selected_error)
+                if isinstance(selected_error, Mapping)
+                else _error_payload("UnresolvedGitHead", "selected-base")
+            )
         processes, process_observations = _process_records(self._runner)
         producers, request_formats, scanned_files = _producer_records(
             self._roots,
@@ -2604,11 +3179,7 @@ class InventoryBuilder:
         return InventoryReport(
             schema_version=SCHEMA_VERSION,
             generated_at=datetime.now(UTC).isoformat(),
-            selected_base={
-                "repository": str(self._roots.repo_root.absolute()),
-                "ref": selected_base_ref,
-                "head": head or None,
-            },
+            selected_base=selected_base,
             roots={
                 "home": str(self._roots.home.absolute()),
                 "repo_root": str(self._roots.repo_root.absolute()),
@@ -2630,24 +3201,68 @@ def build_inventory(
     return InventoryBuilder(roots=roots, runner=runner).collect().to_mapping()
 
 
-def write_manifest_atomic(manifest: Mapping[str, object], destination: Path) -> None:
+def _canonical_manifest_path(home: Path) -> Path:
+    return (home.expanduser() / CANONICAL_MANIFEST_RELATIVE_PATH).absolute()
+
+
+def _manifest_directory_has_symlink(directory: Path) -> bool:
+    return any(path.is_symlink() for path in (directory, *directory.parents))
+
+
+def _ensure_manifest_directory(
+    destination: Path,
+    *,
+    canonical_home: Path | None,
+) -> Path:
+    destination = destination.expanduser().absolute()
+    directory = destination.parent
+    if _manifest_directory_has_symlink(directory):
+        raise ValueError("manifest directory must not be a symlink")
+    canonical = _canonical_manifest_path(canonical_home or Path.home())
+    if not directory.exists():
+        if destination != canonical:
+            raise FileNotFoundError(
+                f"custom manifest parent must already exist: {directory}"
+            )
+        home = (canonical_home or Path.home()).expanduser().absolute()
+        if not home.exists() or not home.is_dir():
+            raise NotADirectoryError(f"manifest home is not a directory: {home}")
+        current = home
+        for part in CANONICAL_MANIFEST_RELATIVE_PATH.parent.parts:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError("manifest directory must not be a symlink")
+            if current.exists():
+                if not current.is_dir():
+                    raise NotADirectoryError(
+                        f"manifest parent is not a directory: {current}"
+                    )
+                continue
+            current.mkdir(mode=0o700)
+            os.chmod(current, 0o700)
+    if not directory.is_dir():
+        raise NotADirectoryError(f"manifest parent is not a directory: {directory}")
+    directory_mode = os.lstat(directory).st_mode & 0o777
+    if directory_mode != 0o700:
+        raise PermissionError(
+            f"manifest directory mode must be 0700, got {directory_mode:04o}: {directory}"
+        )
+    return directory
+
+
+def write_manifest_atomic(
+    manifest: Mapping[str, object],
+    destination: Path,
+    *,
+    canonical_home: Path | None = None,
+) -> None:
     """Write mode 0600 through a sibling temporary file and ``os.replace``."""
 
     destination = destination.expanduser().absolute()
-    directory = destination.parent
-    if any(path.is_symlink() for path in (directory, *directory.parents)):
-        raise ValueError("manifest directory must not be a symlink")
-    if directory.exists():
-        if not directory.is_dir():
-            raise NotADirectoryError(f"manifest parent is not a directory: {directory}")
-        directory_mode = directory.stat().st_mode & 0o777
-        if directory_mode != 0o700:
-            raise PermissionError(
-                f"manifest directory mode must be 0700, got {directory_mode:04o}: {directory}"
-            )
-    else:
-        directory.mkdir(parents=True, mode=0o700)
-        os.chmod(directory, 0o700)
+    directory = _ensure_manifest_directory(
+        destination,
+        canonical_home=canonical_home,
+    )
     file_descriptor, temporary_name = tempfile.mkstemp(
         dir=directory,
         prefix=f".{destination.name}.",
@@ -2674,16 +3289,10 @@ def write_manifest_atomic(manifest: Mapping[str, object], destination: Path) -> 
 
 
 def _prepare_canonical_manifest_directory(home: Path, destination: Path) -> None:
-    canonical = (home.expanduser() / CANONICAL_MANIFEST_RELATIVE_PATH).absolute()
+    canonical = _canonical_manifest_path(home)
     if destination != canonical:
         return
-    directory = destination.parent
-    if any(path.is_symlink() for path in (directory, *directory.parents)):
-        raise ValueError("manifest directory must not be a symlink")
-    if directory.exists() and not directory.is_dir():
-        raise NotADirectoryError(f"manifest parent is not a directory: {directory}")
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(directory, 0o700)
+    _ensure_manifest_directory(destination, canonical_home=home)
 
 
 def _contains_key(value: object, forbidden: str) -> bool:
@@ -2700,7 +3309,21 @@ def _contains_key(value: object, forbidden: str) -> bool:
 
 
 _ROOT_FIELDS = {"schema_version", "generated_at", "selected_base", "roots", "surfaces"}
-_SELECTED_BASE_FIELDS = {"repository", "ref", "head"}
+_SELECTED_BASE_FIELDS = {
+    "repository",
+    "ref",
+    "head",
+    "head_state",
+    "required",
+    "error",
+}
+_SELECTED_BASE_REQUIRED_FIELDS = {
+    "repository",
+    "ref",
+    "head",
+    "head_state",
+    "required",
+}
 _ROOTS_FIELDS = {"home", "repo_root", "tmp_root", "excluded", "production"}
 _PATH_FIELDS = {
     "path",
@@ -2788,6 +3411,7 @@ _METADATA_FIELDS: Mapping[str, set[str]] = {
     "repositories": {
         "branch",
         "head",
+        "head_state",
         "toplevel",
         "probe",
         "returncode",
@@ -2809,7 +3433,17 @@ _METADATA_FIELDS: Mapping[str, set[str]] = {
     "input_materials": {"size_bytes", "mode", "decision", "source_root"},
     "launchd": {"size_bytes", "mode"},
 }
-_WIP_FIELDS = {"status", "path", "kind", "sha256", "original_path", "target", "error", "symlink"}
+_WIP_FIELDS = {
+    "status",
+    "path_status",
+    "path",
+    "kind",
+    "sha256",
+    "original_path",
+    "target",
+    "error",
+    "symlink",
+}
 _ERROR_FIELDS = {"type", "operation", "resolved"}
 _SYMLINK_FIELDS = {
     "raw_target",
@@ -2866,6 +3500,7 @@ _SURFACE_STRING_FIELDS = {
     "executable",
     "format",
     "head",
+    "head_state",
     "id",
     "journal_mode",
     "kind",
@@ -2922,6 +3557,100 @@ _NULLABLE_METADATA_STRING_FIELDS = {
     "tracked_diff_sha256",
     "unstaged_diff_sha256",
 }
+_KIND_ENUM = {
+    "database",
+    "directory",
+    "file",
+    "launchd",
+    "path_error",
+    "probe_error",
+    "process",
+    "symlink",
+}
+_STATUS_ENUM = {
+    "active-source",
+    "archive/do-not-copy",
+    "broken",
+    "clean",
+    "deleted",
+    "dirty",
+    "discovered",
+    "git-branch-probe-error",
+    "git-diff-probe-error",
+    "git-head-probe-error",
+    "git-ref-ancestry-probe-error",
+    "git-ref-probe-error",
+    "git-status-probe-error",
+    "git-toplevel-probe-error",
+    "git-wip-inspection-error",
+    "input-material",
+    "loaded",
+    "missing",
+    "path-error",
+    "present",
+    "present-not-git",
+    "probe-error",
+    "running",
+    "runtime-contract",
+    "sqlite-probe-error",
+}
+_HEAD_STATES = {"resolved", "unborn", "not-git", "probe-error"}
+_SYMLINK_TARGET_STATES = {"broken", "changed", "error", "existing"}
+_SYMLINK_TARGET_KINDS = {"directory", "file", "other", "unknown"}
+_SYMLINK_SCOPE_DECISIONS = {
+    "allowed-nonregular-target",
+    "broken-target",
+    "hash-allowed-regular-target",
+    "reject-outside-allowed-roots",
+    "scope-normalization-error",
+    "target-changed-during-scan",
+    "target-read-error",
+    "target-too-large",
+    "target-too-large-during-read",
+}
+
+
+def _has_control_characters(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _validate_string_privacy(
+    value: object,
+    location: str,
+    errors: list[str],
+) -> None:
+    if isinstance(value, str):
+        if _has_control_characters(value):
+            errors.append(f"{location} contains control characters")
+        if _contains_high_confidence_secret(value):
+            errors.append(f"{location} contains a high-confidence secret")
+        return
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            _validate_string_privacy(child, f"{location}.{key}", errors)
+        return
+    if isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            _validate_string_privacy(child, f"{location}[{index}]", errors)
+
+
+def _is_absolute_normalized_path(value: str) -> bool:
+    return Path(value).is_absolute() and os.path.normpath(value) == value
+
+
+def _validate_absolute_path(value: object, location: str, errors: list[str]) -> None:
+    if isinstance(value, str) and not _is_absolute_normalized_path(value):
+        errors.append(f"{location} must be an absolute normalized path")
+
+
+def _validate_git_object_id(value: object, location: str, errors: list[str]) -> None:
+    if isinstance(value, str) and not _is_git_object_id(value):
+        errors.append(f"{location} must be a Git SHA-1 or SHA-256")
+
+
+def _validate_sha256(value: object, location: str, errors: list[str]) -> None:
+    if isinstance(value, str) and not re.fullmatch(r"[0-9a-f]{64}", value):
+        errors.append(f"{location} must be SHA-256")
 
 
 def _required_surface_fields(
@@ -3068,6 +3797,18 @@ def _validate_symlink(value: object, location: str, errors: list[str]) -> None:
             or value["target_size_bytes"] < 0
         ):
             errors.append(f"{location}.target_size_bytes must be a non-negative integer or null")
+    if isinstance(value.get("normalized_target"), str):
+        _validate_absolute_path(
+            value["normalized_target"],
+            f"{location}.normalized_target",
+            errors,
+        )
+    if value.get("target_state") not in _SYMLINK_TARGET_STATES:
+        errors.append(f"{location}.target_state has unknown enum value")
+    if value.get("target_kind") not in _SYMLINK_TARGET_KINDS:
+        errors.append(f"{location}.target_kind has unknown enum value")
+    if value.get("scope_decision") not in _SYMLINK_SCOPE_DECISIONS:
+        errors.append(f"{location}.scope_decision has unknown enum value")
 
 
 def _validate_metadata(
@@ -3090,6 +3831,21 @@ def _validate_metadata(
             continue
         if not isinstance(item, str):
             errors.append(f"{location}.{key} must be a string")
+    for key in (
+        "staged_diff_sha256",
+        "tracked_diff_sha256",
+        "unstaged_diff_sha256",
+        "untracked_tree_sha256",
+    ):
+        if key in value and value[key] is not None:
+            _validate_sha256(value[key], f"{location}.{key}", errors)
+    if value.get("head") is not None:
+        _validate_git_object_id(value["head"], f"{location}.head", errors)
+    if "head_state" in value and value["head_state"] not in _HEAD_STATES:
+        errors.append(f"{location}.head_state has unknown enum value")
+    for key in ("source_root", "toplevel"):
+        if key in value and value[key] is not None:
+            _validate_absolute_path(value[key], f"{location}.{key}", errors)
     if "wip_entries" in value:
         entries = value["wip_entries"]
         if not isinstance(entries, list):
@@ -3111,6 +3867,20 @@ def _validate_metadata(
                     _validate_error(entry["error"], f"{entry_location}.error", errors)
                 if "symlink" in entry:
                     _validate_symlink(entry["symlink"], f"{entry_location}.symlink", errors)
+                if isinstance(entry.get("sha256"), str):
+                    _validate_sha256(
+                        entry["sha256"],
+                        f"{entry_location}.sha256",
+                        errors,
+                    )
+                if "path_status" in entry and entry["path_status"] not in _STATUS_ENUM:
+                    errors.append(f"{entry_location}.path_status has unknown enum value")
+                for key in ("path", "original_path"):
+                    if key not in entry or entry[key] is None or not isinstance(entry[key], str):
+                        continue
+                    normalized = os.path.normpath(entry[key])
+                    if Path(entry[key]).is_absolute() or normalized != entry[key] or normalized.startswith("../"):
+                        errors.append(f"{entry_location}.{key} must be a normalized relative path")
 
 
 def _validate_surface_row(
@@ -3144,16 +3914,32 @@ def _validate_surface_row(
         pid = row["pid"]
         if surface == "launchd":
             if pid is not None and (
-                isinstance(pid, bool) or not isinstance(pid, (int, str))
+                isinstance(pid, bool) or not isinstance(pid, int)
             ):
-                errors.append(f"{location}.pid must be an integer, string, or null")
+                errors.append(f"{location}.pid must be an integer or null")
+            elif isinstance(pid, int) and not isinstance(pid, bool) and pid <= 0:
+                errors.append(f"{location}.pid must be positive when present")
         elif isinstance(pid, bool) or not isinstance(pid, int):
             errors.append(f"{location}.pid must be an integer")
+        elif pid <= 0:
+            errors.append(f"{location}.pid must be positive")
+    if "ppid" in row:
+        ppid = row["ppid"]
+        if isinstance(ppid, int) and not isinstance(ppid, bool) and ppid < 0:
+            errors.append(f"{location}.ppid must be non-negative")
+    if "line_index" in row:
+        line_index = row["line_index"]
+        if (
+            isinstance(line_index, int)
+            and not isinstance(line_index, bool)
+            and line_index <= 0
+        ):
+            errors.append(f"{location}.line_index must be positive")
     if "last_exit_status" in row and row["last_exit_status"] is not None:
         if isinstance(row["last_exit_status"], bool) or not isinstance(
-            row["last_exit_status"], (int, str)
+            row["last_exit_status"], int
         ):
-            errors.append(f"{location}.last_exit_status must be an integer, string, or null")
+            errors.append(f"{location}.last_exit_status must be an integer or null")
     for key in ("unreachable_from_base", "formats"):
         if key in row and (
             not isinstance(row[key], list)
@@ -3196,6 +3982,37 @@ def _validate_surface_row(
         formats = row["formats"]
         if not isinstance(formats, list) or not all(isinstance(item, str) for item in formats):
             errors.append(f"{location}.formats must be a list of strings")
+    if "kind" in row and isinstance(row["kind"], str) and row["kind"] not in _KIND_ENUM:
+        errors.append(f"{location}.kind has unknown enum value")
+    if "status" in row and isinstance(row["status"], str) and row["status"] not in _STATUS_ENUM:
+        errors.append(f"{location}.status has unknown enum value")
+    for key in ("path", "producer_path", "repository", "target"):
+        if key in row and row[key] is not None:
+            _validate_absolute_path(row[key], f"{location}.{key}", errors)
+    if "sha256" in row and row["sha256"] is not None:
+        _validate_sha256(row["sha256"], f"{location}.sha256", errors)
+    if "runtime_signature" in row:
+        _validate_sha256(
+            row["runtime_signature"],
+            f"{location}.runtime_signature",
+            errors,
+        )
+    if surface == "git_refs":
+        for key in ("head", "chosen_base"):
+            if key in row and row[key] is not None:
+                _validate_git_object_id(row[key], f"{location}.{key}", errors)
+        unreachable = row.get("unreachable_from_base")
+        if isinstance(unreachable, list):
+            for index, value in enumerate(unreachable):
+                _validate_git_object_id(
+                    value,
+                    f"{location}.unreachable_from_base[{index}]",
+                    errors,
+                )
+    if surface == "processes" and "executable" in row:
+        executable = row["executable"]
+        if isinstance(executable, str) and not _SAFE_EXECUTABLE_VALUE.fullmatch(executable):
+            errors.append(f"{location}.executable must be a sanitized executable basename")
     if surface == "databases":
         if "tables" in row and (
             not isinstance(row["tables"], list)
@@ -3232,15 +4049,47 @@ def validate_manifest(manifest: Mapping[str, object]) -> list[str]:
         errors.append("selected_base must be an object")
     else:
         _report_unknown_fields(selected_base, _SELECTED_BASE_FIELDS, "selected_base", errors)
-        missing = sorted(_SELECTED_BASE_FIELDS - set(selected_base))
+        missing = sorted(_SELECTED_BASE_REQUIRED_FIELDS - set(selected_base))
         if missing:
             errors.append(f"selected_base missing fields: {', '.join(missing)}")
         for key in ("repository", "ref"):
             if key in selected_base and not isinstance(selected_base[key], str):
                 errors.append(f"selected_base.{key} must be a string")
+        if "repository" in selected_base:
+            _validate_absolute_path(
+                selected_base["repository"],
+                "selected_base.repository",
+                errors,
+            )
         if "head" in selected_base and selected_base["head"] is not None:
             if not isinstance(selected_base["head"], str):
                 errors.append("selected_base.head must be a string or null")
+            else:
+                _validate_git_object_id(
+                    selected_base["head"],
+                    "selected_base.head",
+                    errors,
+                )
+        head_state = selected_base.get("head_state")
+        if head_state not in _HEAD_STATES:
+            errors.append("selected_base.head_state has unknown enum value")
+        if "required" in selected_base and not isinstance(selected_base["required"], bool):
+            errors.append("selected_base.required must be a boolean")
+        if head_state == "resolved" and selected_base.get("head") is None:
+            errors.append("selected_base resolved head must not be null")
+        if head_state in {"unborn", "not-git", "probe-error"} and selected_base.get("head") is not None:
+            errors.append(f"selected_base {head_state} head must be null")
+        if head_state == "not-git" and selected_base.get("required") is not False:
+            errors.append("selected_base not-git state must be optional")
+        if "error" in selected_base:
+            _validate_error(selected_base["error"], "selected_base.error", errors)
+        if head_state == "probe-error":
+            if "error" not in selected_base:
+                errors.append("selected_base probe-error missing error")
+            elif selected_base.get("required") is True:
+                error_value = selected_base["error"]
+                if isinstance(error_value, Mapping) and error_value.get("resolved") is not True:
+                    errors.append("selected_base has unresolved required error")
     roots = manifest.get("roots")
     if not isinstance(roots, Mapping):
         errors.append("roots must be an object")
@@ -3252,12 +4101,21 @@ def validate_manifest(manifest: Mapping[str, object]) -> list[str]:
         for key in ("home", "repo_root", "tmp_root"):
             if key in roots and not isinstance(roots[key], str):
                 errors.append(f"roots.{key} must be a string")
+            elif key in roots:
+                _validate_absolute_path(roots[key], f"roots.{key}", errors)
         for key in ("excluded", "production"):
             if key in roots and (
                 not isinstance(roots[key], list)
                 or not all(isinstance(item, str) for item in roots[key])
             ):
                 errors.append(f"roots.{key} must be a list of strings")
+            elif key in roots:
+                for index, value in enumerate(roots[key]):
+                    _validate_absolute_path(
+                        value,
+                        f"roots.{key}[{index}]",
+                        errors,
+                    )
     surfaces = manifest.get("surfaces")
     if not isinstance(surfaces, Mapping):
         errors.append("surfaces must be an object")
@@ -3281,22 +4139,45 @@ def validate_manifest(manifest: Mapping[str, object]) -> list[str]:
     for forbidden in sorted(_FORBIDDEN_FIELDS):
         if _contains_key(manifest, forbidden):
             errors.append(f"manifest must not contain field {forbidden}")
+    _validate_string_privacy(manifest, "root", errors)
     return errors
 
 
 def check_manifest(path: Path) -> tuple[Mapping[str, object], list[str]]:
+    path = path.expanduser().absolute()
+    directory = path.parent
+    directory_errors: list[str] = []
+    if _manifest_directory_has_symlink(directory):
+        directory_errors.append("manifest directory must not be a symlink")
+        return {}, directory_errors
+    try:
+        directory_stat = os.lstat(directory)
+    except OSError as exc:
+        directory_errors.append(f"cannot inspect manifest directory: {type(exc).__name__}")
+        return {}, directory_errors
+    if not stat.S_ISDIR(directory_stat.st_mode):
+        directory_errors.append("manifest parent is not a directory")
+        return {}, directory_errors
+    directory_mode = directory_stat.st_mode & 0o777
+    if directory_mode != 0o700:
+        directory_errors.append(
+            f"manifest directory mode must be 0700, got {directory_mode:04o}"
+        )
+    if path.is_symlink():
+        directory_errors.append("manifest file must not be a symlink")
+        return {}, directory_errors
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return {}, [f"cannot read manifest: {type(exc).__name__}"]
-    errors = validate_manifest(manifest)
+        return {}, [*directory_errors, f"cannot read manifest: {type(exc).__name__}"]
+    errors = [*directory_errors, *validate_manifest(manifest)]
     try:
         mode = path.stat().st_mode & 0o777
     except OSError:
         mode = 0
     if mode != MANIFEST_FILE_MODE:
         errors.append(f"manifest mode must be 0600, got {mode:04o}")
-    manifest_path = str(path.expanduser().absolute())
+    manifest_path = str(path)
     surfaces = manifest.get("surfaces", {})
     if isinstance(surfaces, Mapping) and any(
         isinstance(row, Mapping) and str(row.get("path", "")) == manifest_path
@@ -3360,7 +4241,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for error in errors:
             print(f"ERROR: {error}")
         return 1
-    write_manifest_atomic(manifest, output)
+    write_manifest_atomic(manifest, output, canonical_home=roots.home)
     print(f"manifest written: {output} sha256={_manifest_sha256(output)}")
     return 0
 

@@ -98,6 +98,8 @@ def test_inventory_records_symlink_target_and_sha256(tmp_path: Path) -> None:
 
 def test_manifest_write_is_atomic_and_owner_only(tmp_path: Path) -> None:
     destination = tmp_path / "migration" / "manifest.json"
+    destination.parent.mkdir(mode=0o700)
+    destination.parent.chmod(0o700)
 
     write_manifest_atomic({"schema_version": 1, "surfaces": {}}, destination)
 
@@ -231,10 +233,12 @@ def test_voice_asset_symlink_gets_asset_decision_not_adapter_decision(tmp_path: 
 
 def test_ephemeral_dan_runtime_symlink_gets_runtime_decision(tmp_path: Path) -> None:
     roots = fixture_roots(tmp_path)
-    runtime = roots.tmp_root / "dan-atlas-cdp.fixture"
+    runtime = roots.tmp_root / "dan-voice"
     runtime.mkdir()
     link = runtime / "SingletonSocket"
-    link.symlink_to(roots.tmp_root / "socket")
+    target = runtime / "socket"
+    target.write_text("fixture\n", encoding="utf-8")
+    link.symlink_to(target)
 
     manifest = build_inventory(roots, runner=unavailable_runner)
     row = next(
@@ -256,6 +260,9 @@ def test_unborn_git_repository_has_no_fake_head(tmp_path: Path) -> None:
     )
 
     assert row["metadata"]["head"] is None
+    assert row["metadata"]["head_state"] == "unborn"
+    assert row["status"] == "dirty"
+    assert "error" not in row
 
 
 def test_existing_output_manifest_is_excluded_from_runtime_inventory(
@@ -301,7 +308,8 @@ def test_existing_output_manifest_is_excluded_from_runtime_inventory(
         ),
     )
     output = roots.home / ".dan/migration/release1-source-manifest.json"
-    output.parent.mkdir(parents=True)
+    output.parent.mkdir(parents=True, mode=0o700)
+    output.parent.chmod(0o700)
     output.write_text('{"old": true}\n', encoding="utf-8")
 
     result = main(
