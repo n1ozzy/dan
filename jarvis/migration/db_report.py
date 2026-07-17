@@ -26,5 +26,14 @@ def render_database_migration_report(report: DatabaseMigrationReport) -> dict[st
             "imported": report.memory.imported,
             "merged": report.memory.merged,
             "rejected": report.memory.rejected,
+            "classes": [
+                {
+                    "source_table": outcome.source_table,
+                    "outcome": outcome.outcome,
+                    "reason": outcome.reason,
+                    "count": outcome.count,
+                }
+                for outcome in report.memory.classes
+            ],
         },
     }

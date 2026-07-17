@@ -13,7 +13,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from jarvis.migration.sqlite_backup import BackupReport, backup_database
+from jarvis.migration.sqlite_backup import (
+    BackupReport,
+    assert_quiescent_database,
+    backup_database,
+)
 from jarvis.store.db import initialize_database
 
 JARVIS_SOURCE_SCHEMA = "jarvis/current"
@@ -68,10 +72,19 @@ class SourceProvenanceError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class MigrationOutcomeClass:
+    source_table: str
+    outcome: str
+    reason: str | None
+    count: int
+
+
+@dataclass(frozen=True)
 class MemoryMigrationReport:
     imported: int
     merged: int
     rejected: int
+    classes: tuple[MigrationOutcomeClass, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -94,11 +107,13 @@ def migrate_databases(
         Path, (jarvis_database, memory_database, target_database)
     )
     _assert_distinct_database_paths(jarvis_database, memory_database, target_database)
-    _validate_memory_schema(memory_database)
-    existing_provenance = (
-        _read_target_jarvis_provenance(target_database) if target_database.exists() else None
-    )
     approved = tuple(approved_pids)
+    _validate_memory_schema(memory_database)
+    if target_database.exists():
+        assert_quiescent_database(target_database, approved_pids=approved)
+        existing_provenance = _read_target_jarvis_provenance(target_database)
+    else:
+        existing_provenance = None
 
     with tempfile.TemporaryDirectory(prefix="dan-database-migration-") as temporary_directory:
         temporary = Path(temporary_directory)
@@ -294,9 +309,7 @@ def _import_memory_snapshot(
                 )
                 counts["rejected"] += 1
                 continue
-            duplicate = target.execute(
-                "SELECT id FROM memory_blocks WHERE title = ? AND body = ?", (title, body)
-            ).fetchone()
+            duplicate = _equivalent_memory_block(target, row)
             if duplicate is not None:
                 _record_map(
                     target,
@@ -361,6 +374,20 @@ def _import_memory_snapshot(
                 )
                 counts["rejected"] += 1
                 continue
+            legacy_conversation_id = _text(row["conversation_id"])
+            if legacy_conversation_id not in conversation_ids:
+                _record_map(
+                    target,
+                    source_id,
+                    "compiled_contexts",
+                    raw_id,
+                    None,
+                    None,
+                    "rejected",
+                    "missing legacy conversation",
+                )
+                counts["rejected"] += 1
+                continue
             target_id = _stable_id(source_id, "compiled-context", raw_id)
             target.execute(
                 """
@@ -379,7 +406,8 @@ def _import_memory_snapshot(
                         "compiled_contexts",
                         raw_id,
                         {
-                            "legacy_conversation_id": _text(row["conversation_id"]),
+                            "legacy_conversation_id": legacy_conversation_id,
+                            "target_conversation_id": conversation_ids[legacy_conversation_id],
                             "turn_range_start": int(row["turn_range_start"]),
                             "turn_range_end": int(row["turn_range_end"]),
                             "char_count": int(row["char_count"]),
@@ -449,7 +477,62 @@ def _import_memory_snapshot(
                 None,
             )
             counts["imported"] += 1
-    return MemoryMigrationReport(**counts)
+    return MemoryMigrationReport(**counts, classes=_outcome_classes(target, source_id))
+
+
+def _equivalent_memory_block(
+    target: sqlite3.Connection, source_row: sqlite3.Row
+) -> sqlite3.Row | tuple[Any, ...] | None:
+    candidates = target.execute(
+        "SELECT id, kind, priority, active, metadata_json FROM memory_blocks "
+        "WHERE title = ? AND body = ? ORDER BY id",
+        (_text(source_row["title"]), _text(source_row["body"])),
+    ).fetchall()
+    source_semantics = (
+        _text(source_row["kind"]),
+        int(source_row["priority"] or 0),
+        int(bool(source_row["active"])),
+        _normalized_json(source_row["metadata"]),
+    )
+    for candidate in candidates:
+        target_semantics = (
+            _text(candidate[1]),
+            int(candidate[2]),
+            int(bool(candidate[3])),
+            _normalized_json(candidate[4]),
+        )
+        if target_semantics == source_semantics:
+            return candidate
+    return None
+
+
+def _normalized_json(value: Any) -> tuple[str, Any]:
+    raw = _text(value)
+    try:
+        return "json", json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return "raw", raw
+
+
+def _outcome_classes(
+    target: sqlite3.Connection, source_id: str
+) -> tuple[MigrationOutcomeClass, ...]:
+    rows = target.execute(
+        "SELECT source_table, outcome, reason, COUNT(*) "
+        "FROM migration_record_map WHERE source_id = ? "
+        "GROUP BY source_table, outcome, reason "
+        "ORDER BY source_table, outcome, reason",
+        (source_id,),
+    ).fetchall()
+    return tuple(
+        MigrationOutcomeClass(
+            source_table=_text(row[0]),
+            outcome=_text(row[1]),
+            reason=None if row[2] is None else _text(row[2]),
+            count=int(row[3]),
+        )
+        for row in rows
+    )
 
 
 def _snapshot_rows(snapshot: Path) -> dict[str, list[sqlite3.Row]]:
@@ -589,8 +672,7 @@ def _path_hash(path: Path) -> str:
 def _iso(value: Any) -> str:
     return (
         datetime.fromtimestamp(float(value), UTC)
-        .replace(microsecond=0)
-        .isoformat()
+        .isoformat(timespec="microseconds")
         .replace("+00:00", "Z")
     )
 
