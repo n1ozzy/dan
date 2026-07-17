@@ -45,7 +45,7 @@
 |---|---|
 | manifest źródeł/procesów/formatów | Task 1 |
 | audyt refów i WIP | Task 1 |
-| klasyfikacja pełnych 2278 testów | Task 2 |
+| klasyfikacja pełnych 2327 testów | Task 2 |
 | zatrzymanie aktywnego runtime'u | Task 12 i Task 14 |
 | backup/migracja `jarvis.db` + `memory.db` | Task 3 i Task 12 |
 | rename `jarvis` -> `dan` | Task 4, finalna ścieżka w Task 14 |
@@ -232,15 +232,15 @@ pytest -q tests/test_test_safety.py
 
 ```bash
 pytest --collect-only -q > /tmp/dan-release1-collected.txt
-python scripts/dan-test-baseline --expect-collected 2278
+python scripts/dan-test-baseline --expect-collected 2327
 ```
 
 The Task 2 collection gate includes the frozen pre-Task-1 baseline, the original
 Task 1 tests, the review-fix tests, and the FIX FIRST regressions:
 
-`2176 + 32 + 41 + 29 = 2278`
+`2176 + 32 + 41 + 29 + 49 = 2327`
 
-If collection differs from `2278`, stop and reconcile the spec with actual
+If collection differs from `2327`, stop and reconcile the spec with actual
 collection; never silently change the expected number. Existing failures are
 recorded exactly and may not increase.
 
