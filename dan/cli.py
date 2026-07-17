@@ -190,7 +190,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "config" and args.config_command == "explain":
         try:
-            _print_json(ConfigStore(config.source_path).explain(args.key).to_dict())
+            _print_json(
+                ConfigStore(
+                    config.source_path,
+                    owner_path=paths.owner_path,
+                    runtime_db_path=paths.db_path,
+                )
+                .explain(args.key)
+                .to_dict()
+            )
         except ConfigRegistryError as exc:
             print(f"ConfigError: {exc}", file=sys.stderr)
             return 2

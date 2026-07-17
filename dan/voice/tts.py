@@ -19,7 +19,6 @@ import threading
 import time
 import urllib.request
 import uuid
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -207,13 +206,11 @@ class SupertonicEngine:
     ) -> None:
         voice_cfg = config.voice
         self._voice_config = voice_cfg
-        self._resolver = resolver
         if resolver is None:
-            warnings.warn(
-                "SupertonicEngine(config) is a compatibility caller; pass VoiceResolver",
-                DeprecationWarning,
-                stacklevel=2,
+            raise TTSEngineError(
+                "SupertonicEngine requires a caller-supplied VoiceResolver"
             )
+        self._resolver = resolver
         # Persona binding (2026-07-08): resolve the current persona.profile per
         # chunk so a live persona switch (panel dropdown) changes voice +
         # mastering on the next spoken chunk, no daemon restart. None -> the
@@ -248,15 +245,6 @@ class SupertonicEngine:
         self.workdir = str(workdir)
         self._mastering_binary = str(getattr(voice_cfg, "mastering_binary", "ffmpeg") or "ffmpeg")
         self._mastering_enabled = bool(shutil.which(self._mastering_binary))
-        configured_mastering = bool(
-            getattr(voice_cfg, "mastering_profile", "")
-            or getattr(voice_cfg, "persona_mastering", {})
-        )
-        if not self._mastering_enabled and configured_mastering:
-            _LOGGER.warning(
-                "mastering configured but %r not found on PATH; playing raw audio.",
-                self._mastering_binary,
-            )
         # Warm serve (ported from DAN): reuse an existing server, optionally
         # autostart one, else stay None -> CLI-only. The model reloads per CLI
         # chunk (~0.64s); serve loads it once. Fallback to CLI on any failure.
@@ -357,7 +345,7 @@ class SupertonicEngine:
         intent = SpeechIntent(
             text=text,
             persona=persona,
-            source="tts_compat" if self._resolver is None else "dand",
+            source="dand",
             session="tts",
             participant=persona,
             priority=0,
@@ -365,14 +353,16 @@ class SupertonicEngine:
             interrupt_policy="finish_current",
             utterance_index=0,
         )
-        if self._resolver is not None:
-            return self._resolver.resolve(intent)
-        return VoiceResolver.compatibility_snapshot(self._voice_config, intent)
+        return self._resolver.resolve(intent)
 
     def _apply_mastering(self, audio: bytes, filter_chain: str) -> bytes:
-        """Run the ffmpeg persona chain; fail-safe returns the raw audio."""
-        if not (self._mastering_enabled and filter_chain):
+        """Run the required mastering chain or fail without raw fallback."""
+        if not filter_chain:
             return audio
+        if not self._mastering_enabled:
+            raise TTSEngineError(
+                f"mastering requires executable {self._mastering_binary!r}"
+            )
         src = Path(self.workdir) / f"master-in-{uuid.uuid4().hex}.wav"
         dst = Path(self.workdir) / f"master-out-{uuid.uuid4().hex}.wav"
         try:
@@ -385,13 +375,14 @@ class SupertonicEngine:
             )
             if proc.returncode == 0 and dst.is_file() and dst.stat().st_size > 44:
                 return dst.read_bytes()
-            _LOGGER.warning("mastering ffmpeg failed (rc=%s); playing raw.", proc.returncode)
-        except Exception:
-            _LOGGER.exception("mastering raised; playing raw audio.")
+            raise TTSEngineError(f"mastering failed with exit code {proc.returncode}")
+        except TTSEngineError:
+            raise
+        except Exception as exc:
+            raise TTSEngineError(f"mastering failed: {exc}") from exc
         finally:
             src.unlink(missing_ok=True)
             dst.unlink(missing_ok=True)
-        return audio
 
     def _synth_cli(self, clean: str, speed: float, voice: str) -> bytes:
         out = Path(self.workdir) / f"tts-{uuid.uuid4().hex}.wav"
@@ -423,14 +414,7 @@ class SupertonicEngine:
         clean = spoken.translate(_SUPERTONIC_STRIP).strip()
         if not clean:
             raise TTSEngineError(f"Nothing speakable left after sanitizing {text!r}.")
-        # Measured at the G4 live gate (2026-07-02): above ~1.15 speed the
-        # model clips the final phoneme of short sentences (a hot cut inside
-        # the generated audio, so playback pads cannot help) and above ~1.25
-        # occasionally emits a near-silent file. Short sentences may only be
-        # slowed down, never sped up.
         speed = snapshot.speed
-        if 0 < len(clean) <= self._short_chars:
-            speed = min(speed, self._short_speed)
         # Resolve the persona once per chunk so a live switch takes effect on the
         # next chunk (voice + mastering both key off the same profile).
         voice = snapshot.voice_or_style
@@ -446,9 +430,18 @@ class SupertonicEngine:
                     self._serve = None  # server died -> stop trying, go CLI
         if audio is None:
             audio = self._synth_cli(clean, speed, voice)
+        mastering_profile = snapshot.mastering_profile.strip().lower()
+        if mastering_profile in {"raw", "none"}:
+            filter_chain = ""
+        else:
+            filter_chain = mastering_filter(mastering_profile)
+            if not filter_chain:
+                raise TTSEngineError(
+                    f"unknown resolved mastering profile: {snapshot.mastering_profile!r}"
+                )
         return SynthesizedChunk(
             text=text,
-            audio=self._apply_mastering(audio, mastering_filter(snapshot.mastering_profile)),
+            audio=self._apply_mastering(audio, filter_chain),
         )
 
     def play(

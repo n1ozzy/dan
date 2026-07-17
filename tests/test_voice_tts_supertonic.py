@@ -8,6 +8,7 @@ was verified in docs/reviews/2026-07-02-voice-tools-inventory.md.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -15,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from dan.voice.resolver import AssetMetadata, EngineMetadata, VoiceCatalog, VoiceResolver
 from dan.voice.tts import (
     BannedEngineError,
     SupertonicEngine,
@@ -82,11 +84,83 @@ def full_config(tmp_path: Path, binary: Path, player: Path, **voice_overrides) -
     )
 
 
+def strict_resolver(
+    tmp_path: Path,
+    config: SimpleNamespace,
+    *,
+    personas: dict[str, dict[str, object]] | None = None,
+    engine_asset: Path | None = None,
+) -> VoiceResolver:
+    voice_cfg = config.voice
+    voice_dir = tmp_path / f"voice-catalog-{len(list(tmp_path.glob('voice-catalog-*')))}"
+    voice_dir.mkdir()
+    configured_personas = personas or {
+        "dan": {
+            "voice": getattr(voice_cfg, "supertonic_voice", "M1"),
+            "speed": getattr(voice_cfg, "supertonic_speed", 1.0),
+            "mastering": getattr(voice_cfg, "mastering_profile", "") or "raw",
+            "dsp": "none",
+        }
+    }
+    persona_lines: list[str] = []
+    for name, spec in configured_personas.items():
+        persona_lines.extend(
+            [
+                f"[{name}]",
+                'engine = "supertonic"',
+                f"voice = {json.dumps(str(spec['voice']))}",
+                f"speed = {float(spec['speed'])}",
+                f"mastering = {json.dumps(str(spec['mastering']))}",
+                f"dsp = {json.dumps(str(spec.get('dsp', 'none')))}",
+            ]
+        )
+    (voice_dir / "personas.toml").write_text(
+        "\n".join(persona_lines) + "\n", encoding="utf-8"
+    )
+    pronunciations = getattr(voice_cfg, "tts_pronunciations", {}) or {}
+    (voice_dir / "pronunciations.toml").write_text(
+        "".join(
+            f"{json.dumps(str(key).lower())} = {json.dumps(str(value))}\n"
+            for key, value in pronunciations.items()
+        ),
+        encoding="utf-8",
+    )
+    verified_asset = engine_asset or Path(voice_cfg.supertonic_binary)
+    return VoiceResolver(
+        VoiceCatalog.from_directory(voice_dir),
+        {"voice": {"output_gain": getattr(voice_cfg, "output_gain", 1.0)}},
+        {
+            "supertonic": EngineMetadata(
+                version="test-supertonic",
+                assets={"binary": AssetMetadata.from_path(verified_asset)},
+            )
+        },
+    )
+
+
+def build_strict_engine(
+    tmp_path: Path,
+    config: SimpleNamespace,
+    *,
+    persona_provider=None,
+    engine_asset: Path | None = None,
+    personas: dict[str, dict[str, object]] | None = None,
+) -> SupertonicEngine:
+    return build_tts_engine(
+        "supertonic",
+        config=config,
+        persona_provider=persona_provider,
+        resolver=strict_resolver(
+            tmp_path, config, personas=personas, engine_asset=engine_asset
+        ),
+    )
+
+
 def build_engine(tmp_path: Path, **voice_overrides) -> tuple[SupertonicEngine, Path, Path]:
     binary, args_file = fake_supertonic(tmp_path)
     player, played_file = fake_player(tmp_path)
     config = full_config(tmp_path, binary, player, **voice_overrides)
-    engine = build_tts_engine("supertonic", config=config)
+    engine = build_strict_engine(tmp_path, config)
     return engine, args_file, played_file
 
 
@@ -98,6 +172,14 @@ def test_supertonic_without_config_fails_loudly() -> None:
         build_tts_engine("supertonic")
 
 
+def test_supertonic_with_config_but_without_resolver_fails_loudly(tmp_path: Path) -> None:
+    binary, _ = fake_supertonic(tmp_path)
+    player, _ = fake_player(tmp_path)
+
+    with pytest.raises(TTSEngineError, match="VoiceResolver"):
+        build_tts_engine("supertonic", config=full_config(tmp_path, binary, player))
+
+
 def test_supertonic_builds_from_config(tmp_path: Path) -> None:
     engine, _, _ = build_engine(tmp_path)
     assert isinstance(engine, SupertonicEngine)
@@ -105,17 +187,18 @@ def test_supertonic_builds_from_config(tmp_path: Path) -> None:
 
 
 def test_missing_binary_kills_construction(tmp_path: Path) -> None:
+    verified_binary, _ = fake_supertonic(tmp_path)
     player, _ = fake_player(tmp_path)
     config = full_config(tmp_path, tmp_path / "nope", player)
     with pytest.raises(TTSEngineError, match="binary"):
-        build_tts_engine("supertonic", config=config)
+        build_strict_engine(tmp_path, config, engine_asset=verified_binary)
 
 
 def test_missing_player_kills_construction(tmp_path: Path) -> None:
     binary, _ = fake_supertonic(tmp_path)
     config = full_config(tmp_path, binary, tmp_path / "no-player")
     with pytest.raises(TTSEngineError, match="player"):
-        build_tts_engine("supertonic", config=config)
+        build_strict_engine(tmp_path, config)
 
 
 def test_workdir_created_private(tmp_path: Path) -> None:
@@ -188,16 +271,14 @@ def test_supertonic_resolves_binaries_from_path_and_synthesize(tmp_path: Path, m
 
     original_path = os.environ.get("PATH", "")
     monkeypatch.setenv("PATH", f"{system_bin}:{original_path}")
-    engine = build_tts_engine(
-        "supertonic",
-        config=full_config(
-            tmp_path,
-            tmp_path / "ignored",
-            tmp_path / "ignored",
-            supertonic_binary="",
-            playback_binary="supertonic-player",
-        ),
+    config = full_config(
+        tmp_path,
+        tmp_path / "ignored",
+        tmp_path / "ignored",
+        supertonic_binary="",
+        playback_binary="supertonic-player",
     )
+    engine = build_strict_engine(tmp_path, config, engine_asset=binary)
 
     chunk = engine.synthesize("Wypowiedź z PATH.")
     assert isinstance(chunk.text, str)
@@ -208,15 +289,13 @@ def test_synthesize_applies_longer_pronunciation_key_first(tmp_path: Path) -> No
     # Longest-to-shortest replacement order must win for overlapping keys.
     binary, args_file = fake_supertonic(tmp_path)
     player, _ = fake_player(tmp_path)
-    engine = build_tts_engine(
-        "supertonic",
-        config=full_config(
-            tmp_path,
-            binary,
-            player,
-            tts_pronunciations={"run": "rwn", "runtime": "rantajm"},
-        ),
+    config = full_config(
+        tmp_path,
+        binary,
+        player,
+        tts_pronunciations={"run": "rwn", "runtime": "rantajm"},
     )
+    engine = build_strict_engine(tmp_path, config)
 
     engine.synthesize("Runtime.")
     spoken = args_file.read_text().splitlines()[1]
@@ -233,7 +312,8 @@ def test_synthesize_nothing_speakable_raises(tmp_path: Path) -> None:
 def test_synthesize_nonzero_exit_raises_and_cleans(tmp_path: Path) -> None:
     binary, _ = fake_supertonic(tmp_path, rc=3)
     player, _ = fake_player(tmp_path)
-    engine = build_tts_engine("supertonic", config=full_config(tmp_path, binary, player))
+    config = full_config(tmp_path, binary, player)
+    engine = build_strict_engine(tmp_path, config)
 
     with pytest.raises(TTSEngineError):
         engine.synthesize("To zdanie nie wyjdzie.")
@@ -243,7 +323,8 @@ def test_synthesize_nonzero_exit_raises_and_cleans(tmp_path: Path) -> None:
 def test_synthesize_tiny_output_raises_and_cleans(tmp_path: Path) -> None:
     binary, _ = fake_supertonic(tmp_path, wav_bytes=10)
     player, _ = fake_player(tmp_path)
-    engine = build_tts_engine("supertonic", config=full_config(tmp_path, binary, player))
+    config = full_config(tmp_path, binary, player)
+    engine = build_strict_engine(tmp_path, config)
 
     with pytest.raises(TTSEngineError, match="audio"):
         engine.synthesize("Za mało bajtów wyszło.")
@@ -276,7 +357,8 @@ def test_play_gives_player_a_live_file_then_cleans(tmp_path: Path) -> None:
 def test_play_failure_raises_and_cleans(tmp_path: Path) -> None:
     binary, _ = fake_supertonic(tmp_path)
     player, _ = fake_player(tmp_path, rc=1)
-    engine = build_tts_engine("supertonic", config=full_config(tmp_path, binary, player))
+    config = full_config(tmp_path, binary, player)
+    engine = build_strict_engine(tmp_path, config)
     chunk = engine.synthesize("Player padnie na tym zdaniu.")
 
     with pytest.raises(TTSEngineError, match="player"):
@@ -290,15 +372,13 @@ def test_synthesize_applies_pronunciation_map(tmp_path: Path) -> None:
     # matching is case-insensitive and catches inflections ("runtime'ie").
     binary, args_file = fake_supertonic(tmp_path)
     player, _ = fake_player(tmp_path)
-    engine = build_tts_engine(
-        "supertonic",
-        config=full_config(
-            tmp_path,
-            binary,
-            player,
-            tts_pronunciations={"runtime": "rantajm", "stateless": "stejtles"},
-        ),
+    config = full_config(
+        tmp_path,
+        binary,
+        player,
+        tts_pronunciations={"runtime": "rantajm", "stateless": "stejtles"},
     )
+    engine = build_strict_engine(tmp_path, config)
 
     engine.synthesize("Stateless brain na żywym runtime'ie działa.")
 
@@ -317,60 +397,13 @@ def test_synthesize_without_pronunciations_keeps_text(tmp_path: Path) -> None:
     assert "Runtime" in args_file.read_text()
 
 
-# --- short-sentence speed (G4 live-gate fact 2026-07-02) ---------------------
-# Measured: above ~1.15 speed supertonic clips the final phoneme of SHORT
-# sentences (hot cut in the generated audio, so playback pads cannot help)
-# and above ~1.25 occasionally emits a near-silent file. Short sentences are
-# synthesized at a slower, safe speed; longer text keeps the configured pace.
+# --- immutable resolver output -----------------------------------------------
 
 
-def test_short_sentence_synthesized_at_short_speed(tmp_path: Path) -> None:
+def test_short_sentence_keeps_resolved_speed_unchanged(tmp_path: Path) -> None:
     engine, args_file, _ = build_engine(
         tmp_path,
         supertonic_short_sentence_chars=24,
-        supertonic_short_sentence_speed=1.0,
-    )
-
-    engine.synthesize("Gotowe.")
-
-    args = args_file.read_text().splitlines()
-    assert args[args.index("--speed") + 1] == "1.00"
-
-
-def test_long_sentence_keeps_configured_speed(tmp_path: Path) -> None:
-    engine, args_file, _ = build_engine(
-        tmp_path,
-        supertonic_speed=1.35,
-        supertonic_short_sentence_chars=24,
-        supertonic_short_sentence_speed=1.0,
-    )
-
-    engine.synthesize("Wszystkie testy przechodzą bez błędów.")
-
-    args = args_file.read_text().splitlines()
-    assert args[args.index("--speed") + 1] == "1.35"
-
-
-def test_short_speed_never_speeds_text_up(tmp_path: Path) -> None:
-    # Global speed slower than the short-sentence speed wins: the guard may
-    # only slow short sentences down, never accelerate them.
-    engine, args_file, _ = build_engine(
-        tmp_path,
-        supertonic_speed=0.9,
-        supertonic_short_sentence_chars=24,
-        supertonic_short_sentence_speed=1.0,
-    )
-
-    engine.synthesize("Gotowe.")
-
-    args = args_file.read_text().splitlines()
-    assert args[args.index("--speed") + 1] == "0.90"
-
-
-def test_zero_short_chars_disables_the_guard(tmp_path: Path) -> None:
-    engine, args_file, _ = build_engine(
-        tmp_path,
-        supertonic_short_sentence_chars=0,
         supertonic_short_sentence_speed=1.0,
     )
 
@@ -380,20 +413,29 @@ def test_zero_short_chars_disables_the_guard(tmp_path: Path) -> None:
     assert args[args.index("--speed") + 1] == "1.35"
 
 
-def test_short_guard_measures_sanitized_text(tmp_path: Path) -> None:
-    # The threshold applies to what the CLI actually speaks: after quote
-    # stripping and pronunciation rewrites, not the raw canonical text.
-    engine, args_file, _ = build_engine(
+def test_nonempty_resolved_mastering_failure_is_visible(tmp_path: Path) -> None:
+    mastering = write_script(tmp_path / "failing-mastering", "exit 7\n")
+    engine, _, _ = build_engine(
         tmp_path,
-        supertonic_short_sentence_chars=10,
-        supertonic_short_sentence_speed=1.0,
-        tts_pronunciations={"deployment zakończony": "dip"},
+        mastering_profile="clean",
+        mastering_binary=str(mastering),
     )
 
-    engine.synthesize("„Deployment zakończony”.")  # po przepisaniu: "dip." (4 znaki)
+    with pytest.raises(TTSEngineError, match="mastering"):
+        engine.synthesize("Mastering ma nie udawać sukcesu.")
 
-    args = args_file.read_text().splitlines()
-    assert args[args.index("--speed") + 1] == "1.00"
+
+def test_explicit_raw_profile_preserves_unmastered_audio(tmp_path: Path) -> None:
+    mastering = write_script(tmp_path / "unused-mastering", "exit 7\n")
+    engine, _, _ = build_engine(
+        tmp_path,
+        mastering_profile="raw",
+        mastering_binary=str(mastering),
+    )
+
+    chunk = engine.synthesize("Raw znaczy świadomie bez masteringu.")
+
+    assert len(chunk.audio) == 2000
 
 
 def fake_player_recording_argv(tmp_path: Path) -> tuple[Path, Path]:
@@ -413,7 +455,8 @@ exit 0
 def test_play_without_pads_passes_only_the_file(tmp_path: Path) -> None:
     binary, _ = fake_supertonic(tmp_path)
     player, argv_file = fake_player_recording_argv(tmp_path)
-    engine = build_tts_engine("supertonic", config=full_config(tmp_path, binary, player))
+    config = full_config(tmp_path, binary, player)
+    engine = build_strict_engine(tmp_path, config)
     chunk = engine.synthesize("Bez padów player dostaje sam plik.")
 
     engine.play(chunk)
@@ -429,16 +472,14 @@ def test_play_appends_pad_effect_when_configured(tmp_path: Path) -> None:
     # the audible audio (and give Bluetooth its codec-latency tail back).
     binary, _ = fake_supertonic(tmp_path)
     player, argv_file = fake_player_recording_argv(tmp_path)
-    engine = build_tts_engine(
-        "supertonic",
-        config=full_config(
-            tmp_path,
-            binary,
-            player,
-            playback_pad_start_seconds=0.2,
-            playback_pad_end_seconds=0.4,
-        ),
+    config = full_config(
+        tmp_path,
+        binary,
+        player,
+        playback_pad_start_seconds=0.2,
+        playback_pad_end_seconds=0.4,
     )
+    engine = build_strict_engine(tmp_path, config)
     chunk = engine.synthesize("Pady wchodzą do komendy playera.")
 
     engine.play(chunk)
@@ -486,7 +527,8 @@ def test_stop_playback_kills_the_player_process(tmp_path: Path) -> None:
         tmp_path / "slow-player",
         f'echo "started $$" > {marker}\nexec sleep 30\n',
     )
-    engine = build_tts_engine("supertonic", config=full_config(tmp_path, binary, player))
+    config = full_config(tmp_path, binary, player)
+    engine = build_strict_engine(tmp_path, config)
     chunk = engine.synthesize("Długi chunk przerwany barge-inem.")
 
     errors: list[Exception] = []

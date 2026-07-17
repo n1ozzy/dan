@@ -73,7 +73,7 @@ supertonic_serve_max_chunk_length = 400
 
 # Per-persona mastering (ffmpeg timbre chain, ported from DAN). Empty = raw
 # supertonic. "bastard" = DAN (the ziomek voice, less bass); also "gritty",
-# "clean". Fail-safe: any ffmpeg error plays the raw chunk.
+# "clean". A resolved non-raw profile fails visibly if mastering cannot complete.
 mastering_profile = "bastard"               # e.g. "clean" (warm default) or "bastard"
 mastering_binary = "ffmpeg"
 

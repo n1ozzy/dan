@@ -474,6 +474,7 @@ def test_finished_speech_is_published_once_to_isolated_shared_broker(
     tmp_path: Path,
 ) -> None:
     from dan.voice.shared_broker import SharedBrokerClient
+    from tests.test_shared_voice_broker import _strict_resolver
 
     request_dir = tmp_path / "isolated-shared-broker" / "req"
     config = voice_config(
@@ -487,7 +488,9 @@ def test_finished_speech_is_published_once_to_isolated_shared_broker(
         persona_speeds={"dan": 1.35},
         persona_mastering={"dan": "clean"},
     )
-    client = SharedBrokerClient(config, request_dir=request_dir)
+    client = SharedBrokerClient(
+        config, resolver=_strict_resolver(tmp_path), request_dir=request_dir
+    )
     pipeline = SpeechPipeline(
         lambda: connect(db_path),
         config=config,

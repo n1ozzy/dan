@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from dan.config import VoiceConfig
+from dan.voice.models import SnapshotValidationError
+from dan.voice.resolver import AssetMetadata, EngineMetadata, VoiceCatalog, VoiceResolver
 
 
 def _shared_broker_module():
@@ -17,6 +19,39 @@ def _shared_broker_module():
         return importlib.import_module("dan.voice.shared_broker")
     except ModuleNotFoundError:
         pytest.fail("shared broker transport is not implemented")
+
+
+def _strict_resolver(tmp_path: Path, *, persona: str = "dan") -> VoiceResolver:
+    voice_dir = tmp_path / f"voice-{persona}"
+    voice_dir.mkdir()
+    (voice_dir / "personas.toml").write_text(
+        f'[{persona}]\nengine = "supertonic"\nvoice = "M3"\n'
+        'speed = 1.35\nmastering = "clean"\ndsp = "none"\n',
+        encoding="utf-8",
+    )
+    (voice_dir / "pronunciations.toml").write_text(
+        'runtime = "rantajm"\n', encoding="utf-8"
+    )
+    model = voice_dir / "model.onnx"
+    model.write_bytes(b"verified-model")
+    return VoiceResolver(
+        VoiceCatalog.from_directory(voice_dir),
+        {"voice": {"output_gain": 1.0}},
+        {
+            "supertonic": EngineMetadata(
+                version="1.3.1", assets={"model": AssetMetadata.from_path(model)}
+            )
+        },
+    )
+
+
+def test_client_requires_caller_supplied_resolver_before_publish(tmp_path: Path) -> None:
+    module = _shared_broker_module()
+
+    with pytest.raises(module.SharedBrokerError, match="VoiceResolver"):
+        module.SharedBrokerClient(VoiceConfig(), request_dir=tmp_path / "req")
+
+    assert not (tmp_path / "req").exists()
 
 
 def test_client_writes_exact_dan_request_atomically(
@@ -36,6 +71,7 @@ def test_client_writes_exact_dan_request_atomically(
     )
     client = module.SharedBrokerClient(
         config,
+        resolver=_strict_resolver(tmp_path),
         request_dir=request_dir,
         clock=lambda: 1_720_000_000.125,
         pid=lambda: 1234,
@@ -85,6 +121,7 @@ def test_multiple_response_lanes_never_overwrite_each_other_at_the_same_tick(
             persona_speeds={"dan": 1.35},
             persona_mastering={"dan": "clean"},
         ),
+        resolver=_strict_resolver(tmp_path),
         request_dir=request_dir,
         clock=lambda: 1_720_000_000.125,
         pid=lambda: 1234,
@@ -117,3 +154,30 @@ def test_multiple_response_lanes_never_overwrite_each_other_at_the_same_tick(
         "Komentarz drugi.",
         "Final głosowy.",
     ]
+
+
+def test_client_delegates_to_resolver_and_resolution_failure_prevents_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _shared_broker_module()
+    resolver = _strict_resolver(tmp_path, persona="someone-else")
+    calls = 0
+    original = VoiceResolver.resolve
+
+    def recording_resolve(self: VoiceResolver, intent):
+        nonlocal calls
+        calls += 1
+        return original(self, intent)
+
+    monkeypatch.setattr(VoiceResolver, "resolve", recording_resolve)
+    request_dir = tmp_path / "req"
+    client = module.SharedBrokerClient(
+        VoiceConfig(), resolver=resolver, request_dir=request_dir, persona="dan"
+    )
+
+    with pytest.raises(SnapshotValidationError, match="unknown voice persona"):
+        client.enqueue(text="Nie publikuj.", session="s1")
+
+    assert calls == 1
+    assert not request_dir.exists()

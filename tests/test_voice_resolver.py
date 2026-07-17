@@ -133,6 +133,53 @@ def test_resolver_rejects_asset_hash_mismatch(
         VoiceResolver(catalog, installation_config, engines).resolve(speech_intent())
 
 
+@pytest.mark.parametrize("missing_field", ["engine", "voice", "speed", "mastering", "dsp"])
+def test_resolver_requires_every_persona_render_field(
+    tmp_path: Path,
+    installation_config: ConfigStore,
+    engines: dict[str, EngineMetadata],
+    missing_field: str,
+) -> None:
+    fields = {
+        "engine": 'engine = "supertonic"',
+        "voice": 'voice = "M3"',
+        "speed": "speed = 1.25",
+        "mastering": 'mastering = "raw"',
+        "dsp": 'dsp = "none"',
+    }
+    voice_dir = tmp_path / "strict-voice"
+    voice_dir.mkdir()
+    persona_lines = [line for name, line in fields.items() if name != missing_field]
+    (voice_dir / "personas.toml").write_text(
+        "[dan]\n" + "\n".join(persona_lines) + "\n",
+        encoding="utf-8",
+    )
+    (voice_dir / "pronunciations.toml").write_text(
+        'runtime = "rantajm"\n', encoding="utf-8"
+    )
+
+    with pytest.raises(SnapshotValidationError, match=missing_field):
+        VoiceResolver(
+            VoiceCatalog.from_directory(voice_dir), installation_config, engines
+        ).resolve(speech_intent())
+
+
+def test_resolver_reverifies_every_catalog_asset_before_snapshot(
+    catalog: VoiceCatalog,
+    installation_config: ConfigStore,
+    engines: dict[str, EngineMetadata],
+) -> None:
+    personas_path = next(
+        asset.path
+        for name, asset in catalog.assets.items()
+        if name == "voice.personas"
+    )
+    personas_path.write_text("[dan]\nvoice = \"M1\"\n", encoding="utf-8")
+
+    with pytest.raises(SnapshotValidationError, match="voice.personas"):
+        VoiceResolver(catalog, installation_config, engines).resolve(speech_intent())
+
+
 def test_catalog_and_snapshot_mappings_are_immutable(
     catalog: VoiceCatalog,
     installation_config: ConfigStore,

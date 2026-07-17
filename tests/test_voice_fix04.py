@@ -175,7 +175,12 @@ def test_shared_broker_mode_never_builds_local_tts_or_voice_broker(
         pytest.fail("shared broker mode attempted to build DAN-local TTS")
 
     monkeypatch.setattr("dan.voice.tts.build_tts_engine", forbidden_local_tts)
-    daemon_app = create_daemon_app(_write_voice_enabled_config(tmp_path))
+    from tests.test_shared_voice_broker import _strict_resolver
+
+    daemon_app = create_daemon_app(
+        _write_voice_enabled_config(tmp_path),
+        voice_resolver=_strict_resolver(tmp_path),
+    )
     daemon_app.start()
     recorder = daemon_app.voice_recorder
     stt = daemon_app.voice_stt

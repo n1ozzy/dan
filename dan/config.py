@@ -281,12 +281,8 @@ class VoiceConfig:
     supertonic_voice: str = "M1"
     supertonic_lang: str = "pl"
     supertonic_steps: int = 14
-    # G4 live-gate measurement (2026-07-02, N=5 per point): sentences of
-    # >=24 chars are clean at 1.35. Above ~1.15 speed supertonic clips the
-    # final phoneme of SHORT sentences and above ~1.25 sometimes emits a
-    # near-silent file. Short sentences (<= short_sentence_chars) are
-    # synthesized at short_sentence_speed (only ever slower, never faster).
-    # 0 = disabled.
+    # Legacy diagnostics retained until Task 7 removes compatibility TTS.
+    # A resolved snapshot's speed is immutable; these values cannot alter it.
     supertonic_speed: float = 1.35
     supertonic_short_sentence_chars: int = 24
     supertonic_short_sentence_speed: float = 1.0
@@ -493,19 +489,13 @@ def load_config(path: str | Path | None = None) -> DANConfig:
         validate_registered_config_tree(raw, source=config_path)
     except ConfigRegistryError as exc:
         raise ConfigError(str(exc)) from exc
-    # Wspólne źródło głosów/wymowy (~/.config/dan-voice/voices.toml) scala się
-    # jako BAZA pod lokalny [voice]; brak pliku → no-op (import leniwy, bez cyklu).
-    from dan.voice.shared_voice import apply_shared_voices
-
-    voice_cfg = apply_shared_voices(_build_section(VoiceConfig, raw["voice"]))
-
     return DANConfig(
         source_path=config_path,
         daemon=_build_section(DaemonConfig, raw["daemon"]),
         database=_build_section(DatabaseConfig, raw["database"]),
         brain=_build_brain_config(raw["brain"]),
         memory=_build_memory_config(raw["memory"]),
-        voice=voice_cfg,
+        voice=_build_section(VoiceConfig, raw["voice"]),
         audio=_build_section(AudioConfig, raw["audio"]),
         panel=_build_section(PanelConfig, raw["panel"]),
         security=_build_security_config(raw["security"]),

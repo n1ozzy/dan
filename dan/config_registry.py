@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import tempfile
 import tomllib
 from collections.abc import Callable, Mapping
@@ -44,6 +45,7 @@ class ConfigExplanation:
     key: str
     value: Any
     owner: ConfigOwner
+    source_surface: str
     source_file: Path
     revision: str
     consumers: tuple[str, ...]
@@ -53,6 +55,7 @@ class ConfigExplanation:
             "key": self.key,
             "value": self.value,
             "owner": self.owner.value,
+            "source_surface": self.source_surface,
             "source_file": str(self.source_file),
             "revision": self.revision,
             "consumers": list(self.consumers),
@@ -288,6 +291,15 @@ _VOICE_RESOLVER_CONSUMERS = {
     "voice.persona_speeds": ("VoiceResolver",),
 }
 
+_SPECIAL_CONSUMERS = {
+    "owner.display_name": ("PersonaRenderer",),
+    "brain.current_adapter": ("BrainManager",),
+    "dan.conversation_id": ("TurnOrchestrator",),
+    "voice.conversation_id": ("VoiceTurnGateway",),
+    "model": ("BrainManager",),
+    "effort": ("BrainManager",),
+}
+
 REJECTED_KEYS: Mapping[str, str] = {
     "jarvis_speed": "dead legacy setting",
     "database.migrations": "schema migrations are versioned code",
@@ -486,7 +498,9 @@ REGISTRY: Mapping[str, ConfigKey] = {
             if key in _LIVE_RUNTIME_KEYS | _OWNER_KEYS
             else _typed_parser(key)
         ),
-        consumers=_VOICE_RESOLVER_CONSUMERS.get(key, ("DaemonApp",)),
+        consumers=_SPECIAL_CONSUMERS.get(
+            key, _VOICE_RESOLVER_CONSUMERS.get(key, ("DaemonApp",))
+        ),
     )
     for key in _RUNTIME_CONFIG_KEYS
 }
@@ -494,8 +508,30 @@ REGISTRY: Mapping[str, ConfigKey] = {
 class ConfigStore:
     """Typed installation config with one atomic TOML write path."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        owner_path: str | Path | None = None,
+        runtime_db_path: str | Path | None = None,
+        versioned_root: str | Path | None = None,
+    ) -> None:
         self.path = Path(path).expanduser()
+        self.owner_path = (
+            Path(owner_path).expanduser()
+            if owner_path is not None
+            else self.path.parent / "owner.toml"
+        )
+        self.runtime_db_path = (
+            Path(runtime_db_path).expanduser()
+            if runtime_db_path is not None
+            else None
+        )
+        self.versioned_root = (
+            Path(versioned_root).expanduser()
+            if versioned_root is not None
+            else Path(__file__).resolve().parents[1]
+        )
 
     @property
     def revision(self) -> str:
@@ -522,13 +558,96 @@ class ConfigStore:
 
     def explain(self, key: str) -> ConfigExplanation:
         entry = _registered(key)
+        if entry.owner is ConfigOwner.OWNER:
+            value, source_file, revision, surface = self._explain_owner(key, entry)
+        elif entry.owner is ConfigOwner.RUNTIME:
+            value, source_file, revision, surface = self._explain_runtime(key, entry)
+        elif entry.owner is ConfigOwner.VERSIONED:
+            value, source_file, revision, surface = self._explain_versioned(key, entry)
+        else:
+            value = self.get(key)
+            source_file = self.path
+            revision = self.revision
+            surface = "installation config"
         return ConfigExplanation(
             key=key,
-            value=self.get(key),
+            value=value,
             owner=entry.owner,
-            source_file=self.path,
-            revision=self.revision,
+            source_surface=surface,
+            source_file=source_file,
+            revision=revision,
             consumers=entry.consumers,
+        )
+
+    def _explain_owner(
+        self, key: str, entry: ConfigKey
+    ) -> tuple[Any, Path, str, str]:
+        if key != "owner.display_name":
+            raise ConfigRegistryError(f"unsupported owner configuration key: {key}")
+        data = _read_toml_file(self.owner_path)
+        found, value = _nested_value(data, key)
+        if not found:
+            raise ConfigRegistryError(f"{key} is missing from owner profile {self.owner_path}")
+        return (
+            entry.parser(value),
+            self.owner_path,
+            _file_revision(self.owner_path),
+            "owner profile",
+        )
+
+    def _explain_runtime(
+        self, key: str, entry: ConfigKey
+    ) -> tuple[Any, Path, str, str]:
+        path = self.runtime_db_path
+        if path is None or not path.is_file():
+            raise ConfigRegistryError(f"runtime settings database is unavailable for {key}")
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    "SELECT value_json, updated_at, source FROM settings WHERE key = ?",
+                    (key,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise ConfigRegistryError(
+                f"could not read runtime setting {key} from {path}: {exc}"
+            ) from exc
+        if row is None:
+            raise ConfigRegistryError(f"runtime setting {key} does not exist in {path}")
+        value_json, updated_at, source = map(str, row)
+        try:
+            value = entry.parser(json.loads(value_json))
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ConfigRegistryError(f"invalid runtime setting {key} in {path}: {exc}") from exc
+        revision = hashlib.sha256(
+            _canonical_json([key, value_json, updated_at, source]).encode("utf-8")
+        ).hexdigest()
+        return value, path, revision, f"runtime settings database:{source}"
+
+    def _explain_versioned(
+        self, key: str, entry: ConfigKey
+    ) -> tuple[Any, Path, str, str]:
+        config_source = self.versioned_root / "config" / "dan.example.toml"
+        data = _read_toml_file(config_source)
+        found, value = _nested_value(data, key)
+        if found:
+            return (
+                entry.parser(value),
+                config_source,
+                _file_revision(config_source),
+                "versioned config",
+            )
+        code_source = self.versioned_root / "dan" / "config.py"
+        default = _runtime_defaults().get(key)
+        if default is None:
+            raise ConfigRegistryError(f"versioned value for {key} has no source")
+        return (
+            entry.parser(default),
+            code_source,
+            _file_revision(code_source),
+            "versioned code",
         )
 
     def set(self, key: str, value: Any) -> None:
@@ -739,6 +858,30 @@ def _nested_value(data: Mapping[str, Any], key: str) -> tuple[bool, Any]:
             return False, None
         current = current[segment]
     return True, current
+
+
+def _read_toml_file(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+    except FileNotFoundError:
+        raise ConfigRegistryError(f"configuration source does not exist: {path}") from None
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigRegistryError(f"could not read configuration source {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigRegistryError(f"configuration source must be a TOML table: {path}")
+    return data
+
+
+def _file_revision(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ConfigRegistryError(f"could not hash configuration source {path}: {exc}") from exc
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _set_nested(data: dict[str, Any], key: str, value: Any) -> None:

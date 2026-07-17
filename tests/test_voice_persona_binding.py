@@ -1,24 +1,17 @@
-"""Per-persona voice + mastering binding (2026-07-08).
-
-Switching `persona.profile` (panel dropdown / settings) must change how DAN
-SOUNDS, not only his text tone: the mapped supertonic voice and mastering
-profile are resolved per-chunk from a lightweight persona provider, so a live
-persona switch takes effect on the next spoken chunk without a daemon restart.
-
-Everything is fail-safe: an unmapped profile, an empty/failing provider, or no
-provider at all falls back to the global `supertonic_voice` / `mastering_profile`
-— the pre-binding behavior, so this can never cause silence or a wrong-default
-regression.
-"""
+"""Per-persona compatibility binding remains strict resolver-owned truth."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from dan.voice.models import SnapshotValidationError
 from dan.voice.tts import SupertonicEngine, mastering_filter
 
 from tests.test_voice_tts_supertonic import (  # reuse the fake-CLI harness
+    build_strict_engine,
     fake_player,
     fake_supertonic,
 )
@@ -47,7 +40,35 @@ def build_engine(
         voice=SimpleNamespace(**voice),
         runtime=SimpleNamespace(runtime_dir=str(tmp_path / "runtime")),
     )
-    engine = SupertonicEngine(config=config, persona_provider=persona_provider)
+    persona_voices = voice.get("persona_voices", {}) or {}
+    persona_speeds = voice.get("persona_speeds", {}) or {}
+    persona_mastering = voice.get("persona_mastering", {}) or {}
+    persona_names = set(persona_voices) | set(persona_speeds) | set(persona_mastering)
+    personas = {
+        "dan": {
+            "voice": voice["supertonic_voice"],
+            "speed": voice["supertonic_speed"],
+            "mastering": voice.get("mastering_profile", "") or "raw",
+            "dsp": "none",
+        },
+        **{
+            name: {
+                "voice": persona_voices.get(name, voice["supertonic_voice"]),
+                "speed": persona_speeds.get(name, voice["supertonic_speed"]),
+                "mastering": persona_mastering.get(
+                    name, voice.get("mastering_profile", "") or "raw"
+                ),
+                "dsp": "none",
+            }
+            for name in persona_names
+        },
+    }
+    engine = build_strict_engine(
+        tmp_path,
+        config,
+        persona_provider=persona_provider,
+        personas=personas,
+    )
     return engine, args_file
 
 
@@ -69,14 +90,15 @@ def test_persona_profile_selects_mapped_voice(tmp_path: Path) -> None:
     assert _voice_arg(args_file) == "M4"
 
 
-def test_unmapped_profile_falls_back_to_default_voice(tmp_path: Path) -> None:
+def test_unmapped_profile_fails_before_render(tmp_path: Path) -> None:
     engine, args_file = build_engine(
         tmp_path,
         persona_voices={"gangus-3": "M4"},
         persona_provider=lambda: "mentor",  # not in the map
     )
-    engine.synthesize("spokojnie")
-    assert _voice_arg(args_file) == "M1"
+    with pytest.raises(SnapshotValidationError, match="unknown voice persona"):
+        engine.synthesize("spokojnie")
+    assert not args_file.exists()
 
 
 def test_no_provider_uses_default_voice(tmp_path: Path) -> None:
@@ -111,11 +133,12 @@ def test_persona_profile_selects_mapped_mastering(tmp_path: Path) -> None:
     assert engine._mastering_filter_for("mentor") == mastering_filter("clean")
 
 
-def test_unmapped_profile_falls_back_to_global_mastering(tmp_path: Path) -> None:
+def test_unmapped_profile_cannot_fall_back_to_global_mastering(tmp_path: Path) -> None:
     engine, _args = build_engine(
         tmp_path,
         mastering_profile="bastard",
         persona_mastering={"mentor": "clean"},
         persona_provider=lambda: "gangus-1",  # not in the map
     )
-    assert engine._mastering_filter_for("gangus-1") == mastering_filter("bastard")
+    with pytest.raises(SnapshotValidationError, match="unknown voice persona"):
+        engine._mastering_filter_for("gangus-1")

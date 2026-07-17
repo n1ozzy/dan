@@ -1,22 +1,13 @@
-"""Wspólne źródło głosów i wymowy — czytnik katalogu ~/.config/voice/.
+"""Deprecated shared-voice readers and a strict resolver compatibility projection.
 
-Dwa pliki, dwie sprawy:
-  personas.toml       — kto jakim głosem gada (voice / mastering / speed)
-  pronunciations.toml — słownik wymowy anglicyzmów (słowo -> polska fonetyka)
-
-To samo źródło dla DAN daemon, DAN i skilli (standup) — ale KAŻDY projekt ma
-własny, niezależny czytnik; współdzielony jest tylko plik danych w ~/.config
-(poza repo, jak ~/.dan/config.toml). Ten moduł czyta pliki i scala je do
-VoiceConfig demona; NIE dotyka silnika syntezy (dan/voice/tts.py).
-
-Semantyka: wspólny plik = BAZA, lokalny ~/.dan/config.toml = OVERRIDE
-(user-local wygrywa). Katalog nadpisuje env VOICE_CONFIG_DIR (testy / inna
-lokalizacja). Fail-safe: brak katalogu / pliku / zły TOML → zwraca wejściowy
-VoiceConfig bez zmian (systemy jadą na swoich wbudowanych mapach).
+Raw readers remain for migration diagnostics. Runtime projection requires a
+caller-supplied ``VoiceResolver``; local voice, speed, mastering and pronunciation
+values never override its resolved snapshot.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import tomllib
 import warnings
@@ -30,10 +21,6 @@ _VOICE_CFG = TypeVar("_VOICE_CFG")
 DEFAULT_VOICE_DIR = Path.home() / ".config" / "voice"
 PERSONAS_FILE = "personas.toml"
 PRONUNCIATIONS_FILE = "pronunciations.toml"
-
-# "raw"/"none"/"" → surowy głos = pusty profil masteringu (brak łańcucha ffmpeg).
-_RAW_ALIASES = {"raw", "none", ""}
-
 
 def _resolve_dir(directory: str | Path | None) -> Path:
     if directory is not None:
@@ -65,22 +52,51 @@ def load_pronunciations(directory: str | Path | None = None) -> dict[str, str]:
     return {k.lower(): v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)}
 
 
-def _normalize_mastering(value: str) -> str:
-    return "" if value.strip().lower() in _RAW_ALIASES else value.strip()
-
-
-def apply_shared_voices(voice_cfg: _VOICE_CFG, directory: str | Path | None = None) -> _VOICE_CFG:
+def apply_shared_voices(
+    voice_cfg: _VOICE_CFG,
+    *,
+    resolver: Any = None,
+    persona: str = "dan",
+) -> _VOICE_CFG:
     """Temporary compatibility projection delegated to ``VoiceResolver``."""
 
-    from dan.voice.resolver import VoiceCatalog, VoiceResolver
+    from dan.voice.models import SpeechIntent
+    from dan.voice.resolver import VoiceResolverError
+
+    if resolver is None:
+        raise VoiceResolverError(
+            "apply_shared_voices requires a caller-supplied VoiceResolver"
+        )
 
     warnings.warn(
         "apply_shared_voices is a compatibility caller; resolution belongs to VoiceResolver",
         DeprecationWarning,
         stacklevel=2,
     )
-    catalog = VoiceCatalog.from_directory(_resolve_dir(directory), strict=False)
-    return VoiceResolver.compatibility_voice_config(catalog, voice_cfg)
+    snapshot = resolver.resolve(
+        SpeechIntent(
+            text="compatibility projection",
+            persona=persona,
+            source="shared_voice_compat",
+            session="config",
+            participant=persona,
+            priority=0,
+            lane="normal",
+            interrupt_policy="finish_current",
+            utterance_index=0,
+        )
+    )
+    return dataclasses.replace(
+        voice_cfg,
+        default_tts=snapshot.engine,
+        supertonic_voice=snapshot.voice_or_style,
+        supertonic_speed=snapshot.speed,
+        mastering_profile=snapshot.mastering_profile,
+        tts_pronunciations=dict(snapshot.pronunciations),
+        persona_voices={persona: snapshot.voice_or_style},
+        persona_mastering={persona: snapshot.mastering_profile},
+        persona_speeds={persona: snapshot.speed},
+    )
 
 
 __all__ = [

@@ -1,14 +1,10 @@
-"""Wspólne źródło głosów/wymowy — loader po stronie DAN (2026-07-08).
-
-Katalog ~/.config/voice/ z dwoma plikami (personas.toml + pronunciations.toml).
-Sprawdza scalanie do VoiceConfig: wspólny plik jako baza, lokalny [voice] jako
-override, oraz fail-safe gdy katalogu/plików brak.
-"""
+"""Compatibility voice loader delegates only to strict resolver truth."""
 
 from __future__ import annotations
 
 import dataclasses
 import warnings
+from pathlib import Path
 
 import pytest
 
@@ -18,7 +14,13 @@ from dan.voice.shared_voice import (
     load_personas,
     load_pronunciations,
 )
-from dan.voice.resolver import VoiceResolver
+from dan.voice.resolver import (
+    AssetMetadata,
+    EngineMetadata,
+    VoiceCatalog,
+    VoiceResolver,
+    VoiceResolverError,
+)
 
 
 def _voice_dir(tmp_path, *, personas="", pronunciations=""):
@@ -29,69 +31,50 @@ def _voice_dir(tmp_path, *, personas="", pronunciations=""):
     return tmp_path
 
 
-def test_missing_dir_is_noop(tmp_path):
-    cfg = VoiceConfig(persona_voices={"dan": "M1"}, tts_pronunciations={"bug": "bag"})
-    out = apply_shared_voices(cfg, directory=tmp_path / "nope")
-    assert out.persona_voices == {"dan": "M1"}
-    assert out.tts_pronunciations == {"bug": "bag"}
+def _resolver(tmp_path: Path) -> VoiceResolver:
+    (tmp_path / "voice").mkdir()
+    voice_dir = _voice_dir(
+        tmp_path / "voice",
+        personas=(
+            '[dan]\nengine = "supertonic"\nvoice = "M3"\n'
+            'mastering = "raw"\nspeed = 1.25\ndsp = "none"\n'
+        ),
+        pronunciations='runtime = "rantajm"\nbug = "bag"\n',
+    )
+    model = voice_dir / "model.onnx"
+    model.write_bytes(b"verified-model")
+    return VoiceResolver(
+        VoiceCatalog.from_directory(voice_dir),
+        {"voice": {"output_gain": 1.0}},
+        {
+            "supertonic": EngineMetadata(
+                version="1.3.1", assets={"model": AssetMetadata.from_path(model)}
+            )
+        },
+    )
 
 
-def test_broken_toml_is_noop(tmp_path):
+def test_missing_or_broken_catalog_fails_strictly(tmp_path):
+    with pytest.raises(VoiceResolverError, match="does not exist"):
+        VoiceCatalog.from_directory(tmp_path / "nope")
+
     _voice_dir(tmp_path, personas="personas = [this is not valid")
-    cfg = VoiceConfig(persona_voices={"dan": "M1"})
-    assert apply_shared_voices(cfg, directory=tmp_path).persona_voices == {"dan": "M1"}
+    with pytest.raises(VoiceResolverError, match="could not load"):
+        VoiceCatalog.from_directory(tmp_path)
 
 
-def test_populates_personas_and_pronunciations(tmp_path):
-    _voice_dir(
-        tmp_path,
-        personas="""
-        [dan]
-        voice = "M3"
-        mastering = "raw"
-        speed = 1.25
-        [danusia]
-        voice = "F4"
-        mastering = "clean"
-        speed = 1.25
-        """,
-        pronunciations="""
-        runtime = "rantajm"
-        chatterbox = "czaterboks"
-        """,
-    )
-    out = apply_shared_voices(VoiceConfig(), directory=tmp_path)
-    assert out.persona_voices == {"dan": "M3", "danusia": "F4"}
-    # "raw" → pusty profil (DAN: surowy = brak łańcucha ffmpeg)
-    assert out.persona_mastering == {"dan": "", "danusia": "clean"}
-    assert out.persona_speeds == {"dan": 1.25, "danusia": 1.25}
-    assert out.tts_pronunciations["runtime"] == "rantajm"
-    assert out.tts_pronunciations["chatterbox"] == "czaterboks"
-
-
-def test_local_config_overrides_shared(tmp_path):
-    _voice_dir(
-        tmp_path,
-        personas='[dan]\nvoice = "M2"\nspeed = 1.35\n',
-        pronunciations='bug = "bag"\nruntime = "rantajm"\n',
-    )
-    # Lokalny [voice] podał własny głos dana i własną wymowę 'bug' — wygrywa.
+def test_compatibility_projection_ignores_local_resolver_owned_overrides(tmp_path):
     cfg = VoiceConfig(
         persona_voices={"dan": "F1"},
         persona_speeds={"dan": 1.1},
         tts_pronunciations={"bug": "ROBAK"},
     )
-    out = apply_shared_voices(cfg, directory=tmp_path)
-    assert out.persona_voices["dan"] == "F1"           # local wins
-    assert out.persona_speeds["dan"] == 1.1             # local wins
-    assert out.tts_pronunciations["bug"] == "ROBAK"        # local wins
-    assert out.tts_pronunciations["runtime"] == "rantajm"  # shared fills the gap
+    out = apply_shared_voices(cfg, resolver=_resolver(tmp_path))
 
-
-def test_keys_are_lowercased(tmp_path):
-    _voice_dir(tmp_path, pronunciations='RunTime = "rantajm"\n')
-    out = apply_shared_voices(VoiceConfig(), directory=tmp_path)
-    assert out.tts_pronunciations == {"runtime": "rantajm"}
+    assert out.persona_voices == {"dan": "M3"}
+    assert out.persona_speeds == {"dan": 1.25}
+    assert out.persona_mastering == {"dan": "raw"}
+    assert out.tts_pronunciations == {"bug": "bag", "runtime": "rantajm"}
 
 
 def test_loaders_return_dicts(tmp_path):
@@ -105,8 +88,7 @@ def test_loaders_return_dicts(tmp_path):
 
 
 def test_result_is_still_frozen_voiceconfig(tmp_path):
-    _voice_dir(tmp_path, pronunciations='bug = "bag"\n')
-    out = apply_shared_voices(VoiceConfig(), directory=tmp_path)
+    out = apply_shared_voices(VoiceConfig(), resolver=_resolver(tmp_path))
     with pytest.raises(dataclasses.FrozenInstanceError):
         out.enabled = True  # type: ignore[misc]
 
@@ -114,20 +96,27 @@ def test_result_is_still_frozen_voiceconfig(tmp_path):
 def test_compatibility_loader_delegates_to_authoritative_resolver(
     tmp_path, monkeypatch
 ):
-    _voice_dir(tmp_path, personas='[dan]\nvoice = "M3"\n')
     cfg = VoiceConfig()
+    resolver = _resolver(tmp_path)
     calls = []
+    original = VoiceResolver.resolve
 
-    def fake_delegate(catalog, voice_cfg):
-        calls.append((catalog, voice_cfg))
-        return voice_cfg
+    def recording_resolve(self, intent):
+        calls.append(intent)
+        return original(self, intent)
 
-    monkeypatch.setattr(VoiceResolver, "compatibility_voice_config", fake_delegate)
+    monkeypatch.setattr(VoiceResolver, "resolve", recording_resolve)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        assert apply_shared_voices(cfg, directory=tmp_path) is cfg
+        out = apply_shared_voices(cfg, resolver=resolver)
 
     assert len(calls) == 1
-    assert calls[0][1] is cfg
+    assert calls[0].persona == "dan"
+    assert out.supertonic_voice == "M3"
     assert any("VoiceResolver" in str(item.message) for item in caught)
+
+
+def test_compatibility_loader_requires_caller_supplied_resolver() -> None:
+    with pytest.raises(VoiceResolverError, match="caller-supplied VoiceResolver"):
+        apply_shared_voices(VoiceConfig())

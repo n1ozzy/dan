@@ -14,6 +14,7 @@ from dan.store.db import close_quietly, initialize_database
 from dan.voice.shared_broker import SharedBrokerClient
 from dan.voice.speech import SpeechPipeline
 from tests.test_api_smoke import rewrite_voice_section, write_config
+from tests.test_shared_voice_broker import _strict_resolver
 
 
 def _shared_voice_config(tmp_path: Path) -> Path:
@@ -42,12 +43,16 @@ def _shared_voice_config(tmp_path: Path) -> Path:
 def test_shared_publisher_is_ready_without_claiming_local_tts_or_player(
     tmp_path: Path,
 ) -> None:
-    app = create_daemon_app(_shared_voice_config(tmp_path))
+    resolver = _strict_resolver(tmp_path)
+    app = create_daemon_app(
+        _shared_voice_config(tmp_path), voice_resolver=resolver
+    )
     try:
         app.start()
 
         activity_client = SharedBrokerClient(
             app.config.voice,
+            resolver=resolver,
             request_dir=tmp_path / "activity-req",
             clock=lambda: 1_720_000_000.5,
             pid=lambda: 4321,
@@ -127,7 +132,9 @@ def test_shared_publisher_is_ready_without_claiming_local_tts_or_player(
 def test_shared_publisher_shutdown_never_controls_the_external_broker(
     tmp_path: Path,
 ) -> None:
-    app = create_daemon_app(_shared_voice_config(tmp_path))
+    app = create_daemon_app(
+        _shared_voice_config(tmp_path), voice_resolver=_strict_resolver(tmp_path)
+    )
     control_calls: list[str] = []
 
     class ExternalBrokerControlTrap:
@@ -170,6 +177,7 @@ def test_shared_publish_emits_truthful_backend_lifecycle_without_fake_ack(
     )
     client = SharedBrokerClient(
         config,
+        resolver=_strict_resolver(tmp_path),
         request_dir=request_dir,
         clock=lambda: 1_720_000_000.125,
         pid=lambda: 1234,

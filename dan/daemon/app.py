@@ -154,6 +154,7 @@ class DaemonApp:
     memory_item_repository: MemoryItemRepository | None = None
     memory_archive: MemoryArchive | None = None
     worker_broker: WorkerBroker | None = None
+    voice_resolver: Any = None
     voice_recorder: Any = None
     voice_broker: Any = None
     voice_publisher: Any = None
@@ -253,12 +254,15 @@ class DaemonApp:
                     if self.config.voice.broker_enabled:
                         from dan.voice.shared_broker import SharedBrokerClient
 
-                        voice_publisher = SharedBrokerClient(self.config.voice)
+                        voice_publisher = SharedBrokerClient(
+                            self.config.voice, resolver=self.voice_resolver
+                        )
                     else:
                         tts_engine = build_tts_engine(
                             self.config.voice.default_tts,
                             config=self.config,
                             persona_provider=_current_persona_profile,
+                            resolver=self.voice_resolver,
                         )
 
                     # The registry itself is daemon-lifetime (streaming adapters hold
@@ -1638,6 +1642,7 @@ def create_daemon_app(
     config_path: str | Path | None = None,
     *,
     initialize: bool = True,
+    voice_resolver: Any = None,
     memory_compiler: Any | None = None,
     compiled_memory_enabled: bool | None = None,
     compiled_memory_enabled_session_profiles: Iterable[tuple[str, str]] | None = None,
@@ -1649,6 +1654,7 @@ def create_daemon_app(
     return create_daemon_app_from_config(
         config,
         initialize=initialize,
+        voice_resolver=voice_resolver,
         memory_compiler=memory_compiler,
         compiled_memory_enabled=compiled_memory_enabled,
         compiled_memory_enabled_session_profiles=compiled_memory_enabled_session_profiles,
@@ -1724,6 +1730,7 @@ def create_daemon_app_from_config(
     config: DANConfig,
     *,
     initialize: bool = True,
+    voice_resolver: Any = None,
     memory_compiler: Any | None = None,
     compiled_memory_enabled: bool | None = None,
     compiled_memory_enabled_session_profiles: Iterable[tuple[str, str]] | None = None,
@@ -1808,6 +1815,7 @@ def create_daemon_app_from_config(
             memory_evidence_repository=None,
             memory_item_repository=None,
             memory_archive=None,
+            voice_resolver=voice_resolver,
         )
 
     ensure_runtime_dirs(paths)
@@ -1911,6 +1919,7 @@ def create_daemon_app_from_config(
         memory_item_repository=memory_item_repository,
         memory_archive=memory_archive,
         worker_broker=worker_broker,
+        voice_resolver=voice_resolver,
         voice_generation_registry=generation_registry,
         api_token=api_token,
     )

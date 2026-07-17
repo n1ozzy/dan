@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import json
 import tomllib
@@ -44,7 +43,7 @@ class VoiceCatalog:
     personas: Mapping[str, Mapping[str, Any]]
     pronunciations: Mapping[str, str]
     pronunciations_sha256: str
-    asset_sha256: Mapping[str, str]
+    assets: Mapping[str, AssetMetadata]
     revision: str
 
     def __post_init__(self) -> None:
@@ -59,8 +58,14 @@ class VoiceCatalog:
         )
         object.__setattr__(
             self,
-            "asset_sha256",
-            MappingProxyType(dict(sorted(self.asset_sha256.items()))),
+            "assets",
+            MappingProxyType(dict(sorted(self.assets.items()))),
+        )
+
+    @property
+    def asset_sha256(self) -> Mapping[str, str]:
+        return MappingProxyType(
+            {name: asset.sha256 for name, asset in self.assets.items()}
         )
 
     @classmethod
@@ -83,24 +88,24 @@ class VoiceCatalog:
         if strict and not personas:
             raise VoiceResolverError(f"voice catalog has no personas: {personas_path}")
 
-        assets: dict[str, str] = {}
+        assets: dict[str, AssetMetadata] = {}
         if personas_path.is_file():
-            assets["voice.personas"] = _sha256_file(personas_path)
+            assets["voice.personas"] = AssetMetadata.from_path(personas_path)
         if pronunciations_path.is_file():
-            assets["voice.pronunciations"] = _sha256_file(pronunciations_path)
+            assets["voice.pronunciations"] = AssetMetadata.from_path(pronunciations_path)
         pronunciation_json = _canonical_json(pronunciations)
         pronunciation_hash = hashlib.sha256(pronunciation_json.encode("utf-8")).hexdigest()
         revision_payload = {
             "personas": personas,
             "pronunciations": pronunciations,
-            "assets": assets,
+            "assets": {name: asset.sha256 for name, asset in assets.items()},
         }
         revision = hashlib.sha256(_canonical_json(revision_payload).encode("utf-8")).hexdigest()
         return cls(
             personas=personas,
             pronunciations=pronunciations,
             pronunciations_sha256=pronunciation_hash,
-            asset_sha256=assets,
+            assets=assets,
             revision=revision,
         )
 
@@ -127,7 +132,7 @@ class VoiceResolver:
         spec = self._catalog.personas.get(intent.persona)
         if spec is None:
             raise SnapshotValidationError(f"unknown voice persona: {intent.persona}")
-        engine_name = _required_spec_text(spec, "engine", default="supertonic")
+        engine_name = _required_spec_text(spec, "engine")
         engine = self._engines.get(engine_name)
         if engine is None:
             raise SnapshotValidationError(f"unregistered voice engine: {engine_name}")
@@ -135,7 +140,15 @@ class VoiceResolver:
         if not version:
             raise SnapshotValidationError(f"voice engine {engine_name!r} has no version")
 
-        asset_hashes = dict(self._catalog.asset_sha256)
+        asset_hashes: dict[str, str] = {}
+        for name, asset in self._catalog.assets.items():
+            actual = _sha256_file(asset.path)
+            if actual != asset.sha256:
+                raise SnapshotValidationError(
+                    f"SHA-256 mismatch for catalog asset {name}: "
+                    f"expected {asset.sha256}, got {actual}"
+                )
+            asset_hashes[name] = actual
         for name, asset in engine.assets.items():
             actual = _sha256_file(asset.path)
             if actual != asset.sha256:
@@ -159,9 +172,9 @@ class VoiceResolver:
             engine=engine_name,
             engine_version=version,
             voice_or_style=_required_spec_text(spec, "voice"),
-            speed=_positive_float(spec.get("speed", 1.0), "speed"),
-            mastering_profile=str(spec.get("mastering", "raw")),
-            dsp=str(spec.get("dsp", "none")),
+            speed=_positive_float(spec.get("speed"), "speed"),
+            mastering_profile=_required_spec_text(spec, "mastering"),
+            dsp=_required_spec_text(spec, "dsp"),
             pronunciations=self._catalog.pronunciations,
             pronunciations_sha256=self._catalog.pronunciations_sha256,
             gain=gain,
@@ -170,94 +183,6 @@ class VoiceResolver:
         )
         snapshot.validate_complete()
         return snapshot
-
-    @staticmethod
-    def compatibility_voice_config(catalog: VoiceCatalog, voice_config: Any) -> Any:
-        """One temporary legacy projection, implemented only from catalog truth."""
-
-        shared_voices: dict[str, str] = {}
-        shared_mastering: dict[str, str] = {}
-        shared_speeds: dict[str, float] = {}
-        for name, spec in catalog.personas.items():
-            voice = spec.get("voice")
-            mastering = spec.get("mastering")
-            speed = spec.get("speed")
-            if isinstance(voice, str) and voice.strip():
-                shared_voices[name] = voice.strip()
-            if isinstance(mastering, str):
-                normalized = mastering.strip()
-                shared_mastering[name] = (
-                    "" if normalized.lower() in {"raw", "none", ""} else normalized
-                )
-            if isinstance(speed, (int, float)) and not isinstance(speed, bool) and speed > 0:
-                shared_speeds[name] = float(speed)
-        return dataclasses.replace(
-            voice_config,
-            tts_pronunciations={
-                **dict(catalog.pronunciations),
-                **dict(getattr(voice_config, "tts_pronunciations", {}) or {}),
-            },
-            persona_voices={
-                **shared_voices,
-                **dict(getattr(voice_config, "persona_voices", {}) or {}),
-            },
-            persona_mastering={
-                **shared_mastering,
-                **dict(getattr(voice_config, "persona_mastering", {}) or {}),
-            },
-            persona_speeds={
-                **shared_speeds,
-                **dict(getattr(voice_config, "persona_speeds", {}) or {}),
-            },
-        )
-
-    @staticmethod
-    def compatibility_snapshot(voice_config: Any, intent: SpeechIntent) -> RenderSnapshot:
-        """Project legacy ``VoiceConfig`` through the same snapshot contract."""
-
-        persona = intent.persona
-        voice = dict(getattr(voice_config, "persona_voices", {}) or {}).get(
-            persona, getattr(voice_config, "supertonic_voice", "M1")
-        )
-        speed = dict(getattr(voice_config, "persona_speeds", {}) or {}).get(
-            persona, getattr(voice_config, "supertonic_speed", 1.0)
-        )
-        mastering = dict(getattr(voice_config, "persona_mastering", {}) or {}).get(
-            persona, getattr(voice_config, "mastering_profile", "")
-        )
-        pronunciations = {
-            str(key).lower(): str(value)
-            for key, value in dict(
-                getattr(voice_config, "tts_pronunciations", {}) or {}
-            ).items()
-        }
-        config_payload = {
-            "engine": getattr(voice_config, "default_tts", "supertonic"),
-            "voice": voice,
-            "speed": speed,
-            "mastering": mastering,
-            "pronunciations": pronunciations,
-            "gain": getattr(voice_config, "output_gain", 1.0),
-        }
-        revision = hashlib.sha256(_canonical_json(config_payload).encode()).hexdigest()
-        snapshot = RenderSnapshot(
-            engine=str(config_payload["engine"] or "supertonic"),
-            engine_version="compatibility-unverified",
-            voice_or_style=str(voice or "M1"),
-            speed=_positive_float(speed, "speed"),
-            mastering_profile=str(mastering or "raw"),
-            dsp="none",
-            pronunciations=pronunciations,
-            pronunciations_sha256=hashlib.sha256(
-                _canonical_json(pronunciations).encode()
-            ).hexdigest(),
-            gain=_positive_float(config_payload["gain"], "gain"),
-            asset_sha256={"compatibility.config": revision},
-            config_revision=revision,
-        )
-        snapshot.validate_complete()
-        return snapshot
-
 
 def _read_toml(path: Path, *, strict: bool) -> dict[str, Any]:
     try:

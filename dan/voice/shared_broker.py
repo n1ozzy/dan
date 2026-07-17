@@ -7,7 +7,6 @@ import os
 import threading
 import time
 import uuid
-import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -44,13 +43,11 @@ class SharedBrokerClient:
         self._clock = clock
         self._pid = pid
         self._nonce = nonce or (lambda: uuid.uuid4().hex)
-        self._resolver = resolver
         if resolver is None:
-            warnings.warn(
-                "SharedBrokerClient(config) is a compatibility caller; pass VoiceResolver",
-                DeprecationWarning,
-                stacklevel=2,
+            raise SharedBrokerError(
+                "SharedBrokerClient requires a caller-supplied VoiceResolver"
             )
+        self._resolver = resolver
         self._publish_lock = threading.Lock()
         self._last_published_ns = -1
 
@@ -69,7 +66,7 @@ class SharedBrokerClient:
         intent = SpeechIntent(
             text=clean,
             persona=self._persona,
-            source="shared_broker_compat" if self._resolver is None else "dand",
+            source="dand",
             session=str(session or "?"),
             participant=self._persona,
             priority=int(priority),
@@ -77,11 +74,7 @@ class SharedBrokerClient:
             interrupt_policy="finish_current",
             utterance_index=0,
         )
-        snapshot = (
-            self._resolver.resolve(intent)
-            if self._resolver is not None
-            else VoiceResolver.compatibility_snapshot(self._config, intent)
-        )
+        snapshot = self._resolver.resolve(intent)
         request = {
             "text": clean,
             "engine": snapshot.engine,
