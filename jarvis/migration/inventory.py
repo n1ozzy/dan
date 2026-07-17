@@ -112,8 +112,155 @@ _PRIVACY_DENIED_COMPONENTS = {
     "sessions",
 }
 _DECISION_PLACEHOLDER = re.compile(r"\b(?:pending|tbd|todo)\b", re.IGNORECASE)
+_DECISION_VALUES = {
+    "active-source",
+    "archive-do-not-copy-without-named-runtime-evidence",
+    "archive/do-not-copy",
+    "audit-active-instruction-and-migrate-or-disable-in-task11",
+    "backup-and-evolve-as-dan-db-in-task3",
+    "backup-and-import-with-lineage-in-task3",
+    "backup-and-retire-only-after-verified-cutover",
+    "backup-contract-and-retire-in-task12-cutover",
+    "classify-in-config-registry-before-write",
+    "classify-installed-plugin-version-and-migrate-or-disable-in-task11",
+    "classify-license-and-version-or-fetch-in-task6",
+    "create-and-verify-through-versioned-migration",
+    "create-installation-config-in-task5",
+    "create-private-owner-config-in-task5",
+    "create-private-secrets-config-mode-0600-in-task5",
+    "import-approved-installation-values-in-task5",
+    "input-material",
+    "migrate-active-instruction-to-thin-dan-contract-in-task11",
+    "migrate-as-single-persona-canon-in-task5",
+    "migrate-explicitly-or-disable-before-cutover",
+    "migrate-to-dan-speak-or-disable-in-task11",
+    "migrate-to-fail-open-dan-adapter-or-disable-in-task11",
+    "migrate-to-thin-dan-adapter-or-disable-in-task11",
+    "observe-ephemeral-link-and-retire-with-runtime-in-task12",
+    "observe-only-in-task1-stop-only-during-journaled-cutover",
+    "preserve-private-state-and-migrate-with-backup",
+    "reconcile-and-version-in-task6",
+    "reconcile-every-key-and-retire-runtime-owner-in-task5",
+    "reconcile-license-hash-and-version-in-task6",
+    "record-missing-source",
+    "record-probe-failure-and-recheck-at-review-gate",
+    "replace-live-openclaw-skill-with-thin-dan-adapter-in-task11",
+    "replace-or-disable-during-task11-and-cutover",
+    "replace-with-managed-dan-link-or-disable-in-task11",
+    "replace-with-voice-service-contract-in-task8",
+    "retain-as-historical-reference-not-runtime-evidence",
+    "retain-as-inventory-evidence",
+    "retain-as-read-only-migration-evidence",
+    "retain-as-target-machine-contract",
+    "retain-as-task1-evidence",
+    "retain-as-unproven-reference-and-recheck-before-cutover",
+    "retain-disabled-openclaw-skill-and-retire-after-task11-audit",
+    "retain-external-host-and-audit-adapter-in-task11",
+    "retain-external-host-launch-agent",
+    "retain-historical-do-not-copy-unless-live-consumer-proves-active",
+    "retain-host-plugin-registry-and-audit-adapters-in-task11",
+    "retain-private-and-classify-before-data-migration",
+    "retain-private-never-commit",
+    "retain-private-never-commit-and-audit-host-config-in-task11",
+    "retain-read-only-donor-through-observation-gate",
+    "retain-ref-unchanged-and-apply-ref-decision-ledger",
+    "rewrite-managed-reference-during-task11-cutover",
+    "use-as-accepted-runtime-source",
+    "use-as-release1-integration-worktree",
+}
 _SAFE_EXECUTABLE = re.compile(r"[^A-Za-z0-9._+-]")
 _SAFE_EXECUTABLE_VALUE = re.compile(r"[A-Za-z0-9._+-]{1,128}\Z")
+_ERROR_TYPE_VALUES = {
+    "BlockingIOError",
+    "BrokenPipeError",
+    "ChildProcessError",
+    "ConnectionAbortedError",
+    "ConnectionError",
+    "ConnectionRefusedError",
+    "ConnectionResetError",
+    "DataError",
+    "DatabaseError",
+    "Error",
+    "FileChangedDuringScan",
+    "FileExistsError",
+    "FileNotFoundError",
+    "FileTooLargeDuringRead",
+    "IntegrityError",
+    "InterfaceError",
+    "InternalError",
+    "InterruptedError",
+    "IsADirectoryError",
+    "MalformedGitBranchName",
+    "MalformedGitObjectId",
+    "MalformedGitPath",
+    "MalformedGitRefRecord",
+    "MalformedGitStatusRecord",
+    "MalformedLaunchdRecord",
+    "MalformedProcessRecord",
+    "MissingPath",
+    "NonZeroExit",
+    "NotADirectoryError",
+    "NotRegularFile",
+    "NotSupportedError",
+    "OSError",
+    "OperationalError",
+    "PermissionError",
+    "ProcessLookupError",
+    "ProgrammingError",
+    "SymlinkChangedDuringScan",
+    "TimeoutError",
+    "UnicodeDecodeError",
+    "UnresolvedGitHead",
+    "UnsupportedPathType",
+    "Warning",
+    "WipInspectionError",
+    "WipPathMissing",
+}
+_ERROR_OPERATION_VALUES = {
+    "close",
+    "fstat",
+    "git-branch",
+    "git-diff",
+    "git-for-each-ref",
+    "git-head",
+    "git-ref-base",
+    "git-ref-repository-lstat",
+    "git-rev-list",
+    "git-rev-parse-git-dir",
+    "git-status",
+    "git-status-parse",
+    "git-toplevel",
+    "git-wip-inspect",
+    "git-wip-inspection",
+    "hash",
+    "hash-size-limit",
+    "hash-verify",
+    "launchctl-list",
+    "lstat",
+    "open",
+    "ps",
+    "read-signatures-close",
+    "read-signatures-fstat",
+    "read-signatures-lstat",
+    "read-signatures-open",
+    "read-signatures-read",
+    "read-signatures-size",
+    "read-signatures-verify",
+    "readlink",
+    "scandir",
+    "selected-base",
+    "sqlite-count",
+    "sqlite-open",
+    "sqlite-probe",
+    "symlink-scope",
+    "symlink-target-lstat",
+    "symlink-verify",
+    "verify",
+    "walk",
+}
+_PROCESS_ACTIVITY_SOURCE = re.compile(
+    r"process:[1-9][0-9]*:[a-z0-9]+(?:-[a-z0-9]+)*\Z"
+)
 _HIGH_CONFIDENCE_SECRET_PATTERNS = (
     re.compile(r"\bghp_[A-Za-z0-9]{30,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{40,}\b"),
@@ -134,6 +281,35 @@ _PROCESS_ROLES: tuple[tuple[str, str], ...] = (
     ("dand", "dan-daemon"),
     ("jarvis", "jarvis-runtime"),
 )
+_PROCESS_ROLE_VALUES = {role for _, role in _PROCESS_ROLES}
+_PRODUCER_FORMAT_VALUES = {name for _, name in _PRODUCER_SIGNATURES} | {
+    "legacy-hook-off-file"
+}
+_SQLITE_JOURNAL_MODES = {"delete", "truncate", "persist", "memory", "wal", "off"}
+_PROBE_VALUES = {
+    "git branch --show-current",
+    "git for-each-ref",
+    "git rev-parse --git-dir",
+    "git rev-parse --show-toplevel",
+    "git rev-parse --verify base",
+    "git rev-parse HEAD",
+    "git status --porcelain=v1 -z",
+    "launchctl-list",
+    "ps",
+}
+_TRACKED_DIFF_BASES = {"HEAD", "unborn-staged-and-unstaged"}
+_GIT_REF_VALUE = re.compile(r"(?:HEAD|[A-Za-z0-9][A-Za-z0-9._/-]*)\Z")
+_LAUNCHD_LABEL_VALUE = re.compile(
+    r"(?:ai\.openclaw\.gateway|com\.(?:dan|ozzy)\.[a-z0-9][a-z0-9.-]*)\Z"
+)
+_STANDALONE_REQUEST_FORMAT_IDS = {
+    "legacy-claude-hook-switch",
+    "legacy-dan-voice-json-runtime",
+}
+_SQLITE_IDENTIFIER_VALUE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_FILE_MODE_VALUE = re.compile(r"0o[0-7]{3}\Z")
+_GIT_WIP_STATUS_VALUE = re.compile(r"[ MTADRCU?!]{2}\Z")
+_PROCESS_CONSUMER_SOURCE = re.compile(r"process:[1-9][0-9]*\Z")
 
 
 class Runner(Protocol):
@@ -1831,11 +2007,17 @@ def _launchd_records(runner: Runner, roots: InventoryRoots) -> list[Mapping[str,
             )
             return records
         for line_index, line in enumerate(result.stdout.splitlines(), start=1):
-            fields = line.split(maxsplit=2)
-            label = fields[2] if len(fields) > 2 else line.strip()
-            if not _is_product_launchd_label(label):
+            fields = line.split()
+            product_labels = [
+                field for field in fields if _is_product_launchd_label(field)
+            ]
+            if not product_labels:
                 continue
-            if len(fields) != 3:
+            if (
+                len(fields) != 3
+                or product_labels != [fields[2]]
+                or not _LAUNCHD_LABEL_VALUE.fullmatch(fields[2])
+            ):
                 records.append(
                     _probe_error_record(
                         "launchctl-list",
@@ -1845,7 +2027,7 @@ def _launchd_records(runner: Runner, roots: InventoryRoots) -> list[Mapping[str,
                     )
                 )
                 continue
-            pid_text, exit_text, _ = fields
+            pid_text, exit_text, label = fields
             try:
                 pid = None if pid_text == "-" else int(pid_text)
                 last_exit_status = None if exit_text == "-" else int(exit_text)
@@ -2294,7 +2476,7 @@ def _reference_argument_matches(
     candidates: Iterable[Path],
 ) -> bool:
     cleaned = argument.strip("`'\"()[]{}:,;")
-    if not cleaned or "/" not in cleaned:
+    if not cleaned:
         return False
     candidate_normalized = candidate.expanduser().resolve(strict=False)
 
@@ -2312,6 +2494,17 @@ def _reference_argument_matches(
         )
 
     reference = Path(cleaned)
+    if "/" not in cleaned:
+        if source is None:
+            return False
+        resolved_from_source = source.parent / reference
+        try:
+            resolved_stat = os.lstat(resolved_from_source)
+        except OSError:
+            return False
+        return stat.S_ISREG(resolved_stat.st_mode) and matches_candidate(
+            resolved_from_source
+        )
     if reference.is_absolute():
         return matches_candidate(reference)
     if source is not None:
@@ -2417,7 +2610,7 @@ def _call_evidence_kind(source: Path) -> str | None:
     if _is_backup_reference(source):
         return None
     if source.name == "SKILL.md":
-        return "active-skill-call"
+        return "active-skill-call" if _is_active_instruction(source) else None
     if source.name in {"AGENTS.md", "CLAUDE.md"} or source.suffix == ".rules":
         return "active-instruction-call"
     if source.suffix == ".plist":
@@ -3456,6 +3649,16 @@ _SYMLINK_FIELDS = {
     "target_size_bytes",
 }
 _ACTIVITY_FIELDS = {"kind", "source"}
+_ACTIVITY_KINDS = {
+    "active-instruction",
+    "active-instruction-call",
+    "active-skill",
+    "active-skill-call",
+    "hook-config",
+    "launchd-config",
+    "process",
+    "runtime-call",
+}
 _FORBIDDEN_FIELDS = {
     "args",
     "arguments",
@@ -3638,6 +3841,68 @@ def _is_absolute_normalized_path(value: str) -> bool:
     return Path(value).is_absolute() and os.path.normpath(value) == value
 
 
+def _is_structural_git_ref(value: str) -> bool:
+    return bool(
+        _GIT_REF_VALUE.fullmatch(value)
+        and "//" not in value
+        and ".." not in value
+        and "@{" not in value
+        and not value.endswith(("/", ".", ".lock"))
+    )
+
+
+def _is_request_format(value: str) -> bool:
+    formats = value.split(",")
+    return bool(formats) and all(item in _PRODUCER_FORMAT_VALUES for item in formats)
+
+
+def _is_request_format_id(value: str) -> bool:
+    format_name, separator, producer_path = value.partition(":")
+    if not separator:
+        return value in _STANDALONE_REQUEST_FORMAT_IDS
+    return format_name in _PRODUCER_FORMAT_VALUES and _is_absolute_normalized_path(
+        producer_path
+    )
+
+
+def _is_consumer_source(value: str) -> bool:
+    return bool(
+        _is_absolute_normalized_path(value)
+        or _PROCESS_CONSUMER_SOURCE.fullmatch(value)
+    )
+
+
+def _validate_decision(value: object, location: str, errors: list[str]) -> None:
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{location} has no decision")
+    elif _DECISION_PLACEHOLDER.search(value):
+        errors.append(f"{location}.decision contains a placeholder")
+    elif value not in _DECISION_VALUES:
+        errors.append(f"{location}.decision has unknown registry value")
+
+
+def _is_normalized_relative_path(value: str) -> bool:
+    normalized = os.path.normpath(value)
+    return bool(
+        value
+        and ":" not in value
+        and not _has_control_characters(value)
+        and not Path(value).is_absolute()
+        and normalized == value
+        and normalized != ".."
+        and not normalized.startswith("../")
+    )
+
+
+def _is_normalized_symlink_target(value: str) -> bool:
+    return bool(
+        value
+        and ":" not in value
+        and not _has_control_characters(value)
+        and os.path.normpath(value) == value
+    )
+
+
 def _validate_absolute_path(value: object, location: str, errors: list[str]) -> None:
     if isinstance(value, str) and not _is_absolute_normalized_path(value):
         errors.append(f"{location} must be an absolute normalized path")
@@ -3744,8 +4009,15 @@ def _validate_error(
         errors.append(f"{location} missing fields: {', '.join(missing)}")
     if "type" in value and not isinstance(value["type"], str):
         errors.append(f"{location}.type must be a string")
+    elif isinstance(value.get("type"), str) and value["type"] not in _ERROR_TYPE_VALUES:
+        errors.append(f"{location}.type has unknown registry value")
     if "operation" in value and not isinstance(value["operation"], str):
         errors.append(f"{location}.operation must be a string")
+    elif (
+        isinstance(value.get("operation"), str)
+        and value["operation"] not in _ERROR_OPERATION_VALUES
+    ):
+        errors.append(f"{location}.operation has unknown registry value")
     if "resolved" in value and not isinstance(value["resolved"], bool):
         errors.append(f"{location}.resolved must be a boolean")
 
@@ -3768,6 +4040,16 @@ def _validate_activity_evidence(
             errors.append(f"{row_location} must contain kind and source")
         elif not all(isinstance(row[key], str) and row[key] for key in _ACTIVITY_FIELDS):
             errors.append(f"{row_location} kind and source must be non-empty strings")
+        else:
+            kind = row["kind"]
+            source = row["source"]
+            if kind not in _ACTIVITY_KINDS:
+                errors.append(f"{row_location}.kind has unknown enum value")
+            if not (
+                _is_absolute_normalized_path(source)
+                or _PROCESS_ACTIVITY_SOURCE.fullmatch(source)
+            ):
+                errors.append(f"{row_location}.source has invalid semantic value")
 
 
 def _validate_symlink(value: object, location: str, errors: list[str]) -> None:
@@ -3803,6 +4085,10 @@ def _validate_symlink(value: object, location: str, errors: list[str]) -> None:
             f"{location}.normalized_target",
             errors,
         )
+    if isinstance(value.get("raw_target"), str) and not _is_normalized_symlink_target(
+        value["raw_target"]
+    ):
+        errors.append(f"{location}.raw_target must be a normalized symlink target")
     if value.get("target_state") not in _SYMLINK_TARGET_STATES:
         errors.append(f"{location}.target_state has unknown enum value")
     if value.get("target_kind") not in _SYMLINK_TARGET_KINDS:
@@ -3843,6 +4129,23 @@ def _validate_metadata(
         _validate_git_object_id(value["head"], f"{location}.head", errors)
     if "head_state" in value and value["head_state"] not in _HEAD_STATES:
         errors.append(f"{location}.head_state has unknown enum value")
+    if isinstance(value.get("branch"), str) and not _is_structural_git_ref(
+        value["branch"]
+    ):
+        errors.append(f"{location}.branch has invalid Git ref value")
+    if isinstance(value.get("probe"), str) and value["probe"] not in _PROBE_VALUES:
+        errors.append(f"{location}.probe has unknown enum value")
+    if isinstance(value.get("mode"), str) and not _FILE_MODE_VALUE.fullmatch(
+        value["mode"]
+    ):
+        errors.append(f"{location}.mode has invalid file mode value")
+    if (
+        isinstance(value.get("tracked_diff_basis"), str)
+        and value["tracked_diff_basis"] not in _TRACKED_DIFF_BASES
+    ):
+        errors.append(f"{location}.tracked_diff_basis has unknown enum value")
+    if "decision" in value:
+        _validate_decision(value["decision"], location, errors)
     for key in ("source_root", "toplevel"):
         if key in value and value[key] is not None:
             _validate_absolute_path(value[key], f"{location}.{key}", errors)
@@ -3875,12 +4178,24 @@ def _validate_metadata(
                     )
                 if "path_status" in entry and entry["path_status"] not in _STATUS_ENUM:
                     errors.append(f"{entry_location}.path_status has unknown enum value")
+                if isinstance(entry.get("status"), str) and not (
+                    _GIT_WIP_STATUS_VALUE.fullmatch(entry["status"])
+                    and entry["status"] != "  "
+                ):
+                    errors.append(f"{entry_location}.status has invalid Git status value")
+                if isinstance(entry.get("kind"), str) and entry["kind"] not in _KIND_ENUM:
+                    errors.append(f"{entry_location}.kind has unknown enum value")
                 for key in ("path", "original_path"):
                     if key not in entry or entry[key] is None or not isinstance(entry[key], str):
                         continue
-                    normalized = os.path.normpath(entry[key])
-                    if Path(entry[key]).is_absolute() or normalized != entry[key] or normalized.startswith("../"):
+                    if not _is_normalized_relative_path(entry[key]):
                         errors.append(f"{entry_location}.{key} must be a normalized relative path")
+                if isinstance(entry.get("target"), str):
+                    _validate_absolute_path(
+                        entry["target"],
+                        f"{entry_location}.target",
+                        errors,
+                    )
 
 
 def _validate_surface_row(
@@ -3946,11 +4261,7 @@ def _validate_surface_row(
             or not all(isinstance(item, str) for item in row[key])
         ):
             errors.append(f"{location}.{key} must be a list of strings")
-    decision = row.get("decision")
-    if not isinstance(decision, str) or not decision.strip():
-        errors.append(f"{location} has no decision")
-    elif _DECISION_PLACEHOLDER.search(decision):
-        errors.append(f"{location}.decision contains a placeholder")
+    _validate_decision(row.get("decision"), location, errors)
     if "metadata" in row:
         _validate_metadata(surface, row["metadata"], f"{location}.metadata", errors)
     if "error" in row:
@@ -3978,10 +4289,14 @@ def _validate_surface_row(
             isinstance(item, str) for item in consumers
         ):
             errors.append(f"{location}.consumers must be a list of strings")
+        elif not all(_is_consumer_source(item) for item in consumers):
+            errors.append(f"{location}.consumers contains an invalid source")
     if "formats" in row:
         formats = row["formats"]
         if not isinstance(formats, list) or not all(isinstance(item, str) for item in formats):
             errors.append(f"{location}.formats must be a list of strings")
+        elif not all(item in _PRODUCER_FORMAT_VALUES for item in formats):
+            errors.append(f"{location}.formats contains an unknown format")
     if "kind" in row and isinstance(row["kind"], str) and row["kind"] not in _KIND_ENUM:
         errors.append(f"{location}.kind has unknown enum value")
     if "status" in row and isinstance(row["status"], str) and row["status"] not in _STATUS_ENUM:
@@ -4013,16 +4328,50 @@ def _validate_surface_row(
         executable = row["executable"]
         if isinstance(executable, str) and not _SAFE_EXECUTABLE_VALUE.fullmatch(executable):
             errors.append(f"{location}.executable must be a sanitized executable basename")
+    if surface == "processes" and isinstance(row.get("role"), str):
+        if row["role"] not in _PROCESS_ROLE_VALUES:
+            errors.append(f"{location}.role has unknown enum value")
+    if isinstance(row.get("probe"), str) and row["probe"] not in _PROBE_VALUES:
+        errors.append(f"{location}.probe has unknown enum value")
+    if surface == "git_refs":
+        for key in ("ref", "upstream"):
+            if isinstance(row.get(key), str) and not _is_structural_git_ref(row[key]):
+                errors.append(f"{location}.{key} has invalid Git ref value")
+    if surface == "launchd" and isinstance(row.get("label"), str):
+        if not _LAUNCHD_LABEL_VALUE.fullmatch(row["label"]):
+            errors.append(f"{location}.label has invalid launchd label value")
+    if isinstance(row.get("request_format"), str) and not _is_request_format(
+        row["request_format"]
+    ):
+        errors.append(f"{location}.request_format contains an unknown format")
+    if surface == "request_formats":
+        if isinstance(row.get("id"), str) and not _is_request_format_id(row["id"]):
+            errors.append(f"{location}.id has invalid request format identifier")
+        if (
+            isinstance(row.get("format"), str)
+            and row["format"] not in _PRODUCER_FORMAT_VALUES
+        ):
+            errors.append(f"{location}.format has unknown enum value")
     if surface == "databases":
+        if (
+            isinstance(row.get("journal_mode"), str)
+            and row["journal_mode"] not in _SQLITE_JOURNAL_MODES
+        ):
+            errors.append(f"{location}.journal_mode has unknown enum value")
         if "tables" in row and (
             not isinstance(row["tables"], list)
             or not all(isinstance(item, str) for item in row["tables"])
         ):
             errors.append(f"{location}.tables must be a list of strings")
+        elif "tables" in row and not all(
+            _SQLITE_IDENTIFIER_VALUE.fullmatch(item) for item in row["tables"]
+        ):
+            errors.append(f"{location}.tables contains an invalid table identifier")
         if "record_counts" in row:
             counts = row["record_counts"]
             if not isinstance(counts, Mapping) or not all(
                 isinstance(key, str)
+                and _SQLITE_IDENTIFIER_VALUE.fullmatch(key)
                 and not isinstance(value, bool)
                 and isinstance(value, int)
                 and value >= 0
@@ -4042,8 +4391,24 @@ def validate_manifest(manifest: Mapping[str, object]) -> list[str]:
     schema_version = manifest.get("schema_version")
     if isinstance(schema_version, bool) or schema_version != SCHEMA_VERSION:
         errors.append(f"schema_version must be {SCHEMA_VERSION}")
-    if "generated_at" in manifest and not isinstance(manifest["generated_at"], str):
-        errors.append("generated_at must be a string")
+    if "generated_at" in manifest:
+        generated_at = manifest["generated_at"]
+        if not isinstance(generated_at, str):
+            errors.append("generated_at must be a string")
+        else:
+            try:
+                parsed_generated_at = datetime.fromisoformat(
+                    generated_at.replace("Z", "+00:00")
+                )
+            except ValueError:
+                errors.append("generated_at must be an ISO-8601 UTC timestamp")
+            else:
+                if (
+                    parsed_generated_at.tzinfo is None
+                    or parsed_generated_at.utcoffset()
+                    != UTC.utcoffset(parsed_generated_at)
+                ):
+                    errors.append("generated_at must be an ISO-8601 UTC timestamp")
     selected_base = manifest.get("selected_base")
     if not isinstance(selected_base, Mapping):
         errors.append("selected_base must be an object")
@@ -4055,6 +4420,10 @@ def validate_manifest(manifest: Mapping[str, object]) -> list[str]:
         for key in ("repository", "ref"):
             if key in selected_base and not isinstance(selected_base[key], str):
                 errors.append(f"selected_base.{key} must be a string")
+        if isinstance(selected_base.get("ref"), str) and not _is_structural_git_ref(
+            selected_base["ref"]
+        ):
+            errors.append("selected_base.ref has invalid Git ref value")
         if "repository" in selected_base:
             _validate_absolute_path(
                 selected_base["repository"],

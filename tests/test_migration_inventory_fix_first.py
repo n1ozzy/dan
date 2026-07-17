@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -103,6 +104,160 @@ def process_row(**extra: object) -> dict[str, object]:
     }
 
 
+def structural_carrier_manifest() -> dict[str, Any]:
+    manifest = manifest_shell()
+    manifest["surfaces"]["repositories"] = [
+        {
+            "path": "/fixture/repo",
+            "kind": "directory",
+            "status": "dirty",
+            "required": False,
+            "metadata": {
+                "branch": "main",
+                "head": "a" * 40,
+                "head_state": "resolved",
+                "toplevel": "/fixture/repo",
+                "probe": "git status --porcelain=v1 -z",
+                "returncode": 0,
+                "dirty_entry_count": 1,
+                "wip_entries": [
+                    {
+                        "status": "??",
+                        "path_status": "present",
+                        "path": "voice.sh",
+                        "kind": "file",
+                        "sha256": "b" * 64,
+                        "original_path": "old-voice.sh",
+                        "target": "/fixture/repo/voice.sh",
+                        "error": {
+                            "type": "PermissionError",
+                            "operation": "git-wip-inspect",
+                            "resolved": True,
+                        },
+                        "symlink": {
+                            "raw_target": "target.txt",
+                            "normalized_target": "/fixture/repo/target.txt",
+                            "target_state": "existing",
+                            "target_kind": "file",
+                            "target_is_absolute": False,
+                            "inside_allowed_roots": True,
+                            "scope_decision": "hash-allowed-regular-target",
+                            "target_size_bytes": 10,
+                        },
+                    }
+                ],
+                "tracked_diff_sha256": "c" * 64,
+                "tracked_diff_basis": "HEAD",
+                "staged_diff_sha256": "d" * 64,
+                "unstaged_diff_sha256": "e" * 64,
+                "untracked_tree_sha256": "f" * 64,
+            },
+            "decision": "use-as-release1-integration-worktree",
+        }
+    ]
+    manifest["surfaces"]["git_refs"] = [
+        {
+            "repository": "/fixture/repo",
+            "ref": "refs/heads/main",
+            "head": "a" * 40,
+            "upstream": "origin/main",
+            "chosen_base": "b" * 40,
+            "unreachable_from_base": [],
+            "decision": "retain-ref-unchanged-and-apply-ref-decision-ledger",
+        }
+    ]
+    manifest["surfaces"]["processes"] = [
+        process_row(
+            probe="ps",
+            error={
+                "type": "NonZeroExit",
+                "operation": "ps",
+                "resolved": True,
+            },
+        )
+    ]
+    manifest["surfaces"]["launchd"] = [
+        {
+            "kind": "launchd",
+            "pid": 123,
+            "last_exit_status": 0,
+            "label": "com.dan.dand",
+            "status": "loaded",
+            "decision": "replace-or-disable-during-task11-and-cutover",
+        }
+    ]
+    manifest["surfaces"]["databases"] = [
+        {
+            "path": "/fixture/private.db",
+            "kind": "database",
+            "status": "present",
+            "required": False,
+            "user_version": 1,
+            "schema_version": 2,
+            "journal_mode": "wal",
+            "tables": ["memories"],
+            "record_counts": {"memories": 1},
+            "decision": "backup-and-import-with-lineage-in-task3",
+        }
+    ]
+    manifest["surfaces"]["producers"] = [
+        {
+            "path": "/fixture/speak.sh",
+            "kind": "file",
+            "status": "present",
+            "required": False,
+            "consumers": ["/fixture/SKILL.md"],
+            "request_format": "legacy-dan-voice-json",
+            "metadata": {"size_bytes": 10, "mode": "0o700"},
+            "reference_class": "active-runtime-producer",
+            "activity_evidence": [
+                {"kind": "active-skill-call", "source": "/fixture/SKILL.md"}
+            ],
+            "formats": ["legacy-dan-voice-json"],
+            "decision": "migrate-to-dan-speak-or-disable-in-task11",
+        }
+    ]
+    manifest["surfaces"]["request_formats"] = [
+        {
+            "id": "legacy-dan-voice-json:/fixture/speak.sh",
+            "format": "legacy-dan-voice-json",
+            "producer_path": "/fixture/speak.sh",
+            "status": "discovered",
+            "reference_class": "active-runtime-producer",
+            "activity_evidence": [
+                {"kind": "active-skill-call", "source": "/fixture/SKILL.md"}
+            ],
+            "decision": "migrate-explicitly-or-disable-before-cutover",
+        }
+    ]
+    manifest["surfaces"]["input_materials"] = [
+        {
+            "path": "/fixture/material.md",
+            "kind": "file",
+            "status": "input-material",
+            "required": False,
+            "metadata": {
+                "size_bytes": 10,
+                "mode": "0o600",
+                "decision": "archive/do-not-copy",
+                "source_root": "/fixture",
+            },
+            "decision": "input-material",
+        }
+    ]
+    assert validate_manifest(manifest) == []
+    return manifest
+
+
+def manifest_with_private_prompt(*path: str | int) -> dict[str, Any]:
+    manifest = copy.deepcopy(structural_carrier_manifest())
+    target: Any = manifest
+    for component in path[:-1]:
+        target = target[component]
+    target[path[-1]] = "PRIVATE PROMPT SENTINEL: reveal owner history"
+    return manifest
+
+
 def git_runner(
     repo: Path,
     overrides: dict[tuple[str, ...], tuple[int, object, object]] | None = None,
@@ -182,6 +337,68 @@ def test_skill_activity_never_spreads_by_skill_md_basename(tmp_path: Path) -> No
     assert rows[str(untouched)]["activity_evidence"] == [
         {"kind": "active-skill", "source": str(untouched)}
     ]
+
+
+def test_active_skill_local_basename_call_activates_only_its_neighbor(
+    tmp_path: Path,
+) -> None:
+    roots = fixture_roots(tmp_path)
+    invoked_skill = roots.home / ".agents/skills/invoked/SKILL.md"
+    invoked_producer = invoked_skill.parent / "speak.sh"
+    untouched_skill = roots.home / ".agents/skills/untouched/SKILL.md"
+    untouched_producer = untouched_skill.parent / "speak.sh"
+    for skill, producer in (
+        (invoked_skill, invoked_producer),
+        (untouched_skill, untouched_producer),
+    ):
+        skill.parent.mkdir(parents=True)
+        skill.write_text("# fixture skill\n", encoding="utf-8")
+        producer.write_text("#!/bin/sh\n# dan-voice/req\n", encoding="utf-8")
+        producer.chmod(0o700)
+    invoked_skill.write_text("Run: bash speak.sh\n", encoding="utf-8")
+
+    rows = producer_rows(build_inventory(roots, runner=quiet_runner))
+
+    assert rows[str(invoked_producer)]["reference_class"] == "active-runtime-producer"
+    assert rows[str(invoked_producer)]["activity_evidence"] == [
+        {"kind": "active-skill-call", "source": str(invoked_skill)}
+    ]
+    assert rows[str(untouched_producer)]["reference_class"] == (
+        "unproven-runtime-reference"
+    )
+    assert rows[str(untouched_producer)]["activity_evidence"] == []
+
+
+def test_inactive_plugin_cache_skill_cannot_activate_its_sibling_producer(
+    tmp_path: Path,
+) -> None:
+    roots = fixture_roots(tmp_path)
+    active_skill = roots.home / ".agents/skills/voice/SKILL.md"
+    active_producer = active_skill.parent / "speak.sh"
+    cached_skill = (
+        roots.home
+        / ".codex/plugins/cache/vendor/plugin/1.0.0/skills/voice/SKILL.md"
+    )
+    cached_producer = cached_skill.parent / "speak.sh"
+    for skill, producer in (
+        (active_skill, active_producer),
+        (cached_skill, cached_producer),
+    ):
+        skill.parent.mkdir(parents=True)
+        skill.write_text("Run: bash speak.sh\n", encoding="utf-8")
+        producer.write_text("#!/bin/sh\n# dan-voice/req\n", encoding="utf-8")
+        producer.chmod(0o700)
+
+    rows = producer_rows(build_inventory(roots, runner=quiet_runner))
+
+    assert rows[str(active_producer)]["reference_class"] == "active-runtime-producer"
+    assert rows[str(active_producer)]["activity_evidence"] == [
+        {"kind": "active-skill-call", "source": str(active_skill)}
+    ]
+    assert rows[str(cached_producer)]["reference_class"] == (
+        "unproven-runtime-reference"
+    )
+    assert rows[str(cached_producer)]["activity_evidence"] == []
 
 
 def test_malformed_git_porcelain_is_never_reported_clean(tmp_path: Path) -> None:
@@ -528,6 +745,311 @@ def test_secret_validation_does_not_reject_arbitrary_safe_strings() -> None:
     assert validate_manifest(manifest) == []
 
 
+@pytest.mark.parametrize(
+    ("carrier", "path"),
+    [
+        ("root.generated_at", ("generated_at",)),
+        ("selected_base.ref", ("selected_base", "ref")),
+        ("selected_base.head_state", ("selected_base", "head_state")),
+    ],
+)
+def test_manifest_rejects_private_prompt_in_root_and_selected_base_carriers(
+    carrier: str,
+    path: tuple[str | int, ...],
+) -> None:
+    assert validate_manifest(manifest_with_private_prompt(*path)), carrier
+
+
+@pytest.mark.parametrize(
+    ("carrier", "path"),
+    [
+        ("surface.kind", ("surfaces", "processes", 0, "kind")),
+        ("surface.status", ("surfaces", "processes", 0, "status")),
+        ("surface.decision", ("surfaces", "processes", 0, "decision")),
+        ("surface.role", ("surfaces", "processes", 0, "role")),
+        ("surface.executable", ("surfaces", "processes", 0, "executable")),
+        ("surface.probe", ("surfaces", "processes", 0, "probe")),
+        ("surface.ref", ("surfaces", "git_refs", 0, "ref")),
+        ("surface.upstream", ("surfaces", "git_refs", 0, "upstream")),
+        ("surface.label", ("surfaces", "launchd", 0, "label")),
+        ("surface.journal_mode", ("surfaces", "databases", 0, "journal_mode")),
+        ("surface.table", ("surfaces", "databases", 0, "tables", 0)),
+        ("surface.consumer", ("surfaces", "producers", 0, "consumers", 0)),
+        (
+            "surface.request_format",
+            ("surfaces", "producers", 0, "request_format"),
+        ),
+        ("surface.formats", ("surfaces", "producers", 0, "formats", 0)),
+        (
+            "surface.reference_class",
+            ("surfaces", "producers", 0, "reference_class"),
+        ),
+        ("surface.id", ("surfaces", "request_formats", 0, "id")),
+        ("surface.format", ("surfaces", "request_formats", 0, "format")),
+    ],
+)
+def test_manifest_rejects_private_prompt_in_surface_structural_carriers(
+    carrier: str,
+    path: tuple[str | int, ...],
+) -> None:
+    assert validate_manifest(manifest_with_private_prompt(*path)), carrier
+
+
+def test_manifest_rejects_private_prompt_as_record_count_table_name() -> None:
+    manifest = structural_carrier_manifest()
+    database = manifest["surfaces"]["databases"][0]
+    database["record_counts"] = {
+        "PRIVATE PROMPT SENTINEL: reveal owner history": 1
+    }
+
+    assert validate_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("carrier", "path"),
+    [
+        (
+            "metadata.branch",
+            ("surfaces", "repositories", 0, "metadata", "branch"),
+        ),
+        (
+            "metadata.probe",
+            ("surfaces", "repositories", 0, "metadata", "probe"),
+        ),
+        (
+            "metadata.tracked_diff_basis",
+            ("surfaces", "repositories", 0, "metadata", "tracked_diff_basis"),
+        ),
+        (
+            "metadata.wip.status",
+            (
+                "surfaces",
+                "repositories",
+                0,
+                "metadata",
+                "wip_entries",
+                0,
+                "status",
+            ),
+        ),
+        (
+            "metadata.wip.kind",
+            (
+                "surfaces",
+                "repositories",
+                0,
+                "metadata",
+                "wip_entries",
+                0,
+                "kind",
+            ),
+        ),
+        (
+            "metadata.mode",
+            ("surfaces", "producers", 0, "metadata", "mode"),
+        ),
+        (
+            "metadata.decision",
+            ("surfaces", "input_materials", 0, "metadata", "decision"),
+        ),
+    ],
+)
+def test_manifest_rejects_private_prompt_in_metadata_structural_carriers(
+    carrier: str,
+    path: tuple[str | int, ...],
+) -> None:
+    assert validate_manifest(manifest_with_private_prompt(*path)), carrier
+
+
+@pytest.mark.parametrize(
+    ("carrier", "path"),
+    [
+        ("error.type", ("surfaces", "processes", 0, "error", "type")),
+        (
+            "error.operation",
+            ("surfaces", "processes", 0, "error", "operation"),
+        ),
+        (
+            "activity.kind",
+            ("surfaces", "producers", 0, "activity_evidence", 0, "kind"),
+        ),
+        (
+            "activity.source",
+            ("surfaces", "producers", 0, "activity_evidence", 0, "source"),
+        ),
+    ],
+)
+def test_manifest_rejects_private_prompt_in_error_and_activity_carriers(
+    carrier: str,
+    path: tuple[str | int, ...],
+) -> None:
+    assert validate_manifest(manifest_with_private_prompt(*path)), carrier
+
+
+@pytest.mark.parametrize(
+    ("carrier", "path", "prompt_shaped_value"),
+    [
+        (
+            "surface.decision.kebab",
+            ("surfaces", "processes", 0, "decision"),
+            "private-prompt-reveal-owner-history",
+        ),
+        (
+            "metadata.decision.kebab",
+            ("surfaces", "input_materials", 0, "metadata", "decision"),
+            "private-prompt-reveal-owner-history",
+        ),
+        (
+            "error.type.pascal",
+            ("surfaces", "processes", 0, "error", "type"),
+            "PrivatePromptSentinel",
+        ),
+        (
+            "error.operation.kebab",
+            ("surfaces", "processes", 0, "error", "operation"),
+            "reveal-owner-history",
+        ),
+        (
+            "wip.error.type.pascal",
+            (
+                "surfaces",
+                "repositories",
+                0,
+                "metadata",
+                "wip_entries",
+                0,
+                "error",
+                "type",
+            ),
+            "PrivatePromptSentinel",
+        ),
+        (
+            "wip.error.operation.kebab",
+            (
+                "surfaces",
+                "repositories",
+                0,
+                "metadata",
+                "wip_entries",
+                0,
+                "error",
+                "operation",
+            ),
+            "reveal-owner-history",
+        ),
+    ],
+)
+def test_manifest_rejects_prompt_shaped_values_that_fit_former_slug_regexes(
+    carrier: str,
+    path: tuple[str | int, ...],
+    prompt_shaped_value: str,
+) -> None:
+    manifest = copy.deepcopy(structural_carrier_manifest())
+    target: Any = manifest
+    for component in path[:-1]:
+        target = target[component]
+    target[path[-1]] = prompt_shaped_value
+
+    assert validate_manifest(manifest), carrier
+
+
+@pytest.mark.parametrize(
+    ("carrier", "path"),
+    [
+        (
+            "wip.path",
+            ("surfaces", "repositories", 0, "metadata", "wip_entries", 0, "path"),
+        ),
+        (
+            "wip.original_path",
+            (
+                "surfaces",
+                "repositories",
+                0,
+                "metadata",
+                "wip_entries",
+                0,
+                "original_path",
+            ),
+        ),
+        (
+            "wip.target",
+            ("surfaces", "repositories", 0, "metadata", "wip_entries", 0, "target"),
+        ),
+        (
+            "symlink.raw_target",
+            (
+                "surfaces",
+                "repositories",
+                0,
+                "metadata",
+                "wip_entries",
+                0,
+                "symlink",
+                "raw_target",
+            ),
+        ),
+        (
+            "symlink.normalized_target",
+            (
+                "surfaces",
+                "repositories",
+                0,
+                "metadata",
+                "wip_entries",
+                0,
+                "symlink",
+                "normalized_target",
+            ),
+        ),
+        (
+            "symlink.target_state",
+            (
+                "surfaces",
+                "repositories",
+                0,
+                "metadata",
+                "wip_entries",
+                0,
+                "symlink",
+                "target_state",
+            ),
+        ),
+        (
+            "symlink.target_kind",
+            (
+                "surfaces",
+                "repositories",
+                0,
+                "metadata",
+                "wip_entries",
+                0,
+                "symlink",
+                "target_kind",
+            ),
+        ),
+        (
+            "symlink.scope_decision",
+            (
+                "surfaces",
+                "repositories",
+                0,
+                "metadata",
+                "wip_entries",
+                0,
+                "symlink",
+                "scope_decision",
+            ),
+        ),
+    ],
+)
+def test_manifest_rejects_private_prompt_in_wip_and_symlink_carriers(
+    carrier: str,
+    path: tuple[str | int, ...],
+) -> None:
+    assert validate_manifest(manifest_with_private_prompt(*path)), carrier
+
+
 def test_process_collector_redacts_secret_before_manifest_serialization(
     tmp_path: Path,
 ) -> None:
@@ -579,6 +1101,49 @@ def test_malformed_launchctl_row_is_probe_error_not_loaded_private_payload(
     assert not any(row.get("status") == "loaded" for row in rows)
     assert any(row.get("error", {}).get("type") == "MalformedLaunchdRecord" for row in rows)
     assert private_value not in serialized
+
+
+def test_product_launchctl_rows_with_invalid_shape_are_content_free_probe_errors(
+    tmp_path: Path,
+) -> None:
+    rows_by_case: dict[str, list[dict[str, object]]] = {}
+    payloads: dict[str, object] = {
+        "missing-column": "-\tcom.dan.dand\n",
+        "extra-column": "-\t0\tcom.dan.dand\tPRIVATE_STATUS_TEXT\n",
+        "private-label-suffix": "-\t0\tcom.dan.dand:PRIVATE_STATUS_TEXT\n",
+        "undecodable": b"-\t0\tcom.dan.dand\xff\n",
+    }
+
+    for case, payload in payloads.items():
+        case_root = tmp_path / case
+        case_root.mkdir()
+        roots = fixture_roots(case_root)
+
+        def runner(
+            args: list[str],
+            *,
+            launchctl_payload: object = payload,
+            **_: object,
+        ) -> subprocess.CompletedProcess[object]:
+            if args == ["launchctl", "list"]:
+                return subprocess.CompletedProcess(args, 0, launchctl_payload, b"")
+            return quiet_runner(args)
+
+        manifest = build_inventory(roots, runner=runner)
+        rows = manifest["surfaces"]["launchd"]
+        assert isinstance(rows, list)
+        rows_by_case[case] = rows
+        assert "PRIVATE_STATUS_TEXT" not in json.dumps(manifest)
+
+    for case, rows in rows_by_case.items():
+        assert not any(row.get("status") == "loaded" for row in rows), case
+        assert any(
+            row.get("status") == "probe-error"
+            and row.get("probe") == "launchctl-list"
+            and row.get("error", {}).get("type")
+            in {"MalformedLaunchdRecord", "UnicodeDecodeError"}
+            for row in rows
+        ), case
 
 
 def test_selected_base_exposes_undecodable_head_as_unresolved_error(
