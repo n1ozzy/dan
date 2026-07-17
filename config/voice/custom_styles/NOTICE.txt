@@ -1,0 +1,9 @@
+Supertonic custom style notice
+
+The JSON files in this directory are deterministic derivatives of the
+Supertone/supertonic-3 model voice styles at revision
+724fb5abbf5502583fb520898d45929e62f02c0b.
+
+The model and these derivatives are distributed under the included OpenRAIL-M
+license. Copyright (c) 2026 Supertone Inc. The files were modified by combining
+base style vectors according to the recipes recorded in manifest.json.
