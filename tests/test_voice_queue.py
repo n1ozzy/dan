@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.voice.queue import VoiceQueue
+from dan.store.db import close_quietly, initialize_database
+from dan.voice.queue import VoiceQueue
 from tests.git_guards import assert_schema_and_migrations_unchanged
 
 
@@ -194,7 +194,7 @@ def test_claim_next_plays_a_filler_before_its_turns_sentences(conn) -> None:
 def test_enqueue_refuses_a_tombstoned_turn(conn) -> None:
     # FIX-09: after a barge-in tombstones a cancelled turn, a late delta or a
     # FillerTimer of that turn must NOT slip a fresh 'queued' row past the sweep.
-    from jarvis.voice.queue import VoiceQueueCancelledError
+    from dan.voice.queue import VoiceQueueCancelledError
 
     q = queue(conn)
     q.tombstone_turns(["turn-cancelled"])

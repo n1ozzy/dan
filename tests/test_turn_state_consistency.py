@@ -13,26 +13,26 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.brain import (
+from dan.brain import (
     BrainAdapterError,
     BrainManager,
     BrainRequest,
     BrainResponse,
     MockBrainAdapter,
 )
-from jarvis.brain.context_builder import ContextBuilder
-from jarvis.daemon.state_machine import (
+from dan.brain.context_builder import ContextBuilder
+from dan.daemon.state_machine import (
     RuntimeState,
     RuntimeStateMachine,
     StateTransitionError,
     _coerce_state,
 )
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import create_event_store
-from jarvis.tools.registry import ToolRequest, ToolResult
-from jarvis.turns.models import TurnStatus
-from jarvis.turns.orchestrator import TurnOrchestrator, TurnOrchestratorError
-from jarvis.turns.repository import ConversationRepository, TurnRepository
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import create_event_store
+from dan.tools.registry import ToolRequest, ToolResult
+from dan.turns.models import TurnStatus
+from dan.turns.orchestrator import TurnOrchestrator, TurnOrchestratorError
+from dan.turns.repository import ConversationRepository, TurnRepository
 
 
 @pytest.fixture

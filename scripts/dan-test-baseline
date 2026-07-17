@@ -19,7 +19,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from jarvis.migration.test_safety import (  # noqa: E402
+from dan.migration.test_safety import (  # noqa: E402
     classify_node_ids,
     collect_node_ids,
     isolated_node_ids,
@@ -183,9 +183,15 @@ def compare_failure_reports(
     }
 
 
-def _emit_comparison(previous_path: Path, current_path: Path) -> int:
+def _emit_comparison(
+    previous_path: Path, current_path: Path, *, reference_is_canonical: bool = False
+) -> int:
     try:
-        comparison = compare_failure_reports(previous_path, current_path)
+        comparison = compare_failure_reports(
+            previous_path,
+            current_path,
+            reference_is_canonical=reference_is_canonical,
+        )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"invalid baseline comparison: {error}", file=sys.stderr)
         return 2
@@ -193,10 +199,43 @@ def _emit_comparison(previous_path: Path, current_path: Path) -> int:
     return 2 if comparison["new"] else 0
 
 
+def _snapshot_verified_reference(reference_path: Path, directory: Path) -> Path:
+    reference = reference_path.expanduser()
+    _read_report(
+        reference,
+        require_sanitized_failures=True,
+        allow_read_only=True,
+    )
+    descriptor, snapshot_name = tempfile.mkstemp(
+        dir=directory, prefix="baseline-reference-", suffix=".json"
+    )
+    snapshot = Path(snapshot_name)
+    try:
+        os.fchmod(descriptor, 0o400)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(reference.read_bytes())
+            handle.flush()
+            os.fsync(handle.fileno())
+        _read_report(
+            snapshot,
+            require_sanitized_failures=True,
+            allow_read_only=True,
+        )
+        return snapshot
+    except Exception:
+        snapshot.unlink(missing_ok=True)
+        raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expect-collected", type=int)
     parser.add_argument("--verify-report", type=Path)
+    parser.add_argument("--compare", type=Path)
     parser.add_argument("--compare-report", type=Path)
     parser.add_argument("--compare-reports", nargs=2, type=Path, metavar=("PREVIOUS", "CURRENT"))
     args = parser.parse_args(argv)
@@ -209,12 +248,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"invalid baseline report: {error}", file=sys.stderr)
             return 2
         return 0
-    if args.expect_collected is None:
+    if args.expect_collected is None and args.compare is None:
         parser.error("--expect-collected is required")
 
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="dan-test-baseline-") as root:
         temporary = Path(root)
+        comparison_reference: Path | None = None
+        if args.compare is not None:
+            try:
+                comparison_reference = _snapshot_verified_reference(args.compare, temporary)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                print(f"invalid baseline comparison: {error}", file=sys.stderr)
+                return 2
         home = temporary / "home"
         runtime = temporary / "runtime"
         database = temporary / "state" / "dan.db"
@@ -227,13 +273,16 @@ def main(argv: list[str] | None = None) -> int:
         automatic = isolated_node_ids(classified)
         manual = live_manual_node_ids(classified)
         report_path = _report_path()
+        expected_collected = (
+            args.expect_collected if args.expect_collected is not None else len(collected_nodes)
+        )
         duration = time.monotonic() - started
-        if len(collected_nodes) != args.expect_collected:
+        if len(collected_nodes) != expected_collected:
             _write_report(
                 report_path,
                 _report(
                     status="collection-mismatch",
-                    expected=args.expect_collected,
+                    expected=expected_collected,
                     collected=len(collected_nodes),
                     isolated=len(automatic),
                     manual=len(manual),
@@ -241,7 +290,10 @@ def main(argv: list[str] | None = None) -> int:
                     failures=[],
                 ),
             )
-            print(f"collection mismatch: expected {args.expect_collected}, got {len(collected_nodes)}", file=sys.stderr)
+            print(
+                f"collection mismatch: expected {expected_collected}, got {len(collected_nodes)}",
+                file=sys.stderr,
+            )
             return 2
         violations = scan_node_ids(REPO_ROOT, collected_nodes)
         if violations or manual:
@@ -250,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
                 report_path,
                 _report(
                     status="live-manual-refused",
-                    expected=args.expect_collected,
+                    expected=expected_collected,
                     collected=len(collected_nodes),
                     isolated=len(automatic),
                     manual=len(manual),
@@ -277,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
             report_path,
             _report(
                 status=status,
-                expected=args.expect_collected,
+                expected=expected_collected,
                 collected=len(collected_nodes),
                 isolated=len(automatic),
                 manual=0,
@@ -291,6 +343,12 @@ def main(argv: list[str] | None = None) -> int:
             comparison_status = _emit_comparison(args.compare_report, report_path)
             if comparison_status:
                 return comparison_status
+        if comparison_reference is not None:
+            return _emit_comparison(
+                comparison_reference,
+                report_path,
+                reference_is_canonical=True,
+            )
         return completed.returncode
 
 

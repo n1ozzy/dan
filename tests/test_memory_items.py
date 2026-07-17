@@ -11,17 +11,17 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.memory.evidence import MemoryEvidenceRepository
-from jarvis.memory.inbox import MemoryCandidateRepository
-from jarvis.memory.items import (
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.memory.evidence import MemoryEvidenceRepository
+from dan.memory.inbox import MemoryCandidateRepository
+from dan.memory.items import (
     MemoryItemConflict,
     MemoryItemNotFound,
     MemoryItemRepository,
     canonical_key_for_candidate,
 )
-from jarvis.store.db import close_quietly, connect_db, initialize_database
-from jarvis.store.event_store import create_event_store
+from dan.store.db import close_quietly, connect_db, initialize_database
+from dan.store.event_store import create_event_store
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import (
     request_json,
@@ -38,7 +38,7 @@ RAW_QUOTE_SECRET = "sk-ant-activatequote123"
 
 @pytest.fixture
 def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    connection = initialize_database(tmp_path / "jarvis.db")
+    connection = initialize_database(tmp_path / "dan.db")
     try:
         yield connection
     finally:
@@ -62,7 +62,7 @@ def repo(conn: sqlite3.Connection) -> MemoryItemRepository:
 
 @pytest.fixture
 def config_path(tmp_path: Path) -> Path:
-    return write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    return write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
 
 
 @pytest.fixture
@@ -78,7 +78,7 @@ def create_candidate(repo: MemoryCandidateRepository, **overrides: object):
     payload: dict[str, object] = {
         "candidate_kind": "semantic",
         "scope": "project",
-        "namespace": "project/jarvis/memory",
+        "namespace": "project/dan/memory",
         "claim": "Approved candidates activate into memory items.",
         "title": "Memory Activation",
         "recommended_action": "approve",
@@ -93,7 +93,7 @@ def candidate_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "candidate_kind": "semantic",
         "scope": "project",
-        "namespace": "project/jarvis/memory",
+        "namespace": "project/dan/memory",
         "claim": "Approved API candidates activate into memory items.",
         "title": "Memory Activation API",
         "recommended_action": "approve",
@@ -147,7 +147,7 @@ def test_approved_candidate_with_evidence_activates_into_memory_item(
 
     assert item.kind == "semantic"
     assert item.scope == "project"
-    assert item.namespace == "project/jarvis/memory"
+    assert item.namespace == "project/dan/memory"
     assert item.title == "Memory Activation"
     assert item.claim == "Approved candidates activate into memory items."
     assert item.content == "Approved candidates activate into memory items."
@@ -230,7 +230,7 @@ def test_duplicate_activation_returns_existing_item_without_duplicate_row(
 def test_canonical_key_for_candidate_distinguishes_delimiter_collision() -> None:
     shared_parts = {
         "scope": "project",
-        "namespace": "project/jarvis/memory",
+        "namespace": "project/dan/memory",
         "kind": "semantic",
     }
 
@@ -256,7 +256,7 @@ def test_canonical_key_for_candidate_distinguishes_delimiter_collision() -> None
 def test_canonical_key_for_candidate_distinguishes_missing_title_marker() -> None:
     shared_parts = {
         "scope": "project",
-        "namespace": "project/jarvis/memory",
+        "namespace": "project/dan/memory",
         "kind": "semantic",
         "claim": "same claim",
     }
@@ -517,7 +517,7 @@ def test_activation_emits_memory_activated(
             "memory_id": item.id,
             "kind": "semantic",
             "scope": "project",
-            "namespace": "project/jarvis/memory",
+            "namespace": "project/dan/memory",
             "status": "active",
         }
     ]

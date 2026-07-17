@@ -1,0 +1,8773 @@
+"use strict";
+
+const DEFAULT_API_BASE = nativeApiBaseOverride() || "http://127.0.0.1:41741";
+
+function nativeApiBaseOverride() {
+  if (typeof window === "undefined" || typeof window.DAN_API_BASE !== "string") {
+    return "";
+  }
+  return window.DAN_API_BASE.trim().replace(/\/+$/, "");
+}
+
+// DAN has one continuous conversation. The backend owns the durable
+// conversation_id; the panel never creates or switches chats.
+function readStoredConversationId() {
+  return null;
+}
+
+function setSelectedConversation(conversationId) {
+  cockpit.selectedConversationId = conversationId || null;
+}
+
+const cockpit = {
+  apiBase: DEFAULT_API_BASE,
+  online: false,
+  selectedConversationId: readStoredConversationId(),
+  // Tytuły rozmów dorabiane z pierwszego input_text (GET /turns?limit=1);
+  // cache po id rozmowy, bo pierwsza tura się nie zmienia.
+  conversationTitles: new Map(),
+  // Ostatni znany stan pracy daemona — wyświetlany bezpośrednio w pasku
+  // aktywności i używany do sterowania żywą ramką.
+  runtimeState: "unknown",
+  runtimeStateRevision: 0,
+  runtimeStateRequestId: 0,
+  activity: {
+    lastEventId: 0,
+    stage: "Łączenie…",
+    toolName: "",
+    toolStatus: "",
+    resultSummary: "",
+  },
+  // Zakładka LOGI: aktywny filtr + ostatnia partia zdarzeń, żeby zmiana
+  // filtra przerysowała dziennik bez ponownego strzału do daemona.
+  logFilter: "all",
+  lastEvents: [],
+  // Tryb "nowa rozmowa": nie auto-wybieraj najnowszej rozmowy przy refreshu,
+  // dopóki operator nie wyśle pierwszej wiadomości.
+  composingNew: false,
+  healthRetryTimer: null,
+  voice: {
+    enabled: false,
+    listening: false,
+    leases: [],
+  },
+  settingsPreview: {
+    payload: null,
+    model: null,
+    overrides: {},
+  },
+  runtimeSettingsApply: {
+    payload: null,
+    applyingGroup: null,
+    preview: {},
+    groupResults: {},
+    renderingControls: false,
+  },
+  missionControl: {
+    snapshot: null,
+    lastRefreshAt: null,
+    refreshing: false,
+  },
+  pttShortcutRecording: false,
+  pttShortcutKeys: new Set(),
+  stream: {
+    socket: null,
+    base: null,
+    lastEventId: 0,
+    replayFromStart: false,
+    retryMs: 2000,
+    reconnectTimer: null,
+    historyTimer: null,
+    memoryTimer: null,
+    runtimeTimer: null,
+    runtimeOverviewTimer: null,
+    settingsTimer: null,
+    voiceTimer: null,
+    voiceQueueTimer: null,
+    connected: false,
+  },
+};
+
+const STREAM_SUBPROTOCOL = "dan.v1";
+const STREAM_TOKEN_SUBPROTOCOL_PREFIX = "dan-token.";
+const STREAM_MAX_RETRY_MS = 15000;
+const MAX_LIVE_EVENT_ROWS = 50;
+const MAX_ACTIVITY_RESULT_SUMMARY_CHARS = 160;
+const ACTIVITY_STAGE_LABELS = Object.freeze({
+  "turn.started": "Rozpoczęcie tury",
+  "turn.context.built": "Kontekst gotowy",
+  "brain.requested": "Model pracuje",
+  "brain.responded": "Model odpowiedział",
+  "tool.requested": "Przygotowanie narzędzia",
+  "tool.started": "Narzędzie działa",
+  "tool.finished": "Narzędzie zakończone",
+  "tool.failed": "Błąd narzędzia",
+  "turn.finished": "Odpowiedź gotowa",
+  "turn.failed": "Błąd tury",
+  "turn.cancelled": "Tura przerwana",
+});
+const ACTIVITY_RUNTIME_STAGE_LABELS = Object.freeze({
+  IDLE: "Gotowy",
+  THINKING: "Myślenie",
+  TOOLING: "Narzędzie działa",
+  LISTENING: "Nasłuch",
+  TRANSCRIBING: "Transkrypcja",
+  SPEAKING: "Mówienie",
+  ERROR: "Błąd runtime",
+});
+const ACTIVITY_TOOL_STATUS_LABELS = Object.freeze({
+  requested: "przygotowanie",
+  started: "start",
+  success: "sukces",
+  error: "błąd",
+});
+// When the daemon is unreachable at load (e.g. panel started before the daemon
+// finished booting), re-poll health on this interval so the panel recovers on
+// its own instead of getting stuck on "unknown"/"offline" until a manual click.
+const HEALTH_RETRY_MS = 2000;
+// Full Claude CLI effort ladder; fallback when the backend does not scope efforts per model.
+const FULL_EFFORT_VALUES = Object.freeze(["low", "medium", "high", "xhigh", "max"]);
+// Steady status heartbeat: re-check health/state on this interval so the pill
+// is never stuck on a stale "unknown" after a startup race or a daemon restart
+// under a live panel. On a fresh reconnect it triggers a full refreshAll().
+const HEALTH_POLL_MS = 3000;
+// Fallback refresh for core live panes when the websocket stream is down.
+const LIVE_FALLBACK_POLL_MS = 5000;
+const RUNTIME_OVERVIEW_UNKNOWN = "unknown";
+const RUNTIME_OVERVIEW_NOT_EXPOSED = "not exposed by current API";
+const RUNTIME_OVERVIEW_READ_ONLY = "read-only";
+const RUNTIME_OVERVIEW_FIELD_STATUS_ORDER = ["ok", "missing", "invalid", "unsupported", "unknown"];
+const RUNTIME_OVERVIEW_READINESS = Object.freeze({
+  OK: "ok",
+  MISSING: "missing",
+  INVALID: "invalid",
+  UNSUPPORTED: "unsupported",
+  UNKNOWN: "unknown",
+});
+// Production runtime constants.
+const MISSION_CONTROL_ENDPOINTS = Object.freeze([
+  { key: "health", path: "/health", method: "GET" },
+  { key: "state", path: "/state", method: "GET" },
+  { key: "settings", path: "/settings", method: "GET" },
+  { key: "runtimeSettings", path: "/runtime/settings", method: "GET" },
+  { key: "runtimeProcesses", path: "/runtime/processes", method: "GET" },
+  { key: "brain", path: "/brain/adapters", method: "GET" },
+  { key: "audio", path: "/audio/devices", method: "GET" },
+  { key: "voice", path: "/voice/listening", method: "GET" },
+  { key: "voiceRuntime", path: "/voice/runtime", method: "GET" },
+  { key: "voiceQueue", path: "/voice/queue?limit=12", method: "GET" },
+  { key: "tools", path: "/tools", method: "GET" },
+  { key: "memory", path: "/memory?active_only=true&limit=25", method: "GET" },
+  { key: "memoryItems", path: "/memory/items", method: "GET" },
+  { key: "events", path: "/events?latest=true&limit=50", method: "GET" },
+]);
+const RUNTIME_OVERVIEW_FIELD_SOURCES = Object.freeze({
+  health: "Zdrowie",
+  state: "Stan",
+  settings: "Ustawienia",
+  runtimeSettings: "Ustawienia runtime",
+  runtimeProcesses: "Procesy runtime",
+  brain: "Adaptery mózgu",
+  audio: "Urządzenia audio",
+  voice: "Nasłuch głosu",
+  voiceRuntime: "Runtime głosu",
+  voiceQueue: "Kolejka głosu",
+  tools: "Rejestr narzędzi",
+  memory: "Pamięć",
+  memoryItems: "Memory OS",
+  events: "Zdarzenia",
+  contract: "Kontrakt DANa",
+});
+
+// Ludzkie nazwy narzędzi (rejestr daemona) — używane w sekcji
+// „Możliwości DANa”. Fallback dla rodzin ui_/screen_/terminal_,
+// a na końcu surowa nazwa, żeby nowe narzędzie nigdy nie zniknęło z widoku.
+const TOOL_LABELS = {
+  file_read: "Odczyt pliku",
+  file_write: "Zapis pliku",
+  memory_save: "Zapis do pamięci",
+  shell_read: "Polecenie w terminalu",
+  screen_read_window: "Odczyt okna ekranu",
+  screen_ocr_region: "Odczyt ekranu (OCR)",
+  system_status: "Stan systemu",
+  ui_active_app: "Sterowanie UI: aktywna aplikacja",
+  ui_read_window: "Sterowanie UI: odczyt okna",
+  ui_click: "Sterowanie UI: kliknięcie",
+  ui_type: "Sterowanie UI: pisanie",
+  ui_focus_app: "Sterowanie UI: fokus aplikacji",
+  terminal_read_screen: "Odczyt ekranu terminala",
+  terminal_paste: "Wklejenie do terminala",
+  echo: "Echo (test)",
+};
+
+function toolLabel(name) {
+  const key = typeof name === "string" ? name : "";
+  if (TOOL_LABELS[key]) {
+    return TOOL_LABELS[key];
+  }
+  const humanTail = (prefix, lead) =>
+    `${lead}: ${key.slice(prefix.length).replace(/_/g, " ")}`;
+  if (key.startsWith("ui_")) {
+    return humanTail("ui_", "Sterowanie UI");
+  }
+  if (key.startsWith("screen_")) {
+    return humanTail("screen_", "Ekran");
+  }
+  if (key.startsWith("terminal_")) {
+    return humanTail("terminal_", "Terminal");
+  }
+  return key || "narzędzie";
+}
+
+// Etykiety klas ryzyka po polsku (PermissionClass w daemonie).
+const RISK_LABELS = {
+  safe_read: "bezpieczny odczyt",
+  safe_status: "odczyt stanu",
+  file_read: "czyta pliki",
+  file_write: "pisze pliki",
+  shell_read: "czyta przez terminal",
+  shell_write: "pisze przez terminal",
+  network: "sieć",
+  destructive: "destrukcyjne — zawsze pyta",
+  ui_read: "czyta interfejs",
+  ui_act: "steruje interfejsem",
+  screen_read: "czyta ekran",
+  terminal_read: "czyta terminal",
+  terminal_write: "pisze do terminala",
+  memory_write: "zapis do pamięci",
+};
+
+function riskLabel(risk) {
+  const key = typeof risk === "string" ? risk : "";
+  return RISK_LABELS[key] || key || "nieznane";
+}
+
+// Waga ryzyka dla koloru chipa: odczyty spokojne (szarość), zapisy uważne
+// (bursztyn), destructive alarmowe (czerwień). Nieznane traktuj jak zapis.
+const RISK_TIERS = {
+  safe_read: "read",
+  safe_status: "read",
+  file_read: "read",
+  shell_read: "read",
+  ui_read: "read",
+  screen_read: "read",
+  terminal_read: "read",
+  network: "read",
+  file_write: "write",
+  shell_write: "write",
+  ui_act: "write",
+  terminal_write: "write",
+  memory_write: "write",
+  destructive: "destructive",
+};
+
+function riskTier(risk) {
+  const key = typeof risk === "string" ? risk : "";
+  return RISK_TIERS[key] || "write";
+}
+
+// Rodzaje bloków pamięci po polsku (MEMORY_KINDS w daemonie).
+const MEMORY_KIND_LABELS = {
+  identity: "Tożsamość",
+  user_preference: "Preferencja",
+  project: "Projekt",
+  fact: "Fakt",
+  summary: "Podsumowanie",
+  temporary: "Tymczasowe",
+};
+
+function memoryKindLabel(kind) {
+  const key = typeof kind === "string" ? kind : "";
+  return MEMORY_KIND_LABELS[key] || key || "notatka";
+}
+
+// Typy zdarzeń daemona po ludzku (EventType). Fallback po rodzinie, na końcu
+// surowy typ — dziennik nigdy nie gubi wiersza, ale prawie zawsze mówi po
+// polsku. Nazwy krótkie i operatorskie („Nasłuch: początek”, nie techniczne
+// „listening.lease.created”).
+const EVENT_LABELS = {
+  "daemon.started": "Daemon: start",
+  "daemon.stopped": "Daemon: zatrzymany",
+  "daemon.failed": "Daemon: błąd",
+  "state.changed": "Zmiana stanu",
+  "input.text.received": "Wiadomość tekstowa",
+  "input.voice.transcribed": "Głos rozpoznany",
+  "input.rejected": "Wejście odrzucone",
+  "turn.started": "Tura: start",
+  "turn.context.built": "Tura: kontekst gotowy",
+  "turn.finished": "Tura: koniec",
+  "turn.failed": "Tura: błąd",
+  "turn.cancelled": "Tura: przerwana",
+  "brain.requested": "Model: zapytanie",
+  "brain.responded": "Model: odpowiedź",
+  "brain.failed": "Model: błąd",
+  "brain.cancelled": "Model: przerwane",
+  "brain.switched": "Model: przełączony",
+  "voice.speak.queued": "Mowa: w kolejce",
+  "voice.speak.started": "Mowa: start",
+  "voice.speak.finished": "Wypowiedź zakończona",
+  "voice.speak.cancelled": "Mowa: przerwana",
+  "voice.speak.failed": "Mowa: błąd",
+  "audio.devices.snapshot": "Audio: urządzenia",
+  "listening.lease.created": "Nasłuch: początek",
+  "listening.lease.released": "Nasłuch: koniec",
+  "listening.lease.expired": "Nasłuch: wygasł",
+  "listening.lease.cancelled": "Nasłuch: anulowany",
+  "memory.updated": "Pamięć: zaktualizowana",
+  "memory.disabled": "Pamięć: notatka wyłączona",
+  "memory.candidate.created": "Pamięć: propozycja",
+  "memory.candidate.promoted": "Pamięć: zatwierdzona",
+  "tool.requested": "Narzędzie: prośba",
+  "tool.started": "Narzędzie: start",
+  "tool.finished": "Narzędzie: koniec",
+  "tool.failed": "Narzędzie: błąd",
+  "error.raised": "Błąd",
+  "worker.job.created": "Zadanie w tle: utworzone",
+  "worker.job.progress": "Zadanie w tle: postęp",
+  "worker.job.finished": "Zadanie w tle: koniec",
+  "worker.job.failed": "Zadanie w tle: błąd",
+  "worker.job.cancelled": "Zadanie w tle: przerwane",
+  "runtime.legacy.conflict.detected": "Runtime: konflikt legacy",
+  "runtime.process.observed": "Runtime: proces",
+};
+
+const INACTIVE_DECISION_EVENT_TYPES = new Set([
+  "tool.approval.required",
+  "tool.approved",
+  "tool.rejected",
+]);
+
+// Dawne zdarzenia decyzji mogą nadal istnieć w historii backendu. Panel
+// świadomie ich nie pokazuje ani nie używa do odświeżeń lub stanu UI.
+function isInactiveDecisionEvent(type) {
+  const key = String(type || "");
+  return key.startsWith("approval.") || INACTIVE_DECISION_EVENT_TYPES.has(key);
+}
+
+function eventLabel(type) {
+  const key = typeof type === "string" ? type : "";
+  if (EVENT_LABELS[key]) {
+    return EVENT_LABELS[key];
+  }
+  if (key.startsWith("turn.")) return "Tura: …";
+  if (key.startsWith("voice.")) return "Mowa: …";
+  if (key.startsWith("listening.")) return "Nasłuch: …";
+  if (key.startsWith("tool.")) return "Narzędzie: …";
+  if (key.startsWith("memory.")) return "Pamięć: …";
+  if (key.startsWith("brain.")) return "Model: …";
+  return key || "zdarzenie";
+}
+
+// Filtr dziennika wg rodziny typu: tury / głos / narzędzia.
+function eventMatchesFilter(type, filter) {
+  const key = typeof type === "string" ? type : "";
+  if (isInactiveDecisionEvent(key)) {
+    return false;
+  }
+  if (!filter || filter === "all") {
+    return true;
+  }
+  if (filter === "turns") {
+    return key.startsWith("turn.");
+  }
+  if (filter === "voice") {
+    return (
+      key.startsWith("voice.") ||
+      key.startsWith("listening.") ||
+      key.startsWith("audio.") ||
+      key === "input.voice.transcribed"
+    );
+  }
+  if (filter === "tools") {
+    return key.startsWith("tool.");
+  }
+  return true;
+}
+
+const el = {};
+
+// Relative labels ("2 min temu") drift while the panel sits open; refresh
+// every rendered [data-timestamp] node on this interval.
+const RELATIVE_TIME_TICK_MS = 60000;
+
+document.addEventListener("DOMContentLoaded", () => {
+  bindElements();
+  el.apiBaseInput.value = DEFAULT_API_BASE;
+  bindEvents();
+  refreshAll();
+  window.setInterval(pollHealth, HEALTH_POLL_MS);
+  window.setInterval(pollLiveFallback, LIVE_FALLBACK_POLL_MS);
+  window.setInterval(refreshRelativeTimes, RELATIVE_TIME_TICK_MS);
+});
+
+// Heartbeat tick: keep the status pill current, and when the daemon comes back
+// after being unreachable, repopulate every section (not just the pill).
+async function pollHealth() {
+  const wasOnline = cockpit.online;
+  const ok = await refreshHealthAndState();
+  if (ok && !wasOnline) {
+    refreshAll();
+  }
+}
+
+async function pollLiveFallback() {
+  if (!cockpit.online || cockpit.stream.connected) {
+    return;
+  }
+  await Promise.allSettled([
+    refreshHistory(),
+    refreshMemory(),
+    refreshTools(),
+    refreshSettingsPreview(),
+    refreshVoice(),
+    refreshVoiceQueue(),
+    refreshRuntimeOverview(),
+    refreshEvents(),
+    refreshRuntime(),
+  ]);
+}
+
+function bindElements() {
+  const ids = [
+    "activityStrip",
+    "stateLabel",
+    "activityStage",
+    "activityDetail",
+    "activityTool",
+    "activityStatus",
+    "activityResult",
+    "refreshAllButton",
+    "apiBaseInput",
+    "healthHumanList",
+    "healthStateList",
+    "healthError",
+    "textForm",
+    "textInput",
+    "sendButton",
+    "inputError",
+    "newConversationButton",
+    "conversationSelect",
+    "turnList",
+    "historyError",
+    "refreshMemoryButton",
+    "memoryForm",
+    "memoryKind",
+    "memoryTitle",
+    "memoryPriority",
+    "memoryBody",
+    "createMemoryButton",
+    "memoryList",
+    "memoryError",
+    "refreshToolsButton",
+    "toolList",
+    "toolsError",
+    "refreshMissionControlButton",
+    "missionControlSummary",
+    "missionControlModules",
+    "missionControlChecklist",
+    "voiceDoctorList",
+    "missionControlRefreshStatus",
+    "refreshActiveSettingsButton",
+    "activeSettingsList",
+    "activeSettingsStatus",
+    "restartRequiredBanner",
+    "restartRequiredMessage",
+    "restartDANButton",
+    "resetBrainPreviewButton",
+    "activeBrainProviderSelect",
+    "activeBrainModelSelect",
+    "activeBrainModelManual",
+    "activeBrainEffortSelect",
+    "activeBrainEffortManual",
+    "applyBrainSettingsButton",
+    "brainApplyStatus",
+    "voiceSpeakResponsesToggle",
+    "voiceBrokerEnabledToggle",
+    "voiceTtsSelect",
+    "voiceTtsModelSelect",
+    "voiceSttSelect",
+    "voiceSttModelSelect",
+    "voiceSttModelManual",
+    "voiceSttLanguageSelect",
+    "voiceSttLanguageManual",
+    "voiceVoiceIdSelect",
+    "voiceVoiceIdManual",
+    "voiceProfileSelect",
+    "voiceSpeedInput",
+    "resetTtsPreviewButton",
+    "resetSttPreviewButton",
+    "applyTtsSettingsButton",
+    "applySttSettingsButton",
+    "voiceApplyStatus",
+    "ttsApplyStatus",
+    "sttApplyStatus",
+    "pttModeSelect",
+    "pttHotkeyInput",
+    "pttRecordShortcutButton",
+    "pttShortcutValidation",
+    "pttMergeWindowInput",
+    "applyPttSettingsButton",
+    "pttApplyStatus",
+    "testPttButton",
+    "pttTestStatusList",
+    "refreshQueueButton",
+    "cancelCurrentSpeechButton",
+    "queueBargeInList",
+    "queueApplyStatus",
+    "activeToolsSettingsSection",
+    "toolsSectionDescription",
+    "toolsControlGrid",
+    "toolsEnabledToggle",
+    "toolsNetworkEnabledToggle",
+    "resetToolsPreviewButton",
+    "applyToolsSettingsButton",
+    "toolsApplyStatus",
+    "personaProfileSelect",
+    "applyPersonaSettingsButton",
+    "personaApplyStatus",
+    "latestTurnTraceList",
+    "refreshRuntimeLogsSummaryButton",
+    "runtimeLogsSummaryList",
+    "refreshSettingsPreviewButton",
+    "resetSettingsPreviewButton",
+    "settingsPreviewList",
+    "settingsPreviewError",
+    "refreshSettingsButton",
+    "refreshRuntimeOverviewButton",
+    "runtimeOverviewList",
+    "runtimeOverviewError",
+    "brainAdapterSelect",
+    "switchBrainButton",
+    "brainAdapterLabel",
+    "settingsForm",
+    "settingKey",
+    "settingValue",
+    "saveSettingButton",
+    "settingsList",
+    "settingsError",
+    "refreshEventsButton",
+    "logFilter",
+    "eventList",
+    "eventsError",
+    "refreshRuntimeButton",
+    "runtimeList",
+    "runtimeObservationList",
+    "runtimeError",
+    "pttModeButton",
+    "listenToggle",
+    "voiceStatus",
+    "voiceStatusText",
+    "voiceError",
+    "voiceQueueList",
+  ];
+
+  for (const id of ids) {
+    el[id] = document.getElementById(id);
+  }
+}
+
+function bindEvents() {
+  bindIf(el.refreshAllButton, "click", refreshAll);
+  bindIf(el.refreshMissionControlButton, "click", refreshMissionControl);
+  bindIf(el.refreshActiveSettingsButton, "click", refreshSettingsPreview);
+  bindIf(el.activeBrainProviderSelect, "change", updateBrainControlOptions);
+  bindIf(el.activeBrainModelSelect, "change", updateBrainControlOptions);
+  bindIf(el.activeBrainEffortSelect, "change", updateBrainControlOptions);
+  bindManualSelectInput(el.activeBrainModelManual, el.activeBrainModelSelect);
+  bindManualSelectInput(el.activeBrainEffortManual, el.activeBrainEffortSelect);
+  bindManualSelectInput(el.voiceVoiceIdManual, el.voiceVoiceIdSelect);
+  bindManualSelectInput(el.voiceSttModelManual, el.voiceSttModelSelect);
+  bindManualSelectInput(el.voiceSttLanguageManual, el.voiceSttLanguageSelect);
+  bindSummaryToggleGuards();
+  bindIf(el.voiceSpeakResponsesToggle, "change", updateTtsControlOptions);
+  bindIf(el.voiceTtsSelect, "change", updateTtsControlOptions);
+  bindIf(el.voiceTtsModelSelect, "change", updateTtsControlOptions);
+  bindIf(el.voiceVoiceIdSelect, "change", updateTtsControlOptions);
+  bindIf(el.voiceProfileSelect, "change", updateTtsControlOptions);
+  bindIf(el.voiceSpeedInput, "input", updateTtsControlOptions);
+  bindIf(el.voiceSttSelect, "change", updateSttControlOptions);
+  bindIf(el.voiceSttModelSelect, "change", updateSttControlOptions);
+  bindIf(el.voiceSttLanguageSelect, "change", updateSttControlOptions);
+  bindIf(el.pttModeSelect, "change", updatePttControlOptions);
+  bindIf(el.pttHotkeyInput, "input", updatePttControlOptions);
+  bindIf(el.pttHotkeyInput, "keydown", capturePttShortcutKeydown);
+  bindIf(el.pttHotkeyInput, "keyup", capturePttShortcutKeyup);
+  bindIf(el.pttMergeWindowInput, "input", updatePttControlOptions);
+  bindIf(el.pttRecordShortcutButton, "click", recordPttShortcut);
+  bindIf(el.testPttButton, "click", testPttPath);
+  bindIf(el.toolsEnabledToggle, "change", updateToolsControlOptions);
+  bindIf(el.toolsNetworkEnabledToggle, "change", updateToolsControlOptions);
+  bindIf(el.personaProfileSelect, "change", updatePersonaControlOptions);
+  // Instant auto-apply: every settings control persists immediately on change — no Apply/Reset buttons.
+  const instantApplyTimers = {};
+  const instantApply = (group) => {
+    if (instantApplyTimers[group]) clearTimeout(instantApplyTimers[group]);
+    instantApplyTimers[group] = setTimeout(() => {
+      instantApplyTimers[group] = null;
+      applyRuntimeSettingsGroup(group);
+    }, 40);
+  };
+  const instantApplyGroups = {
+    brain: [el.activeBrainProviderSelect, el.activeBrainModelSelect, el.activeBrainEffortSelect],
+    tts: [el.voiceSpeakResponsesToggle, el.voiceTtsSelect, el.voiceTtsModelSelect, el.voiceVoiceIdSelect, el.voiceProfileSelect, el.voiceSpeedInput],
+    stt: [el.voiceSttSelect, el.voiceSttModelSelect, el.voiceSttLanguageSelect],
+    ptt: [el.pttModeSelect, el.pttHotkeyInput, el.pttMergeWindowInput],
+    tools: [el.toolsEnabledToggle],
+    persona: [el.personaProfileSelect],
+  };
+  for (const [group, elems] of Object.entries(instantApplyGroups)) {
+    for (const elem of elems) {
+      bindIf(elem, "change", () => instantApply(group));
+    }
+  }
+  bindIf(el.restartDANButton, "click", () => {
+    setText(el.activeSettingsStatus, "Zrestartuj DANa z terminala: scripts/dan restart");
+  });
+  bindIf(el.refreshQueueButton, "click", refreshVoiceQueue);
+  bindIf(el.cancelCurrentSpeechButton, "click", cancelCurrentSpeech);
+  bindIf(el.refreshRuntimeLogsSummaryButton, "click", refreshEvents);
+  bindIf(el.resetBrainPreviewButton, "click", resetSettingsPreview);
+  bindIf(el.resetTtsPreviewButton, "click", resetSettingsPreview);
+  bindIf(el.resetSttPreviewButton, "click", resetSettingsPreview);
+  bindIf(el.resetToolsPreviewButton, "click", resetSettingsPreview);
+  bindIf(el.resetSettingsPreviewButton, "click", resetSettingsPreview);
+  bindIf(el.refreshMemoryButton, "click", refreshMemory);
+  bindIf(el.refreshToolsButton, "click", refreshTools);
+  bindIf(el.refreshSettingsPreviewButton, "click", refreshSettingsPreview);
+  bindIf(el.refreshSettingsButton, "click", refreshSettings);
+  bindIf(el.refreshRuntimeOverviewButton, "click", refreshRuntimeOverview);
+  bindIf(el.switchBrainButton, "click", switchBrain);
+  bindIf(el.settingsForm, "submit", saveSetting);
+  bindIf(el.refreshEventsButton, "click", refreshEvents);
+  bindIf(el.logFilter, "change", () => {
+    cockpit.logFilter = el.logFilter.value || "all";
+    renderEvents(cockpit.lastEvents);
+  });
+  bindIf(el.refreshRuntimeButton, "click", refreshRuntime);
+  bindIf(el.textForm, "submit", sendTextInput);
+  bindIf(el.textInput, "keydown", (event) => {
+    // Enter sends; Shift+Enter keeps inserting a newline.
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      el.textForm.requestSubmit();
+    }
+  });
+  // Pole rośnie z treścią (2 → ~5 rzędów), potem przewija się wewnątrz —
+  // komunikatorowy composer bez ręcznego ciągnięcia uchwytu.
+  bindIf(el.textInput, "input", autoGrowComposer);
+  for (const tab of document.querySelectorAll(".tab-button")) {
+    tab.addEventListener("click", () => switchView(tab.dataset.view));
+  }
+  bindIf(el.pttModeButton, "click", () => setVoiceMode("ptt"));
+  bindIf(el.listenToggle, "click", () => setVoiceMode("listen"));
+  bindIf(el.memoryForm, "submit", createMemoryBlock);
+  bindIf(el.apiBaseInput, "change", () => {
+    const nextBase = el.apiBaseInput.value.trim();
+    cockpit.apiBase = nextBase || DEFAULT_API_BASE;
+    el.apiBaseInput.value = cockpit.apiBase;
+    cockpit.conversationTitles.clear();
+    disconnectStream("api base changed");
+    cockpit.stream.lastEventId = 0;
+    resetActivity();
+    refreshAll();
+  });
+}
+
+function bindIf(node, eventName, handler) {
+  if (!node) {
+    return;
+  }
+  node.addEventListener(eventName, handler);
+}
+
+async function refreshAll() {
+  const healthOk = await refreshHealthAndState();
+  if (!healthOk) {
+    clearDynamicSections();
+    disconnectStream("daemon offline");
+    scheduleHealthRetry();
+    return;
+  }
+  cancelHealthRetry();
+
+  await Promise.all([
+    refreshVoice(),
+    refreshVoiceQueue(),
+    refreshHistory(),
+    refreshMemory(),
+    refreshTools(),
+    refreshSettingsPreview(),
+    refreshSettings(),
+    refreshRuntimeOverview(),
+    refreshEvents(),
+    refreshRuntime(),
+  ]);
+  connectStream();
+}
+
+// Keep re-polling health while the daemon is unreachable so the panel heals
+// itself once the daemon comes up (order-of-startup no longer matters). A
+// successful refreshAll() cancels the pending retry.
+function scheduleHealthRetry() {
+  if (cockpit.healthRetryTimer) {
+    return;
+  }
+  cockpit.healthRetryTimer = window.setTimeout(() => {
+    cockpit.healthRetryTimer = null;
+    refreshAll();
+  }, HEALTH_RETRY_MS);
+}
+
+function cancelHealthRetry() {
+  if (cockpit.healthRetryTimer) {
+    window.clearTimeout(cockpit.healthRetryTimer);
+    cockpit.healthRetryTimer = null;
+  }
+}
+
+async function refreshVoice() {
+  clearError(el.voiceError);
+  try {
+    const payload = await requestJson("/voice/listening");
+    cockpit.voice.enabled = Boolean(payload.voice_enabled);
+    cockpit.voice.listening = Boolean(payload.listening);
+    cockpit.voice.leases = Array.isArray(payload.leases) ? payload.leases : [];
+  } catch (error) {
+    cockpit.voice.enabled = false;
+    cockpit.voice.listening = false;
+    cockpit.voice.leases = [];
+    renderError(el.voiceError, error);
+  }
+  renderVoice();
+}
+
+async function refreshVoiceQueue() {
+  if (!el.voiceQueueList) {
+    return;
+  }
+  try {
+    const payload = await requestJson("/voice/queue?limit=12");
+    renderVoiceQueue(Array.isArray(payload.voice_queue) ? payload.voice_queue : []);
+  } catch (error) {
+    clearNode(el.voiceQueueList);
+    clearNode(el.queueBargeInList);
+    const row = document.createElement("div");
+    row.className = "list-row";
+    appendLine(row, "Kolejka głosu niedostępna", "input-line");
+    appendLine(row, error.message || "request failed", "muted");
+    el.voiceQueueList.appendChild(row);
+    setText(el.queueApplyStatus, error.message || "queue refresh failed");
+  }
+}
+
+function renderVoiceQueue(rows) {
+  renderQueueBargeInSummary(cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {}, rows);
+  clearNode(el.voiceQueueList);
+  if (rows.length === 0) {
+    renderEmpty(el.voiceQueueList, "Kolejka głosu pusta");
+    return;
+  }
+  for (const item of rows) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+    appendLine(
+      row,
+      `${item.status || "unknown"} · ${item.kind || "sentence"} #${item.seq ?? "?"}`,
+      "input-line",
+    );
+    appendLine(
+      row,
+      `${shortId(item.id)} · turn ${shortId(item.turn_id)} · ${item.interrupt_policy || "no_interrupt"}`,
+      "muted",
+    );
+    if (item.text_preview) {
+      appendLine(row, item.text_preview, "payload-line");
+    }
+    if (item.error) {
+      appendLine(row, item.error, "error-line");
+    }
+    const timing = [
+      item.created_at ? `utworzono ${formatRelative(item.created_at)}` : null,
+      item.spoken_at ? `start audio ${formatRelative(item.spoken_at)}` : null,
+    ].filter(Boolean);
+    if (timing.length > 0) {
+      appendLine(row, timing.join(" · "), "muted");
+    }
+    el.voiceQueueList.appendChild(row);
+  }
+}
+
+function renderVoice() {
+  const usable = cockpit.online && cockpit.voice.enabled;
+  el.pttModeButton.disabled = !usable;
+  el.listenToggle.disabled = !usable;
+  if (el.testPttButton) {
+    el.testPttButton.disabled = !usable;
+  }
+
+  const locked = cockpit.voice.leases.some((lease) => lease.mode === "locked");
+  el.pttModeButton.classList.toggle("active", usable && !locked);
+  el.listenToggle.classList.toggle("active", usable && locked);
+  if (el.testPttButton) {
+    el.testPttButton.classList.toggle("active", false);
+  }
+
+  let status = "cisza — przytrzymaj hotkey PTT";
+  if (!cockpit.online) {
+    status = "daemon offline";
+  } else if (!cockpit.voice.enabled) {
+    status = "głos wyłączony w configu";
+  } else if (cockpit.voice.listening) {
+    const holding = cockpit.voice.leases.some((lease) => lease.mode === "hold");
+    status = holding ? "słucha (PTT)" : "słucha (nasłuch)";
+  } else if (locked) {
+    status = "nasłuch uzbrojony";
+  }
+  setText(el.voiceStatusText, status);
+  // Fala przy statusie ożywa tylko, gdy mikrofon naprawdę zbiera.
+  el.voiceStatus.classList.toggle("live", cockpit.voice.listening);
+  // Status pokazujemy tylko, gdy mikrofon faktycznie słucha — cisza/spoczynek
+  // nie ma po co zajmować miejsca „cisza — przytrzymaj hotkey" pod polem.
+  el.voiceStatus.hidden = !cockpit.voice.listening;
+  // Zbierający mikrofon to też „praca” — ramka ma wtedy obiegać.
+  applyStateFrame();
+  renderPttTestStatusList();
+}
+
+// Panel ustawia TRYB słuchania (PTT vs ciągły nasłuch); samo trzymanie PTT
+// żyje na globalnym hotkeyu (menubar), nie na przycisku w webview.
+async function setVoiceMode(mode) {
+  if (!cockpit.online || !cockpit.voice.enabled) {
+    return;
+  }
+  const locked = cockpit.voice.leases.some((lease) => lease.mode === "locked");
+  const path =
+    mode === "listen" && !locked
+      ? "/voice/listen/lock"
+      : mode === "ptt" && locked
+        ? "/voice/listen/unlock"
+        : null;
+  if (!path) {
+    return;
+  }
+  clearError(el.voiceError);
+  setBusy(el.pttModeButton, true);
+  setBusy(el.listenToggle, true);
+  try {
+    await requestJson(path, { method: "POST", body: {} });
+  } catch (error) {
+    renderError(el.voiceError, error);
+  } finally {
+    setBusy(el.pttModeButton, false);
+    setBusy(el.listenToggle, false);
+  }
+  await refreshVoice();
+}
+
+// PTT button hold (web panel) — press and hold the PTT button to talk
+// This works alongside the macOS global hotkey for PTT
+function setupPttButtonHold() {
+  const btn = el.pttModeButton;
+  if (!btn) return;
+
+  const sendPtt = async (path) => {
+    if (!cockpit.online || !cockpit.voice.enabled) return;
+    try {
+      await requestJson(path, { method: "POST", body: { source: "ptt" } });
+      await refreshVoice();
+    } catch (error) {
+      renderError(el.voiceError, error);
+    }
+  };
+
+  let holdTimer = null;
+  const startHold = () => {
+    if (btn.disabled) return;
+    btn.classList.add("ptt-hold");
+    sendPtt("/voice/ptt/down");
+  };
+  const endHold = () => {
+    if (btn.disabled) return;
+    btn.classList.remove("ptt-hold");
+    sendPtt("/voice/ptt/up");
+  };
+
+  // Mouse events
+  btn.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return; // left click only
+    e.preventDefault();
+    startHold();
+  });
+  btn.addEventListener("mouseup", (e) => {
+    if (e.button !== 0) return;
+    endHold();
+  });
+  btn.addEventListener("mouseleave", endHold);
+
+  // Touch events (mobile)
+  btn.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    startHold();
+  }, { passive: false });
+  btn.addEventListener("touchend", (e) => {
+    e.preventDefault();
+    endHold();
+  }, { passive: false });
+  btn.addEventListener("touchcancel", endHold, { passive: false });
+}
+
+// Initialize PTT button hold on load
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", setupPttButtonHold);
+} else {
+  setupPttButtonHold();
+}
+
+async function refreshHealthAndState() {
+  clearError(el.healthError);
+  const requestId = ++cockpit.runtimeStateRequestId;
+  const stateRevisionAtRequest = cockpit.runtimeStateRevision;
+
+  try {
+    const health = await requestJson("/health");
+    setOnline(true);
+
+    let statePayload = {};
+    try {
+      statePayload = await requestJson("/state");
+    } catch (error) {
+      renderError(el.healthError, error);
+    }
+
+    const merged = { ...health, ...statePayload };
+    // A state.changed frame may arrive while /health + /state are in flight.
+    // Never let that older REST snapshot roll the strip back afterward.
+    if (
+      requestId === cockpit.runtimeStateRequestId &&
+      stateRevisionAtRequest === cockpit.runtimeStateRevision
+    ) {
+      setActivityRuntimeState(merged.state || "unknown");
+    }
+    applyStateFrame();
+    renderHealthHuman(merged);
+    renderKeyValues(el.healthStateList, [
+      ["service", merged.service],
+      ["state", merged.state],
+      ["started", merged.started],
+      ["schema_version", merged.schema_version],
+      ["brain_adapter", merged.brain_adapter],
+      ["voice_enabled", merged.voice_enabled],
+      ["tokens_in", merged.session_tokens_in],
+      ["tokens_out", merged.session_tokens_out],
+    ]);
+    return true;
+  } catch (error) {
+    if (requestId !== cockpit.runtimeStateRequestId) {
+      return cockpit.online;
+    }
+    setOnline(false);
+    setActivityRuntimeState("offline");
+    cockpit.activity.stage = "Brak połączenia";
+    renderActivity();
+    clearNode(el.healthHumanList);
+    clearNode(el.healthStateList);
+    renderError(el.healthError, error);
+    return false;
+  }
+}
+
+// Ludzki stan daemona w sekcji Połączenie: 3–4 pozycje po polsku zamiast
+// surowej kv-listy (ta zostaje w „Diagnostyka (surowe)”).
+function renderHealthHuman(merged) {
+  renderKeyValues(el.healthHumanList, [
+    ["Działa od", merged.started ? formatRelative(merged.started) : "n/a"],
+    ["Wersja schematu", merged.schema_version],
+    ["Głos", merged.voice_enabled ? "włączony" : "wyłączony"],
+    ["Tokeny sesji ↑", merged.session_tokens_in != null ? merged.session_tokens_in.toLocaleString() : "n/a"],
+    ["Tokeny sesji ↓", merged.session_tokens_out != null ? merged.session_tokens_out.toLocaleString() : "n/a"],
+  ]);
+}
+
+async function refreshRuntimeOverview() {
+  if (!el.runtimeOverviewList) {
+    return;
+  }
+  clearError(el.runtimeOverviewError);
+
+  const endpoints = missionControlSafeEndpointPlan();
+  const settled = await Promise.allSettled(
+    endpoints.map((entry) => requestJson(entry.path)),
+  );
+  const snapshot = { failures: [], sourceStatus: {} };
+  for (let index = 0; index < endpoints.length; index += 1) {
+    const { key, path } = endpoints[index];
+    const result = settled[index];
+    if (result.status === "fulfilled") {
+      snapshot[key] = result.value || {};
+      snapshot.sourceStatus[key] = { ok: true, path };
+    } else {
+      snapshot.failures.push(path);
+      snapshot.sourceStatus[key] = { ok: false, path };
+    }
+  }
+
+  cockpit.missionControl.snapshot = snapshot;
+  cockpit.missionControl.lastRefreshAt = new Date().toISOString();
+  renderMissionControl(snapshot);
+  renderRuntimeOverview(snapshot);
+}
+
+function missionControlSafeEndpointPlan() {
+  return MISSION_CONTROL_ENDPOINTS.map((entry) => ({
+    key: entry.key,
+    path: entry.path,
+    method: "GET",
+  }));
+}
+
+async function refreshMissionControl() {
+  if (cockpit.missionControl.refreshing) {
+    setText(el.missionControlRefreshStatus, "Refresh already running");
+    return;
+  }
+  cockpit.missionControl.refreshing = true;
+  setMissionControlRefreshBusy(true);
+  setText(el.missionControlRefreshStatus, "Refresh started");
+  try {
+    const healthOk = await refreshHealthAndState();
+    if (!healthOk) {
+      renderMissionControl(missionControlOfflineSnapshot());
+      setText(el.missionControlRefreshStatus, "Refresh finished: backend offline");
+      return;
+    }
+    await Promise.allSettled([
+      refreshVoice(),
+      refreshVoiceQueue(),
+      refreshTools(),
+      refreshMemory(),
+      refreshEvents(),
+      refreshSettingsPreview(),
+      refreshRuntime(),
+      refreshRuntimeOverview(),
+    ]);
+    setText(
+      el.missionControlRefreshStatus,
+      `Refresh finished ${formatClock(cockpit.missionControl.lastRefreshAt)}`,
+    );
+  } catch (error) {
+    setText(el.missionControlRefreshStatus, `Refresh error: ${error.message || "request failed"}`);
+    renderMissionControl(missionControlOfflineSnapshot(error));
+  } finally {
+    cockpit.missionControl.refreshing = false;
+    setMissionControlRefreshBusy(false);
+  }
+}
+
+function setMissionControlRefreshBusy(busy) {
+  if (!el.refreshMissionControlButton) {
+    return;
+  }
+  el.refreshMissionControlButton.disabled = busy;
+  el.refreshMissionControlButton.classList.toggle("busy", busy);
+}
+
+function missionControlOfflineSnapshot(error) {
+  return {
+    sourceStatus: {
+      health: { ok: false, path: "/health" },
+      runtimeSettings: { ok: false, path: "/runtime/settings" },
+    },
+    failures: ["/health"],
+    latestError: error && error.message ? error.message : "backend offline",
+  };
+}
+
+const SETTINGS_PREVIEW_SECTION_ORDER = [
+  "brain_provider",
+  "voice_tts",
+  "voice_stt",
+  "endpointing_ptt",
+  "queue_barge_in",
+  "tools_internet",
+  "personality",
+];
+
+const SETTINGS_PREVIEW_SECTION_LABELS = {
+  brain_provider: "Brain / Provider",
+  voice_tts: "Voice / TTS",
+  voice_stt: "Voice / STT",
+  endpointing_ptt: "Endpointing / PTT",
+  queue_barge_in: "Queue / Barge-in",
+  tools_internet: "Tools / Internet",
+  personality: "Personality",
+};
+
+const SETTINGS_PREVIEW_CONTROL_FIELDS = new Set([
+  "brain_provider.provider",
+  "brain_provider.model",
+  "brain_provider.effort",
+  "brain_provider.fast",
+  "voice_tts.tts_provider",
+  "voice_tts.tts_model",
+  "voice_tts.voice_id",
+  "voice_tts.speed_or_rate",
+  "voice_stt.stt_provider",
+  "voice_stt.stt_model",
+  "queue_barge_in.manual_cancel_available",
+]);
+
+const RUNTIME_SETTINGS_GROUP_FIELDS = Object.freeze({
+  brain: Object.freeze(["brain.provider", "brain.model", "brain.effort"]),
+  tts: Object.freeze([
+    "voice.speak_responses",
+    "voice.default_tts",
+    "voice.voice_id",
+    "voice.voice_profile",
+    "voice.profile",
+    "voice.speed",
+  ]),
+  stt: Object.freeze(["voice.default_stt", "voice.stt_model", "voice.stt_language"]),
+  voice: Object.freeze([
+    "voice.speak_responses",
+    "voice.default_tts",
+    "voice.default_stt",
+    "voice.voice_id",
+    "voice.voice_profile",
+    "voice.profile",
+    "voice.speed",
+  ]),
+  ptt: Object.freeze(["voice.ptt_mode", "voice.ptt_hotkey", "voice.merge_window"]),
+  tools: Object.freeze([
+    "tools.enabled",
+    "tools.network_enabled",
+    "security.network_enabled",
+    "security.destructive_tools_enabled",
+    "destructive_tools_enabled",
+    "provider_tools_enabled",
+  ]),
+  persona: Object.freeze(["persona.profile"]),
+});
+
+const RUNTIME_SETTINGS_GROUP_LABELS = Object.freeze({
+  brain: "Mózg / Dostawca",
+  tts: "Głos / TTS",
+  stt: "Głos / STT",
+  ptt: "PTT / Detekcja końca",
+  tools: "Narzędzia / Internet",
+  persona: "Osobowość",
+});
+
+const RUNTIME_SETTING_LABELS = Object.freeze({
+  "brain.provider": "Dostawca mózgu",
+  "brain.model": "Model mózgu",
+  "brain.effort": "Poziom wysiłku",
+  "brain.fast": "Tryb szybki",
+  "voice.speak_responses": "Mów odpowiedzi",
+  "voice.default_tts": "Silnik mowy",
+  "voice.default_stt": "Silnik transkrypcji",
+  "voice.stt_model": "Model STT",
+  "voice.stt_language": "Język STT",
+  "voice.ptt_mode": "Tryb PTT",
+  "voice.ptt_hotkey": "Skrót PTT",
+  "voice.merge_window": "Okno scalania",
+  "tools.enabled": "Narzędzia włączone",
+  "tools.network_enabled": "Dostęp do internetu",
+  "security.network_enabled": "Polityka sieci",
+  "security.destructive_tools_enabled": "Destrukcyjne dozwolone",
+  "persona.profile": "Profil persony",
+});
+
+const RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY = Object.freeze({
+  "brain.provider": Object.freeze(["brain_provider", "provider"]),
+  "brain.model": Object.freeze(["brain_provider", "model"]),
+  "brain.effort": Object.freeze(["brain_provider", "effort"]),
+  "brain.fast": Object.freeze(["brain_provider", "fast"]),
+  "voice.default_tts": Object.freeze(["voice_tts", "tts_provider"]),
+  "voice.default_stt": Object.freeze(["voice_stt", "stt_provider"]),
+  "voice.stt_model": Object.freeze(["voice_stt", "stt_model"]),
+  "voice.stt_language": Object.freeze(["voice_stt", "language"]),
+  "voice.voice_id": Object.freeze(["voice_tts", "voice_id"]),
+  "voice.voice_profile": Object.freeze(["voice_tts", "voice_profile"]),
+  "voice.profile": Object.freeze(["voice_tts", "voice_profile"]),
+  "voice.speed": Object.freeze(["voice_tts", "speed_or_rate"]),
+  "voice.rate": Object.freeze(["voice_tts", "speed_or_rate"]),
+  "voice.ptt_mode": Object.freeze(["endpointing_ptt", "ptt_mode"]),
+  "voice.ptt_hotkey": Object.freeze(["endpointing_ptt", "ptt_hotkey"]),
+  "voice.merge_window": Object.freeze(["endpointing_ptt", "merge_window"]),
+  "tools.enabled": Object.freeze(["tools_internet", "tools_enabled"]),
+  "tools.network_enabled": Object.freeze(["tools_internet", "internet_capability"]),
+  "security.network_enabled": Object.freeze(["tools_internet", "network_policy"]),
+  "persona.profile": Object.freeze(["personality", "active_persona"]),
+});
+
+const HUMAN_SETTING_LABELS = Object.freeze({
+  ...RUNTIME_SETTING_LABELS,
+  active_persona: "Profil persony",
+  broker_enabled: "Broker głosu",
+  command_status: "Status komendy",
+  credentials_or_command_status: "Status uprawnień",
+  default_stt: "Silnik transkrypcji",
+  default_tts: "Silnik mowy",
+  endpointing_support: "Wsparcie endpointingu",
+  fast: "Tryb szybki",
+  language: "Język",
+  merge_window: "Okno scalania",
+  model: "Model",
+  provider: "Dostawca mózgu",
+  ptt_hotkey: "Skrót PTT",
+  ptt_mode: "Tryb PTT",
+  silence_duration: "Czas ciszy",
+  silence_threshold: "Próg ciszy",
+  speak_responses: "Mów odpowiedzi",
+  speed_or_rate: "Szybkość",
+  stt_model: "Model STT",
+  stt_provider: "Silnik transkrypcji",
+  tools_support: "Narzędzia",
+  tts_model: "Model mowy",
+  tts_provider: "Silnik mowy",
+  voice_id: "Voice id",
+  voice_profile: "Voice profile",
+});
+
+function runtimeSettingsPayloadForGroup(group, draft) {
+  const allowed = RUNTIME_SETTINGS_GROUP_FIELDS[group] || [];
+  const source = safeObject(draft);
+  const settings = {};
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(source, key) && source[key] !== undefined) {
+      settings[key] = source[key];
+    }
+  }
+  return settings;
+}
+
+function runtimeSettingsGroupHasChanges(group, settings, payload = null) {
+  const source = safeObject(settings);
+  const currentPayload = payload || cockpit.runtimeSettingsApply.payload || {};
+  return runtimeSettingsChangedKeys(group, source, currentPayload).length > 0;
+}
+
+function runtimeSettingsPreviewForGroup(group) {
+  return safeObject(safeObject(cockpit.runtimeSettingsApply.preview)[group]);
+}
+
+function runtimeSettingsHasPendingPreview(group = null) {
+  if (group) {
+    const draft = runtimeSettingsPayloadForGroup(group, runtimeSettingsPreviewForGroup(group));
+    return runtimeSettingsChangedKeys(group, draft, cockpit.runtimeSettingsApply.payload || {}).length > 0;
+  }
+  return Object.keys(safeObject(cockpit.runtimeSettingsApply.preview)).some((key) =>
+    runtimeSettingsHasPendingPreview(key),
+  );
+}
+
+function runtimeSettingsPreviewValue(group, key, effectiveValue) {
+  const preview = runtimeSettingsPreviewForGroup(group);
+  if (Object.prototype.hasOwnProperty.call(preview, key)) {
+    return preview[key];
+  }
+  return effectiveValue;
+}
+
+function runtimeSettingsSetPreview(group, draft) {
+  if (cockpit.runtimeSettingsApply.renderingControls) {
+    return;
+  }
+  cockpit.runtimeSettingsApply.preview[group] = runtimeSettingsPayloadForGroup(group, draft);
+  cockpit.runtimeSettingsApply.groupResults[group] = "";
+}
+
+function runtimeSettingsClearPreview(group = null, message = "Podgląd zresetowany do wartości efektywnej.") {
+  if (group) {
+    delete cockpit.runtimeSettingsApply.preview[group];
+    cockpit.runtimeSettingsApply.groupResults[group] = message;
+    return;
+  }
+  cockpit.runtimeSettingsApply.preview = {};
+  for (const key of Object.keys(RUNTIME_SETTINGS_GROUP_FIELDS)) {
+    cockpit.runtimeSettingsApply.groupResults[key] = message;
+  }
+}
+
+function runtimeSettingsFormatValue(value) {
+  if (typeof value === "boolean") {
+    return value ? "Włączone" : "Wyłączone";
+  }
+  return humanDisplayValue(value);
+}
+
+function humanSettingLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "Ustawienie";
+  }
+  if (HUMAN_SETTING_LABELS[raw]) {
+    return HUMAN_SETTING_LABELS[raw];
+  }
+  const last = raw.includes(".") ? raw.split(".").pop() : raw;
+  if (HUMAN_SETTING_LABELS[last]) {
+    return HUMAN_SETTING_LABELS[last];
+  }
+  return last
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function humanDisplayValue(value) {
+  if (value === undefined || value === null || value === "") {
+    return "Nieznane";
+  }
+  if (typeof value === "boolean") {
+    return value ? "Włączone" : "Wyłączone";
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0 ? value.map(humanDisplayValue).join(", ") : "Brak";
+  }
+  const text = settingsPreviewValue(value);
+  if (text === "yes") return "Włączone";
+  if (text === "no") return "Wyłączone";
+  if (text === "unknown") return "Nieznane";
+  if (text === "missing") return "Brak";
+  if (text === "found") return "Znalezione";
+  if (text === "logged_in") return "Zalogowane";
+  if (text === "next_turn") return "Następna tura";
+  if (text === "requires_new_session") return "Wymaga nowej sesji";
+  if (text === "requires_daemon_restart") return "Wymaga restartu daemonu";
+  if (text === "not_apply_capable") return "Nie można zastosować";
+  if (text === "available") return "Dostępne";
+  if (text === "unavailable") return "Brak";
+  if (text === "disabled") return "Wyłączone";
+  if (text === "enabled") return "Włączone";
+  return text;
+}
+
+function humanStatusLabel(status, options = {}) {
+  if (options.requiresRestart) return "Wymaga restartu";
+  if (options.blocked) return "Zablokowane";
+  const raw = String(status || "").toLowerCase();
+  if (["ok", "ready", "available", "registered"].includes(raw)) return "Dostępne";
+  if (["enabled", "on", "true", "yes"].includes(raw)) return "Włączone";
+  if (["disabled", "off", "false", "no"].includes(raw)) return "Wyłączone";
+  if (["missing", "unavailable", "not_found"].includes(raw)) return "Brak";
+  if (["blocked", "invalid", "error"].includes(raw)) return "Zablokowane";
+  if (["unsupported", "not_supported"].includes(raw)) return "Nieobsługiwane";
+  if (raw === "read_only" || raw === "readonly") return "Tylko odczyt";
+  return "Nieznane";
+}
+
+function humanShortReason(value) {
+  const text = String(value || "").trim();
+  if (!text || text === "none") {
+    return "";
+  }
+  const lower = text.toLowerCase();
+  if (lower.includes("no network/search tool")) {
+    return "Brak zarejestrowanego narzędzia sieci/szukania";
+  }
+  if (lower.includes("runtime tool/network policy reload")) {
+    return "Zmiana polityki runtime wymaga restartu";
+  }
+  if (lower.includes("new provider session") || lower.includes("requires new session")) {
+    return "Wymagana nowa sesja dostawcy";
+  }
+  if (lower.includes("requires daemon restart") || lower.includes("requires restart")) {
+    return "Wymagany restart";
+  }
+  if (lower.includes("registry-backed")) {
+    return "Brak przełącznika sieci działającego na żywo";
+  }
+  if (lower.includes("not apply-capable")) {
+    return "Nie można zastosować";
+  }
+  if (lower.includes("backend offline")) {
+    return "backend niedostępny";
+  }
+  if (lower.includes("missing")) {
+    return text.length > 90 ? `${text.slice(0, 87)}...` : text;
+  }
+  const withoutKeys = text.replace(/\b[a-z]+(?:[._-][a-z0-9]+)+\b/gi, "ustawienie");
+  return withoutKeys.length > 90 ? `${withoutKeys.slice(0, 87)}...` : withoutKeys;
+}
+
+function humanActionForReason(reason, fallback = "Brak dostępnej akcji w tej chwili.") {
+  const lower = String(reason || "").toLowerCase();
+  if (lower.includes("network/search tool") || lower.includes("narzędzia sieci/szukania")) {
+    return "Zainstaluj albo zarejestruj narzędzie sieci/szukania.";
+  }
+  if (lower.includes("restart")) {
+    return "Zrestartuj DANa, żeby to zmienić.";
+  }
+  if (lower.includes("new provider session") || lower.includes("requires new session") || lower.includes("nowa sesja dostawcy")) {
+    return "DAN zastosuje to przy starcie nowej sesji dostawcy.";
+  }
+  if (lower.includes("auth")) {
+    return "Uwierzytelnij CLI dostawcy, jeśli DAN to odrzuci.";
+  }
+  if (lower.includes("voice id")) {
+    return "Ustaw ID głosu przed użyciem tego głosu.";
+  }
+  if (lower.includes("local model")) {
+    return "Skonfiguruj lokalny model przed włączeniem tego dostawcy.";
+  }
+  return fallback;
+}
+
+function runtimeSettingsPreviewFieldForKey(payload, key) {
+  const path = RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY[key];
+  if (!path) {
+    return {};
+  }
+  return settingsPreviewField(payload, path[0], path[1]);
+}
+
+function runtimeSettingsPreviewSectionForKey(payload, key) {
+  const path = RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY[key];
+  if (!path) {
+    return {};
+  }
+  const source = safeObject(payload);
+  const previewSections = safeObject(safeObject(source.settings_preview).sections);
+  if (Object.keys(previewSections).length > 0) {
+    return safeObject(previewSections[path[0]]);
+  }
+  return safeObject(safeObject(source.sections)[path[0]]);
+}
+
+function runtimeSettingsFieldEffectiveValue(field) {
+  const source = safeObject(field);
+  if (Object.prototype.hasOwnProperty.call(source, "effective")) {
+    return source.effective;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, "effective_value")) {
+    return source.effective_value;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, "current")) {
+    return source.current;
+  }
+  if (Object.prototype.hasOwnProperty.call(source, "value")) {
+    return source.value;
+  }
+  return undefined;
+}
+
+function runtimeSettingsValueIsUnknown(value) {
+  if (value === undefined || value === null || value === "") {
+    return true;
+  }
+  if (typeof value === "string") {
+    const raw = value.trim().toLowerCase();
+    return ["unknown", "missing", "undefined", "null", "n/a", "na"].includes(raw);
+  }
+  return false;
+}
+
+function runtimeSettingsEffectiveValueUnknown(payload, key) {
+  const field = runtimeSettingsPreviewFieldForKey(payload, key);
+  const fieldValue = runtimeSettingsFieldEffectiveValue(field);
+  const currentValue = runtimeSettingsCurrentValueForKey(payload, key);
+  if (runtimeSettingsValueIsUnknown(currentValue)) {
+    return true;
+  }
+  if (Object.keys(field).length > 0 && runtimeSettingsValueIsUnknown(fieldValue)) {
+    return true;
+  }
+  return false;
+}
+
+function runtimeSettingsApplyCapabilityForKey(payload, key) {
+  const graph = safeObject(safeObject(payload).capability_graph);
+  const tools = safeObject(safeObject(graph).tools_capabilities);
+  const toolCapability = safeObject(safeObject(tools.apply_capabilities)[key]);
+  if (Object.keys(toolCapability).length > 0) {
+    return toolCapability;
+  }
+  const section = runtimeSettingsPreviewSectionForKey(payload, key);
+  const validNextTurn = Array.isArray(section.valid_next_turn_changes) ? section.valid_next_turn_changes : [];
+  const requiresNewSession = Array.isArray(section.requires_new_session_changes) ? section.requires_new_session_changes : [];
+  const requiresRestart = Array.isArray(section.requires_restart_changes) ? section.requires_restart_changes : [];
+  if (validNextTurn.includes(key)) {
+    return { apply_capable: true, requires_restart: false, blocker: "" };
+  }
+  if (requiresRestart.includes(key)) {
+    return { apply_capable: false, requires_restart: true, blocker: section.apply_disabled_reason || "requires_daemon_restart" };
+  }
+  if (requiresNewSession.includes(key)) {
+    return { apply_capable: false, requires_restart: false, blocker: section.apply_disabled_reason || "requires_new_session" };
+  }
+  if (key.startsWith("brain.") && Object.prototype.hasOwnProperty.call(section, "apply_capable")) {
+    return {
+      apply_capable: false,
+      requires_restart: false,
+      blocker: section.apply_disabled_reason || "not_apply_capable",
+    };
+  }
+  const field = runtimeSettingsPreviewFieldForKey(payload, key);
+  if (field.apply_capable === true) {
+    return {
+      apply_capable: true,
+      requires_restart: Boolean(field.requires_restart || field.requires_reload),
+      blocker: field.blocker || "",
+    };
+  }
+  return {};
+}
+
+function runtimeSettingsUnknownCanApply(payload, key) {
+  const capability = runtimeSettingsApplyCapabilityForKey(payload, key);
+  return capability.apply_capable === true && capability.requires_restart !== true && !capability.blocker;
+}
+
+function runtimeSettingsUnknownDisabledReason(payload, key) {
+  if (!runtimeSettingsEffectiveValueUnknown(payload, key)) {
+    return "";
+  }
+  if ((key === "voice.ptt_hotkey" || key === "brain.effort") && runtimeSettingsUnknownCanApply(payload, key)) {
+    return "";
+  }
+  return "Wartość efektywna: nieznana. Powód: runtime nie raportuje tego ustawienia. Zastosowanie wyłączone.";
+}
+
+function runtimeSettingsUnknownDisabledMessage(group, settings, payload) {
+  for (const key of Object.keys(safeObject(settings))) {
+    const reason = runtimeSettingsUnknownDisabledReason(payload, key);
+    if (reason) {
+      return reason;
+    }
+  }
+  return "";
+}
+
+function runtimeSettingsBrainUnknownControlMessage(payload) {
+  for (const key of ["brain.model", "brain.effort"]) {
+    const field = runtimeSettingsPreviewFieldForKey(payload, key);
+    if (field.editable_now === true) {
+      const reason = runtimeSettingsUnknownDisabledReason(payload, key);
+      if (reason) {
+        return reason;
+      }
+    }
+  }
+  return "";
+}
+
+function runtimeSettingsFieldCanApplyNow(payload, key) {
+  const capability = runtimeSettingsApplyCapabilityForKey(payload, key);
+  if (Object.keys(capability).length > 0) {
+    return capability.apply_capable === true && capability.requires_restart !== true && !capability.blocker;
+  }
+  const field = runtimeSettingsPreviewFieldForKey(payload, key);
+  if (Object.keys(field).length > 0) {
+    if (field.blocker || field.requires_restart || field.requires_reload) {
+      return false;
+    }
+    if (["blocked", "missing", "unavailable", "unsupported", "invalid", "read_only", "readonly"].includes(String(field.status || "").toLowerCase())) {
+      return false;
+    }
+    return field.editable_now === true;
+  }
+  return true;
+}
+
+function runtimeSettingsFieldCannotApplyReason(payload, key) {
+  const unknownReason = runtimeSettingsUnknownDisabledReason(payload, key);
+  if (unknownReason) {
+    return unknownReason;
+  }
+  if (!runtimeSettingsFieldCanApplyNow(payload, key)) {
+    const field = runtimeSettingsPreviewFieldForKey(payload, key);
+    const reason = humanShortReason(field.blocker || field.warning);
+    if (field.requires_restart || field.requires_reload) {
+      return "Wymaga restartu. Zrestartuj DANa, żeby to zmienić.";
+    }
+    if (reason) {
+      return `Zablokowane. ${humanActionForReason(reason)}`;
+    }
+    return `${humanSettingLabel(key)} nie może być teraz zastosowane.`;
+  }
+  return "";
+}
+
+function runtimeSettingsGroupApplyBlockedReason(group, settings, payload) {
+  const changedKeys = runtimeSettingsChangedKeys(group, settings, payload);
+  if (changedKeys.length === 0) {
+    return "";
+  }
+  for (const key of changedKeys) {
+    const field = runtimeSettingsPreviewFieldForKey(payload, key);
+    if (field.requires_restart || field.requires_reload) {
+      return "Wymaga restartu";
+    }
+  }
+  for (const key of changedKeys) {
+    if (!runtimeSettingsFieldCanApplyNow(payload, key)) {
+      return "Nie można zastosować";
+    }
+  }
+  return "";
+}
+
+function runtimeSettingsCompactUnknownStatus(value) {
+  if (runtimeSettingsValueIsUnknown(value)) {
+    return "Wartość efektywna: nieznana. Powód: runtime nie raportuje tego ustawienia.";
+  }
+  return settingsPreviewValue(value);
+}
+
+function runtimeSettingsPendingMessage(group, settings, payload) {
+  const changedKeys = runtimeSettingsChangedKeys(group, settings, payload)
+    .filter((key) => runtimeSettingsFieldCanApplyNow(payload, key));
+  if (changedKeys.length === 0) {
+    return "";
+  }
+  const pieces = changedKeys.map((key) => {
+    const label = RUNTIME_SETTING_LABELS[key] || key;
+    const effective = runtimeSettingsCurrentValueForKey(payload, key);
+    return `${label}: ${runtimeSettingsFormatValue(effective)} -> ${runtimeSettingsFormatValue(settings[key])}`;
+  });
+  return `Oczekująca zmiana: ${pieces.join("; ")}`;
+}
+
+function runtimeSettingsAttemptPendingMessage(group, settings, payload) {
+  const changedKeys = runtimeSettingsChangedKeys(group, settings, payload);
+  if (changedKeys.length === 0) {
+    return "";
+  }
+  const pieces = changedKeys.map((key) => {
+    const label = RUNTIME_SETTING_LABELS[key] || key;
+    const effective = runtimeSettingsCurrentValueForKey(payload, key);
+    return `${label}: ${runtimeSettingsFormatValue(effective)} -> ${runtimeSettingsFormatValue(settings[key])}`;
+  });
+  return `Oczekująca zmiana: ${pieces.join("; ")}`;
+}
+
+function runtimeSettingsPendingBackendMessage(pending, validationMessage = "") {
+  if (!pending) {
+    return "";
+  }
+  const reason = humanShortReason(validationMessage);
+  return reason
+    ? `${pending}. Backend zweryfikuje: ${humanActionForReason(reason)}`
+    : `${pending}. Backend zweryfikuje.`;
+}
+
+function runtimeSettingsGroupResult(group) {
+  return safeObject(cockpit.runtimeSettingsApply.groupResults)[group] || "";
+}
+
+function runtimeSettingsGroupNoChangesMessage(group) {
+  const label = RUNTIME_SETTINGS_GROUP_LABELS[group] || group;
+  return `Brak zmian w sekcji ${label}.`;
+}
+
+function runtimeSettingValuesEquivalent(left, right) {
+  if (left === right) {
+    return true;
+  }
+  if ((left === undefined || left === null || left === "") && (right === undefined || right === null || right === "")) {
+    return true;
+  }
+  if (typeof left === "number" || typeof right === "number") {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    return Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber === rightNumber;
+  }
+  return String(left) === String(right);
+}
+
+function runtimeSettingsCurrentValueForKey(payload, key) {
+  const source = safeObject(payload);
+  const graph = safeObject(source.capability_graph);
+  const brain = safeObject(graph.brain_capabilities);
+  const voice = safeObject(source.voice);
+  const tools = safeObject(source.tools);
+  if (key === "brain.provider" || key === "brain.adapter") {
+    return firstPresent(brain.current_provider, projectionValue(safeObject(source.brain).current_adapter));
+  }
+  if (key === "brain.model") {
+    return firstPresent(brain.current_model, settingsPreviewFieldValue(source, "brain_provider", "model"));
+  }
+  if (key === "brain.effort") {
+    return settingsPreviewFieldValue(source, "brain_provider", "effort");
+  }
+  if (key === "brain.fast") {
+    return settingsPreviewFieldValue(source, "brain_provider", "fast");
+  }
+  if (key === "voice.speak_responses") {
+    return projectionValue(voice.speak_responses);
+  }
+  if (key === "voice.default_tts") {
+    return projectionValue(voice.default_tts);
+  }
+  if (key === "voice.default_stt") {
+    return projectionValue(voice.default_stt);
+  }
+  if (key === "voice.stt_model") {
+    return settingsPreviewFieldValue(source, "voice_stt", "stt_model");
+  }
+  if (key === "voice.stt_language") {
+    return settingsPreviewFieldValue(source, "voice_stt", "language");
+  }
+  if (key === "voice.voice_id") {
+    return settingsPreviewFieldValue(source, "voice_tts", "voice_id");
+  }
+  if (key === "voice.voice_profile" || key === "voice.profile") {
+    return settingsPreviewFieldValue(source, "voice_tts", "voice_profile");
+  }
+  if (key === "voice.speed" || key === "voice.rate") {
+    return settingsPreviewFieldValue(source, "voice_tts", "speed_or_rate");
+  }
+  if (key === "voice.ptt_mode") {
+    return settingsPreviewFieldValue(source, "endpointing_ptt", "ptt_mode");
+  }
+  if (key === "voice.ptt_hotkey") {
+    return settingsPreviewFieldValue(source, "endpointing_ptt", "ptt_hotkey");
+  }
+  if (key === "voice.merge_window") {
+    return settingsPreviewFieldValue(source, "endpointing_ptt", "merge_window");
+  }
+  if (key === "persona.profile") {
+    return settingsPreviewFieldValue(source, "personality", "active_persona");
+  }
+  if (key === "tools.enabled") {
+    return projectionValue(tools.tools_enabled);
+  }
+  if (key === "tools.network_enabled" || key === "security.network_enabled") {
+    const internet = safeObject(projectionValue(tools.internet_capability));
+    return internet.state === "available";
+  }
+  if (key === "security.destructive_tools_enabled") {
+    return Boolean(projectionValue(tools.destructive_tools_enabled));
+  }
+  return undefined;
+}
+
+async function postRuntimeSettingsApply(settings) {
+  return requestJson("/runtime/settings/apply", {
+    method: "POST",
+    body: { settings: safeObject(settings) },
+  });
+}
+
+async function refreshSettingsPreview() {
+  if (!el.settingsPreviewList) {
+    return;
+  }
+  clearError(el.settingsPreviewError);
+  const hadPendingPreview = runtimeSettingsHasPendingPreview();
+  try {
+    const payload = await requestJson("/runtime/settings");
+    cockpit.runtimeSettingsApply.payload = payload;
+    cockpit.settingsPreview.payload = payload;
+    if (hadPendingPreview) {
+      for (const group of Object.keys(safeObject(cockpit.runtimeSettingsApply.preview))) {
+        if (runtimeSettingsHasPendingPreview(group)) {
+          cockpit.runtimeSettingsApply.groupResults[group] = "Stan efektywny odświeżony; oczekujący podgląd zachowany.";
+        }
+      }
+      setText(el.activeSettingsStatus, "Stan efektywny odświeżony; oczekujący podgląd zachowany.");
+    }
+    cockpit.settingsPreview.model = settingsPreviewModelFromPayload(
+      payload,
+      cockpit.settingsPreview.overrides,
+    );
+    renderRuntimeSettingsControls(payload);
+    renderSettingsPreview(cockpit.settingsPreview.model);
+  } catch (error) {
+    clearRuntimeSettingsControls();
+    clearNode(el.settingsPreviewList);
+    renderError(el.settingsPreviewError, error);
+  }
+}
+
+function resetSettingsPreview() {
+  cockpit.settingsPreview.overrides = {};
+  runtimeSettingsClearPreview(null, "Podgląd zresetowany do wartości efektywnej.");
+  cockpit.settingsPreview.model = settingsPreviewModelFromPayload(cockpit.settingsPreview.payload || {});
+  renderRuntimeSettingsControls(cockpit.settingsPreview.payload || cockpit.runtimeSettingsApply.payload || {});
+  renderSettingsPreview(cockpit.settingsPreview.model);
+  setText(el.activeSettingsStatus, "Podgląd zresetowany.");
+}
+
+function renderRuntimeSettingsControls(payload) {
+  cockpit.runtimeSettingsApply.renderingControls = true;
+  try {
+    renderActiveSettingsSummary(payload);
+    renderBrainApplyControls(payload);
+    renderVoiceApplyControls(payload);
+    renderPttApplyControls(payload);
+    renderToolsApplyControls(payload);
+    renderPersonaApplyControls(payload);
+    renderAuxiliaryCockpitSectionsFromPayload(payload);
+    updateRestartRequiredBanner();
+  } finally {
+    cockpit.runtimeSettingsApply.renderingControls = false;
+  }
+}
+
+function clearRuntimeSettingsControls() {
+  clearNode(el.activeSettingsList);
+  setText(el.activeSettingsStatus, "backend offline");
+  for (const node of [
+    el.activeBrainProviderSelect,
+    el.activeBrainModelSelect,
+    el.activeBrainEffortSelect,
+    el.voiceTtsSelect,
+    el.voiceTtsModelSelect,
+    el.voiceSttSelect,
+    el.voiceSttModelSelect,
+    el.voiceSttLanguageSelect,
+    el.voiceVoiceIdSelect,
+    el.voiceProfileSelect,
+    el.pttModeSelect,
+    el.personaProfileSelect,
+  ]) {
+    clearNode(node);
+  }
+  updateRestartRequiredBanner();
+}
+
+function renderActiveSettingsSummary(payload) {
+  clearNode(el.activeSettingsList);
+  const graph = safeObject(payload.capability_graph);
+  const brain = safeObject(graph.brain_capabilities);
+  const voice = safeObject(payload.voice);
+  const tools = safeObject(payload.tools);
+  const personaField = settingsPreviewField(payload, "personality", "active_persona");
+  const row = document.createElement("article");
+  row.className = "list-row";
+  appendLine(row, "Effective runtime state", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["brain provider", firstPresent(brain.current_provider, projectionValue(safeObject(payload.brain).current_adapter))],
+    ["brain model", firstPresent(brain.current_model, settingsPreviewFieldValue(payload, "brain_provider", "model"))],
+    ["speak responses", projectionValue(voice.speak_responses)],
+    ["TTS / STT", `${settingsPreviewValue(projectionValue(voice.default_tts))} / ${settingsPreviewValue(projectionValue(voice.default_stt))}`],
+    ["PTT mode", projectionValue(voice.ptt_mode)],
+    ["Internet/tools", toolsInternetSummaryText(payload, tools)],
+    ["persona", personaField.effective || personaField.current || "default"],
+  ]);
+  row.appendChild(values);
+  if (el.activeSettingsList) {
+    el.activeSettingsList.appendChild(row);
+  }
+}
+
+function runtimeSettingsPendingRestartKeys(payload) {
+  const runtimePayload = payload || cockpit.runtimeSettingsApply.payload || {};
+  const groups = ["tts", "stt", "ptt", "tools", "persona"];
+  const keys = [];
+  for (const group of groups) {
+    const draft = runtimeSettingsPayloadForGroup(group, runtimeSettingsDraftForGroup(group));
+    for (const key of runtimeSettingsChangedKeys(group, draft, runtimePayload)) {
+      const field = runtimeSettingsPreviewFieldForKey(runtimePayload, key);
+      if (field.requires_restart || field.requires_reload) {
+        keys.push(key);
+      }
+    }
+  }
+  return Array.from(new Set(keys));
+}
+
+function updateRestartRequiredBanner() {
+  if (!el.restartRequiredBanner) {
+    return;
+  }
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  const keys = runtimeSettingsPendingRestartKeys(payload);
+  const hasPendingRestart = keys.length > 0;
+  el.restartRequiredBanner.hidden = !hasPendingRestart;
+  if (!hasPendingRestart) {
+    setText(el.restartRequiredMessage, "");
+    return;
+  }
+  const labels = keys.slice(0, 3).map((key) => RUNTIME_SETTING_LABELS[key] || key);
+  const suffix = keys.length > 3 ? ` +${keys.length - 3}` : "";
+  setText(
+    el.restartRequiredMessage,
+    `Wymagany restart: ${labels.join(", ")}${suffix}. Zapisz zmiany, potem zrestartuj DANa.`,
+  );
+}
+
+function renderSettingsSectionSummary(node, payload, sectionId, limit = 12) {
+  clearNode(node);
+  if (!node) {
+    return;
+  }
+  const section = safeObject(safeObject(safeObject(payload.settings_preview).sections)[sectionId]);
+  const fields = safeObject(section.fields);
+  if (Object.keys(fields).length === 0) {
+    renderEmpty(node, "section projection unavailable");
+    return;
+  }
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, section.label || SETTINGS_PREVIEW_SECTION_LABELS[sectionId] || sectionId, "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  const rows = Object.values(fields).slice(0, limit).map((field) => {
+    const reason = humanShortReason(field.blocker || field.warning);
+    const status = humanStatusLabel(field.status, {
+      requiresRestart: Boolean(field.requires_restart),
+      blocked: Boolean(field.blocker),
+    });
+    const action = reason
+      ? humanActionForReason(reason)
+      : field.editable_now
+        ? "Zastosuj w Systemie."
+        : field.requires_restart
+          ? "Zrestartuj DANa, żeby to zmienić."
+          : "Brak";
+    const value = humanDisplayValue(field.effective !== undefined ? field.effective : field.current);
+    const pieces = [
+      value,
+      status,
+      reason || null,
+      action && action !== "Brak" ? action : null,
+    ].filter(Boolean);
+    return [humanSettingLabel(field.label || field.id), pieces.join(" · ") || "Nieznane"];
+  });
+  renderKeyValues(values, rows);
+  row.appendChild(values);
+  node.appendChild(row);
+}
+
+// Ładne, spójne podpisy modeli w dropdownie — surowe id (np. "claude-haiku-4-5-20251001",
+// z datą, gdy reszta bez) wyglądają niespójnie. Wartość selecta zostaje realnym id.
+function prettyModelLabel(id) {
+  const raw = String(id == null ? "" : id).trim();
+  if (!raw) return raw;
+  const s = raw.replace(/^claude-/, "").replace(/-\d{6,}$/, "");
+  const m = s.match(/^([a-z]+)-(.+)$/i);
+  if (!m) return raw;
+  const family = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+  return family + " " + m[2].replace(/-/g, ".");
+}
+
+function renderBrainApplyControls(payload) {
+  const graph = safeObject(payload.capability_graph);
+  const brain = safeObject(graph.brain_capabilities);
+  const providers = Array.isArray(brain.providers) ? brain.providers : [];
+  // Pokaż tylko dostawców realnie DOSTĘPNYCH — ukryj niezainstalowane lokalne runtime'y
+  // (ollama/mlx/llama.cpp/bielik/mistral), żeby lista nie była zaśmiecona martwymi opcjami.
+  // Aktywnego dostawcę trzymamy zawsze, nawet gdyby chwilowo raportował available=false.
+  const normalProviders = providers.filter(
+    (provider) =>
+      !provider.developer_only &&
+      (provider.available !== false || String(provider.id) === String(brain.current_provider || "")),
+  );
+  const currentProvider = String(brain.current_provider || "");
+  const previewProvider = runtimeSettingsPreviewValue("brain", "brain.provider", currentProvider);
+  const currentProviderObject = runtimeSettingsBrainProvider(payload, currentProvider);
+  const keepDeveloperProviderActive = currentProvider === "mock" || Boolean(currentProviderObject && currentProviderObject.developer_only);
+  const providerOptions = [
+    ...normalProviders.map((provider) => ({
+      value: provider.id,
+      label: providerApplyLabel(provider, currentProvider),
+      disabled: Boolean(providerApplyBlocker(provider, currentProvider)) && String(provider.id) !== String(currentProvider),
+      title: providerApplyBlocker(provider, currentProvider),
+    })),
+  ];
+  if (keepDeveloperProviderActive) {
+    providerOptions.unshift({
+      value: "",
+      label: "Brak aktywnego normalnego dostawcy",
+      disabled: true,
+    });
+  }
+  setSelectOptions(
+    el.activeBrainProviderSelect,
+    providerOptions,
+    keepDeveloperProviderActive && String(previewProvider) === currentProvider
+      ? ""
+      : normalProviders.some((provider) => String(provider.id) === String(previewProvider))
+      ? previewProvider
+      : keepDeveloperProviderActive
+        ? ""
+        : (normalProviders[0] && normalProviders[0].id) || "",
+  );
+  if (el.activeBrainProviderSelect) {
+    el.activeBrainProviderSelect.title = keepDeveloperProviderActive
+      ? "Aktywny dostawca developerski/testowy"
+      : "";
+    el.activeBrainProviderSelect.disabled = keepDeveloperProviderActive && providerOptions.length === 1;
+  }
+  // Only one real provider (Claude CLI) → hide the single-choice dropdown entirely.
+  setFieldVisibleForSelect(el.activeBrainProviderSelect, normalProviders.length);
+  updateBrainControlOptions();
+}
+
+function updateBrainControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  const providerId = el.activeBrainProviderSelect ? el.activeBrainProviderSelect.value : "";
+  const selectedProvider = runtimeSettingsBrainProvider(payload, providerId);
+  const currentProviderId = runtimeSettingsCurrentProvider(payload);
+  const currentProvider = runtimeSettingsBrainProvider(payload, currentProviderId);
+  const provider = selectedProvider || currentProvider;
+  const preserveDeveloperProvider = currentProviderId === "mock" || Boolean(currentProvider && currentProvider.developer_only);
+  const lockedToDeveloperProvider = preserveDeveloperProvider && !selectedProvider;
+  const models = Array.isArray(safeObject(provider).models) ? provider.models : [];
+  const modelDisabledReason = runtimeSettingsUnknownDisabledReason(payload, "brain.model");
+  const currentModelControlValue = el.activeBrainModelSelect ? String(el.activeBrainModelSelect.value || "") : "";
+  const modelIds = models.map((item) => String(item.id));
+  const previewModel = runtimeSettingsPreviewValue(
+    "brain",
+    "brain.model",
+    safeObject(provider).current_model || (models[0] && models[0].id) || "",
+  );
+  setSelectOptions(
+    el.activeBrainModelSelect,
+    models.map((item) => ({
+      value: item.id,
+      label: prettyModelLabel(item.id),
+      disabled: item.available === false,
+      title: item.available === false ? "Backend raportuje model jako niedostępny." : "",
+    })),
+    modelIds.includes(currentModelControlValue) ? currentModelControlValue : previewModel,
+  );
+  if (el.activeBrainModelSelect) {
+    el.activeBrainModelSelect.disabled = models.length === 0 || lockedToDeveloperProvider || Boolean(modelDisabledReason);
+    el.activeBrainModelSelect.title = modelDisabledReason || "";
+  }
+  // Effort options: prefer a per-model list (brain_capabilities.providers[].model_effort_support),
+  // fall back to the provider-wide allowed set, then to the full CLI effort ladder.
+  const selectedModelId = el.activeBrainModelSelect ? String(el.activeBrainModelSelect.value || "") : "";
+  const modelEffortSupport = safeObject(safeObject(provider).model_effort_support);
+  const perModelEfforts = Array.isArray(modelEffortSupport[selectedModelId])
+    ? modelEffortSupport[selectedModelId]
+    : null;
+  const providerEfforts = Array.isArray(safeObject(provider).allowed_effort_values)
+    ? provider.allowed_effort_values
+    : [];
+  const efforts = perModelEfforts && perModelEfforts.length > 0
+    ? perModelEfforts
+    : providerEfforts.length > 0
+      ? providerEfforts
+      : FULL_EFFORT_VALUES;
+  const effortUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "brain.effort");
+  const currentEffortControlValue = el.activeBrainEffortSelect ? String(el.activeBrainEffortSelect.value || "") : "";
+  const effectiveEffort = runtimeSettingsCurrentValueForKey(payload, "brain.effort");
+  const previewEffort = runtimeSettingsPreviewValue("brain", "brain.effort", effectiveEffort || efforts[0] || "");
+  const selectedEffort = efforts.includes(currentEffortControlValue)
+    ? currentEffortControlValue
+    : efforts.includes(String(previewEffort))
+      ? previewEffort
+      : efforts[0] || "";
+  setSelectOptions(
+    el.activeBrainEffortSelect,
+    efforts.map((value) => ({ value, label: value })),
+    effortUnknownReason ? "" : selectedEffort,
+  );
+  if (el.activeBrainEffortSelect) {
+    el.activeBrainEffortSelect.disabled = efforts.length === 0 || lockedToDeveloperProvider || Boolean(effortUnknownReason);
+    el.activeBrainEffortSelect.title = effortUnknownReason || "";
+  }
+  runtimeSettingsSetPreview("brain", runtimeSettingsDraftForGroup("brain"));
+  updateRestartRequiredBanner();
+  const blocker = provider ? providerApplyBlocker(provider, runtimeSettingsCurrentProvider(payload)) : "provider unavailable";
+  const draft = runtimeSettingsPayloadForGroup("brain", runtimeSettingsDraftForGroup("brain"));
+  const pending = runtimeSettingsAttemptPendingMessage("brain", draft, payload);
+  const unknownMessage = runtimeSettingsBrainUnknownControlMessage(payload) || runtimeSettingsUnknownDisabledMessage("brain", draft, payload);
+  const applyBlockedReason = runtimeSettingsGroupApplyBlockedReason("brain", draft, payload);
+  const validationMessage = blocker || applyBlockedReason;
+  const result = runtimeSettingsGroupResult("brain");
+  setText(
+    el.brainApplyStatus,
+    unknownMessage
+      ? unknownMessage
+      : pending
+        ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
+        : result || runtimeSettingsGroupNoChangesMessage("brain"),
+  );
+  setButtonEnabled(
+    el.applyBrainSettingsButton,
+    !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
+}
+
+function renderVoiceApplyControls(payload) {
+  renderTtsApplyControls(payload);
+  renderSttApplyControls(payload);
+}
+
+function renderTtsApplyControls(payload) {
+  const voice = safeObject(payload.voice);
+  const graphVoice = safeObject(safeObject(payload.capability_graph).voice_capabilities);
+  const ttsProviders = Array.isArray(graphVoice.tts_providers) ? graphVoice.tts_providers : [];
+  const currentTts = projectionValue(voice.default_tts);
+  const ttsField = settingsPreviewField(payload, "voice_tts", "tts_provider");
+  const ttsModelField = settingsPreviewField(payload, "voice_tts", "tts_model");
+  const voiceIdField = settingsPreviewField(payload, "voice_tts", "voice_id");
+  const voiceProfileField = settingsPreviewField(payload, "voice_tts", "voice_profile");
+  if (el.voiceSpeakResponsesToggle) {
+    el.voiceSpeakResponsesToggle.checked = Boolean(runtimeSettingsPreviewValue(
+      "tts",
+      "voice.speak_responses",
+      projectionValue(voice.speak_responses),
+    ));
+  }
+  if (el.voiceBrokerEnabledToggle) {
+    setReadOnlyBooleanStatus(el.voiceBrokerEnabledToggle, projectionValue(voice.broker_enabled));
+  }
+  setSelectOptions(
+    el.voiceTtsSelect,
+    ttsProviders.map((provider) => ({
+      value: provider.id,
+      label: provider.label || provider.id,
+      disabled: provider.available === false,
+      title: provider.available === false ? "Dostawca TTS jest niedostępny." : "Zapisz do restartu.",
+    })),
+    currentTts,
+  );
+  setSelectOptions(
+    el.voiceTtsModelSelect,
+    settingsFieldAllowedValuesWithCurrent(ttsModelField).map((value) => ({
+      value,
+      label: value,
+      disabled: false,
+    })),
+    ttsModelField.effective || ttsModelField.current || "",
+  );
+  setSelectOptions(
+    el.voiceVoiceIdSelect,
+    settingsFieldAllowedValuesWithCurrent(voiceIdField).map((value) => ({
+      value,
+      label: value,
+      disabled: false,
+    })),
+    voiceIdField.effective || voiceIdField.current || "",
+  );
+  setSelectOptions(
+    el.voiceProfileSelect,
+    settingsFieldAllowedValuesWithCurrent(voiceProfileField).map((value) => ({
+      value,
+      label: value,
+      disabled: false,
+    })),
+    voiceProfileField.effective || voiceProfileField.current || "",
+  );
+  if (el.voiceTtsSelect) el.voiceTtsSelect.disabled = ttsProviders.length === 0;
+  if (el.voiceTtsModelSelect) el.voiceTtsModelSelect.disabled = settingsFieldAllowedValuesWithCurrent(ttsModelField).length === 0;
+  if (el.voiceVoiceIdSelect) el.voiceVoiceIdSelect.disabled = settingsFieldAllowedValuesWithCurrent(voiceIdField).length === 0;
+  if (el.voiceProfileSelect) el.voiceProfileSelect.disabled = settingsFieldAllowedValuesWithCurrent(voiceProfileField).length === 0;
+  // Single-option engine/model/profile dropdowns are hidden; ID głosu keeps its manual entry.
+  setFieldVisibleForSelect(el.voiceTtsSelect, ttsProviders.length);
+  setFieldVisibleForSelect(el.voiceTtsModelSelect, settingsFieldAllowedValuesWithCurrent(ttsModelField).length);
+  setFieldVisibleForSelect(el.voiceProfileSelect, settingsFieldAllowedValuesWithCurrent(voiceProfileField).length);
+  if (el.voiceSpeedInput) {
+    el.voiceSpeedInput.disabled = false;
+    const currentSpeed = settingsPreviewFieldValue(payload, "voice_tts", "speed_or_rate");
+    el.voiceSpeedInput.value = currentSpeed === null || currentSpeed === undefined ? "" : currentSpeed;
+  }
+  updateTtsControlOptions();
+  if (ttsField.requires_restart || ttsModelField.requires_restart || voiceIdField.requires_restart) {
+    setText(el.voiceApplyStatus, "Wymaga restartu. Zrestartuj DANa, żeby to zmienić.");
+  }
+  updateRestartRequiredBanner();
+}
+
+function renderSttApplyControls(payload) {
+  const voice = safeObject(payload.voice);
+  const graphVoice = safeObject(safeObject(payload.capability_graph).voice_capabilities);
+  const sttProviders = Array.isArray(graphVoice.stt_providers) ? graphVoice.stt_providers : [];
+  const sttField = settingsPreviewField(payload, "voice_stt", "stt_provider");
+  const sttModelField = settingsPreviewField(payload, "voice_stt", "stt_model");
+  const languageField = settingsPreviewField(payload, "voice_stt", "language");
+  setSelectOptions(
+    el.voiceSttSelect,
+    sttProviders.map((provider) => ({
+      value: provider.id,
+      label: provider.label || provider.id,
+      disabled: provider.available === false,
+      title: provider.available === false ? "Dostawca albo runtime STT jest niedostępny." : "Zapisz do restartu.",
+    })),
+    projectionValue(voice.default_stt),
+  );
+  setSelectOptions(
+    el.voiceSttModelSelect,
+    settingsFieldAllowedValuesWithCurrent(sttModelField).map((value) => ({
+      value,
+      label: value,
+      disabled: false,
+    })),
+    sttModelField.effective || sttModelField.current || "",
+  );
+  setSelectOptions(
+    el.voiceSttLanguageSelect,
+    settingsFieldAllowedValuesWithCurrent(languageField).filter(Boolean).map((value) => ({
+      value,
+      label: value,
+      disabled: false,
+    })),
+    languageField.effective || languageField.current || "",
+  );
+  if (el.voiceSttSelect) el.voiceSttSelect.disabled = sttProviders.length === 0;
+  if (el.voiceSttModelSelect) el.voiceSttModelSelect.disabled = settingsFieldAllowedValuesWithCurrent(sttModelField).length === 0;
+  if (el.voiceSttLanguageSelect) el.voiceSttLanguageSelect.disabled = settingsFieldAllowedValuesWithCurrent(languageField).length === 0;
+  // Single-option STT provider is hidden; model + language keep their manual entry fields.
+  setFieldVisibleForSelect(el.voiceSttSelect, sttProviders.length);
+  updateSttControlOptions();
+  if (sttField.requires_restart || sttModelField.requires_restart || languageField.requires_restart) {
+    setText(el.sttApplyStatus, "Wymaga restartu. Zrestartuj DANa, żeby to zmienić.");
+  }
+  updateRestartRequiredBanner();
+}
+
+function updateTtsControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  runtimeSettingsSetPreview("tts", runtimeSettingsDraftForGroup("tts"));
+  const tts = runtimeSettingsVoiceProvider(payload, el.voiceTtsSelect ? el.voiceTtsSelect.value : "", "tts");
+  const ttsCanApply = runtimeSettingsFieldCanApplyNow(payload, "voice.default_tts");
+  const speakCanApply = runtimeSettingsFieldCanApplyNow(payload, "voice.speak_responses");
+  const blockers = [];
+  if (!tts || tts.available === false) blockers.push("Brak dostawcy TTS");
+  const ttsField = settingsPreviewField(payload, "voice_tts", "tts_provider");
+  const voiceIdField = settingsPreviewField(payload, "voice_tts", "voice_id");
+  if (ttsField.blocker && !String(ttsField.blocker).includes("requires restart")) blockers.push(ttsField.blocker);
+  if (voiceIdField.blocker) blockers.push(voiceIdField.blocker);
+  const draft = runtimeSettingsPayloadForGroup("tts", runtimeSettingsDraftForGroup("tts"));
+  const pending = runtimeSettingsAttemptPendingMessage("tts", draft, payload);
+  const unknownMessage = runtimeSettingsUnknownDisabledMessage("tts", draft, payload);
+  const result = runtimeSettingsGroupResult("tts");
+  const applyBlockedReason = runtimeSettingsGroupApplyBlockedReason("tts", draft, payload);
+  const ttsGroupBlocked = !ttsCanApply || blockers.length > 0;
+  if (el.voiceSpeakResponsesToggle) {
+    el.voiceSpeakResponsesToggle.disabled = unknownMessage !== "";
+    el.voiceSpeakResponsesToggle.title = unknownMessage || (ttsGroupBlocked && !speakCanApply
+      ? runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts") || "Backend zweryfikuje zmianę."
+      : "");
+  }
+  const ttsApplyBlocked = ttsGroupBlocked || Boolean(applyBlockedReason);
+  let validationMessage = "";
+  if (ttsApplyBlocked) {
+    if (applyBlockedReason) {
+      validationMessage = applyBlockedReason;
+    } else if (blockers.length > 0) {
+      validationMessage = blockers[0];
+    } else {
+      validationMessage = runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts")
+        || `Zablokowane. ${humanActionForReason("not apply-capable")}`;
+    }
+  }
+  setText(
+    el.ttsApplyStatus,
+    unknownMessage
+      ? unknownMessage
+      : pending
+        ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
+        : result || validationMessage || "Wymaga restartu. Zrestartuj DANa, żeby zmienić silnik, model, głos albo szybkość.",
+  );
+  setButtonEnabled(
+    el.applyTtsSettingsButton,
+    !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
+  updateRestartRequiredBanner();
+}
+
+function updateSttControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  runtimeSettingsSetPreview("stt", runtimeSettingsDraftForGroup("stt"));
+  const stt = runtimeSettingsVoiceProvider(payload, el.voiceSttSelect ? el.voiceSttSelect.value : "", "stt");
+  const blockers = [];
+  if (!stt || stt.available === false) blockers.push("Brak dostawcy albo runtime STT");
+  const draft = runtimeSettingsPayloadForGroup("stt", runtimeSettingsDraftForGroup("stt"));
+  const pending = runtimeSettingsAttemptPendingMessage("stt", draft, payload);
+  const unknownMessage = runtimeSettingsUnknownDisabledMessage("stt", draft, payload);
+  const result = runtimeSettingsGroupResult("stt");
+  const validationMessage = blockers[0] || runtimeSettingsGroupApplyBlockedReason("stt", draft, payload);
+  setText(
+    el.sttApplyStatus,
+    unknownMessage
+      ? unknownMessage
+      : pending
+        ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
+        : result || validationMessage || "Wymaga restartu. Zrestartuj DANa, żeby zmienić ustawienia transkrypcji.",
+  );
+  setButtonEnabled(
+    el.applySttSettingsButton,
+    !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
+  updateRestartRequiredBanner();
+}
+
+function renderPttApplyControls(payload) {
+  const pttField = settingsPreviewField(payload, "endpointing_ptt", "ptt_mode");
+  const allowedModes = Array.isArray(pttField.allowed_values) && pttField.allowed_values.length > 0
+    ? pttField.allowed_values
+    : ["hold"];
+  const pttUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "voice.ptt_mode");
+  const pttMode = pttUnknownReason
+    ? ""
+    : settingsPreviewFieldValue(payload, "endpointing_ptt", "ptt_mode") || allowedModes[0] || "hold";
+  setSelectOptions(
+    el.pttModeSelect,
+    allowedModes.map((value) => ({ value, label: value })),
+    runtimeSettingsPreviewValue("ptt", "voice.ptt_mode", pttMode),
+  );
+  if (el.pttModeSelect) {
+    el.pttModeSelect.disabled = Boolean(pttUnknownReason);
+    el.pttModeSelect.title = pttUnknownReason || "";
+  }
+  if (el.pttHotkeyInput) {
+    el.pttHotkeyInput.value = runtimeSettingsPreviewValue(
+      "ptt",
+      "voice.ptt_hotkey",
+      settingsPreviewFieldValue(payload, "endpointing_ptt", "ptt_hotkey") || "",
+    );
+    el.pttHotkeyInput.disabled = false;
+    renderPttShortcutValidation(el.pttHotkeyInput.value);
+  }
+  if (el.pttMergeWindowInput) {
+    el.pttMergeWindowInput.value = settingsPreviewFieldValue(payload, "endpointing_ptt", "merge_window") || "";
+    el.pttMergeWindowInput.disabled = false;
+  }
+  renderPttTestStatusList();
+  updatePttControlOptions();
+}
+
+function updatePttControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  runtimeSettingsSetPreview("ptt", runtimeSettingsDraftForGroup("ptt"));
+  const pttField = settingsPreviewField(payload, "endpointing_ptt", "ptt_mode");
+  const blocker = pttField.blocker || "";
+  const draft = runtimeSettingsPayloadForGroup("ptt", runtimeSettingsDraftForGroup("ptt"));
+  const pending = runtimeSettingsAttemptPendingMessage("ptt", draft, payload);
+  const pttUnknownReason = runtimeSettingsUnknownDisabledReason(payload, "voice.ptt_mode");
+  const shortcutMessage = validatePttShortcut(el.pttHotkeyInput ? el.pttHotkeyInput.value : "");
+  const unknownMessage = runtimeSettingsUnknownDisabledMessage("ptt", draft, payload)
+    || (!pending && pttUnknownReason ? pttUnknownReason : "");
+  const result = runtimeSettingsGroupResult("ptt");
+  renderPttShortcutValidation(el.pttHotkeyInput ? el.pttHotkeyInput.value : "");
+  setText(
+    el.pttApplyStatus,
+    unknownMessage
+      ? unknownMessage
+      : shortcutMessage
+      ? shortcutMessage
+      : pending
+        ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, blocker)}`
+        : result || blocker || "Wymaga restartu. Zrestartuj DANa, żeby zmienić okno scalania.",
+  );
+  setButtonEnabled(
+    el.applyPttSettingsButton,
+    !shortcutMessage && !unknownMessage && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
+  updateRestartRequiredBanner();
+}
+
+function validatePttShortcut(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) {
+    return "Skrót PTT jest wymagany.";
+  }
+  const tokens = raw.split("+").map((item) => item.trim()).filter(Boolean);
+  if (tokens.length < 2) {
+    return "Skrót PTT musi łączyć co najmniej dwa klawisze.";
+  }
+  const known = new Set([
+    "cmd",
+    "command",
+    "left_cmd",
+    "right_cmd",
+    "shift",
+    "left_shift",
+    "right_shift",
+    "ctrl",
+    "control",
+    "left_ctrl",
+    "right_ctrl",
+    "alt",
+    "option",
+    "left_alt",
+    "right_alt",
+    "space",
+  ]);
+  const invalid = tokens.find((token) => !known.has(token) && !/^[a-z0-9]$/.test(token));
+  return invalid ? `Nieobsługiwany klawisz skrótu: ${invalid}` : "";
+}
+
+function renderPttShortcutValidation(value) {
+  if (!el.pttShortcutValidation) {
+    return;
+  }
+  const message = cockpit.pttShortcutRecording
+    ? "Nagrywanie skrótu..."
+    : validatePttShortcut(value) || "Skrót wygląda poprawnie.";
+  setText(el.pttShortcutValidation, message);
+}
+
+function pttShortcutTokenFromEvent(event) {
+  const code = String(event.code || "");
+  const key = String(event.key || "").toLowerCase();
+  if (code === "MetaRight") return "right_cmd";
+  if (code === "MetaLeft") return "left_cmd";
+  if (code === "ShiftRight") return "right_shift";
+  if (code === "ShiftLeft") return "left_shift";
+  if (code === "ControlRight") return "right_ctrl";
+  if (code === "ControlLeft") return "left_ctrl";
+  if (code === "AltRight") return "right_alt";
+  if (code === "AltLeft") return "left_alt";
+  if (code === "Space") return "space";
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  return key.length === 1 ? key : "";
+}
+
+function capturePttShortcutKeydown(event) {
+  if (!cockpit.pttShortcutRecording) {
+    return;
+  }
+  event.preventDefault();
+  const token = pttShortcutTokenFromEvent(event);
+  if (token) {
+    cockpit.pttShortcutKeys.add(token);
+  }
+  const value = Array.from(cockpit.pttShortcutKeys).join("+");
+  if (el.pttHotkeyInput) {
+    el.pttHotkeyInput.value = value;
+  }
+  renderPttShortcutValidation(value);
+}
+
+function capturePttShortcutKeyup(event) {
+  if (!cockpit.pttShortcutRecording) {
+    return;
+  }
+  if (cockpit.pttShortcutKeys.size >= 2) {
+    cockpit.pttShortcutRecording = false;
+    updatePttControlOptions();
+    return;
+  }
+  event.preventDefault();
+}
+
+function recordPttShortcut() {
+  cockpit.pttShortcutRecording = true;
+  cockpit.pttShortcutKeys = new Set();
+  if (el.pttHotkeyInput) {
+    el.pttHotkeyInput.value = "";
+    el.pttHotkeyInput.focus();
+  }
+  renderPttShortcutValidation("");
+}
+
+async function testPttPath() {
+  if (!cockpit.online || !cockpit.voice.enabled) {
+    renderPttTestStatusList("Backend albo głos są wyłączone.");
+    return;
+  }
+  renderPttTestStatusList("Test PTT...");
+  setBusy(el.testPttButton, true);
+  try {
+    await requestJson("/voice/ptt/down", { method: "POST", body: { source: "panel_test" } });
+    await requestJson("/voice/ptt/up", { method: "POST", body: { source: "panel_test" } });
+    await Promise.allSettled([refreshVoice(), refreshEvents(), refreshSettingsPreview()]);
+    renderPttTestStatusList("Impuls lease PTT zakończony.");
+  } catch (error) {
+    renderPttTestStatusList(error && error.message ? error.message : "Test PTT nie powiódł się.");
+    renderError(el.voiceError, error);
+  } finally {
+    setBusy(el.testPttButton, false);
+  }
+}
+
+function renderPttTestStatusList(message = "") {
+  clearNode(el.pttTestStatusList);
+  if (!el.pttTestStatusList) {
+    return;
+  }
+  const leases = Array.isArray(cockpit.voice.leases) ? cockpit.voice.leases : [];
+  const hold = leases.some((lease) => lease.mode === "hold");
+  const locked = leases.some((lease) => lease.mode === "locked");
+  const row = document.createElement("article");
+  row.className = "list-row compact-status-row";
+  appendLine(row, "Stan testu PTT", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["Skrót", el.pttHotkeyInput ? validatePttShortcut(el.pttHotkeyInput.value) || "poprawny" : "nieznany"],
+    ["Lease", hold ? "hold aktywny" : locked ? "zablokowany" : "bezczynny"],
+    ["Recorder", cockpit.voice.listening ? "nagrywa/nasłuchuje" : "bezczynny"],
+    ["STT", pttVadModeSummary(cockpit.runtimeSettingsApply.payload || {})],
+    ["Test", message || "Gotowy"],
+  ]);
+  row.appendChild(values);
+  el.pttTestStatusList.appendChild(row);
+}
+
+function pttVadModeSummary(payload) {
+  const mode = settingsPreviewFieldValue(payload, "endpointing_ptt", "ptt_mode");
+  if (mode) {
+    return `ptt (${mode})`;
+  }
+  const endpointing = settingsPreviewFieldValue(payload, "voice_stt", "endpointing_support");
+  if (endpointing === true) {
+    return "zgłoszone wsparcie server_vad/semantic_vad";
+  }
+  if (endpointing === false) {
+    return "wyłączone";
+  }
+  return "nieznane";
+}
+
+function renderToolsApplyControls(payload) {
+  const tools = safeObject(payload.tools);
+  const graphTools = safeObject(safeObject(payload.capability_graph).tools_capabilities);
+  const applyCapabilities = safeObject(graphTools.apply_capabilities);
+  const internet = safeObject(projectionValue(tools.internet_capability));
+  const hasLiveApplyControl = runtimeSettingsToolsHasLiveApplyControl(applyCapabilities);
+  const operator = toolsInternetOperatorState(tools, applyCapabilities);
+  const missingInternetReason = operator.applyStatus === "Blocked" ? operator.reason : "";
+  setToolsToggleState(
+    el.toolsEnabledToggle,
+    projectionValue(tools.tools_master_flag) === "enabled" || Boolean(projectionValue(tools.tools_enabled)),
+    "tools.enabled",
+    applyCapabilities,
+    missingInternetReason,
+  );
+  setToolsToggleState(
+    el.toolsNetworkEnabledToggle,
+    internet.state === "available",
+    "tools.network_enabled",
+    applyCapabilities,
+    missingInternetReason,
+  );
+  const compactBlocked = operator.applyStatus !== "Dostępne" || !hasLiveApplyControl;
+  setToolsSectionCompactMode(compactBlocked);
+  updateToolsControlOptions();
+}
+
+function updateToolsControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  const tools = safeObject(payload.tools);
+  const graphTools = safeObject(safeObject(payload.capability_graph).tools_capabilities);
+  const applyCapabilities = safeObject(graphTools.apply_capabilities);
+  const draft = runtimeSettingsPayloadForGroup("tools", runtimeSettingsDraftForGroup("tools"));
+  const disabledReason = runtimeSettingsToolsApplyDisabledReason(payload, draft, applyCapabilities, tools);
+  const pending = runtimeSettingsAttemptPendingMessage("tools", draft, payload);
+  setText(
+    el.toolsApplyStatus,
+    disabledReason
+      ? disabledReason
+      : pending
+      ? runtimeSettingsPendingBackendMessage(pending, disabledReason)
+      : runtimeSettingsGroupNoChangesMessage("tools"),
+  );
+  setButtonEnabled(
+    el.applyToolsSettingsButton,
+    !disabledReason && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
+  updateRestartRequiredBanner();
+}
+
+function setToolsToggleState(toggle, checked, key, applyCapabilities, forceDisabledReason = "") {
+  if (!toggle) {
+    return;
+  }
+  const capability = safeObject(safeObject(applyCapabilities)[key]);
+  const disabledReason = forceDisabledReason
+    ? `${humanSettingLabel(key)}: ${forceDisabledReason}`
+    : runtimeSettingsToolControlDisabledReason(key, capability);
+  toggle.title = disabledReason || "";
+  if (String(toggle.tagName || "").toLowerCase() !== "input") {
+    const blockedSetup = key === "tools.network_enabled" && forceDisabledReason;
+    setText(toggle, checked ? "Dostępne" : blockedSetup ? "Blokada setupu" : "Brak");
+    toggle.disabled = true;
+    return;
+  }
+  toggle.checked = Boolean(checked);
+  toggle.disabled = false;
+}
+
+function setReadOnlyBooleanStatus(node, value) {
+  if (!node) {
+    return;
+  }
+  const known = value === true || value === false;
+  const text = known ? (value ? "Włączone" : "Wyłączone") : "Nieznane";
+  if (String(node.tagName || "").toLowerCase() === "input") {
+    node.checked = Boolean(value);
+    node.disabled = true;
+    node.title = "Status runtime tylko do odczytu.";
+    return;
+  }
+  setText(node, text);
+  node.title = known ? "Status runtime tylko do odczytu." : "Powód: runtime nie raportuje tego ustawienia.";
+  if (node.classList && typeof node.classList.toggle === "function") {
+    node.classList.toggle("status-on", value === true);
+    node.classList.toggle("status-off", value === false);
+    node.classList.toggle("status-unknown", !known);
+  }
+}
+
+function runtimeSettingsToolControlDisabledReason(key, capability) {
+  const label = humanSettingLabel(key);
+  if (capability.requires_restart) {
+    return `${label}: wymaga restartu`;
+  }
+  if (capability.apply_capable !== true) {
+    return `${label}: tylko odczyt`;
+  }
+  if (capability.blocker) {
+    return `${label}: ${humanShortReason(capability.blocker) || "zablokowane"}`;
+  }
+  return "";
+}
+
+function runtimeSettingsChangedKeys(group, settings, payload) {
+  const changed = [];
+  for (const [key, value] of Object.entries(safeObject(settings))) {
+    if (runtimeSettingsUnknownDisabledReason(payload, key)) {
+      continue;
+    }
+    if (!runtimeSettingValuesEquivalent(value, runtimeSettingsCurrentValueForKey(payload, key))) {
+      changed.push(key);
+    }
+  }
+  return changed;
+}
+
+function runtimeSettingsToolsApplyDisabledReason(payload, settings, applyCapabilities, tools) {
+  if (!cockpit.online) {
+    return "Błąd: backend offline";
+  }
+  if (cockpit.runtimeSettingsApply.applyingGroup) {
+    return "Oczekuje: inne zastosowanie ustawień jest w toku";
+  }
+  const operator = toolsInternetOperatorState(tools, applyCapabilities);
+  const changedKeys = runtimeSettingsChangedKeys("tools", settings, payload);
+  if (changedKeys.length === 0) {
+    return "";
+  }
+  if (operator.applyStatus === "Zablokowane" || operator.applyStatus === "Wymaga restartu") {
+    return `${operator.applyStatus}. Zastosowanie wyłączone. ${operator.action}`;
+  }
+  for (const key of changedKeys) {
+    const reason = runtimeSettingsToolControlDisabledReason(key, safeObject(safeObject(applyCapabilities)[key]));
+    if (reason) {
+      return reason;
+    }
+  }
+  return "";
+}
+
+function toolsInternetSummaryText(payload, tools = null) {
+  const source = tools || safeObject(safeObject(payload).tools);
+  const internet = safeObject(projectionValue(source.internet_capability));
+  const state = internet.state || projectionStatus(source.internet_capability) || "unknown";
+  const names = Array.isArray(internet.registered_network_tools) ? internet.registered_network_tools : [];
+  if (names.length > 0) {
+    return `${toolsInternetStateLabel(state)}: ${names.join(", ")}`;
+  }
+  const warning = projectionWarning(source.internet_capability);
+  if (state === "unavailable") {
+    return `Blokada setupu${warning ? `: ${humanShortReason(warning)}` : ""}`;
+  }
+  return warning || toolsInternetStateLabel(state);
+}
+
+function runtimeSettingsToolBlockers(applyCapabilities, tools) {
+  const blockers = [];
+  const internetWarning = projectionWarning(safeObject(tools).internet_capability);
+  if (internetWarning) blockers.push(internetWarning);
+  for (const key of RUNTIME_SETTINGS_GROUP_FIELDS.tools) {
+    const capability = safeObject(safeObject(applyCapabilities)[key]);
+    if (capability.blocker) {
+      blockers.push(capability.blocker);
+    }
+  }
+  return Array.from(new Set(blockers.filter(Boolean))).slice(0, 4);
+}
+
+function runtimeSettingsToolsHasLiveApplyControl(applyCapabilities) {
+  return RUNTIME_SETTINGS_GROUP_FIELDS.tools.some((key) => {
+    const capability = safeObject(safeObject(applyCapabilities)[key]);
+    return capability.apply_capable === true && capability.requires_restart !== true && !capability.blocker;
+  });
+}
+
+function runtimeSettingsToolsNoLiveApplyReason(applyCapabilities, tools = null) {
+  const blockers = tools ? runtimeSettingsToolBlockers(applyCapabilities, tools) : [];
+  if (blockers.length > 0) {
+    return humanShortReason(blockers[0]);
+  }
+  let restartCount = 0;
+  let notCapableCount = 0;
+  for (const key of RUNTIME_SETTINGS_GROUP_FIELDS.tools) {
+    const capability = safeObject(safeObject(applyCapabilities)[key]);
+    if (capability.requires_restart) {
+      restartCount += 1;
+    } else if (capability.apply_capable !== true) {
+      notCapableCount += 1;
+    }
+  }
+  if (restartCount > 0) {
+    return "Wymaga restartu";
+  }
+  if (notCapableCount > 0) {
+    return "Tylko odczyt";
+  }
+  return "";
+}
+
+function setToolsSectionCompactMode(compact) {
+  if (el.activeToolsSettingsSection && el.activeToolsSettingsSection.classList) {
+    el.activeToolsSettingsSection.classList.toggle("compact-only", false);
+  }
+  if (el.toolsSectionDescription) {
+    el.toolsSectionDescription.hidden = false;
+  }
+  if (el.toolsControlGrid) {
+    el.toolsControlGrid.hidden = false;
+  }
+  if (el.resetToolsPreviewButton) {
+    el.resetToolsPreviewButton.disabled = false;
+    el.resetToolsPreviewButton.hidden = false;
+    el.resetToolsPreviewButton.title = compact ? "Backend zweryfikuje zmiany Narzędzia / Internet." : "";
+  }
+}
+
+function toolsInternetStateLabel(state) {
+  if (state === "available") {
+    return "Dostępne";
+  }
+  if (state === "unavailable") {
+    return "Blokada setupu";
+  }
+  if (state === "missing") {
+    return "Brak";
+  }
+  if (state === "enabled") {
+    return "Włączone";
+  }
+  if (state === "disabled") {
+    return "Wyłączone";
+  }
+  return state ? humanDisplayValue(state) : "Nieznane";
+}
+
+function toolsInternetOperatorState(tools, applyCapabilities) {
+  const internet = safeObject(projectionValue(tools.internet_capability));
+  const rawInternetState = String(internet.state || projectionStatus(tools.internet_capability) || "").toLowerCase();
+  const networkTool = projectionValue(tools.network_search_tool);
+  const networkToolMissing = String(networkTool || "").toLowerCase() === "missing";
+  const warning = projectionWarning(tools.internet_capability) || projectionWarning(tools.network_search_tool);
+  const toolsFlag = projectionValue(tools.tools_master_flag);
+  const toolsEnabled = projectionValue(tools.tools_enabled);
+  const toolsOn = toolsEnabled === true || toolsFlag === "enabled";
+  const internetMissing = rawInternetState === "unavailable" || rawInternetState === "missing" || networkToolMissing;
+  const restartOnly = !runtimeSettingsToolsHasLiveApplyControl(applyCapabilities)
+    && Object.values(safeObject(applyCapabilities)).some((item) => safeObject(item).requires_restart);
+  const blockerReason = humanShortReason(warning || runtimeSettingsToolBlockers(applyCapabilities, tools)[0]);
+  const reason = internetMissing ? "Brak zarejestrowanego narzędzia sieci/szukania" : blockerReason;
+  const action = reason
+    ? humanActionForReason(reason)
+    : restartOnly
+      ? "Zrestartuj DANa, żeby to zmienić."
+      : "Brak";
+  const applyStatus = internetMissing || blockerReason
+    ? "Zablokowane"
+    : restartOnly
+      ? "Wymaga restartu"
+      : "Dostępne";
+  return {
+    toolsStatus: toolsOn ? "Włączone" : "Wyłączone",
+    internetStatus: internetMissing ? "Blokada setupu" : toolsInternetStateLabel(rawInternetState),
+    searchToolStatus: networkToolMissing ? "Brak" : (networkTool ? "Dostępne" : "Nieznane"),
+    reason: reason || "Brak",
+    action,
+    applyStatus,
+    applyLabel: applyStatus === "Dostępne" ? "dostępne" : "wyłączone",
+    whatThisMeans: internetMissing && toolsOn
+      ? "Narzędzia są włączone, ale internet jest niedostępny, bo nie ma zarejestrowanego narzędzia sieci/szukania."
+      : internetMissing
+        ? "Internet jest niedostępny, bo nie ma zarejestrowanego narzędzia sieci/szukania."
+        : restartOnly
+          ? "Ustawienia narzędzi są skonfigurowane, ale ich zmiana wymaga restartu DANa."
+          : "Ustawienia narzędzi można tu przejrzeć przed zastosowaniem.",
+  };
+}
+
+function renderToolsInternetCompactStatusList(payload, tools, applyCapabilities) {
+  clearNode(el.toolsInternetStatusList);
+  if (!el.toolsInternetStatusList) return;
+  const row = document.createElement("article");
+  row.className = "list-row compact-status-row";
+  appendLine(row, "Narzędzia / Internet", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  const operator = toolsInternetOperatorState(tools, applyCapabilities);
+  renderKeyValues(values, [
+    ["Narzędzia", operator.toolsStatus],
+    ["Dostęp do internetu", operator.internetStatus],
+    ["Powód", operator.reason],
+    ["Akcja", operator.action],
+    ["Zastosowanie", operator.applyLabel],
+  ]);
+  row.appendChild(values);
+  el.toolsInternetStatusList.appendChild(row);
+}
+
+function renderToolsInternetStatusList(payload, tools, applyCapabilities) {
+  clearNode(el.toolsInternetStatusList);
+  if (!el.toolsInternetStatusList) return;
+  const row = document.createElement("article");
+  row.className = "list-row";
+  appendLine(row, "Efektywny stan Narzędzia / Internet", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  const internet = safeObject(projectionValue(tools.internet_capability));
+  const applyCapability = projectionValue(tools.apply_capability)
+    || (Object.values(safeObject(applyCapabilities)).some((item) => safeObject(item).apply_capable) ? "yes" : "no");
+  const requiresRestart = Object.prototype.hasOwnProperty.call(safeObject(tools.requires_restart), "effective_value")
+    ? projectionValue(tools.requires_restart)
+    : Object.values(safeObject(applyCapabilities)).some((item) => safeObject(item).requires_restart);
+  const blocker = projectionValue(tools.blocker)
+    || runtimeSettingsToolBlockers(applyCapabilities, tools)[0]
+    || "brak";
+  const internetWarning = projectionWarning(tools.internet_capability) || "brak";
+  const operator = toolsInternetOperatorState(tools, applyCapabilities);
+  renderKeyValues(values, [
+    ["Narzędzia", operator.toolsStatus],
+    ["Dostęp do internetu", toolsInternetStateLabel(internet.state || projectionStatus(tools.internet_capability))],
+    ["Powód", humanShortReason(internetWarning) || "Brak"],
+    ["Akcja", operator.action],
+    ["Narzędzie szukania", operator.searchToolStatus],
+    ["Zastosowanie", applyCapability === "yes" ? "Dostępne" : operator.applyStatus],
+    ["Restart wymagany", requiresRestart ? "Wymaga restartu" : "Wyłączone"],
+    ["Blokada", humanShortReason(blocker) || "Brak"],
+  ]);
+  row.appendChild(values);
+  el.toolsInternetStatusList.appendChild(row);
+}
+
+function personaProfileDisplayLabel(value) {
+  // DAN runs a single persona; show it capitalised ("dan" -> "DAN").
+  const text = value === undefined || value === null ? "" : String(value);
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+function renderPersonaApplyControls(payload) {
+  const field = settingsPreviewField(payload, "personality", "active_persona");
+  const profiles = Array.isArray(field.allowed_values) ? field.allowed_values : [];
+  const selectedProfile = runtimeSettingsPreviewValue(
+    "persona",
+    "persona.profile",
+    field.effective || field.current || profiles[0] || "",
+  );
+  setSelectOptions(
+    el.personaProfileSelect,
+    profiles.map((value) => ({ value, label: personaProfileDisplayLabel(value) })),
+    selectedProfile,
+  );
+  setText(
+    el.personaApplyStatus,
+    profiles.length > 0 ? runtimeSettingsGroupNoChangesMessage("persona") : "No persona profiles available.",
+  );
+  updatePersonaControlOptions();
+}
+
+function updatePersonaControlOptions() {
+  const payload = cockpit.runtimeSettingsApply.payload || {};
+  runtimeSettingsSetPreview("persona", runtimeSettingsDraftForGroup("persona"));
+  const field = settingsPreviewField(payload, "personality", "active_persona");
+  const profiles = Array.isArray(field.allowed_values) ? field.allowed_values : [];
+  const disabledReason = runtimeSettingsFieldCannotApplyReason(payload, "persona.profile");
+  const draft = runtimeSettingsPayloadForGroup("persona", runtimeSettingsDraftForGroup("persona"));
+  const pending = runtimeSettingsAttemptPendingMessage("persona", draft, payload);
+  const applyBlockedReason = runtimeSettingsGroupApplyBlockedReason("persona", draft, payload);
+  const result = runtimeSettingsGroupResult("persona");
+  const validationMessage = applyBlockedReason || disabledReason;
+  setText(
+    el.personaApplyStatus,
+    pending
+      ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
+      : result || validationMessage || runtimeSettingsGroupNoChangesMessage("persona"),
+  );
+  setButtonEnabled(
+    el.applyPersonaSettingsButton,
+    profiles.length > 0 && Boolean(pending) && cockpit.online && !cockpit.runtimeSettingsApply.applyingGroup,
+  );
+  updateRestartRequiredBanner();
+}
+
+function renderAuxiliaryCockpitSectionsFromPayload(payload) {
+  renderQueueBargeInSummary(payload);
+  renderLatestTurnTraceSummary(payload);
+  renderRuntimeLogsSummaryFromPayload(payload);
+}
+
+function renderQueueBargeInSummary(payload, rows = null) {
+  clearNode(el.queueBargeInList);
+  if (!el.queueBargeInList) {
+    return;
+  }
+  const queueSection = safeObject(safeObject(safeObject(payload.settings_preview).sections).queue_barge_in);
+  const queueFields = safeObject(queueSection.fields);
+  const statusValue = settingsPreviewFieldValue(payload, "queue_barge_in", "queue_status");
+  const statusObject = safeObject(statusValue);
+  const counts = safeObject(statusObject.counts);
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, "Queue / Barge-in effective state", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  const queueRows = Array.isArray(rows) ? rows : [];
+  const speaking = queueRows.find((item) => String(item.status || "").toLowerCase() === "speaking") || null;
+  renderKeyValues(values, [
+    ["queued", firstPresent(counts.queued, 0)],
+    ["speaking", firstPresent(counts.speaking, speaking ? 1 : 0)],
+    ["done / failed / cancelled", `${firstPresent(counts.done, 0)} / ${firstPresent(counts.failed, 0)} / ${firstPresent(counts.cancelled, 0)}`],
+    ["current speaking item", speaking ? shortId(firstPresent(speaking.id, speaking.voice_id)) : settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "active_speech_id"))],
+    ["kind", speaking ? firstPresent(speaking.kind, "unknown") : settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "current_spoken_kind"))],
+    ["cancel support", settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "cancel_support"))],
+    ["manual cancel", settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "manual_cancel_available"))],
+    ["interrupted_previous_response", settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "interrupted_previous_response"))],
+    ["last cancellation reason", settingsPreviewValue(settingsPreviewFieldValue(payload, "queue_barge_in", "last_cancellation_reason"))],
+    ["latest queue error", firstPresent(safeObject(queueFields.queue_status).warning, statusObject.latest_error, "none")],
+  ]);
+  row.appendChild(values);
+  el.queueBargeInList.appendChild(row);
+  setText(el.queueApplyStatus, "Manual cancel route not implemented in this panel.");
+  if (el.cancelCurrentSpeechButton) {
+    el.cancelCurrentSpeechButton.disabled = true;
+    el.cancelCurrentSpeechButton.title = "not implemented";
+  }
+}
+
+function latestProjectionWarning(group) {
+  for (const item of Object.values(safeObject(group))) {
+    const warning = projectionWarning(item);
+    if (warning) {
+      return warning;
+    }
+  }
+  return "";
+}
+
+function renderLatestTurnTraceSummary(payload) {
+  clearNode(el.latestTurnTraceList);
+  if (!el.latestTurnTraceList) {
+    return;
+  }
+  const trace = safeObject(payload.latest_turn_trace);
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, "Latest Turn Trace", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["turn id", settingsPreviewValue(projectionValue(trace.turn_id))],
+    ["source", settingsPreviewValue(projectionValue(trace.source))],
+    ["provider/model", `${settingsPreviewValue(projectionValue(trace.provider_adapter))} / ${settingsPreviewValue(projectionValue(trace.provider_model))}`],
+    ["tools attempted", settingsPreviewValue(projectionValue(trace.tools_attempted_count))],
+    ["voice rows", settingsPreviewValue(projectionValue(trace.voice_rows_created))],
+    ["interrupted turn", settingsPreviewValue(projectionValue(trace.interrupted_turn_id))],
+    ["cancelled speech", settingsPreviewValue(projectionValue(trace.cancelled_speech_id))],
+  ]);
+  row.appendChild(values);
+  el.latestTurnTraceList.appendChild(row);
+}
+
+function renderRuntimeLogsSummaryFromPayload(payload, events = []) {
+  clearNode(el.runtimeLogsSummaryList);
+  if (!el.runtimeLogsSummaryList) {
+    return;
+  }
+  const row = document.createElement("article");
+  row.className = "list-row cockpit-summary-card";
+  appendLine(row, "Runtime Logs summary only", "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, [
+    ["latest safe error", firstPresent(traceLatestSafeError(runtimeOverviewContext({ runtimeSettings: payload, events: { events } })), "none")],
+    ["latest voice event", latestEventSummaryForFamily(events, "voice")],
+    ["latest provider event", latestEventSummaryForFamilies(events, ["brain", "provider", "adapter"])],
+    ["debug events", newestFirstEvents(events).slice(0, 5).map((event) => `${event.type || "event"} #${event.id || "?"}`).join(" | ") || "none"],
+  ]);
+  row.appendChild(values);
+  el.runtimeLogsSummaryList.appendChild(row);
+}
+
+function latestEventSummaryForFamily(events, family) {
+  const event = newestFirstEvents(events).find((item) => eventFamily(item && item.type) === family);
+  return event ? `${event.type || family} #${event.id || "?"}` : "none";
+}
+
+function latestEventSummaryForFamilies(events, families) {
+  const event = newestFirstEvents(events).find((item) => eventMatchesIssue(item, families));
+  return event ? `${event.type || "event"} #${event.id || "?"}` : "none";
+}
+
+async function cancelCurrentSpeech() {
+  setText(el.queueApplyStatus, "Manual cancel route not implemented.");
+  if (el.cancelCurrentSpeechButton) {
+    el.cancelCurrentSpeechButton.disabled = true;
+  }
+}
+
+async function applyRuntimeSettingsGroup(group) {
+  const draft = runtimeSettingsDraftForGroup(group);
+  const settings = runtimeSettingsApplyPayloadForGroup(group, runtimeSettingsPayloadForGroup(group, draft));
+  const statusNode = runtimeSettingsStatusNode(group);
+  if (cockpit.runtimeSettingsApply.applyingGroup) {
+    setText(statusNode, `Settings apply already in progress: ${cockpit.runtimeSettingsApply.applyingGroup}`);
+    return;
+  }
+  if (Object.keys(settings).length === 0) {
+    setText(statusNode, "No apply payload available.");
+    return;
+  }
+  if (!runtimeSettingsGroupHasChanges(group, settings, cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {})) {
+    setText(statusNode, "unchanged");
+    return;
+  }
+  cockpit.runtimeSettingsApply.applyingGroup = group;
+  cockpit.runtimeSettingsApply.groupResults[group] = "Applying...";
+  setRuntimeSettingsApplyBusy(true);
+  setText(statusNode, "Applying...");
+  setText(el.activeSettingsStatus, `Applying ${group} settings...`);
+  let resultMessage = null;
+  try {
+    const payload = await postRuntimeSettingsApply(settings);
+    const runtimeSettings = payload.runtime_settings || {};
+    cockpit.runtimeSettingsApply.payload = runtimeSettings;
+    cockpit.settingsPreview.payload = runtimeSettings;
+    cockpit.settingsPreview.overrides = {};
+    cockpit.settingsPreview.model = settingsPreviewModelFromPayload(runtimeSettings);
+    resultMessage = runtimeSettingsApplyResultMessage(payload, group, settings, runtimeSettings);
+    if (payload.status === "applied" || payload.status === "unchanged") {
+      runtimeSettingsClearPreview(group, resultMessage);
+    } else {
+      cockpit.runtimeSettingsApply.groupResults[group] = resultMessage;
+    }
+    await Promise.allSettled([refreshMissionControl(), refreshHealthAndState(), refreshRuntimeOverview(), refreshVoice()]);
+  } catch (error) {
+    resultMessage = runtimeSettingsErrorMessage(error);
+    const errorPayload = safeObject(safeObject(error && error.detail).payload);
+    const runtimeSettings = safeObject(errorPayload.runtime_settings);
+    if (Object.keys(runtimeSettings).length > 0) {
+      cockpit.runtimeSettingsApply.payload = runtimeSettings;
+      cockpit.settingsPreview.payload = runtimeSettings;
+      cockpit.settingsPreview.model = settingsPreviewModelFromPayload(
+        runtimeSettings,
+        cockpit.settingsPreview.overrides,
+      );
+    }
+    cockpit.runtimeSettingsApply.groupResults[group] = resultMessage;
+  } finally {
+    cockpit.runtimeSettingsApply.applyingGroup = null;
+    setRuntimeSettingsApplyBusy(false);
+    renderRuntimeSettingsControls(cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {});
+    if (cockpit.settingsPreview.model && el.settingsPreviewList) {
+      renderSettingsPreview(cockpit.settingsPreview.model);
+    }
+    setText(statusNode, resultMessage || "Apply finished.");
+    setText(el.activeSettingsStatus, resultMessage || "Apply finished.");
+  }
+}
+
+function runtimeSettingsApplyButtons(buttons = null) {
+  if (Array.isArray(buttons)) {
+    return buttons.filter(Boolean);
+  }
+  return [
+    el.applyBrainSettingsButton,
+    el.applyTtsSettingsButton,
+    el.applySttSettingsButton,
+    el.applyPttSettingsButton,
+    el.applyToolsSettingsButton,
+    el.applyPersonaSettingsButton,
+  ].filter(Boolean);
+}
+
+function setRuntimeSettingsApplyBusy(busy, buttons = null) {
+  for (const button of runtimeSettingsApplyButtons(buttons)) {
+    if (busy) {
+      setBusy(button, true);
+    } else if (button.classList && typeof button.classList.toggle === "function") {
+      button.classList.toggle("busy", false);
+    }
+  }
+}
+
+function runtimeSettingsDraftBrainProviderId(payload = null) {
+  const runtimePayload = safeObject(payload || cockpit.runtimeSettingsApply.payload || {});
+  const selectedProviderId = el.activeBrainProviderSelect ? String(el.activeBrainProviderSelect.value || "") : "";
+  const currentProviderId = runtimeSettingsCurrentProvider(runtimePayload);
+  if (!selectedProviderId) {
+    return currentProviderId || "";
+  }
+  const selectedProvider = runtimeSettingsBrainProvider(runtimePayload, selectedProviderId);
+  const currentProvider = runtimeSettingsBrainProvider(runtimePayload, currentProviderId);
+  if (!selectedProvider && currentProvider && currentProvider.developer_only) {
+    return currentProviderId || "";
+  }
+  return selectedProviderId;
+}
+
+function runtimeSettingsDraftForGroup(group) {
+  if (group === "brain") {
+    const providerId = runtimeSettingsDraftBrainProviderId();
+    const draft = {
+      "brain.provider": providerId || undefined,
+      "brain.model": el.activeBrainModelSelect && !el.activeBrainModelSelect.disabled
+        ? el.activeBrainModelSelect.value
+        : undefined,
+      "brain.effort": el.activeBrainEffortSelect && !el.activeBrainEffortSelect.disabled
+        ? el.activeBrainEffortSelect.value
+        : undefined,
+    };
+    return draft;
+  }
+  if (group === "tts") {
+    const draft = {
+      ...(el.voiceSpeakResponsesToggle && !el.voiceSpeakResponsesToggle.disabled
+        ? { "voice.speak_responses": Boolean(el.voiceSpeakResponsesToggle.checked) }
+        : {}),
+      "voice.default_tts": el.voiceTtsSelect && !el.voiceTtsSelect.disabled ? el.voiceTtsSelect.value : undefined,
+    };
+    if (el.voiceVoiceIdSelect && !el.voiceVoiceIdSelect.disabled && el.voiceVoiceIdSelect.value) {
+      draft["voice.voice_id"] = el.voiceVoiceIdSelect.value;
+    }
+    if (el.voiceProfileSelect && !el.voiceProfileSelect.disabled && el.voiceProfileSelect.value) {
+      draft["voice.voice_profile"] = el.voiceProfileSelect.value;
+    }
+    if (el.voiceSpeedInput && !el.voiceSpeedInput.disabled && el.voiceSpeedInput.value !== "") {
+      draft["voice.speed"] = Number(el.voiceSpeedInput.value);
+    }
+    return draft;
+  }
+  if (group === "stt") {
+    return {
+      "voice.default_stt": el.voiceSttSelect && !el.voiceSttSelect.disabled ? el.voiceSttSelect.value : undefined,
+      "voice.stt_model": el.voiceSttModelSelect && !el.voiceSttModelSelect.disabled ? el.voiceSttModelSelect.value : undefined,
+      "voice.stt_language": el.voiceSttLanguageSelect && !el.voiceSttLanguageSelect.disabled ? el.voiceSttLanguageSelect.value : undefined,
+    };
+  }
+  if (group === "ptt") {
+    return {
+      "voice.ptt_mode": el.pttModeSelect && !el.pttModeSelect.disabled ? el.pttModeSelect.value : undefined,
+      "voice.ptt_hotkey": el.pttHotkeyInput && !el.pttHotkeyInput.disabled ? el.pttHotkeyInput.value.trim() : undefined,
+      "voice.merge_window": el.pttMergeWindowInput && !el.pttMergeWindowInput.disabled && el.pttMergeWindowInput.value !== ""
+        ? Number(el.pttMergeWindowInput.value)
+        : undefined,
+    };
+  }
+  if (group === "tools") {
+    const draft = {};
+    if (el.toolsEnabledToggle && !el.toolsEnabledToggle.disabled) {
+      draft["tools.enabled"] = Boolean(el.toolsEnabledToggle.checked);
+    }
+    if (el.toolsNetworkEnabledToggle && !el.toolsNetworkEnabledToggle.disabled) {
+      draft["tools.network_enabled"] = Boolean(el.toolsNetworkEnabledToggle.checked);
+    }
+    return draft;
+  }
+  if (group === "persona") {
+    return {
+      "persona.profile": el.personaProfileSelect ? el.personaProfileSelect.value : undefined,
+    };
+  }
+  return {};
+}
+
+function runtimeSettingsApplyPayloadForGroup(group, settings) {
+  const payload = runtimeSettingsPayloadForGroup(group, settings);
+  const runtimePayload = cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {};
+  const filtered = {};
+  for (const key of runtimeSettingsChangedKeys(group, payload, runtimePayload)) {
+    filtered[key] = payload[key];
+  }
+  return filtered;
+}
+
+function runtimeSettingsStatusNode(group) {
+  return {
+    brain: el.brainApplyStatus,
+    tts: el.ttsApplyStatus || el.voiceApplyStatus,
+    stt: el.sttApplyStatus,
+    voice: el.voiceApplyStatus,
+    ptt: el.pttApplyStatus,
+    tools: el.toolsApplyStatus,
+    persona: el.personaApplyStatus,
+    queue: el.queueApplyStatus,
+  }[group] || el.activeSettingsStatus;
+}
+
+function runtimeSettingsApplyButton(group) {
+  return {
+    brain: el.applyBrainSettingsButton,
+    tts: el.applyTtsSettingsButton,
+    stt: el.applySttSettingsButton,
+    ptt: el.applyPttSettingsButton,
+    tools: el.applyToolsSettingsButton,
+    persona: el.applyPersonaSettingsButton,
+  }[group] || null;
+}
+
+function runtimeSettingsErrorMessage(error) {
+  const detail = safeObject(error && error.detail);
+  const payload = safeObject(detail.payload);
+  const blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
+  const status = payload.status || "";
+  const reason = humanShortReason(blockers[0] || (error && error.message ? error.message : "Zastosowanie nie powiodło się"));
+  if (status === "requires_restart") {
+    return `Wymaga restartu. ${humanActionForReason(reason)}`;
+  }
+  if (status === "blocked") {
+    return `Zablokowane. ${humanActionForReason(reason)}`;
+  }
+  if (blockers.length > 0) {
+    return `Zablokowane. ${humanActionForReason(reason)}`;
+  }
+  if (detail.status === 400) {
+    return `Błąd walidacji: ${error.message}`;
+  }
+  if (detail.status === 409 || detail.status === 422) {
+    return `Zablokowane. ${humanActionForReason(reason)}`;
+  }
+  return error && error.message ? error.message : "Zastosowanie nie powiodło się";
+}
+
+function runtimeSettingsApplyResultMessage(payload, group, settings, runtimeSettings) {
+  const status = payload.status || "";
+  const applied = Array.isArray(payload.applied_keys)
+    ? payload.applied_keys
+    : (Array.isArray(payload.applied) ? payload.applied : []);
+  const blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
+  const requiresRestart = Array.isArray(payload.requires_restart_keys) ? payload.requires_restart_keys : [];
+  if (status === "requires_restart" || requiresRestart.length > 0) {
+    const reason = humanShortReason(blockers[0] || "Wymagany restart");
+    return `Wymaga restartu. ${humanActionForReason(reason)}`;
+  }
+  if (status === "blocked" || blockers.length > 0) {
+    const reason = humanShortReason(blockers[0] || "Zablokowane");
+    return `Zablokowane. ${humanActionForReason(reason)}`;
+  }
+  if (status === "applied" || applied.length > 0) {
+    const count = applied.length || Object.keys(safeObject(settings)).length;
+    if (runtimeSettingsRequestedValuesApplied(settings, runtimeSettings)) {
+      return `Zastosowano ${count} ustawienie${count === 1 ? "" : "ń"}. Stan efektywny odświeżony.`;
+    }
+    return "Bez zmian: stan efektywny nie zmienił się po odświeżeniu.";
+  }
+  return runtimeSettingsGroupNoChangesMessage(group);
+}
+
+function runtimeSettingsRequestedValuesApplied(settings, runtimeSettings) {
+  const source = safeObject(settings);
+  for (const [key, value] of Object.entries(source)) {
+    if (!runtimeSettingValuesEquivalent(value, runtimeSettingsCurrentValueForKey(runtimeSettings, key))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function runtimeSettingsCurrentProvider(payload) {
+  return String(safeObject(safeObject(payload.capability_graph).brain_capabilities).current_provider || "");
+}
+
+function runtimeSettingsBrainProvider(payload, providerId) {
+  const providers = safeObject(safeObject(payload.capability_graph).brain_capabilities).providers;
+  return Array.isArray(providers)
+    ? providers.find((provider) => String(provider.id) === String(providerId)) || null
+    : null;
+}
+
+function runtimeSettingsVoiceProvider(payload, providerId, type) {
+  const voice = safeObject(safeObject(payload.capability_graph).voice_capabilities);
+  const key = type === "stt" ? "stt_providers" : "tts_providers";
+  const providers = Array.isArray(voice[key]) ? voice[key] : [];
+  return providers.find((provider) => String(provider.id) === String(providerId)) || null;
+}
+
+function settingsPreviewField(payload, section, field) {
+  return safeObject(
+    safeObject(safeObject(safeObject(payload.settings_preview).sections)[section]).fields,
+  )[field] || {};
+}
+
+function settingsPreviewFieldValue(payload, section, field) {
+  const item = settingsPreviewField(payload, section, field);
+  return item.effective !== undefined ? item.effective : item.current;
+}
+
+function settingsFieldAllowedValuesWithCurrent(field) {
+  const values = Array.isArray(field.allowed_values) ? [...field.allowed_values] : [];
+  for (const value of [field.effective, field.current]) {
+    if (value !== undefined && value !== null && value !== "" && !values.includes(value)) {
+      values.unshift(value);
+    }
+  }
+  return values;
+}
+
+function providerApplyLabel(provider, currentProviderId) {
+  const blocker = providerApplyBlocker(provider, currentProviderId);
+  const base = provider.label || provider.id;
+  return blocker ? `${base} (${blocker})` : base;
+}
+
+function providerApplyBlocker(provider, currentProviderId) {
+  if (!provider) {
+    return "missing";
+  }
+  const eligibility = safeObject(provider.apply_eligibility);
+  const backendReason = String(
+    eligibility.reason || provider.apply_semantics_reason || "",
+  ).trim();
+  if (backendReason) {
+    return backendReason;
+  }
+  if (provider.developer_only && String(provider.id) !== String(currentProviderId)) {
+    return "Developer/Test only";
+  }
+  if (!provider.available) {
+    return provider.blocker || "missing";
+  }
+  if (provider.auth_status === "missing") {
+    return "auth missing";
+  }
+  const applySemantics = String(provider.apply_semantics || "").trim();
+  if (applySemantics && applySemantics !== "next_turn") {
+    if (applySemantics === "requires_new_session") return "requires new session";
+    if (applySemantics === "requires_daemon_restart") return "requires restart";
+    return "not apply-capable";
+  }
+  if (settingsPreviewSupportState(provider.command_status) === "no") {
+    return "command missing";
+  }
+  return "";
+}
+
+function setSelectOptions(select, options, selectedValue) {
+  if (!select) {
+    return;
+  }
+  clearNode(select);
+  for (const item of options) {
+    const option = document.createElement("option");
+    option.value = item.value === undefined || item.value === null ? "" : String(item.value);
+    setText(option, item.label === undefined ? option.value : item.label);
+    option.disabled = Boolean(item.disabled);
+    if (item.title) {
+      option.title = String(item.title);
+    }
+    select.appendChild(option);
+  }
+  if (selectedValue !== undefined && selectedValue !== null) {
+    select.value = String(selectedValue);
+  }
+  // A manually typed value (input "lub wpisz ręcznie") wins over the built options
+  // so a fresh model-id can be applied before the backend/oracle knows it.
+  applyManualSelectOverride(select);
+}
+
+// Manual per-select overrides keyed by the select's element id. setSelectOptions is
+// the single funnel that rebuilds every settings select, so re-applying the override
+// there keeps a hand-typed value selected across every re-render.
+const manualSelectOverrides = new Map();
+
+function applyManualSelectOverride(select) {
+  if (!select || !select.id) {
+    return;
+  }
+  const override = manualSelectOverrides.get(select.id);
+  if (override === undefined || override === null || override === "") {
+    return;
+  }
+  const value = String(override);
+  let present = false;
+  for (const option of Array.from(select.options)) {
+    if (option.value === value) {
+      present = true;
+      break;
+    }
+  }
+  if (!present) {
+    const option = document.createElement("option");
+    option.value = value;
+    setText(option, `${value} (ręcznie)`);
+    select.appendChild(option);
+  }
+  select.value = value;
+}
+
+function bindManualSelectInput(manualInput, select) {
+  if (!manualInput || !select || !select.id) {
+    return;
+  }
+  bindIf(manualInput, "input", () => {
+    const raw = manualInput.value.trim();
+    if (raw) {
+      manualSelectOverrides.set(select.id, raw);
+    } else {
+      manualSelectOverrides.delete(select.id);
+    }
+    // Rebuild every control from the last payload: setSelectOptions re-applies the
+    // override when set, and drops back to the computed value when the field is cleared.
+    renderRuntimeSettingsControls(
+      cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {},
+    );
+  });
+}
+
+// Buttons live inside the collapsible-card <summary>; a click on them must run the
+// button action without also toggling the accordion. stopPropagation keeps the click
+// from reaching the summary, so the disclosure never toggles on Reset/Apply.
+function bindSummaryToggleGuards() {
+  const controls = document.querySelectorAll(
+    ".collapsible-card > summary button, .collapsible-card > summary .mission-actions",
+  );
+  for (const node of Array.from(controls)) {
+    node.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+  }
+}
+
+// Hide a whole field (label + select + optional manual input) when the backend offers
+// at most one real option — a single-choice select is noise, not a control.
+function setFieldVisibleForSelect(select, realOptionCount) {
+  if (!select || typeof select.closest !== "function") {
+    return;
+  }
+  const field = select.closest(".field-label");
+  if (!field) {
+    return;
+  }
+  field.hidden = realOptionCount <= 1;
+}
+
+function setButtonEnabled(button, enabled) {
+  if (!button) {
+    return;
+  }
+  button.disabled = !enabled;
+}
+
+function settingsPreviewModelFromPayload(payload, overrides = {}) {
+  const preview = safeObject(safeObject(payload).settings_preview);
+  const model = {
+    previewOnly: preview.preview_only !== false,
+    saveImplemented: Boolean(preview.save_implemented),
+    saveDisabledReason: preview.save_disabled_reason || "Diagnostics preview only",
+    sections: settingsPreviewCloneSections(safeObject(preview.sections)),
+    capabilityGraph: safeObject(safeObject(payload).capability_graph),
+    compatibilityWarnings: Array.isArray(safeObject(payload).compatibility_warnings)
+      ? payload.compatibility_warnings
+      : Array.isArray(payload.compatibility_warnings)
+        ? payload.compatibility_warnings
+        : [],
+    overrides: { ...safeObject(overrides) },
+  };
+  return settingsPreviewEvaluate(model);
+}
+
+function settingsPreviewApplyOverride(model, fieldId, value) {
+  const next = {
+    ...model,
+    sections: settingsPreviewCloneSections(model.sections),
+    overrides: { ...safeObject(model.overrides), [fieldId]: value },
+  };
+  return settingsPreviewEvaluate(next);
+}
+
+function settingsPreviewEvaluate(model) {
+  const evaluated = {
+    ...model,
+    sections: settingsPreviewCloneSections(model.sections),
+    overrides: { ...safeObject(model.overrides) },
+  };
+
+  for (const [fieldId, value] of Object.entries(evaluated.overrides)) {
+    const field = settingsPreviewFieldById(evaluated, fieldId);
+    if (!field) {
+      continue;
+    }
+    field.effective = value;
+    if (field.current !== value) {
+      field.warning = field.warning || "Preview override active; reset required before save exists.";
+    }
+  }
+
+  settingsPreviewEvaluateBrain(evaluated);
+  settingsPreviewEvaluateVoiceTts(evaluated);
+  settingsPreviewEvaluateVoiceStt(evaluated);
+  settingsPreviewEvaluateQueueBargeIn(evaluated);
+  return evaluated;
+}
+
+function settingsPreviewEvaluateBrain(model) {
+  const providerField = settingsPreviewFieldById(model, "brain_provider.provider");
+  if (!providerField) {
+    return;
+  }
+  const provider = settingsPreviewBrainProvider(model, providerField.effective);
+  const backendProviderIds = Array.isArray(providerField.allowed_values)
+    ? providerField.allowed_values.filter((item) => item !== undefined && item !== null && item !== "")
+    : [];
+  const providerIds = backendProviderIds.length > 0
+    ? backendProviderIds
+    : settingsPreviewBrainProviders(model)
+      .filter((item) => !item.developer_only)
+      .map((item) => item.id);
+  providerField.allowed_values = providerIds;
+  providerField.disabled_values = settingsPreviewBrainProviders(model)
+    .map((item) => settingsPreviewDisabledProviderOption(item))
+    .filter(Boolean);
+  providerField.invalidates = uniqueNonEmpty([
+    ...(Array.isArray(providerField.invalidates) ? providerField.invalidates : []),
+    "brain_provider.command_status",
+    "brain_provider.credentials_or_command_status",
+  ]);
+  providerField.developer_only = Boolean(provider && provider.developer_only);
+  if (!provider) {
+    providerField.status = "invalid";
+    providerField.blocker = "Selected provider is not present in backend capability graph.";
+    return;
+  }
+  providerField.status = provider.available ? "ok" : "missing";
+  providerField.blocker = provider.available ? null : provider.blocker || "Provider is unavailable.";
+  providerField.warning = provider.developer_only
+    ? "Developer/Test provider selected."
+    : providerField.warning;
+
+  const modelField = settingsPreviewFieldById(model, "brain_provider.model");
+  const effortField = settingsPreviewFieldById(model, "brain_provider.effort");
+  const fastField = settingsPreviewFieldById(model, "brain_provider.fast");
+  const toolsField = settingsPreviewFieldById(model, "brain_provider.tools_support");
+  const streamingField = settingsPreviewFieldById(model, "brain_provider.streaming_support");
+  const contextField = settingsPreviewFieldById(model, "brain_provider.context_budget");
+  const commandField = settingsPreviewFieldById(model, "brain_provider.command_status");
+  const credentialsField = settingsPreviewFieldById(model, "brain_provider.credentials_or_command_status");
+
+  const models = settingsPreviewProviderModels(provider);
+  if (modelField) {
+    modelField.allowed_values = models.map((item) => item.id);
+    modelField.dependencies = ["brain_provider.provider"];
+    if (models.length === 0) {
+      const localProvider = provider.local_runtime || /local/i.test(String(provider.kind || ""));
+      modelField.status = "missing";
+      modelField.blocker = localProvider
+        ? "Local provider selected but no local model exists."
+        : "Selected provider has no allowed models.";
+    } else if (!models.some((item) => item.id === modelField.effective)) {
+      modelField.status = "invalid";
+      modelField.blocker = "Selected model is stale for this provider; reset required.";
+    } else {
+      modelField.status = "ok";
+      modelField.blocker = null;
+    }
+  }
+
+  if (effortField) {
+    const allowedEfforts = Array.isArray(provider.allowed_effort_values)
+      ? provider.allowed_effort_values
+      : [];
+    effortField.allowed_values = allowedEfforts;
+    effortField.dependencies = ["brain_provider.provider", "brain_provider.model"];
+    if (effortField.effective === null || effortField.effective === undefined || effortField.effective === "") {
+      effortField.status = allowedEfforts.length > 0 ? "missing" : "unsupported";
+      effortField.blocker = null;
+    } else if (allowedEfforts.length === 0) {
+      effortField.status = "unsupported";
+      effortField.blocker = "Selected provider/model does not support effort; reset required.";
+    } else if (!allowedEfforts.includes(effortField.effective)) {
+      effortField.status = "invalid";
+      effortField.blocker = "Selected effort is stale for this provider/model; reset required.";
+    } else {
+      effortField.status = "ok";
+      effortField.blocker = null;
+    }
+  }
+
+  if (fastField) {
+    fastField.allowed_values = [true, false];
+    fastField.dependencies = ["brain_provider.provider", "brain_provider.model"];
+    fastField.disabled_values = provider.fast_supported
+      ? []
+      : [{ value: true, reason: "Selected provider/model does not support fast mode." }];
+    if (!provider.fast_supported && fastField.effective === true) {
+      fastField.status = "unsupported";
+      fastField.blocker = "Fast is enabled but selected provider/model does not support fast.";
+    } else {
+      fastField.status = "ok";
+      fastField.blocker = null;
+    }
+  }
+
+  if (toolsField) {
+    toolsField.effective = provider.tools_supported ? "yes" : "no";
+    toolsField.current = toolsField.current || toolsField.effective;
+    toolsField.status = provider.tools_supported ? "ok" : "unsupported";
+  }
+  if (streamingField) {
+    streamingField.effective = provider.streaming_supported ? "yes" : "no";
+    streamingField.current = streamingField.current || streamingField.effective;
+    streamingField.status = provider.streaming_supported ? "ok" : "unsupported";
+  }
+  if (contextField) {
+    contextField.effective = safeObject(provider.context_info).budget_chars || null;
+    contextField.status = contextField.effective ? "ok" : "unknown";
+  }
+  if (commandField) {
+    const command = settingsPreviewProviderCommandState(provider);
+    commandField.effective = command.value;
+    commandField.status = command.status;
+    commandField.blocker = command.blocker;
+    commandField.dependencies = ["brain_provider.provider"];
+  }
+  if (credentialsField) {
+    const credentials = settingsPreviewProviderCredentialsOrCommandState(provider);
+    credentialsField.effective = credentials.value;
+    credentialsField.status = credentials.status;
+    credentialsField.blocker = credentials.blocker;
+    credentialsField.dependencies = ["brain_provider.provider"];
+  }
+}
+
+function settingsPreviewProviderCommandState(provider) {
+  const support = settingsPreviewSupportState(firstPresent(
+    safeObject(provider).command_status,
+    safeObject(provider).provider_command_status,
+  ));
+  if (support === "yes") {
+    return { value: "yes", status: "ok", blocker: null };
+  }
+  if (support === "no") {
+    return { value: "no", status: "missing", blocker: "Provider command is missing." };
+  }
+  if (provider && provider.available === false) {
+    return { value: "unknown", status: "missing", blocker: "Provider command readiness is unavailable." };
+  }
+  return { value: "unknown", status: "unknown", blocker: null };
+}
+
+function settingsPreviewProviderCredentialsOrCommandState(provider) {
+  const support = settingsPreviewSupportState(firstPresent(
+    safeObject(provider).command_status,
+    safeObject(provider).provider_command_status,
+  ));
+  if (support === "yes") {
+    return { value: "ok", status: "ok", blocker: null };
+  }
+  if (support === "no") {
+    return {
+      value: "missing",
+      status: "missing",
+      blocker: "Provider command or credential readiness is missing.",
+    };
+  }
+  if (provider && provider.available === false) {
+    return {
+      value: "unavailable",
+      status: "missing",
+      blocker: "Provider command or credential readiness is unavailable.",
+    };
+  }
+  return { value: "unknown", status: "unknown", blocker: null };
+}
+
+function settingsPreviewSupportState(value) {
+  const raw = typeof value === "object" && value !== null ? projectionValue(value) : value;
+  if (typeof raw === "boolean") {
+    return raw ? "yes" : "no";
+  }
+  const normalized = String(raw ?? "").trim().toLowerCase();
+  if (["yes", "true", "supported", "available", "ok", "enabled"].includes(normalized)) {
+    return "yes";
+  }
+  if (["found", "logged_in"].includes(normalized)) {
+    return "yes";
+  }
+  if (["no", "false", "unsupported", "missing", "unavailable", "disabled", "not_found"].includes(normalized)) {
+    return "no";
+  }
+  return "unknown";
+}
+
+function settingsPreviewEvaluateVoiceTts(model) {
+  const providerField = settingsPreviewFieldById(model, "voice_tts.tts_provider");
+  if (!providerField) {
+    return;
+  }
+  const providers = settingsPreviewVoiceProviders(model, "tts");
+  const provider = providers.find((item) => item.id === providerField.effective);
+  providerField.allowed_values = providers.map((item) => item.id);
+  providerField.disabled_values = providers
+    .filter((item) => !item.available)
+    .map((item) => ({ value: item.id, reason: "TTS provider is unavailable." }));
+  if (!providerField.effective) {
+    providerField.status = "missing";
+    providerField.blocker = providerField.blocker || "Voice enabled but TTS provider is missing.";
+  } else if (!provider) {
+    providerField.status = "invalid";
+    providerField.blocker = "Selected TTS provider is not present in backend capability graph.";
+  } else if (!provider.available) {
+    providerField.status = "missing";
+    providerField.blocker = "Selected TTS provider is unavailable.";
+  } else {
+    providerField.status = "ok";
+    providerField.blocker = null;
+  }
+
+  const ttsModel = settingsPreviewFieldById(model, "voice_tts.tts_model");
+  const voiceId = settingsPreviewFieldById(model, "voice_tts.voice_id");
+  const speed = settingsPreviewFieldById(model, "voice_tts.speed_or_rate");
+  const providerModels = provider && Array.isArray(provider.models) ? provider.models : [];
+  const voiceIds = provider && Array.isArray(provider.voice_ids) ? provider.voice_ids : [];
+  const speedSupported = Boolean(provider && safeObject(provider.controls).speed);
+
+  if (ttsModel) {
+    ttsModel.allowed_values = providerModels.map((item) => item.id);
+    if (providerModels.length === 0) {
+      ttsModel.status = providerField.effective && providerField.effective !== "mock" ? "missing" : "unknown";
+    } else if (ttsModel.effective && !providerModels.some((item) => item.id === ttsModel.effective)) {
+      ttsModel.status = "invalid";
+      ttsModel.blocker = "Selected TTS model is stale for this provider; reset required.";
+    } else {
+      ttsModel.status = "ok";
+      ttsModel.blocker = null;
+    }
+  }
+  if (voiceId) {
+    voiceId.allowed_values = voiceIds;
+    if (providerField.effective === "supertonic" && !voiceId.effective) {
+      voiceId.status = "missing";
+      voiceId.blocker = "TTS provider requires voice_id.";
+    } else if (voiceIds.length > 0 && voiceId.effective && !voiceIds.includes(voiceId.effective)) {
+      voiceId.status = "invalid";
+      voiceId.blocker = "Selected voice_id is stale for this TTS provider; reset required.";
+    } else {
+      voiceId.status = providerField.effective === "supertonic" ? "ok" : "unknown";
+      voiceId.blocker = null;
+    }
+  }
+  if (speed) {
+    speed.allowed_values = speedSupported ? speed.allowed_values.length > 0 ? speed.allowed_values : [0.8, 1.0, 1.15, 1.35] : [];
+    speed.disabled_values = speedSupported
+      ? []
+      : [{ value: "speed", reason: "Selected TTS provider does not support speed/rate." }];
+    speed.status = speedSupported ? "ok" : "unsupported";
+  }
+}
+
+function settingsPreviewEvaluateVoiceStt(model) {
+  const providerField = settingsPreviewFieldById(model, "voice_stt.stt_provider");
+  if (!providerField) {
+    return;
+  }
+  const providers = settingsPreviewVoiceProviders(model, "stt");
+  const provider = providers.find((item) => item.id === providerField.effective);
+  providerField.allowed_values = providers.map((item) => item.id);
+  providerField.disabled_values = providers
+    .filter((item) => !item.available)
+    .map((item) => ({ value: item.id, reason: "STT provider is unavailable." }));
+  if (!providerField.effective) {
+    providerField.status = "missing";
+    providerField.blocker = providerField.blocker || "Voice enabled but STT provider is missing.";
+  } else if (!provider) {
+    providerField.status = "invalid";
+    providerField.blocker = "Selected STT provider is not present in backend capability graph.";
+  } else if (!provider.available) {
+    providerField.status = "missing";
+    providerField.blocker = "Selected STT provider/runtime is unavailable.";
+  } else {
+    providerField.status = "ok";
+    providerField.blocker = null;
+  }
+
+  const sttModel = settingsPreviewFieldById(model, "voice_stt.stt_model");
+  const endpointing = settingsPreviewFieldById(model, "voice_stt.endpointing_support");
+  const providerModels = provider && Array.isArray(provider.models) ? provider.models : [];
+  if (sttModel) {
+    sttModel.allowed_values = providerModels.map((item) => item.id);
+    if (providerField.effective && providerField.effective !== "mock" && providerModels.length === 0) {
+      sttModel.status = "missing";
+      sttModel.blocker = "Selected STT provider has no model/runtime in capability graph.";
+    } else if (providerModels.length > 0 && sttModel.effective && !providerModels.some((item) => item.id === sttModel.effective)) {
+      sttModel.status = "invalid";
+      sttModel.blocker = "Selected STT model is stale for this provider; reset required.";
+    } else {
+      sttModel.status = sttModel.effective ? "ok" : "missing";
+      sttModel.blocker = null;
+    }
+  }
+  if (endpointing && provider) {
+    endpointing.effective = Boolean(provider.endpointing_support);
+    endpointing.status = provider.endpointing_support ? "ok" : "unsupported";
+  }
+}
+
+function settingsPreviewEvaluateQueueBargeIn(model) {
+  const manualCancel = settingsPreviewFieldById(model, "queue_barge_in.manual_cancel_available");
+  const cancelSupport = settingsPreviewFieldById(model, "queue_barge_in.cancel_support");
+  const voice = safeObject(safeObject(model.capabilityGraph).voice_capabilities);
+  if (!manualCancel || !cancelSupport) {
+    return;
+  }
+  const supportsCancel = Boolean(voice.cancellation_support);
+  if (manualCancel.effective === true && !supportsCancel) {
+    manualCancel.status = "unsupported";
+    manualCancel.blocker = "Barge-in/manual cancel preview requires cancellation support.";
+    cancelSupport.status = "unsupported";
+  }
+}
+
+function settingsPreviewCloneSections(sections) {
+  const cloned = {};
+  for (const [sectionId, section] of Object.entries(safeObject(sections))) {
+    const fields = {};
+    for (const [fieldId, field] of Object.entries(safeObject(section.fields))) {
+      fields[fieldId] = settingsPreviewCloneField(field, sectionId, fieldId);
+    }
+    cloned[sectionId] = {
+      id: section.id || sectionId,
+      label: section.label || SETTINGS_PREVIEW_SECTION_LABELS[sectionId] || sectionId,
+      fields,
+    };
+  }
+  return cloned;
+}
+
+function settingsPreviewCloneField(field, sectionId, fieldId) {
+  const source = safeObject(field);
+  const id = source.id || `${sectionId}.${fieldId}`;
+  const current = source.current !== undefined ? source.current : null;
+  return {
+    id,
+    label: source.label || fieldId,
+    current,
+    effective: source.effective !== undefined ? source.effective : current,
+    status: source.status || "unknown",
+    source: source.source || "unknown",
+    allowed_values: Array.isArray(source.allowed_values) ? [...source.allowed_values] : [],
+    disabled_values: Array.isArray(source.disabled_values) ? source.disabled_values.map((item) => ({ ...safeObject(item) })) : [],
+    warning: source.warning || null,
+    blocker: source.blocker || null,
+    dependencies: Array.isArray(source.dependencies) ? [...source.dependencies] : [],
+    invalidates: Array.isArray(source.invalidates) ? [...source.invalidates] : [],
+    requires_restart: Boolean(source.requires_restart),
+    requires_reload: Boolean(source.requires_reload),
+    editable_now: Boolean(source.editable_now),
+    editable_later: Boolean(source.editable_later),
+    developer_only: Boolean(source.developer_only),
+  };
+}
+
+function settingsPreviewFieldById(model, fieldId) {
+  const [sectionId, key] = String(fieldId || "").split(".");
+  return safeObject(safeObject(model.sections)[sectionId]).fields
+    ? safeObject(safeObject(model.sections)[sectionId]).fields[key]
+    : null;
+}
+
+function settingsPreviewBrainProviders(model) {
+  const brain = safeObject(safeObject(model.capabilityGraph).brain_capabilities);
+  return Array.isArray(brain.providers) ? brain.providers : [];
+}
+
+function settingsPreviewBrainProvider(model, providerId) {
+  return settingsPreviewBrainProviders(model).find((item) => item.id === providerId) || null;
+}
+
+function settingsPreviewProviderModels(provider) {
+  return Array.isArray(safeObject(provider).models) ? provider.models : [];
+}
+
+function settingsPreviewVoiceProviders(model, type) {
+  const voice = safeObject(safeObject(model.capabilityGraph).voice_capabilities);
+  const key = type === "stt" ? "stt_providers" : "tts_providers";
+  return Array.isArray(voice[key]) ? voice[key] : [];
+}
+
+function settingsPreviewDisabledProviderOption(provider) {
+  if (provider.developer_only) {
+    return { value: provider.id, reason: "Developer/Test only" };
+  }
+  if (!provider.available) {
+    return { value: provider.id, reason: provider.blocker || "Provider is unavailable" };
+  }
+  return null;
+}
+
+function renderSettingsPreview(model) {
+  clearNode(el.settingsPreviewList);
+  if (!model || Object.keys(safeObject(model.sections)).length === 0) {
+    renderEmpty(el.settingsPreviewList, "Settings preview unavailable");
+    return;
+  }
+  const banner = document.createElement("article");
+  banner.className = "list-row settings-preview-banner";
+  appendLine(banner, "Diagnostics only - Apply controls above own runtime changes", "input-line");
+  appendLine(
+    banner,
+    "Local preview changes show diffs, invalidated children, warnings, blockers, and restart/reload requirements.",
+    "muted",
+  );
+  el.settingsPreviewList.appendChild(banner);
+
+  const diff = renderSettingsPreviewDiff(model);
+  if (diff) {
+    el.settingsPreviewList.appendChild(diff);
+  }
+
+  const warningRows = settingsPreviewWarningRows(model);
+  if (warningRows.length > 0) {
+    const warningsCard = document.createElement("article");
+    warningsCard.className = "list-row settings-preview-warning-card";
+    appendLine(warningsCard, "Compatibility warnings", "input-line");
+    for (const warning of warningRows) {
+      appendLine(warningsCard, warning, "muted");
+    }
+    el.settingsPreviewList.appendChild(warningsCard);
+  }
+  for (const sectionId of SETTINGS_PREVIEW_SECTION_ORDER) {
+    const section = safeObject(model.sections)[sectionId];
+    if (!section) {
+      continue;
+    }
+    const card = document.createElement("article");
+    card.className = "list-row settings-preview-section";
+    appendLine(card, section.label || SETTINGS_PREVIEW_SECTION_LABELS[sectionId] || sectionId, "input-line");
+    const fields = safeObject(section.fields);
+    for (const key of Object.keys(fields)) {
+      if (inactiveSettingsPreviewField(key, fields[key])) {
+        continue;
+      }
+      card.appendChild(renderSettingsPreviewField(fields[key], model));
+    }
+    el.settingsPreviewList.appendChild(card);
+  }
+}
+
+function inactiveSettingsPreviewField(key, field) {
+  const source = safeObject(field);
+  const identity = [key, source.id, source.label, source.current, source.effective]
+    .map((value) => String(value || "").toLowerCase())
+    .join(" ");
+  return identity.includes("approval") || identity.includes("zgod");
+}
+
+function renderSettingsPreviewDiff(model) {
+  const rows = settingsPreviewDiffRows(model);
+  if (rows.length === 0) {
+    return null;
+  }
+  const card = document.createElement("article");
+  card.className = "list-row settings-preview-diff";
+  appendLine(card, "Preview Diff", "input-line");
+  for (const row of rows) {
+    const item = document.createElement("div");
+    item.className = "settings-preview-field";
+    appendLine(item, row.field, "input-line");
+    const values = document.createElement("dl");
+    values.className = "kv-list settings-preview-values";
+    renderKeyValues(values, [
+      ["old value", row.oldValue],
+      ["preview value", row.previewValue],
+      ["invalidated children", row.invalidatedChildren],
+      ["warnings introduced", row.warningsIntroduced],
+      ["blockers introduced", row.blockersIntroduced],
+      ["restart/reload", row.restartReload],
+    ]);
+    item.appendChild(values);
+    card.appendChild(item);
+  }
+  return card;
+}
+
+function settingsPreviewDiffRows(model) {
+  const rows = new Map();
+  for (const fieldId of Object.keys(safeObject(model.overrides))) {
+    const field = settingsPreviewFieldById(model, fieldId);
+    if (!field) {
+      continue;
+    }
+    const invalidated = Array.isArray(field.invalidates) ? field.invalidates : [];
+    rows.set(field.id, settingsPreviewDiffRow(field, invalidated));
+    for (const childId of invalidated) {
+      const child = settingsPreviewFieldById(model, childId);
+      if (!child) {
+        continue;
+      }
+      if (
+        child.warning ||
+        child.blocker ||
+        ["invalid", "missing", "unsupported"].includes(child.status) ||
+        child.current !== child.effective
+      ) {
+        rows.set(child.id, settingsPreviewDiffRow(child, child.invalidates || []));
+      }
+    }
+  }
+  return [...rows.values()];
+}
+
+function settingsPreviewDiffRow(field, invalidated) {
+  const invalidatedChildren = Array.isArray(invalidated) ? invalidated : [];
+  const warnings = [];
+  const blockers = [];
+  if (field.warning) warnings.push(field.warning);
+  if (field.blocker) blockers.push(field.blocker);
+  const restartReload = [
+    field.requires_restart ? "restart required" : null,
+    field.requires_reload ? "reload required" : null,
+  ].filter(Boolean).join(", ") || "none";
+  const message = uniqueNonEmpty([...blockers, ...warnings]).join("; ") ||
+    (invalidatedChildren.length > 0 ? "Preview invalidates dependent settings." : "Preview value changed.");
+  const current = settingsPreviewValue(field.current);
+  const preview = settingsPreviewValue(field.effective);
+  return {
+    field: field.id,
+    fieldId: field.id,
+    oldValue: current,
+    current,
+    previewValue: preview,
+    preview,
+    invalidatedChildren: invalidatedChildren.length > 0 ? invalidatedChildren.join(", ") : "none",
+    warningsIntroduced: uniqueNonEmpty(warnings).join("; ") || "none",
+    blockersIntroduced: uniqueNonEmpty(blockers).join("; ") || "none",
+    restartReload,
+    message,
+  };
+}
+
+function renderSettingsPreviewField(field, model) {
+  const row = document.createElement("div");
+  row.className = `settings-preview-field status-${field.status || "unknown"}`;
+
+  const header = document.createElement("div");
+  header.className = "settings-preview-field-head";
+  const label = document.createElement("strong");
+  setText(label, field.label || field.id);
+  const badge = document.createElement("span");
+  badge.className = `settings-preview-badge status-${field.status || "unknown"}`;
+  setText(badge, field.status || "unknown");
+  header.append(label, badge);
+  row.appendChild(header);
+
+  const values = document.createElement("dl");
+  values.className = "kv-list settings-preview-values";
+  const valueRows = [
+    ["current", settingsPreviewValue(field.current)],
+    ["effective", settingsPreviewValue(field.effective)],
+    ["source", field.source || "unknown"],
+  ];
+  if (Array.isArray(field.allowed_values) && field.allowed_values.length > 0) {
+    valueRows.push(["allowed", field.allowed_values.map(settingsPreviewValue).join(", ")]);
+  }
+  if (Array.isArray(field.disabled_values) && field.disabled_values.length > 0) {
+    valueRows.push(["disabled", field.disabled_values.map((item) => `${settingsPreviewValue(item.value)} (${item.reason || "disabled"})`).join(", ")]);
+  }
+  if (Array.isArray(field.dependencies) && field.dependencies.length > 0) {
+    valueRows.push(["depends on", field.dependencies.join(", ")]);
+  }
+  if (Array.isArray(field.invalidates) && field.invalidates.length > 0) {
+    valueRows.push(["invalidates", field.invalidates.join(", ")]);
+  }
+  if (field.requires_restart || field.requires_reload) {
+    valueRows.push(["change impact", [field.requires_restart ? "restart" : null, field.requires_reload ? "reload" : null].filter(Boolean).join(" + ")]);
+  }
+  if (field.editable_now || field.editable_later || field.developer_only) {
+    valueRows.push(["badges", [
+      field.editable_now ? "editable now (preview only)" : null,
+      field.editable_later ? "editable later" : null,
+      field.developer_only ? "Developer/Test" : null,
+    ].filter(Boolean).join(", ")]);
+  }
+  renderKeyValues(values, valueRows);
+  row.appendChild(values);
+
+  const message = field.blocker || field.warning;
+  if (message) {
+    appendLine(row, message, field.blocker ? "error-line" : "muted");
+  }
+
+  const control = settingsPreviewControlForField(field, model);
+  if (control) {
+    row.appendChild(control);
+  }
+  return row;
+}
+
+function settingsPreviewControlForField(field, model) {
+  if (!SETTINGS_PREVIEW_CONTROL_FIELDS.has(field.id)) {
+    return null;
+  }
+  if (typeof field.effective === "boolean") {
+    const label = document.createElement("label");
+    label.className = "settings-preview-control";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = Boolean(field.effective);
+    input.disabled = !field.editable_now && !field.editable_later;
+    input.addEventListener("change", () => settingsPreviewControlChanged(field.id, input.checked));
+    const text = document.createElement("span");
+    setText(text, "Preview toggle");
+    label.append(input, text);
+    return label;
+  }
+  const allowed = Array.isArray(field.allowed_values) ? field.allowed_values : [];
+  if (allowed.length === 0) {
+    return null;
+  }
+  const label = document.createElement("label");
+  label.className = "settings-preview-control";
+  const text = document.createElement("span");
+  setText(text, "Preview");
+  const select = document.createElement("select");
+  select.disabled = !field.editable_now && !field.editable_later;
+  for (const value of allowed) {
+    const option = document.createElement("option");
+    option.value = settingsPreviewOptionValue(value);
+    setText(option, settingsPreviewValue(value));
+    option.disabled = settingsPreviewOptionDisabled(field, value);
+    if (settingsPreviewOptionValue(value) === settingsPreviewOptionValue(field.effective)) {
+      option.selected = true;
+    }
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => {
+    settingsPreviewControlChanged(field.id, settingsPreviewParseControlValue(select.value, allowed));
+  });
+  label.append(text, select);
+  return label;
+}
+
+function settingsPreviewControlChanged(fieldId, value) {
+  cockpit.settingsPreview.overrides = {
+    ...safeObject(cockpit.settingsPreview.overrides),
+    [fieldId]: value,
+  };
+  cockpit.settingsPreview.model = settingsPreviewApplyOverride(
+    cockpit.settingsPreview.model || settingsPreviewModelFromPayload(cockpit.settingsPreview.payload || {}),
+    fieldId,
+    value,
+  );
+  renderSettingsPreview(cockpit.settingsPreview.model);
+}
+
+function settingsPreviewOptionDisabled(field, value) {
+  return (field.disabled_values || []).some((item) => item.value === value);
+}
+
+function settingsPreviewOptionValue(value) {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function settingsPreviewParseControlValue(raw, allowed) {
+  for (const value of allowed) {
+    if (settingsPreviewOptionValue(value) === raw) {
+      return value;
+    }
+  }
+  return raw;
+}
+
+function settingsPreviewWarningRows(model) {
+  const rows = [];
+  for (const warning of model.compatibilityWarnings || []) {
+    const item = safeObject(warning);
+    rows.push(`${item.severity || "warning"} · ${item.group || "settings"} · ${item.message || item.id || "warning"}`);
+  }
+  return rows.slice(0, 8);
+}
+
+function settingsPreviewValue(value) {
+  if (value === undefined || value === null || value === "") {
+    return "unknown";
+  }
+  if (typeof value === "boolean") {
+    return value ? "yes" : "no";
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0 ? value.map(settingsPreviewValue).join(", ") : "none";
+  }
+  if (typeof value === "object") {
+    return redactEventSummaryText(JSON.stringify(value));
+  }
+  return redactEventSummaryText(String(value));
+}
+
+function renderRuntimeOverview(snapshot) {
+  clearNode(el.runtimeOverviewList);
+
+  const sections = runtimeOverviewSections(snapshot || {});
+  for (const section of sections) {
+    const row = document.createElement("article");
+    row.className = "list-row";
+    appendLine(row, section.title, "input-line");
+
+    const values = document.createElement("dl");
+    values.className = "kv-list";
+    renderKeyValues(values, section.rows);
+    row.appendChild(values);
+    el.runtimeOverviewList.appendChild(row);
+  }
+
+  const failures = Array.isArray(snapshot.failures) ? snapshot.failures : [];
+  if (failures.length > 0) {
+    el.runtimeOverviewError.hidden = false;
+    setText(
+      el.runtimeOverviewError,
+      `Some runtime overview sources failed: ${failures.join(", ")}`,
+    );
+  }
+}
+
+function renderMissionControl(snapshot) {
+  if (!el.missionControlSummary) {
+    return;
+  }
+  const safeSnapshot = snapshot || {};
+  const summary = operatorSummaryFromSnapshot(safeSnapshot);
+  renderMissionSummary(summary);
+  renderMissionModules(safeSnapshot, summary);
+  renderOperationalChecklist(safeSnapshot);
+  renderVoiceDoctor(safeSnapshot);
+  renderMissionAuxiliarySummaries(safeSnapshot);
+}
+
+function renderMissionAuxiliarySummaries(snapshot) {
+  const runtimeSettings = safeObject(snapshot.runtimeSettings);
+  const events = Array.isArray(safeObject(snapshot.events).events) ? snapshot.events.events : [];
+  if (Object.keys(runtimeSettings).length > 0) {
+    renderQueueBargeInSummary(runtimeSettings);
+    renderLatestTurnTraceSummary(runtimeSettings);
+    renderRuntimeLogsSummaryFromPayload(runtimeSettings, events);
+  } else {
+    renderQueueBargeInSummary({});
+    renderLatestTurnTraceSummary({});
+    renderRuntimeLogsSummaryFromPayload({}, events);
+  }
+}
+
+function renderMissionSummary(summary) {
+  clearNode(el.missionControlSummary);
+
+  const head = document.createElement("div");
+  head.className = "mission-summary-head";
+  const title = document.createElement("p");
+  title.className = "mission-summary-title";
+  setText(title, `DAN: ${compactMissionText(summary.statusLine, 110)}`);
+  head.append(title, missionStatusChip(summary.status, summary.status));
+  el.missionControlSummary.appendChild(head);
+
+  const glance = document.createElement("div");
+  glance.className = "mission-glance-grid";
+  for (const item of [
+    ["backend", summary.backendConnected ? "connected" : "offline"],
+    ["provider", summary.activeProvider],
+    ["voice", summary.voiceStatus],
+    ["tools", summary.toolsInternetStatus],
+    ["memory", summary.memoryStatus],
+    ["refresh", summary.lastRefreshTime],
+  ]) {
+    glance.appendChild(missionGlanceItem(item[0], item[1]));
+  }
+  el.missionControlSummary.appendChild(glance);
+
+  appendMissionIssueList(el.missionControlSummary, "action", [summary.nextAction], "action");
+  appendMissionIssueList(el.missionControlSummary, "blockers", summary.blockers, "blocked");
+  appendMissionIssueList(el.missionControlSummary, "warnings", summary.warnings, "warning");
+}
+
+function missionStatusChip(status, label) {
+  const chip = document.createElement("span");
+  chip.className = `status-chip status-${status || "unknown"}`;
+  setText(chip, label || "unknown");
+  return chip;
+}
+
+function missionGlanceItem(label, value) {
+  const item = document.createElement("div");
+  item.className = "mission-glance-item";
+  const key = document.createElement("span");
+  key.className = "mission-glance-label";
+  setText(key, label);
+  const val = document.createElement("span");
+  val.className = "mission-glance-value";
+  val.title = displayValue(value);
+  setText(val, compactMissionText(value, 44));
+  item.append(key, val);
+  return item;
+}
+
+function appendMissionIssueList(parent, label, items, tone) {
+  const list = document.createElement("div");
+  list.className = `mission-issue-list mission-issue-${tone}`;
+  const labelNode = document.createElement("span");
+  labelNode.className = "mission-issue-label";
+  setText(labelNode, label);
+  list.appendChild(labelNode);
+
+  const values = uniqueNonEmpty(items || []).slice(0, 3);
+  if (values.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "mission-issue-empty";
+    setText(empty, "none");
+    list.appendChild(empty);
+  } else {
+    for (const value of values) {
+      const pill = document.createElement("span");
+      pill.className = "mission-issue-pill";
+      pill.title = displayValue(value);
+      setText(pill, compactMissionText(value, 72));
+      list.appendChild(pill);
+    }
+  }
+  parent.appendChild(list);
+}
+
+function compactMissionText(value, maxLength = 72) {
+  const text = displayValue(value).replace(/\s+/g, " ").trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function renderMissionModules(snapshot, summary) {
+  clearNode(el.missionControlModules);
+  const context = runtimeOverviewContext(snapshot || {});
+  for (const card of missionControlModuleCards(context, summary)) {
+    el.missionControlModules.appendChild(missionModuleCard(card));
+  }
+}
+
+function missionModuleCard(card) {
+  const row = document.createElement("article");
+  row.className = `list-row mission-card status-${card.status || "unknown"}`;
+  const head = document.createElement("div");
+  head.className = "mission-summary-head";
+  const title = document.createElement("p");
+  title.className = "input-line";
+  setText(title, card.title);
+  head.append(title, missionStatusChip(card.status || "unknown", card.status || "unknown"));
+  row.appendChild(head);
+
+  appendLine(row, missionModuleSummary(card.rows), "mission-card-summary");
+  const facts = document.createElement("div");
+  facts.className = "mission-module-facts";
+  for (const fact of missionModuleFacts(card.rows)) {
+    const pill = document.createElement("span");
+    pill.className = "mission-module-fact";
+    pill.title = fact.full;
+    setText(pill, fact.short);
+    facts.appendChild(pill);
+  }
+  row.appendChild(facts);
+  return row;
+}
+
+function missionModuleSummary(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return "No diagnostics loaded.";
+  }
+  const [label, value] = rows[0];
+  return `${label}: ${compactMissionText(value, 82)}`;
+}
+
+function missionModuleFacts(rows) {
+  return (Array.isArray(rows) ? rows : []).slice(1, 4).map(([label, value]) => {
+    const full = `${label}: ${displayValue(value)}`;
+    return {
+      full,
+      short: compactMissionText(full, 54),
+    };
+  });
+}
+
+function missionControlModuleCards(context, summary) {
+  return [
+    {
+      title: "Lifecycle",
+      status: summary.backendConnected ? "ready" : "offline",
+      rows: [
+        ["daemon status", firstPresent(context.state.state, context.health.state, context.health.service)],
+        ["panel status", summary.backendConnected ? "backend connected" : "backend offline"],
+        ["runtime dir/log dir", runtimeDirLogSummary(context)],
+        ["last backend status", sourceStatusSummary(context, ["health", "state", "runtimeSettings"])],
+        ["scripts/dan status hint", scriptsDANStatusHint(context)],
+      ],
+    },
+    {
+      title: "Brain / Provider",
+      status: moduleStatusFromReadiness(providerCapabilityReadiness(context, context.activeAdapter)),
+      rows: [
+        ["active provider", firstPresent(projectionValue(context.brainRuntime.current_adapter), context.activeAdapter)],
+        ["model", firstPresent(providerCurrentModel(context), configuredBrainModel(context))],
+        ["effort / fast", `${providerEffortStatus(context)} / ${providerFastSupport(context)}`],
+        ["command", providerCommandStatus(context)],
+        ["credentials", providerCredentialsStatus(context)],
+        ["unsupported stale values", providerCompatibilityWarnings(context).join("; ") || "none"],
+        ["non-production warning", providerMockDevWarning(context)],
+      ],
+    },
+    {
+      title: "Voice Pipeline",
+      status: moduleStatusFromReadiness(voiceRuntimeOverallReadiness(context)),
+      rows: [
+        voicePipelineRow(context, "capture_input", "Capture/Input", recorderEngine(context)),
+        voicePipelineRow(context, "stt_transcription", "STT", firstPresent(configuredStt(context), effectiveStt(context))),
+        voicePipelineRow(context, "endpointing_vad_ptt", "Endpointing/PTT", missionPttSummary(context)),
+        voicePipelineRow(context, "tts_voice_model", "TTS/Voice Model", firstPresent(configuredTts(context), effectiveTts(context))),
+        voicePipelineRow(context, "playback", "Playback", playbackEngine(context)),
+        voicePipelineRow(context, "queue_barge_in", "Queue/Barge-in", voiceQueueSummary(context.queueRows, context.voiceQueue)),
+      ],
+    },
+    {
+      title: "Memory",
+      status: moduleStatusFromSources(context, ["memory", "memoryItems"]),
+      rows: [
+        ["memory enabled", memoryEnabledSummary(context)],
+        ["latest memory status", latestMemoryStatus(context)],
+      ],
+    },
+    {
+      title: "Tools / Internet",
+      status: moduleStatusFromSources(context, ["tools"]),
+      rows: [
+        ["tools", context.tools.length > 0 ? `${context.tools.length} known` : "unknown/none"],
+        ["internet/network", networkToolSummary(context.tools)],
+        ["risk classes", toolRiskSummary(context.tools)],
+        ["provider tools support", providerSupportValue(context, "tools_support")],
+      ],
+    },
+    {
+      title: "Trace / Logs",
+      status: moduleStatusFromSources(context, ["events", "runtimeSettings"]),
+      rows: [
+        ["latest turn", latestTurnBrief(context)],
+        ["latest event time", latestEventTime(context.events)],
+        ["latest safe error", traceLatestSafeError(context)],
+        ["logs newest-first", "newest-first and redacted"],
+      ],
+    },
+  ];
+}
+
+function voicePipelineRow(context, groupKey, label, currentValue) {
+  const status = voiceRuntimeGroupReadiness(context, groupKey);
+  const warnings = voiceRuntimeGroupWarnings(context, groupKey);
+  const blocker = warnings.find((item) => /missing|invalid|disabled|unavailable|block/i.test(item));
+  const latestError = latestVoiceLayerError(context, groupKey, ["voice", "audio", "speech", "stt", "tts"]);
+  return [
+    label,
+    [
+      status,
+      `current: ${overviewValue(currentValue)}`,
+      blocker ? `blocker: ${overviewValue(blocker)}` : null,
+      !blocker && warnings.length > 0 ? `warning: ${warnings[0]}` : null,
+      latestError && latestError !== "none in recent events" ? `latest safe error: ${latestError}` : null,
+    ].filter(Boolean).join(" · "),
+  ];
+}
+
+function renderOperationalChecklist(snapshot) {
+  clearNode(el.missionControlChecklist);
+  for (const item of operationalChecklistItems(snapshot || {})) {
+    const row = document.createElement("article");
+    row.className = `checklist-item status-${item.status}`;
+    const head = document.createElement("p");
+    head.className = "input-line";
+    const label = document.createElement("span");
+    setText(label, item.label);
+    head.append(label, missionStatusChip(item.status, item.status));
+    row.appendChild(head);
+    appendLine(row, item.why, "payload-line");
+    appendLine(row, `source: ${item.source}`, "muted");
+    appendLine(row, `manual: ${item.hint}`, "muted");
+    el.missionControlChecklist.appendChild(row);
+  }
+}
+
+function operationalChecklistItems(snapshot) {
+  const context = runtimeOverviewContext(snapshot || {});
+  const backend = operatorBackendConnected(context);
+  const runtimeLoaded = operatorRuntimeProjectionLoaded(context);
+  const queueVisible = runtimeOverviewSourceAvailable(context, "voiceQueue");
+  const eventsVisible = runtimeOverviewSourceAvailable(context, "events");
+  const memoryVisible =
+    runtimeOverviewSourceAvailable(context, "memory") ||
+    runtimeOverviewSourceAvailable(context, "memoryItems");
+  const providerKnown = firstPresent(
+    projectionValue(context.brainRuntime.current_adapter),
+    context.activeAdapter,
+  );
+  const ttsKnown = settingsPreviewFieldValue(context.runtimeSettings, "voice_tts", "tts_provider") ||
+    readinessValue(context, "tts_provider");
+  const sttKnown = settingsPreviewFieldValue(context.runtimeSettings, "voice_stt", "stt_provider") ||
+    readinessValue(context, "stt_provider");
+  const toolsKnown = firstPresent(
+    settingsPreviewFieldValue(context.runtimeSettings, "tools_internet", "internet_capability"),
+    readinessValue(context, "network_tools_capability"),
+  );
+  const turnId = traceValue(context, "turn_id");
+  return [
+    checklistItem(
+      "Daemon działa",
+      backend ? "pass" : "fail",
+      backend ? "health/state daemona wczytane" : "backend offline albo brak health",
+      "/health + /state",
+      "Uruchom scripts/dan status, jeśli to nie przechodzi.",
+    ),
+    checklistItem(
+      "Panel połączony",
+      backend ? "pass" : "fail",
+      backend ? "panel widzi endpointy daemona" : "backend nieosiągalny",
+      "/health",
+      "Odśwież Kontrolę misji po starcie daemona.",
+    ),
+    checklistItem(
+      "Ścieżka tekstowa dostępna",
+      backend && runtimeLoaded ? "pass" : backend ? "manual" : "fail",
+      backend ? "panel może wysłać POST /input/text poza Kontrolą misji" : "backend offline",
+      "panel composer + runtime projection",
+      "Wyślij jedną krótką turę tekstową z Czatu.",
+    ),
+    checklistItem(
+      "Kolejka głosu widoczna",
+      queueVisible ? "pass" : "unknown",
+      queueVisible ? "projekcja kolejki wczytana" : "brakuje źródła kolejki głosu",
+      "/voice/queue?limit=12",
+      "Powiedz raz i sprawdź, czy pojawiły się wiersze queued/final/error.",
+    ),
+    checklistItem(
+      "PTT dostępne",
+      pttChecklistStatus(context),
+      pttChecklistWhy(context),
+      "/voice/runtime endpointing_vad_ptt",
+      "Przytrzymaj natywny skrót; Kontrola misji nie może sama aktywować mikrofonu.",
+    ),
+    checklistItem(
+      "Dostawca mózgu znany",
+      providerKnown ? "pass" : "unknown",
+      providerKnown ? `dostawca ${overviewValue(providerKnown)} widoczny` : "brakuje aktywnego dostawcy",
+      "/runtime/settings brain.providers",
+      "Wyślij turę i sprawdź provider/model w ostatnim trace.",
+    ),
+    checklistItem(
+      "Status TTS znany",
+      ttsKnown ? "pass" : "unknown",
+      ttsKnown ? `TTS ${settingsPreviewValue(ttsKnown)}` : "brakuje statusu TTS",
+      "/runtime/settings voice_tts",
+      "Uruchom ręczny test mowy poza panelem.",
+    ),
+    checklistItem(
+      "Status STT znany",
+      sttKnown ? "pass" : "unknown",
+      sttKnown ? `STT ${settingsPreviewValue(sttKnown)}` : "brakuje statusu STT",
+      "/runtime/settings voice_stt",
+      "Uruchom ręczny test transkrypcji poza panelem.",
+    ),
+    checklistItem(
+      "Status narzędzi/internetu znany",
+      toolsKnown ? "pass" : "unknown",
+      toolsKnown ? toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)) : "brakuje projekcji narzędzi/internetu",
+      "/runtime/settings tools_internet",
+      "Nie uruchamiaj tu narzędzi; sprawdź tylko politykę.",
+    ),
+    checklistItem(
+      "Pamięć widoczna",
+      memoryVisible ? "pass" : "unknown",
+      memoryVisible ? "podsumowania/elementy pamięci wczytane" : "brakuje źródła pamięci",
+      "/memory + /memory/items",
+      "Utwórz albo zatwierdź pamięć, potem odśwież.",
+    ),
+    checklistItem(
+      "Ostatni trace tury widoczny",
+      turnId ? "pass" : "unknown",
+      turnId ? `ostatnia tura ${shortId(turnId)} widoczna` : "brak ostatniego trace tury",
+      "/runtime/settings latest_turn_trace",
+      "Uruchom jedną turę tekstową albo głosową.",
+    ),
+  ];
+}
+
+function checklistItem(label, status, why, source, hint) {
+  return { label, status, why, source, hint };
+}
+
+function renderVoiceDoctor(snapshot) {
+  clearNode(el.voiceDoctorList);
+  const context = runtimeOverviewContext(snapshot || {});
+  el.voiceDoctorList.appendChild(doctorKvCard("Diagnostyka głosu", voiceDoctorRows(context)));
+  el.voiceDoctorList.appendChild(doctorKvCard("Diagnoza", [
+    ["reguły", voiceDoctorDiagnoses(context).join("; ") || "brak"],
+    ["znaczenie", voiceDoctorMeaning(context)],
+  ]));
+}
+
+function doctorKvCard(title, rows) {
+  const row = document.createElement("article");
+  row.className = "list-row";
+  appendLine(row, title, "input-line");
+  const values = document.createElement("dl");
+  values.className = "kv-list";
+  renderKeyValues(values, rows);
+  row.appendChild(values);
+  return row;
+}
+
+/**
+ * Helper to get the effective value of a field from the turn_detection projection.
+ * @param {Object} context - The context object from the panel.
+ * @param {string} fieldName - The field name in turn_detection.
+ * @returns {*} The effective value or undefined.
+ */
+function getTurnDetectionFieldEffectiveValue(context, fieldName) {
+  const td = safeObject(context.voiceRuntime).turn_detection;
+  if (!td) return undefined;
+  const field = safeObject(td)[fieldName];
+  if (!field) return undefined;
+  return field.effective_value;
+}
+
+/**
+ * Helper to get a display string for a turn_detection field.
+ * @param {Object} context - The context object from the panel.
+ * @param {string} fieldName - The field name in turn_detection.
+ * @returns {string} The formatted value for display.
+ */
+function getTurnDetectionFieldDisplayValue(context, fieldName) {
+  const value = getTurnDetectionFieldEffectiveValue(context, fieldName);
+  if (value === undefined || value === null) {
+    return "nieznane";
+  }
+  if (typeof value === 'string' && value.toLowerCase() === 'unknown') {
+    return "nieznane";
+  }
+  if (Array.isArray(value)) {
+    return value.join(", ");
+  }
+  if (typeof value === 'boolean') {
+    return value ? "tak" : "nie";
+  }
+  return String(value);
+}
+function voiceDoctorRows(context) {
+  return [
+    ["speak_responses", firstPresent(voiceRuntimeConfiguredValue(context, "tts_voice_model", ["speak_responses"]), configuredSetting(context, ["voice.speak_responses", "speak_responses"]))],
+    ["broker_enabled", firstPresent(voiceRuntimeEffectiveValue(context, "playback", ["broker_enabled"]), configuredSetting(context, ["voice.broker_enabled", "broker_enabled"]))],
+    ["default_tts", firstPresent(configuredTts(context), effectiveTts(context))],
+    ["default_stt", firstPresent(configuredStt(context), effectiveStt(context))],
+    ["TTS readiness", voiceRuntimeGroupReadiness(context, "tts_voice_model")],
+    ["STT readiness", voiceRuntimeGroupReadiness(context, "stt_transcription")],
+    ["playback readiness", voiceRuntimeGroupReadiness(context, "playback")],
+    ["capture policy", firstPresent(voiceRuntimeConfiguredValue(context, "capture_input", ["input_policy"]), configuredSetting(context, ["voice.input_policy"]))],
+    ["PTT mode", missionPttSummary(context)],
+    ["listening lease state", firstPresent(voiceRuntimeEffectiveValue(context, "endpointing_vad_ptt", ["active_leases", "lease_modes"]), context.voice.listening)],
+    ["queue counts", voiceQueueCounts(context.queueRows)],
+    ["current speaking item", currentSpeakingItem(context)],
+    ["last cancellation reason", firstPresent(latestQueueValue(context.queueRows, ["cancellation_reason", "cancel_reason"]), latestBargeInSummary(context.events))],
+    ["interrupted_previous_response", firstPresent(latestEventPayloadValue(context.events, ["interrupted_previous_response"]), traceValue(context, "interrupted_previous_response"))],
+    ["latest voice error", latestVoiceLayerError(context, "tts_voice_model", ["voice", "audio", "speech", "stt", "tts"])],
+    ["Tryb TK", getTurnDetectionFieldDisplayValue(context, "mode")],
+    ["Silnik TK", getTurnDetectionFieldDisplayValue(context, "current_engine")],
+    ["Próbkowanie", getTurnDetectionFieldDisplayValue(context, "sample_rate")],
+    ["Ramka MS", getTurnDetectionFieldDisplayValue(context, "frame_ms")],
+    ["Min. przechwytywania MS", getTurnDetectionFieldDisplayValue(context, "min_capture_ms")],
+    ["Próg RMS", getTurnDetectionFieldDisplayValue(context, "rms_threshold")],
+    ["Min. czas głoski", getTurnDetectionFieldDisplayValue(context, "min_voiced_seconds")],
+    ["Stosunek głoski", getTurnDetectionFieldDisplayValue(context, "min_voiced_ratio")],
+    ["VAD streaming", getTurnDetectionFieldDisplayValue(context, "streaming_vad_supported")],
+    ["Buff. przedaktyw. MS", getTurnDetectionFieldDisplayValue(context, "pre_activation_buffer_ms")],
+    ["Cisza trw. MS", getTurnDetectionFieldDisplayValue(context, "silence_duration_ms")],
+    ["Próg VAD", getTurnDetectionFieldDisplayValue(context, "vad_threshold")],
+    ["Odp. na przerwanie", getTurnDetectionFieldDisplayValue(context, "interrupt_response")],
+    ["Przerwanie semantyczne", getTurnDetectionFieldDisplayValue(context, "semantic_interruption")],
+    ["Priorytet użytkownika", getTurnDetectionFieldDisplayValue(context, "priority_user_lane")],
+    ["Samodzielność tła", getTurnDetectionFieldDisplayValue(context, "background_autonomy_lane")],
+    ["Ostrzeżenia TK", getTurnDetectionFieldDisplayValue(context, "warnings")],
+  ];
+}
+
+function voiceDoctorDiagnoses(context) {
+  const diagnoses = [];
+  if (!operatorBackendConnected(context)) {
+    diagnoses.push("backend offline");
+  }
+  if (context.voiceEnabled === false) {
+    diagnoses.push("voice disabled");
+  }
+  const speak = firstPresent(voiceRuntimeConfiguredValue(context, "tts_voice_model", ["speak_responses"]), configuredSetting(context, ["voice.speak_responses", "speak_responses"]));
+  if (speak === false || String(speak).toLowerCase() === "false") {
+    diagnoses.push("speak disabled");
+  }
+  const broker = firstPresent(voiceRuntimeEffectiveValue(context, "playback", ["broker_enabled"]), configuredSetting(context, ["voice.broker_enabled", "broker_enabled"]));
+  if (broker === false || String(broker).toLowerCase() === "false") {
+    diagnoses.push("broker disabled");
+  }
+  if (voiceRuntimeGroupReadiness(context, "tts_voice_model") === RUNTIME_OVERVIEW_READINESS.MISSING || !firstPresent(configuredTts(context), effectiveTts(context))) {
+    diagnoses.push("TTS missing");
+  }
+  if (voiceRuntimeGroupReadiness(context, "stt_transcription") === RUNTIME_OVERVIEW_READINESS.MISSING || !firstPresent(configuredStt(context), effectiveStt(context))) {
+    diagnoses.push("STT missing");
+  }
+  const stuck = queueStuckWarning(context);
+  if (stuck) {
+    diagnoses.push("queue stuck");
+  }
+  if (voiceRuntimeGroupReadiness(context, "queue_barge_in") === RUNTIME_OVERVIEW_READINESS.MISSING) {
+    diagnoses.push("cancellation path unavailable");
+  }
+  if (runtimeOverviewWarningsSummary(context).toLowerCase().includes("ptt")) {
+    diagnoses.push("PTT source invalid warning");
+  }
+  return [...new Set(diagnoses)];
+}
+
+function voiceDoctorMeaning(context) {
+  const diagnoses = voiceDoctorDiagnoses(context);
+  if (diagnoses.includes("backend offline")) {
+    return "DAN is not reachable; voice state cannot be trusted yet.";
+  }
+  if (diagnoses.includes("voice disabled")) {
+    return "Voice is off; text/status can still be tested.";
+  }
+  if (diagnoses.some((item) => item.includes("TTS") || item.includes("STT") || item.includes("broker"))) {
+    return "Voice path is incomplete; check the missing layer before live PTT.";
+  }
+  if (diagnoses.includes("queue stuck")) {
+    return "Speech was queued or speaking too long; inspect voice queue and cancellation.";
+  }
+  return "Voice looks usable; run a manual PTT and queue check.";
+}
+
+function providerDoctorRows(context) {
+  return [
+    ["active provider/adapter", firstPresent(projectionValue(context.brainRuntime.current_adapter), context.activeAdapter)],
+    ["active model", firstPresent(providerCurrentModel(context), configuredBrainModel(context))],
+    ["command status", providerCommandStatus(context)],
+    ["credentials status", providerCredentialsStatus(context)],
+    ["effort support", providerAllowedEffort(context)],
+    ["fast support", providerFastSupport(context)],
+    ["context budget/window", firstPresent(projectionValue(safeObject(currentProviderCapability(context)).context_window_chars), configuredSetting(context, ["brain.context_budget_chars", "context.window"]))],
+    ["streaming support", providerSupportValue(context, "streaming_support")],
+    ["tools support", providerSupportValue(context, "tools_support")],
+    ["local runtime status", localRuntimeStatus(context)],
+    ["latest provider error", providerLatestError(context)],
+  ];
+}
+
+function providerDoctorDiagnoses(context) {
+  const diagnoses = [];
+  const provider = safeObject(currentProviderCapability(context));
+  const providerName = firstPresent(provider.name, projectionValue(context.brainRuntime.current_adapter), context.activeAdapter);
+  const commandStatus = providerProjectionReadiness(provider, "provider_command_status");
+  const credentialsStatus = providerProjectionReadiness(provider, "provider_credentials_status");
+  const modelStatus = providerProjectionReadiness(provider, "current_model");
+  if (commandStatus === RUNTIME_OVERVIEW_READINESS.MISSING) {
+    diagnoses.push("provider command missing");
+  }
+  if (provider.configured === true && provider.available === false) {
+    diagnoses.push("provider configured but unavailable");
+  }
+  if (!firstPresent(providerCurrentModel(context), configuredBrainModel(context)) || modelStatus === RUNTIME_OVERVIEW_READINESS.MISSING) {
+    diagnoses.push("model missing/unknown");
+  }
+  if (providerProjectionReadiness(provider, "effort") === RUNTIME_OVERVIEW_READINESS.UNSUPPORTED || providerProjectionReadiness(provider, "effort") === RUNTIME_OVERVIEW_READINESS.INVALID) {
+    diagnoses.push("effort unsupported");
+  }
+  if (providerSupportValue(context, "fast_supported") === "no" || providerProjectionReadiness(provider, "fast") === RUNTIME_OVERVIEW_READINESS.INVALID) {
+    diagnoses.push("fast unsupported");
+  }
+  if (/local|ollama|mlx|llama|bielik|mistral/i.test(String(providerName || "")) && modelStatus !== RUNTIME_OVERVIEW_READINESS.OK) {
+    diagnoses.push("local model missing");
+  }
+  if (providerName === "mock" || provider.kind === "Developer/Test") {
+    diagnoses.push("non-production provider selected");
+  }
+  if (credentialsStatus === RUNTIME_OVERVIEW_READINESS.MISSING || credentialsStatus === RUNTIME_OVERVIEW_READINESS.UNKNOWN) {
+    diagnoses.push("credentials unknown/missing");
+  }
+  return [...new Set(diagnoses)];
+}
+
+function providerDoctorMeaning(context) {
+  const diagnoses = providerDoctorDiagnoses(context);
+  if (diagnoses.includes("provider command missing")) {
+    return "The selected adapter cannot be executed from the safe runtime view.";
+  }
+  if (diagnoses.includes("non-production provider selected")) {
+    return "The active provider is not a normal runtime provider.";
+  }
+  if (diagnoses.includes("credentials unknown/missing")) {
+    return "Credentials are not exposed here; run a manual provider smoke if needed.";
+  }
+  return "Provider status is known enough for a text turn.";
+}
+
+function operatorSummaryFromSnapshot(snapshot) {
+  const context = runtimeOverviewContext(snapshot || {});
+  const backendConnected = operatorBackendConnected(context);
+  const runtimeLoaded = operatorRuntimeProjectionLoaded(context);
+  const blockers = operatorTopBlockers(context);
+  const warnings = operatorTopWarnings(context);
+  const degradingWarnings = operatorDegradingWarnings(context);
+  let status = "ready";
+  if (!backendConnected) {
+    status = "offline";
+  } else if (!runtimeLoaded) {
+    status = "unknown";
+  } else if (blockers.length > 0) {
+    status = "blocked";
+  } else if (degradingWarnings.length > 0) {
+    status = "degraded";
+  }
+  return {
+    status,
+    statusLine: operatorStatusLine(status, blockers, warnings, context),
+    blockers: blockers.slice(0, 3),
+    warnings: warnings.slice(0, 3),
+    nextAction: operatorNextAction(status, blockers, warnings),
+    backendConnected,
+    daemonStatus: firstPresent(context.state.state, context.health.state, context.health.service, "nieznane"),
+    panelStatus: backendConnected ? "połączony z backendem" : "backend nieosiągalny",
+    activeProvider: firstPresent(projectionValue(context.brainRuntime.current_adapter), context.activeAdapter, "nieznane"),
+    voiceStatus: missionVoiceStatus(context),
+    toolsInternetStatus: firstPresent(toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)), networkToolSummary(context.tools), "unknown"),
+    memoryStatus: memoryEnabledSummary(context),
+    latestCriticalBlocker: blockers[0] || "brak",
+    latestSafeError: traceLatestSafeError(context) || "brak",
+    lastRefreshTime: cockpit.missionControl.lastRefreshAt
+      ? formatFullDate(cockpit.missionControl.lastRefreshAt)
+      : "nieznane",
+    lastImportantEvent: lastImportantEventSummary(context),
+    safetyGuarantee:
+      "Tryb produkcyjny; stan należy do backendu; diagnostyka redagowana; bez renderowania sekretów",
+  };
+}
+
+function missionVoiceStatus(context) {
+  if (context.health.voice_enabled === false) {
+    return "disabled";
+  }
+  const readiness = voiceRuntimeOverallReadiness(context);
+  if (readiness === RUNTIME_OVERVIEW_READINESS.OK) {
+    return "enabled";
+  }
+  if (readiness === RUNTIME_OVERVIEW_READINESS.MISSING || readiness === RUNTIME_OVERVIEW_READINESS.INVALID) {
+    return "degraded";
+  }
+  return firstPresent(context.health.voice_enabled === true ? "enabled/unknown" : null, readiness, "unknown");
+}
+
+function operatorBackendConnected(context) {
+  return runtimeOverviewSourceAvailable(context, "health") && Boolean(
+    firstPresent(context.health.service, context.health.state, context.state.state),
+  );
+}
+
+function operatorRuntimeProjectionLoaded(context) {
+  return (
+    runtimeOverviewSourceAvailable(context, "runtimeSettings") &&
+    Object.keys(context.runtimeSettings).length > 0
+  );
+}
+
+function operatorTopBlockers(context) {
+  const blockers = [];
+  if (!operatorBackendConnected(context)) {
+    blockers.push("backend offline");
+    return blockers;
+  }
+  if (!operatorRuntimeProjectionLoaded(context)) {
+    blockers.push("runtime projection missing");
+  }
+  const topBlockers = readinessValue(context, "top_blockers");
+  if (Array.isArray(topBlockers)) {
+    blockers.push(...topBlockers.map(overviewValue));
+  } else if (firstPresent(topBlockers) && topBlockers !== "none") {
+    blockers.push(overviewValue(topBlockers));
+  }
+  for (const [key, label] of [
+    ["brain_provider_command", "brain provider command"],
+    ["tts_provider", "TTS provider"],
+    ["stt_provider", "STT provider"],
+    ["panel_backend_connected", "panel backend connected"],
+  ]) {
+    const status = readinessStatus(context, key);
+    if (status === RUNTIME_OVERVIEW_READINESS.MISSING || status === RUNTIME_OVERVIEW_READINESS.INVALID) {
+      blockers.push(`${label}: ${overviewValue(readinessValue(context, key))}`);
+    }
+  }
+  const providerStatus = providerCapabilityReadiness(context, context.activeAdapter);
+  if (providerStatus === RUNTIME_OVERVIEW_READINESS.MISSING || providerStatus === RUNTIME_OVERVIEW_READINESS.INVALID) {
+    blockers.push("provider configured but unavailable");
+  }
+  return uniqueNonEmpty(blockers).slice(0, 6);
+}
+
+function operatorTopWarnings(context) {
+  const warnings = [];
+  const readinessWarningsValue = readinessValue(context, "warnings");
+  if (Array.isArray(readinessWarningsValue)) {
+    warnings.push(...readinessWarningsValue.map(overviewValue));
+  } else if (firstPresent(readinessWarningsValue)) {
+    warnings.push(overviewValue(readinessWarningsValue));
+  }
+  warnings.push(...runtimeOverviewCompatibilityWarnings(context));
+  warnings.push(...voiceRuntimeWarnings(context));
+  warnings.push(...providerCompatibilityWarnings(context));
+  const mockWarning = providerMockDevWarning(context);
+  if (mockWarning !== "none") {
+    warnings.push(mockWarning);
+  }
+  const credentials = providerCredentialsStatus(context);
+  if (credentials.includes("unknown") || credentials.includes("missing")) {
+    warnings.push("credentials unknown/missing");
+  }
+  const latestError = traceLatestSafeError(context);
+  if (latestError && latestError !== "none") {
+    warnings.push(`latest safe error: ${latestError}`);
+  }
+  const stuck = queueStuckWarning(context);
+  if (stuck) {
+    warnings.push(stuck);
+  }
+  for (const failure of context.failures) {
+    warnings.push(`source unavailable: ${overviewValue(failure)}`);
+  }
+  return uniqueNonEmpty(warnings);
+}
+
+function operatorDegradingWarnings(context) {
+  return operatorTopWarnings(context).filter((warning) =>
+    /latest safe error|queue stuck|source unavailable|compat:|invalid|failed|unavailable/i.test(warning),
+  );
+}
+
+function operatorStatusLine(status, blockers, warnings, context) {
+  if (status === "offline") {
+    return `Offline: ${humanShortReason(blockers[0] || "backend offline")}`;
+  }
+  if (status === "unknown") {
+    return "Nieznane: brakuje projekcji runtime";
+  }
+  if (status === "blocked") {
+    return `Zablokowane: ${blockers.slice(0, 2).join(", ")}`;
+  }
+  if (status === "degraded") {
+    return `Ograniczone: ${warnings.slice(0, 2).join(", ") || "pozostały ostrzeżenia"}`;
+  }
+  return `Gotowe: ${operatorReadySignals(context).slice(0, 3).join(", ")}${warnings.length > 0 ? ", pozostały ostrzeżenia" : ""}`;
+}
+
+function operatorReadySignals(context) {
+  const signals = [];
+  if (operatorBackendConnected(context)) signals.push("status available");
+  if (operatorRuntimeProjectionLoaded(context)) signals.push("runtime projection loaded");
+  if (traceValue(context, "turn_id")) signals.push("latest turn trace visible");
+  if (runtimeOverviewSourceAvailable(context, "voiceQueue")) signals.push("voice queue visible");
+  if (runtimeOverviewSourceAvailable(context, "events")) signals.push("safe events visible");
+  return signals.length > 0 ? signals : ["read-only cockpit loaded"];
+}
+
+function operatorNextAction(status, blockers, warnings) {
+  if (status === "offline") {
+    return "Uruchom albo sprawdź daemona przez scripts/dan status, potem odśwież.";
+  }
+  if (status === "unknown") {
+    return "Odśwież Kontrolę misji, gdy /runtime/settings będzie dostępne.";
+  }
+  if (status === "blocked") {
+    return `Napraw pierwszy blocker: ${blockers[0] || "blocker runtime"}.`;
+  }
+  if (status === "degraded") {
+    return `Przetestuj następną bezpieczną ścieżkę, potem sprawdź ostrzeżenie: ${warnings[0] || "ostatnie ostrzeżenie"}.`;
+  }
+  return "Następny test: wyślij turę tekstową, przytrzymaj PTT ręcznie, sprawdź pamięć i ostatni trace.";
+}
+
+function lastImportantEventSummary(context) {
+  const parts = [
+    importantEventPart(context.events, "error", (event) => eventMatchesIssue(event, ["runtime", "turn", "voice", "brain", "provider", "memory", "tool"])),
+    importantEventPart(context.events, "voice", (event) => eventFamily(event && event.type) === "voice"),
+    importantEventPart(context.events, "turn", (event) => eventFamily(event && event.type) === "turn"),
+  ].filter(Boolean);
+  return parts.join(" | ");
+}
+
+function importantEventPart(events, label, predicate) {
+  const event = newestFirstEvents(events).find(predicate);
+  if (!event) {
+    return "";
+  }
+  const item = safeEventTimelineItem(event);
+  return `${label}: ${item.type}${item.summary ? ` - ${item.summary}` : ""}`;
+}
+
+function moduleStatusFromReadiness(readiness) {
+  const normalized = normalizeRuntimeReadiness(readiness);
+  if (normalized === RUNTIME_OVERVIEW_READINESS.OK) return "ready";
+  if (
+    normalized === RUNTIME_OVERVIEW_READINESS.INVALID ||
+    normalized === RUNTIME_OVERVIEW_READINESS.MISSING ||
+    normalized === RUNTIME_OVERVIEW_READINESS.UNSUPPORTED
+  ) return "blocked";
+  return "degraded";
+}
+
+function moduleStatusFromSources(context, sources) {
+  return sources.every((source) => runtimeOverviewSourceAvailable(context, source))
+    ? "ready"
+    : "degraded";
+}
+
+function runtimeDirLogSummary(context) {
+  return firstPresent(
+    readinessValue(context, "runtime_dir"),
+    readinessValue(context, "log_dir"),
+    readinessValue(context, "database_path"),
+    configuredSetting(context, ["runtime.dir", "runtime_dir", "logs.dir", "log_dir"]),
+    RUNTIME_OVERVIEW_NOT_EXPOSED,
+  );
+}
+
+function sourceStatusSummary(context, keys) {
+  return keys
+    .map((key) => `${key}: ${runtimeOverviewSourceAvailable(context, key) ? "ok" : "missing"}`)
+    .join(", ");
+}
+
+function scriptsDANStatusHint(context) {
+  const observations = Array.isArray(safeObject(context.runtimeProcesses).observations)
+    ? context.runtimeProcesses.observations
+    : [];
+  if (observations.length > 0) {
+    return `${observations.length} runtime observations loaded`;
+  }
+  return "not exposed; use scripts/dan status manually";
+}
+
+function providerMockDevWarning(context) {
+  const provider = safeObject(currentProviderCapability(context));
+  if (provider.name === "mock" || provider.kind === "Developer/Test") {
+    return "non-production provider selected";
+  }
+  return "none";
+}
+
+function missionPttSummary(context) {
+  return firstPresent(
+    voiceRuntimeConfiguredValue(context, "endpointing_vad_ptt", ["ptt_mode", "ptt_source", "ptt_hotkey"]),
+    configuredSetting(context, ["voice.ptt_mode", "voice.ptt_hotkey", "ptt.mode"]),
+  );
+}
+
+function memoryEnabledSummary(context) {
+  const value = configuredSetting(context, ["memory.enabled", "memory_enabled"]);
+  if (value === false || String(value).toLowerCase() === "false") {
+    return "disabled";
+  }
+  if (value === true || String(value).toLowerCase() === "true") {
+    return "enabled";
+  }
+  return context.memoryItems.length > 0 || context.memoryBlocks.length > 0 ? "visible" : "unknown";
+}
+
+function latestMemoryStatus(context) {
+  const event = latestEvent(context.events, ["memory.updated", "memory.candidate.created", "memory.candidate.promoted", "memory.disabled"]);
+  if (event) {
+    return eventPayloadSummary(event.payload || {}) || eventLabel(event.type);
+  }
+  if (context.memoryItems.length > 0) {
+    return `${context.memoryItems.length} Memory OS items visible`;
+  }
+  if (context.memoryBlocks.length > 0) {
+    return `${context.memoryBlocks.length} legacy blocks visible`;
+  }
+  return "none/unknown";
+}
+
+function latestTurnBrief(context) {
+  const turn = traceValue(context, "turn_id");
+  if (!turn) {
+    return "unknown";
+  }
+  return `${shortId(turn)} · ${overviewValue(traceValue(context, "source"))}`;
+}
+
+function latestEventTime(events) {
+  const event = newestFirstEvents(events)[0];
+  return event && event.created_at ? formatRelative(event.created_at) : RUNTIME_OVERVIEW_UNKNOWN;
+}
+
+function pttChecklistStatus(context) {
+  if (!operatorBackendConnected(context)) {
+    return "fail";
+  }
+  const readiness = voiceRuntimeGroupReadiness(context, "endpointing_vad_ptt");
+  if (readiness === RUNTIME_OVERVIEW_READINESS.OK && firstPresent(missionPttSummary(context))) {
+    return "pass";
+  }
+  return readiness === RUNTIME_OVERVIEW_READINESS.MISSING ? "fail" : "unknown";
+}
+
+function pttChecklistWhy(context) {
+  const value = missionPttSummary(context);
+  return firstPresent(value)
+    ? `PTT state/config visible: ${overviewValue(value)}`
+    : "hotkey/PTT state missing";
+}
+
+function bargeInChecklistStatus(context) {
+  const readiness = voiceRuntimeGroupReadiness(context, "queue_barge_in");
+  if (readiness === RUNTIME_OVERVIEW_READINESS.OK) {
+    return "pass";
+  }
+  if (readiness === RUNTIME_OVERVIEW_READINESS.MISSING) {
+    return "fail";
+  }
+  return "unknown";
+}
+
+function bargeInChecklistWhy(context) {
+  return firstPresent(
+    voiceRuntimeGroupDependency(context, "queue_barge_in"),
+    latestBargeInSummary(context.events),
+    "cancel state not observed yet",
+  );
+}
+
+function currentSpeakingItem(context) {
+  const row = context.queueRows.find((item) => String(item.status || "").toLowerCase() === "speaking");
+  if (!row) {
+    return "none";
+  }
+  return `${shortId(row.id)} · ${overviewValue(row.kind)} · ${overviewValue(row.status)}`;
+}
+
+function queueStuckWarning(context) {
+  const now = Date.now();
+  for (const row of context.queueRows) {
+    const status = String(row && row.status || "").toLowerCase();
+    if (!["queued", "speaking", "started"].includes(status)) {
+      continue;
+    }
+    const timestamp = Date.parse(row.spoken_at || row.created_at || "");
+    if (Number.isFinite(timestamp) && now - timestamp > 10 * 60 * 1000) {
+      return `queue stuck: ${shortId(row.id)} ${status}`;
+    }
+  }
+  return "";
+}
+
+function localRuntimeStatus(context) {
+  const graph = safeObject(safeObject(context.runtimeSettings).capability_graph);
+  const runtimes = safeObject(safeObject(graph).local_capabilities).runtimes;
+  if (!Array.isArray(runtimes) || runtimes.length === 0) {
+    return "absent/unknown";
+  }
+  return runtimes
+    .map((runtime) => `${overviewValue(runtime.id || runtime.name)}: ${overviewValue(runtime.status || runtime.available)}`)
+    .join(", ");
+}
+
+function uniqueNonEmpty(values) {
+  return [...new Set(values.map(overviewValue).filter((value) => value && value !== RUNTIME_OVERVIEW_UNKNOWN && value !== "none"))];
+}
+
+const RUNTIME_OVERVIEW_SECTIONS = [
+  {
+    title: "Runtime",
+    fields: [
+      field("overview mode", "contract", (ctx) => ctx.readOnlyMode),
+      field("service", "health", (ctx) => ctx.health.service),
+      field("state", "state", (ctx) => firstPresent(ctx.state.state, ctx.health.state)),
+      field("started", "health", (ctx) => ctx.health.started),
+      field("schema version", "health", (ctx) => ctx.health.schema_version),
+      field("voice enabled", "state", (ctx) => ctx.voiceEnabled),
+    ],
+  },
+  {
+    title: "Turn State",
+    fields: [
+      field("current_turn_id", "runtimeSettings", (ctx) => turnStateValue(ctx, "current_turn_id"), {
+        readiness: (ctx) => turnStateReadiness(ctx, "current_turn_id"),
+        warnings: (ctx) => turnStateWarnings(ctx, ["current_turn_id"]),
+      }),
+      field("current_conversation_id", "runtimeSettings", (ctx) =>
+        turnStateValue(ctx, "current_conversation_id"),
+        {
+          readiness: (ctx) => turnStateReadiness(ctx, "current_conversation_id"),
+          warnings: (ctx) => turnStateWarnings(ctx, ["current_conversation_id"]),
+        },
+      ),
+      field("current_turn_source", "runtimeSettings", (ctx) => turnStateValue(ctx, "current_turn_source"), {
+        readiness: (ctx) => turnStateReadiness(ctx, "current_turn_source"),
+      }),
+      field("generation_state", "runtimeSettings", (ctx) => turnStateValue(ctx, "generation_state"), {
+        readiness: (ctx) => turnStateReadiness(ctx, "generation_state"),
+      }),
+      field("current_speech_id", "runtimeSettings", (ctx) => turnStateValue(ctx, "current_speech_id"), {
+        readiness: (ctx) => turnStateReadiness(ctx, "current_speech_id"),
+      }),
+      field("interrupted_previous_response", "runtimeSettings", (ctx) =>
+        turnStateValue(ctx, "interrupted_previous_response"),
+        {
+          readiness: (ctx) => turnStateReadiness(ctx, "interrupted_previous_response"),
+        },
+      ),
+      field("interrupted_turn_id", "runtimeSettings", (ctx) => turnStateValue(ctx, "interrupted_turn_id"), {
+        readiness: (ctx) => turnStateReadiness(ctx, "interrupted_turn_id"),
+      }),
+      field("interruption_reason", "runtimeSettings", (ctx) => turnStateValue(ctx, "interruption_reason"), {
+        readiness: (ctx) => turnStateReadiness(ctx, "interruption_reason"),
+      }),
+      field("cancelled_speech_id", "runtimeSettings", (ctx) => turnStateValue(ctx, "cancelled_speech_id"), {
+        readiness: (ctx) => turnStateReadiness(ctx, "cancelled_speech_id"),
+      }),
+    ],
+  },
+  {
+    title: "Readiness / Blockers",
+    fields: [
+      field("OK / Missing / Invalid / Unknown / Warning", "runtimeSettings", (ctx) =>
+        readinessSummary(ctx),
+        {
+          readiness: (ctx) => readinessStatus(ctx, "summary"),
+          warnings: (ctx) => readinessWarnings(ctx, ["summary", "warnings", "top_blockers"]),
+        },
+      ),
+      field("top blockers", "runtimeSettings", (ctx) => readinessValue(ctx, "top_blockers"), {
+        readiness: (ctx) => readinessStatus(ctx, "top_blockers"),
+        warnings: (ctx) => readinessWarnings(ctx, ["top_blockers"]),
+      }),
+      field("warnings", "runtimeSettings", (ctx) => readinessValue(ctx, "warnings"), {
+        readiness: (ctx) => readinessStatus(ctx, "warnings"),
+      }),
+      field("daemon config", "runtimeSettings", (ctx) => readinessValue(ctx, "daemon_config"), {
+        readiness: (ctx) => readinessStatus(ctx, "daemon_config"),
+        warnings: (ctx) => readinessWarnings(ctx, ["daemon_config"]),
+      }),
+      field("database path", "runtimeSettings", (ctx) => readinessValue(ctx, "database_path"), {
+        readiness: (ctx) => readinessStatus(ctx, "database_path"),
+        warnings: (ctx) => readinessWarnings(ctx, ["database_path"]),
+      }),
+      field("panel backend connected", "runtimeSettings", (ctx) =>
+        readinessValue(ctx, "panel_backend_connected"),
+        {
+          readiness: (ctx) => readinessStatus(ctx, "panel_backend_connected"),
+        },
+      ),
+      field("brain provider command", "runtimeSettings", (ctx) =>
+        readinessValue(ctx, "brain_provider_command"),
+        {
+          readiness: (ctx) => readinessStatus(ctx, "brain_provider_command"),
+          warnings: (ctx) => readinessWarnings(ctx, ["brain_provider_command"]),
+        },
+      ),
+      field("TTS provider", "runtimeSettings", (ctx) => readinessValue(ctx, "tts_provider"), {
+        readiness: (ctx) => readinessStatus(ctx, "tts_provider"),
+        warnings: (ctx) => readinessWarnings(ctx, ["tts_provider"]),
+      }),
+      field("STT provider", "runtimeSettings", (ctx) => readinessValue(ctx, "stt_provider"), {
+        readiness: (ctx) => readinessStatus(ctx, "stt_provider"),
+        warnings: (ctx) => readinessWarnings(ctx, ["stt_provider"]),
+      }),
+      field("recorder/playback command", "runtimeSettings", (ctx) =>
+        `${overviewValue(readinessValue(ctx, "recorder_command"))} / ${overviewValue(readinessValue(ctx, "playback_command"))}`,
+        {
+          readiness: (ctx) =>
+            runtimeReadinessCompare(
+              readinessStatus(ctx, "recorder_command"),
+              readinessStatus(ctx, "playback_command"),
+            ) <= 0
+              ? readinessStatus(ctx, "recorder_command")
+              : readinessStatus(ctx, "playback_command"),
+          warnings: (ctx) => readinessWarnings(ctx, ["recorder_command", "playback_command"]),
+        },
+      ),
+      field("network/tools capability", "runtimeSettings", (ctx) =>
+        readinessValue(ctx, "network_tools_capability"),
+        {
+          readiness: (ctx) => readinessStatus(ctx, "network_tools_capability"),
+          warnings: (ctx) => readinessWarnings(ctx, ["network_tools_capability"]),
+        },
+      ),
+    ],
+  },
+  {
+    title: "Brain/Provider",
+    fields: [
+      field("active provider/adapter", "runtimeSettings", (ctx) =>
+        firstPresent(projectionValue(ctx.brainRuntime.current_adapter), ctx.activeAdapter),
+        {
+          readiness: (ctx, value) => providerCapabilityReadiness(ctx, value),
+          dependency: (ctx, value) => providerCapabilityDependency(ctx, value),
+          warnings: (ctx) => providerCompatibilityWarnings(ctx),
+        },
+      ),
+      field("active model", "runtimeSettings", (ctx) =>
+        firstPresent(providerCurrentModel(ctx), configuredBrainModel(ctx), adapterModels(ctx.adapters, ctx.activeAdapter)),
+        {
+          readiness: (ctx) => providerProjectionReadiness(currentProviderCapability(ctx), "current_model"),
+          warnings: (ctx) => providerCompatibilityWarnings(ctx),
+        },
+      ),
+      field("configured provider list", "runtimeSettings", (ctx) => providerCapabilityList(ctx), {
+        readiness: (ctx) =>
+          normalProviderCapabilities(ctx).length > 0
+            ? RUNTIME_OVERVIEW_READINESS.OK
+            : RUNTIME_OVERVIEW_READINESS.UNKNOWN,
+      }),
+      field("provider availability/configured status", "runtimeSettings", (ctx) => providerAvailabilitySummary(ctx), {
+        readiness: (ctx) => providerCapabilityReadiness(ctx, ctx.activeAdapter),
+        warnings: (ctx) => providerCompatibilityWarnings(ctx),
+      }),
+      field("command status", "runtimeSettings", (ctx) => providerCommandStatus(ctx), {
+        readiness: (ctx) => providerProjectionReadiness(currentProviderCapability(ctx), "provider_command_status"),
+      }),
+      field("credentials status", "runtimeSettings", (ctx) => providerCredentialsStatus(ctx), {
+        readiness: (ctx) => providerProjectionReadiness(currentProviderCapability(ctx), "provider_credentials_status"),
+      }),
+      field("context budget/window", "runtimeSettings", (ctx) =>
+        firstPresent(
+          projectionValue(safeObject(currentProviderCapability(ctx)).context_window_chars),
+          configuredSetting(ctx, [
+            "brain.context_budget_chars",
+            "brain.context_budget",
+            "brain.context_window",
+            "context.budget",
+            "context.window",
+            "memory.context_budget",
+          ]),
+        ),
+      ),
+      field("streaming support", "runtimeSettings", (ctx) => providerSupportValue(ctx, "streaming_support")),
+      field("tools support", "runtimeSettings", (ctx) => providerSupportValue(ctx, "tools_support")),
+      field("effort allowed values", "runtimeSettings", (ctx) => providerAllowedEffort(ctx), {
+        readiness: (ctx) => providerProjectionReadiness(currentProviderCapability(ctx), "allowed_effort_values"),
+        warnings: (ctx) => providerCompatibilityWarnings(ctx),
+      }),
+      field("effort current/status", "runtimeSettings", (ctx) => providerEffortStatus(ctx), {
+        readiness: (ctx) => providerProjectionReadiness(currentProviderCapability(ctx), "effort"),
+        warnings: (ctx) => providerCompatibilityWarnings(ctx),
+      }),
+      field("fast support", "runtimeSettings", (ctx) => providerFastSupport(ctx), {
+        readiness: (ctx) => providerProjectionReadiness(currentProviderCapability(ctx), "fast_supported"),
+        warnings: (ctx) => providerCompatibilityWarnings(ctx),
+      }),
+      field("latest provider used by last turn", "runtimeSettings", (ctx) => latestTurnProviderSummary(ctx)),
+      field("latest provider error", "runtimeSettings", (ctx) => providerLatestError(ctx), {
+        readiness: (ctx) => providerProjectionReadiness(currentProviderCapability(ctx), "latest_error"),
+      }),
+      field("provider sessions are memory", "contract", () => "no; daemon owns memory"),
+      field("Claude config", "brain", (ctx) =>
+        adapterRegistration(ctx.adapters, ["claude_cli"]),
+      ),
+    ],
+  },
+  {
+    title: "Ostatni trace tury",
+    fields: [
+      field("turn_id", "runtimeSettings", (ctx) => traceValue(ctx, "turn_id"), {
+        readiness: (ctx) => traceReadiness(ctx, "turn_id"),
+        warnings: (ctx) => traceWarnings(ctx, ["turn_id"]),
+      }),
+      field("conversation_id", "runtimeSettings", (ctx) => traceValue(ctx, "conversation_id"), {
+        readiness: (ctx) => traceReadiness(ctx, "conversation_id"),
+      }),
+      field("source", "runtimeSettings", (ctx) => traceValue(ctx, "source"), {
+        readiness: (ctx) => traceReadiness(ctx, "source"),
+      }),
+      field("provider/adapter/model used", "runtimeSettings", (ctx) =>
+        traceProviderModelSummary(ctx),
+      ),
+      field("effort/fast", "runtimeSettings", (ctx) =>
+        `${overviewValue(traceValue(ctx, "effort"))} / ${overviewValue(traceValue(ctx, "fast"))}`,
+      ),
+      field("memory included count", "runtimeSettings", (ctx) => traceValue(ctx, "memory_included_count"), {
+        readiness: (ctx) => traceReadiness(ctx, "memory_included_count"),
+        warnings: (ctx) => traceWarnings(ctx, ["memory_included_count"]),
+      }),
+      field("memory excluded count", "runtimeSettings", (ctx) => traceValue(ctx, "memory_excluded_count"), {
+        readiness: (ctx) => traceReadiness(ctx, "memory_excluded_count"),
+        warnings: (ctx) => traceWarnings(ctx, ["memory_excluded_count"]),
+      }),
+      field("tools attempted count", "runtimeSettings", (ctx) => traceValue(ctx, "tools_attempted_count")),
+      field("voice rows created filler/final/error", "runtimeSettings", (ctx) => traceVoiceRowsCreated(ctx)),
+      field("speech cancellation/interruption reason", "runtimeSettings", (ctx) =>
+        traceCancellationSummary(ctx),
+      ),
+      field("latest safe error", "runtimeSettings", (ctx) => traceLatestSafeError(ctx), {
+        readiness: (ctx, value) =>
+          value === "none" ? RUNTIME_OVERVIEW_READINESS.OK : traceReadiness(ctx, "latest_safe_error"),
+      }),
+    ],
+  },
+  {
+    title: "Debug timeline",
+    fields: [
+      field("user input received", "runtimeSettings", (ctx) =>
+        traceTimestamp(ctx, ["user_input_received", "input_received_at", "created_at"]),
+      ),
+      field("STT done", "runtimeSettings", (ctx) =>
+        traceTimestamp(ctx, ["stt_done_at", "transcription_done_at"]),
+      ),
+      field("generation started", "runtimeSettings", (ctx) =>
+        traceTimestamp(ctx, ["generation_started_at", "started_at"]),
+      ),
+      field("generation done", "runtimeSettings", (ctx) =>
+        traceTimestamp(ctx, ["generation_done_at", "completion_at", "updated_at"]),
+      ),
+      field("TTS queued", "runtimeSettings", (ctx) =>
+        traceTimestamp(ctx, ["tts_queued_at", "speech_queued_at"]),
+      ),
+      field("playback started", "runtimeSettings", (ctx) =>
+        traceTimestamp(ctx, ["playback_started_at", "spoken_at"]),
+      ),
+      field("playback finished", "runtimeSettings", (ctx) =>
+        traceTimestamp(ctx, ["playback_finished_at", "speech_done_at"]),
+      ),
+      field("newest-first safe events", "events", (ctx) => debugTimelineSummary(ctx.events), {
+        readiness: (ctx) =>
+          Array.isArray(ctx.events) && ctx.events.length > 0
+            ? RUNTIME_OVERVIEW_READINESS.OK
+            : RUNTIME_OVERVIEW_READINESS.UNKNOWN,
+      }),
+    ],
+  },
+  {
+    title: "Voice Settings: Capture/Input",
+    fields: [
+      field("backend projection", "voiceRuntime", (ctx) => voiceRuntimeProjectionSummary(ctx), {
+        readiness: (ctx) => voiceRuntimeOverallReadiness(ctx),
+        dependency: (ctx) => voiceRuntimeCannotProbeSummary(ctx),
+        warnings: (ctx) => voiceRuntimeWarnings(ctx),
+      }),
+      field("input policy", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "capture_input", ["input_policy"]),
+          ctx.audio.input_policy,
+          configuredSetting(ctx, ["voice.input_policy", "audio.input_policy"]),
+        ),
+        {
+          readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "capture_input"),
+          dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "capture_input"),
+          warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "capture_input"),
+        },
+      ),
+      field("preferred input", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "capture_input", ["preferred_input"]),
+          voiceRuntimeEffectiveValue(ctx, "capture_input", ["input_device", "input_transport"]),
+          ctx.audio.preferred_input,
+          ctx.audio.input_device,
+        ),
+      ),
+      field("bluetooth mic allowed", "audio", (ctx) => ctx.audio.allow_bluetooth_microphone),
+      field("recorder backend/command", "voiceRuntime", (ctx) => recorderEngine(ctx), {
+        readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "capture_input"),
+        dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "capture_input"),
+        warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "capture_input"),
+      }),
+      field("mic permission/status", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeEffectiveValue(ctx, "capture_input", [
+            "microphone_permission",
+            "mic_permission",
+            "permission",
+          ]),
+          ctx.audio.microphone_permission,
+          ctx.audio.mic_permission,
+          RUNTIME_OVERVIEW_NOT_EXPOSED,
+        ),
+        {
+          readiness: () => RUNTIME_OVERVIEW_READINESS.UNKNOWN,
+          dependency: () => "reported only if existing safe audio state exposes it",
+        },
+      ),
+      field("active capture/listening", "voice", (ctx) =>
+        firstPresent(
+          voiceRuntimeEffectiveValue(ctx, "capture_input", ["listening"]),
+          ctx.voice.listening,
+        ),
+      ),
+    ],
+  },
+  {
+    title: "Voice Settings: STT/Transcription",
+    fields: [
+      field("STT provider", "voiceRuntime", (ctx) => firstPresent(configuredStt(ctx), effectiveStt(ctx)), {
+        readiness: (ctx, value) =>
+          voiceRuntimeGroupReadiness(ctx, "stt_transcription", voiceConfiguredReadiness(ctx, value)),
+        dependency: (ctx, value) =>
+          voiceRuntimeGroupDependency(ctx, "stt_transcription", configuredRuntimeDependency(ctx, value)),
+        warnings: (ctx, value) =>
+          voiceRuntimeGroupWarnings(ctx, "stt_transcription", voiceConfiguredWarnings("STT")(ctx, value)),
+      }),
+      field("STT model/path", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "stt_transcription", ["model", "model_path", "path"]),
+          configuredSetting(ctx, ["voice.stt_model", "stt.model", "stt.path"]),
+        ),
+      ),
+      field("STT language", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "stt_transcription", ["language"]),
+          configuredSetting(ctx, ["voice.stt_language", "stt.language"]),
+        ),
+      ),
+      field("STT readiness", "voiceRuntime", (ctx) => voiceRuntimeGroupReadiness(ctx, "stt_transcription"), {
+        readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "stt_transcription"),
+        dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "stt_transcription"),
+      }),
+      field("latest STT error", "voiceRuntime", (ctx) =>
+        latestVoiceLayerError(ctx, "stt_transcription", ["stt", "transcription"]),
+        {
+          readiness: (ctx, value) =>
+            value === "none in recent events" ? RUNTIME_OVERVIEW_READINESS.OK : RUNTIME_OVERVIEW_READINESS.INVALID,
+          warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "stt_transcription"),
+        },
+      ),
+    ],
+  },
+  {
+    title: "Voice Settings: Endpointing/VAD/PTT",
+    fields: [
+      field("PTT mode", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "endpointing_vad_ptt", ["ptt_mode"]),
+          configuredSetting(ctx, ["voice.ptt_mode", "ptt.mode"]),
+        ),
+        {
+          readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "endpointing_vad_ptt"),
+          dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "endpointing_vad_ptt"),
+          warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "endpointing_vad_ptt"),
+        },
+      ),
+      field("hotkey", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "endpointing_vad_ptt", ["ptt_hotkey"]),
+          configuredSetting(ctx, ["voice.ptt_hotkey", "voice.ptt.hotkey", "ptt.hotkey"]),
+        ),
+      ),
+      field("merge window", "settings", (ctx) =>
+        configuredSetting(ctx, [
+          "voice.ptt_merge_window_ms",
+          "voice.merge_window_ms",
+          "ptt.merge_window_ms",
+          "endpointing.merge_window_ms",
+        ]),
+      ),
+      field("silence threshold/duration", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "endpointing_vad_ptt", [
+            "stt_min_rms",
+            "stt_min_voiced_seconds",
+            "stt_min_voiced_ratio",
+          ]),
+          configuredSetting(ctx, [
+            "voice.stt_min_rms",
+            "voice.stt_min_voiced_seconds",
+            "voice.stt_min_voiced_ratio",
+            "vad.silence_threshold",
+            "vad.silence_duration_ms",
+          ]),
+        ),
+      ),
+      field("interrupt policy", "voiceRuntime", (ctx) =>
+        firstPresent(
+          configuredSetting(ctx, ["voice.interrupt_policy", "voice.barge_in_policy"]),
+          latestQueueValue(ctx.queueRows, ["interrupt_policy"]),
+          voiceRuntimeEffectiveValue(ctx, "queue_barge_in", ["cancellation_reason"]),
+          RUNTIME_OVERVIEW_UNKNOWN,
+        ),
+      ),
+      field("listen lease state", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeEffectiveValue(ctx, "endpointing_vad_ptt", [
+            "active_leases",
+            "lease_modes",
+            "lease_sources",
+          ]),
+          ctx.voice.listening,
+        ),
+      ),
+    ],
+  },
+  {
+    title: "Voice Settings: TTS/Voice Model",
+    fields: [
+      field("TTS provider", "voiceRuntime", (ctx) => firstPresent(configuredTts(ctx), effectiveTts(ctx)), {
+        readiness: (ctx, value) =>
+          voiceRuntimeGroupReadiness(ctx, "tts_voice_model", voiceConfiguredReadiness(ctx, value)),
+        dependency: (ctx, value) =>
+          voiceRuntimeGroupDependency(ctx, "tts_voice_model", configuredRuntimeDependency(ctx, value)),
+        warnings: (ctx, value) =>
+          voiceRuntimeGroupWarnings(ctx, "tts_voice_model", voiceConfiguredWarnings("TTS")(ctx, value)),
+      }),
+      field("TTS model_id", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "tts_voice_model", ["model_id", "voice_model"]),
+          configuredSetting(ctx, ["voice.tts_model_id", "tts.model_id"]),
+        ),
+      ),
+      field("voice id/profile/model", "voiceRuntime", (ctx) => configuredVoiceIdentity(ctx), {
+        readiness: (ctx, value) =>
+          voiceRuntimeGroupReadiness(ctx, "tts_voice_model", voiceIdentityReadiness(ctx, value)),
+        dependency: (ctx, value) =>
+          voiceRuntimeGroupDependency(ctx, "tts_voice_model", configuredRuntimeDependency(ctx, value)),
+        warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "tts_voice_model"),
+      }),
+      field("speed/rate/tempo", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "tts_voice_model", ["speed", "rate", "tempo"]),
+          configuredSetting(ctx, [
+            "voice.supertonic_speed",
+            "voice.speed",
+            "voice.rate",
+            "tts.speed",
+            "tts.rate",
+          ]),
+        ),
+      ),
+      field("provider-specific voice settings", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "tts_voice_model", ["language", "steps", "speak_responses"]),
+          configuredSetting(ctx, ["voice.supertonic_steps", "voice.supertonic_lang"]),
+        ),
+      ),
+      field("latest TTS error", "voiceRuntime", (ctx) =>
+        latestVoiceLayerError(ctx, "tts_voice_model", ["tts", "speech", "voice.speak"]),
+        {
+          readiness: (ctx, value) =>
+            value === "none in recent events" ? RUNTIME_OVERVIEW_READINESS.OK : RUNTIME_OVERVIEW_READINESS.INVALID,
+          warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "tts_voice_model"),
+        },
+      ),
+    ],
+  },
+  {
+    title: "Voice Settings: Playback",
+    fields: [
+      field("output policy", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeConfiguredValue(ctx, "playback", ["output_policy"]),
+          ctx.audio.output_policy,
+          configuredSetting(ctx, ["voice.output_policy", "audio.output_policy"]),
+        ),
+        {
+          readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "playback"),
+          dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "playback"),
+          warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "playback"),
+        },
+      ),
+      field("playback engine/command", "voiceRuntime", (ctx) => playbackEngine(ctx), {
+        readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "playback"),
+        dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "playback"),
+        warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "playback"),
+      }),
+      field("active playback state", "voiceQueue", (ctx) =>
+        firstPresent(
+          latestQueueValue(ctx.queueRows, ["status"]),
+          voiceRuntimeEffectiveValue(ctx, "playback", ["broker", "output_device"]),
+          ctx.voice.listening === true ? "listening only" : undefined,
+        ),
+      ),
+      field("latest playback error", "voiceRuntime", (ctx) =>
+        latestVoiceLayerError(ctx, "playback", ["playback", "audio", "voice.speak"]),
+        {
+          readiness: (ctx, value) =>
+            value === "none in recent events" ? RUNTIME_OVERVIEW_READINESS.OK : RUNTIME_OVERVIEW_READINESS.INVALID,
+          warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "playback"),
+        },
+      ),
+    ],
+  },
+  {
+    title: "Voice Settings: Queue/Barge-in",
+    fields: [
+      field("queue counts", "voiceQueue", (ctx) =>
+        firstPresent(
+          voiceRuntimeEffectiveValue(ctx, "queue_barge_in", ["queue_counts"]),
+          voiceQueueCounts(ctx.queueRows),
+        ),
+      ),
+      field("speaking/final/filler", "voiceQueue", (ctx) => voiceQueueKindSummary(ctx.queueRows)),
+      field("cancelled reason", "voiceRuntime", (ctx) =>
+        firstPresent(
+          voiceRuntimeEffectiveValue(ctx, "queue_barge_in", ["cancellation_reason"]),
+          latestQueueValue(ctx.queueRows, ["cancellation_reason", "cancel_reason", "interruption_reason"]),
+          latestBargeInSummary(ctx.events),
+        ),
+      ),
+      field("interrupted previous response", "voiceQueue", (ctx) =>
+        firstPresent(
+          latestQueueValue(ctx.queueRows, ["interrupted_previous_response"]),
+          latestEventPayloadValue(ctx.events, ["interrupted_previous_response"]),
+          RUNTIME_OVERVIEW_UNKNOWN,
+        ),
+      ),
+      field("kolejka głosu", "voiceQueue", (ctx) => voiceQueueSummary(ctx.queueRows, ctx.voiceQueue), {
+        readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "queue_barge_in"),
+        dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "queue_barge_in"),
+        warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "queue_barge_in"),
+      }),
+    ],
+  },
+  {
+    title: "Narzędzia/Internet",
+    fields: [
+      field("zarejestrowane narzędzia", "tools", (ctx) =>
+        ctx.tools.length > 0 ? `${ctx.tools.length} zarejestrowane` : "brak zarejestrowanych",
+      ),
+      field("widoczne klasy ryzyka", "tools", (ctx) => toolRiskSummary(ctx.tools)),
+      field("internet/network capability", "tools", (ctx) => networkToolSummary(ctx.tools), {
+        readiness: (ctx) =>
+          networkToolCandidates(ctx.tools).length > 0
+            ? RUNTIME_OVERVIEW_READINESS.OK
+            : networkPolicyRequiresTool(ctx)
+              ? RUNTIME_OVERVIEW_READINESS.MISSING
+              : RUNTIME_OVERVIEW_READINESS.UNKNOWN,
+        warnings: (ctx) =>
+          networkPolicyRequiresTool(ctx) && networkToolCandidates(ctx.tools).length === 0
+            ? ["network/internet policy exists but no network tool exists"]
+            : [],
+      }),
+      field("missing credentials/config status", "settings", () => RUNTIME_OVERVIEW_NOT_EXPOSED),
+    ],
+  },
+  {
+    title: "Logs/Trace",
+    fields: [
+      field("latest runtime error", "events", (ctx) =>
+        latestEventIssue(ctx.events, ["runtime", "state", "daemon"]),
+      ),
+      field("latest voice error", "events", (ctx) =>
+        latestEventIssue(ctx.events, ["voice", "audio", "speech", "stt", "tts", "listening"]),
+      ),
+      field("latest provider error", "events", (ctx) =>
+        latestEventIssue(ctx.events, ["brain", "provider", "adapter"]),
+      ),
+      field("latest tool error", "events", (ctx) =>
+        latestEventIssue(ctx.events, ["tool"]),
+      ),
+      field("events window", "events", () => "latest 50 events"),
+      field("last failure source", "events", (ctx) => runtimeOverviewSourceFailures(ctx.failures)),
+      field("backend data gaps", "contract", (ctx) => backendDataGapsSummary(ctx)),
+      field("warnings summary", "contract", (ctx) => runtimeOverviewWarningsSummary(ctx)),
+      field("diagnostic status", "events", () => RUNTIME_OVERVIEW_NOT_EXPOSED),
+    ],
+  },
+  {
+    title: "Runtime Checks",
+    fields: [
+      field("active persona/profile", "settings", (ctx) => overviewPersona(ctx.settings)),
+      field("runtime change without restart", "contract", () =>
+        "persona.profile is read per turn when set",
+      ),
+      field("style config", "settings", (ctx) => configuredSetting(ctx, [
+        "persona.style",
+        "style.profile",
+        "voice.style",
+      ])),
+      field("runtime config", "runtimeSettings", (ctx) => readinessValue(ctx, "daemon_config"), {
+        readiness: (ctx) => readinessStatus(ctx, "daemon_config"),
+        warnings: (ctx) => readinessWarnings(ctx, ["daemon_config"]),
+      }),
+    ],
+  },
+];
+
+function runtimeOverviewSections(snapshot) {
+  const context = runtimeOverviewContext(snapshot);
+  return RUNTIME_OVERVIEW_SECTIONS.map((section) => ({
+    title: section.title,
+    rows: runtimeOverviewFieldRows(section.fields, context),
+  }));
+}
+
+function runtimeOverviewContext(snapshot) {
+  const settings = overviewSettings(snapshot.settings);
+  const runtimeSettings = safeObject(snapshot.runtimeSettings);
+  const brainRuntime = safeObject(runtimeSettings.brain);
+  const runtimeReadiness = safeObject(runtimeSettings.runtime_readiness);
+  const currentTurnState = safeObject(runtimeSettings.current_turn_state);
+  const latestTurnTrace = safeObject(runtimeSettings.latest_turn_trace);
+  const brain = safeObject(snapshot.brain);
+  const health = safeObject(snapshot.health);
+  const state = safeObject(snapshot.state);
+  const audio = safeObject(snapshot.audio).audio || {};
+  const voice = safeObject(snapshot.voice);
+  const voiceRuntime = safeObject(safeObject(snapshot.voiceRuntime).voice_runtime);
+  const queueRows = Array.isArray(safeObject(snapshot.voiceQueue).voice_queue)
+    ? snapshot.voiceQueue.voice_queue
+    : [];
+  const tools = Array.isArray(safeObject(snapshot.tools).tools) ? snapshot.tools.tools : [];
+  const memoryBlocks = Array.isArray(safeObject(snapshot.memory).memory)
+    ? snapshot.memory.memory
+    : [];
+  const memoryItems = Array.isArray(safeObject(snapshot.memoryItems).items)
+    ? snapshot.memoryItems.items
+    : [];
+  const events = (Array.isArray(safeObject(snapshot.events).events) ? snapshot.events.events : [])
+    .filter((event) => !isInactiveDecisionEvent(event && event.type));
+  const adapters = Array.isArray(brain.adapters) ? brain.adapters : [];
+  const activeAdapter = firstPresent(brain.current, state.brain_adapter, health.brain_adapter);
+  const failures = Array.isArray(snapshot.failures) ? snapshot.failures : [];
+  const sourceStatus = safeObject(snapshot.sourceStatus);
+  const voiceEnabled = firstPresent(
+    voiceRuntime.voice_enabled,
+    voice.voice_enabled,
+    state.voice_enabled,
+    health.voice_enabled,
+  );
+
+  return {
+    readOnlyMode: RUNTIME_OVERVIEW_READ_ONLY,
+    settings,
+    runtimeSettings,
+    brainRuntime,
+    runtimeReadiness,
+    currentTurnState,
+    latestTurnTrace,
+    brain,
+    health,
+    state,
+    audio,
+    voice,
+    voiceRuntime,
+    voiceQueue: safeObject(snapshot.voiceQueue),
+    queueRows,
+    tools,
+    memoryBlocks,
+    memoryItems,
+    events,
+    runtimeProcesses: safeObject(snapshot.runtimeProcesses),
+    adapters,
+    activeAdapter,
+    failures,
+    sourceStatus,
+    voiceEnabled,
+  };
+}
+
+function field(label, source, value, options = {}) {
+  return { label, source, value, ...options };
+}
+
+function runtimeOverviewFieldRows(fields, context) {
+  return fields.map((entry) => [entry.label, runtimeOverviewFieldSummary(entry, context)]);
+}
+
+function runtimeOverviewFieldSummary(fieldConfig, context) {
+  const rawValue = fieldConfig.value(context);
+  const value = runtimeOverviewDisplayValue(rawValue);
+  const readiness = runtimeOverviewReadiness(fieldConfig, context, rawValue, value);
+  const source = runtimeOverviewSourceLabel(fieldConfig.source);
+  const parts = [value, `readiness: ${readiness}`, `source: ${source}`];
+  const dependency =
+    typeof fieldConfig.dependency === "function"
+      ? runtimeOverviewDisplayValue(fieldConfig.dependency(context, rawValue))
+      : "";
+  if (dependency && dependency !== RUNTIME_OVERVIEW_UNKNOWN) {
+    parts.push(`dependency: ${dependency}`);
+  }
+  const warnings = runtimeOverviewFieldWarnings(fieldConfig, context, rawValue);
+  if (warnings.length > 0) {
+    parts.push(`warnings: ${warnings.join("; ")}`);
+  }
+  return parts.join(" · ");
+}
+
+function runtimeOverviewReadiness(fieldConfig, context, rawValue, value) {
+  if (!runtimeOverviewSourceAvailable(context, fieldConfig.source)) {
+    return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  }
+  if (typeof fieldConfig.readiness === "function") {
+    return normalizeRuntimeReadiness(fieldConfig.readiness(context, rawValue, value));
+  }
+  if (value === RUNTIME_OVERVIEW_NOT_EXPOSED || value === RUNTIME_OVERVIEW_UNKNOWN) {
+    return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  }
+  if (value === "not registered" || value === "none registered" || value === "none") {
+    return RUNTIME_OVERVIEW_READINESS.MISSING;
+  }
+  if (value === "object not displayed") {
+    return RUNTIME_OVERVIEW_READINESS.INVALID;
+  }
+  return RUNTIME_OVERVIEW_READINESS.OK;
+}
+
+function normalizeRuntimeReadiness(value) {
+  const normalized = String(value || "").toLowerCase();
+  return RUNTIME_OVERVIEW_FIELD_STATUS_ORDER.includes(normalized)
+    ? normalized
+    : RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+}
+
+function runtimeOverviewSourceLabel(source) {
+  return RUNTIME_OVERVIEW_FIELD_SOURCES[source] || overviewValue(source);
+}
+
+function runtimeOverviewSourceAvailable(context, source) {
+  if (source === "contract") {
+    return true;
+  }
+  const status = safeObject(context.sourceStatus)[source];
+  return !status || status.ok !== false;
+}
+
+function runtimeOverviewFieldWarnings(fieldConfig, context, rawValue) {
+  if (!runtimeOverviewSourceAvailable(context, fieldConfig.source)) {
+    const status = safeObject(context.sourceStatus)[fieldConfig.source];
+    const path = status && status.path ? ` (${status.path})` : "";
+    return [`${runtimeOverviewSourceLabel(fieldConfig.source)} source unavailable${path}`];
+  }
+  return typeof fieldConfig.warnings === "function"
+    ? fieldConfig.warnings(context, rawValue).filter(Boolean)
+    : [];
+}
+
+function runtimeOverviewDisplayValue(value) {
+  if (typeof value === "boolean") {
+    return yesNoUnknown(value);
+  }
+  return overviewValue(value);
+}
+
+function overviewSettings(payload) {
+  const settings = safeObject(payload).settings;
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return {};
+  }
+  return settings;
+}
+
+function safeObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value;
+}
+
+function voiceRuntimeGroups(context) {
+  return safeObject(safeObject(context.voiceRuntime).groups);
+}
+
+function voiceRuntimeGroup(context, key) {
+  return safeObject(voiceRuntimeGroups(context)[key]);
+}
+
+function voiceRuntimeProjectionSummary(context) {
+  const groups = voiceRuntimeGroups(context);
+  const names = Object.keys(groups);
+  if (names.length === 0) {
+    return RUNTIME_OVERVIEW_NOT_EXPOSED;
+  }
+  return `${names.length} backend-owned groups · read-only`;
+}
+
+function voiceRuntimeOverallReadiness(context) {
+  const groups = Object.values(voiceRuntimeGroups(context));
+  if (groups.length === 0) {
+    return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  }
+  return groups
+    .map((group) => normalizeRuntimeReadiness(safeObject(group).readiness))
+    .sort(runtimeReadinessCompare)[0];
+}
+
+function runtimeReadinessCompare(left, right) {
+  return runtimeReadinessRank(left) - runtimeReadinessRank(right);
+}
+
+function runtimeReadinessRank(value) {
+  if (value === RUNTIME_OVERVIEW_READINESS.INVALID) {
+    return 0;
+  }
+  if (value === RUNTIME_OVERVIEW_READINESS.MISSING || value === RUNTIME_OVERVIEW_READINESS.UNSUPPORTED) {
+    return 1;
+  }
+  if (value === RUNTIME_OVERVIEW_READINESS.UNKNOWN) {
+    return 2;
+  }
+  return 3;
+}
+
+function voiceRuntimeCannotProbeSummary(context) {
+  const cannotProbe = safeObject(context.voiceRuntime).cannot_probe_safely;
+  if (!Array.isArray(cannotProbe) || cannotProbe.length === 0) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return cannotProbe.map(overviewValue).join("; ");
+}
+
+function voiceRuntimeWarnings(context) {
+  const warnings = safeObject(context.voiceRuntime).warnings;
+  return Array.isArray(warnings) ? warnings.map(overviewValue).filter(Boolean) : [];
+}
+
+function voiceRuntimeGroupReadiness(context, groupKey, fallback = RUNTIME_OVERVIEW_READINESS.UNKNOWN) {
+  const readiness = voiceRuntimeGroup(context, groupKey).readiness;
+  return readiness ? normalizeRuntimeReadiness(readiness) : normalizeRuntimeReadiness(fallback);
+}
+
+function voiceRuntimeGroupDependency(context, groupKey, fallback) {
+  return firstPresent(voiceRuntimeGroup(context, groupKey).dependency_status, fallback);
+}
+
+function voiceRuntimeGroupWarnings(context, groupKey, fallback = []) {
+  const groupWarnings = voiceRuntimeGroup(context, groupKey).warnings;
+  const warnings = Array.isArray(fallback) ? [...fallback] : [];
+  if (Array.isArray(groupWarnings)) {
+    warnings.push(...groupWarnings.map(overviewValue));
+  }
+  return [...new Set(warnings.filter(Boolean))];
+}
+
+function voiceRuntimeConfiguredValue(context, groupKey, keys) {
+  return voiceRuntimeValueAt(voiceRuntimeGroup(context, groupKey).configured, keys);
+}
+
+function voiceRuntimeEffectiveValue(context, groupKey, keys) {
+  return voiceRuntimeValueAt(voiceRuntimeGroup(context, groupKey).effective, keys);
+}
+
+function voiceRuntimeValueAt(source, keys) {
+  const object = safeObject(source);
+  for (const key of keys) {
+    const value = valueAtPath(object, key);
+    if (value !== undefined && value !== null && value !== "") {
+      return overviewScalarOrObjectSummary(value);
+    }
+  }
+  return undefined;
+}
+
+function overviewScalarOrObjectSummary(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const entries = Object.entries(value)
+    .filter(([, item]) => item !== undefined && item !== null && item !== "")
+    .map(([key, item]) => `${key}: ${overviewValue(item)}`);
+  return entries.length > 0 ? entries.join(", ") : undefined;
+}
+
+function overviewPersona(settings) {
+  if (Object.prototype.hasOwnProperty.call(settings, "persona.profile")) {
+    return overviewValue(settings["persona.profile"]);
+  }
+  return "default profile (persona.profile not set)";
+}
+
+function configuredSetting(context, keys) {
+  return firstConfiguredValue(context.settings, keys);
+}
+
+function firstConfiguredValue(settings, keys) {
+  for (const key of keys) {
+    const value = valueAtPath(settings, key);
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function valueAtPath(object, path) {
+  const source = safeObject(object);
+  if (Object.prototype.hasOwnProperty.call(source, path)) {
+    return source[path];
+  }
+  return String(path)
+    .split(".")
+    .reduce((current, part) => {
+      if (!current || typeof current !== "object" || Array.isArray(current)) {
+        return undefined;
+      }
+      return current[part];
+    }, source);
+}
+
+function configuredTts(context) {
+  return firstPresent(
+    voiceRuntimeConfiguredValue(context, "tts_voice_model", ["default_tts", "tts", "engine"]),
+    configuredSetting(context, [
+      "voice.default_tts",
+      "voice.tts",
+      "voice.tts.engine",
+      "voice.tts_provider",
+      "tts.engine",
+      "tts.provider",
+      "default_tts",
+    ]),
+  );
+}
+
+function configuredStt(context) {
+  return firstPresent(
+    voiceRuntimeConfiguredValue(context, "stt_transcription", ["default_stt", "stt", "engine"]),
+    configuredSetting(context, [
+      "voice.default_stt",
+      "voice.stt",
+      "voice.stt.engine",
+      "voice.stt_provider",
+      "stt.engine",
+      "stt.provider",
+      "default_stt",
+    ]),
+  );
+}
+
+function effectiveTts(context) {
+  return firstPresent(
+    voiceRuntimeEffectiveValue(context, "tts_voice_model", ["engine", "default_tts", "tts"]),
+    latestEventPayloadValue(context.events, ["tts_engine", "tts_provider", "default_tts"]),
+  );
+}
+
+function effectiveStt(context) {
+  return firstPresent(
+    voiceRuntimeEffectiveValue(context, "stt_transcription", ["engine", "default_stt", "stt"]),
+    latestEventPayloadValue(context.events, ["stt_engine", "stt_provider", "default_stt"]),
+  );
+}
+
+function configuredVoiceIdentity(context) {
+  return firstPresent(
+    voiceRuntimeConfiguredValue(context, "tts_voice_model", [
+      "voice_id",
+      "voice_model",
+      "voice_profile",
+    ]),
+    configuredSetting(context, [
+      "voice.supertonic_voice",
+      "voice.voice_id",
+      "voice.voice_model",
+      "voice.voice_profile",
+      "voice.model",
+      "voice.profile",
+      "tts.voice_id",
+      "tts.model",
+      "voice_id",
+    ]),
+  );
+}
+
+function playbackEngine(context) {
+  return firstPresent(
+    voiceRuntimeConfiguredValue(context, "playback", ["playback_binary", "engine"]),
+    voiceRuntimeEffectiveValue(context, "playback", ["broker", "output_device"]),
+    context.audio.playback_engine,
+    context.audio.output_engine,
+    configuredSetting(context, [
+      "voice.playback_binary",
+      "voice.playback_engine",
+      "audio.playback_engine",
+      "playback.command",
+      "playback.engine",
+    ]),
+  );
+}
+
+function recorderEngine(context) {
+  return firstPresent(
+    voiceRuntimeConfiguredValue(context, "capture_input", ["recorder", "recorder_binary"]),
+    voiceRuntimeEffectiveValue(context, "capture_input", ["recorder", "input_device"]),
+    context.audio.recorder_engine,
+    context.audio.input_engine,
+    configuredSetting(context, [
+      "voice.recorder",
+      "voice.recorder_binary",
+      "voice.recorder_engine",
+      "audio.recorder_engine",
+      "recorder.command",
+      "recorder.engine",
+    ]),
+  );
+}
+
+function voiceConfiguredReadiness(context, value) {
+  if (context.voiceEnabled === true && !firstPresent(value)) {
+    return RUNTIME_OVERVIEW_READINESS.MISSING;
+  }
+  return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+}
+
+function voiceEffectiveReadiness(context, value) {
+  return firstPresent(value)
+    ? RUNTIME_OVERVIEW_READINESS.OK
+    : RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+}
+
+function voiceConfiguredWarnings(label) {
+  return (context, value) => {
+    if (context.voiceEnabled === true && !firstPresent(value)) {
+      return [`voice enabled but ${label} is not exposed/configured`];
+    }
+    return [];
+  };
+}
+
+function voiceIdentityReadiness(context, value) {
+  if (ttsRequiresVoiceIdentity(context) && !firstPresent(value)) {
+    return RUNTIME_OVERVIEW_READINESS.MISSING;
+  }
+  return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+}
+
+function configuredRuntimeDependency(context, value) {
+  return firstPresent(value) ? "configured only; dependency not probed" : undefined;
+}
+
+function ttsRequiresVoiceIdentity(context) {
+  const selected = String(firstPresent(configuredTts(context), effectiveTts(context)) || "").toLowerCase();
+  return selected && selected !== "mock";
+}
+
+function backendDataGapsSummary(context) {
+  const gaps = [];
+  const voiceRuntimeAvailable = runtimeOverviewSourceAvailable(context, "voiceRuntime");
+  if (!voiceRuntimeAvailable) {
+    gaps.push("voice_runtime projection unavailable");
+  }
+  if (context.voiceEnabled === false) {
+    return gaps.length > 0
+      ? gaps.join("; ")
+      : "voice runtime not required while voice disabled";
+  }
+  if (!runtimeOverviewSourceAvailable(context, "events")) {
+    gaps.push("latest runtime events unavailable");
+  } else if (!voiceRuntimeAvailable) {
+    if (!firstPresent(effectiveTts(context))) {
+      gaps.push("effective_tts not exposed by runtime");
+    }
+    if (!firstPresent(effectiveStt(context))) {
+      gaps.push("effective_stt not exposed by runtime");
+    }
+  }
+  if (!runtimeOverviewSourceAvailable(context, "settings")) {
+    gaps.push("settings unavailable");
+  } else {
+    if (!firstPresent(configuredTts(context))) {
+      gaps.push("configured_tts missing/not exposed");
+    }
+    if (!firstPresent(configuredStt(context))) {
+      gaps.push("configured_stt missing/not exposed");
+    }
+    if (ttsRequiresVoiceIdentity(context) && !firstPresent(configuredVoiceIdentity(context))) {
+      gaps.push("voice identity missing/not exposed");
+    }
+  }
+  if (!firstPresent(playbackEngine(context))) {
+    gaps.push("playback engine not exposed");
+  }
+  if (!firstPresent(recorderEngine(context))) {
+    gaps.push("recorder engine not exposed");
+  }
+  return gaps.length > 0 ? gaps.join("; ") : "none";
+}
+
+function runtimeOverviewWarningsSummary(context) {
+  const warnings = [];
+  for (const failure of context.failures) {
+    warnings.push(`source: unavailable ${overviewValue(failure)}`);
+  }
+  for (const warning of voiceRuntimeWarnings(context)) {
+    warnings.push(`voice: ${warning}`);
+  }
+  if (context.voiceEnabled === true && !firstPresent(configuredTts(context))) {
+    warnings.push("missing: voice enabled but configured TTS missing/not exposed");
+  }
+  if (context.voiceEnabled === true && !firstPresent(configuredStt(context))) {
+    warnings.push("missing: voice enabled but configured STT missing/not exposed");
+  }
+  if (context.voiceEnabled === true && configuredTts(context) && !firstPresent(effectiveTts(context))) {
+    warnings.push("unknown: effective TTS not reported by runtime");
+  }
+  if (context.voiceEnabled === true && configuredStt(context) && !firstPresent(effectiveStt(context))) {
+    warnings.push("unknown: effective STT not reported by runtime");
+  }
+  if (ttsRequiresVoiceIdentity(context) && !firstPresent(configuredVoiceIdentity(context))) {
+    warnings.push("missing: TTS requires voice identity/model but none is exposed");
+  }
+  if (networkPolicyRequiresTool(context) && networkToolCandidates(context.tools).length === 0) {
+    warnings.push("compat: network/internet policy exists but no network tool exists");
+  }
+  warnings.push(...runtimeOverviewCompatibilityWarnings(context));
+  return warnings.length > 0 ? [...new Set(warnings)].join("; ") : "none";
+}
+
+function overviewValue(value) {
+  if (value === undefined || value === null || value === "") {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  if (Array.isArray(value)) {
+    const shown = value.map(overviewValue).filter((item) => item !== RUNTIME_OVERVIEW_UNKNOWN);
+    return shown.length > 0 ? shown.join(", ") : "none";
+  }
+  if (typeof value === "string") {
+    return redactEventSummaryText(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return "object not displayed";
+}
+
+function yesNoUnknown(value) {
+  if (value === true) {
+    return "yes";
+  }
+  if (value === false) {
+    return "no";
+  }
+  return RUNTIME_OVERVIEW_UNKNOWN;
+}
+
+function firstPresent(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function adapterNames(adapters) {
+  if (!Array.isArray(adapters) || adapters.length === 0) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return adapters.map((adapter) => overviewValue(adapter.name)).join(", ");
+}
+
+function adapterRegistration(adapters, names, presentLabel = "registered") {
+  const found = names.filter((name) => adapterByName(adapters, name));
+  if (found.length === 0) {
+    return "not registered";
+  }
+  return found.length === 1 ? presentLabel : `${presentLabel}: ${found.join(", ")}`;
+}
+
+function adapterModels(adapters, name) {
+  const adapter = adapterByName(adapters, name);
+  const models = adapter && Array.isArray(adapter.models) ? adapter.models : [];
+  return models.length > 0 ? models.map(overviewValue).join(", ") : RUNTIME_OVERVIEW_UNKNOWN;
+}
+
+function adapterReadiness(adapters, name) {
+  if (!name) {
+    return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  }
+  return adapterByName(adapters, name)
+    ? RUNTIME_OVERVIEW_READINESS.OK
+    : RUNTIME_OVERVIEW_READINESS.MISSING;
+}
+
+function adapterDependency(adapters, name) {
+  if (!name) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return adapterByName(adapters, name) ? "registered" : "not registered";
+}
+
+function adapterByName(adapters, name) {
+  if (!name || !Array.isArray(adapters)) {
+    return null;
+  }
+  return adapters.find((adapter) => adapter && adapter.name === name) || null;
+}
+
+function projectionValue(projection) {
+  const object = safeObject(projection);
+  if (Object.prototype.hasOwnProperty.call(object, "effective_value")) {
+    return object.effective_value;
+  }
+  if (Object.prototype.hasOwnProperty.call(object, "value")) {
+    return object.value;
+  }
+  return undefined;
+}
+
+function projectionStatus(projection) {
+  return normalizeRuntimeReadiness(safeObject(projection).status);
+}
+
+function projectionWarning(projection) {
+  return safeObject(projection).warning;
+}
+
+function projectionList(projection) {
+  const value = projectionValue(projection);
+  return Array.isArray(value) ? value : [];
+}
+
+function providerCapabilities(context) {
+  return projectionList(safeObject(context.brainRuntime).providers);
+}
+
+function normalProviderCapabilities(context) {
+  return providerCapabilities(context).filter((provider) => {
+    const source = safeObject(provider);
+    return source.name !== "mock" && source.kind !== "Developer/Test";
+  });
+}
+
+function currentProviderCapability(context) {
+  const providers = providerCapabilities(context);
+  return (
+    providers.find((provider) => safeObject(provider).current === true) ||
+    providers.find((provider) => safeObject(provider).name === context.activeAdapter) ||
+    null
+  );
+}
+
+function configuredBrainModel(context) {
+  return firstPresent(
+    projectionValue(safeObject(context.brainRuntime).default_model),
+    configuredSetting(context, [
+      "brain.default_model",
+      "brain.model",
+      "provider.model",
+      "model",
+      "llm.model",
+    ]),
+  );
+}
+
+function providerCapabilityList(context) {
+  const providers = normalProviderCapabilities(context);
+  if (providers.length === 0) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return providers.map((provider) => overviewValue(safeObject(provider).name)).join(", ");
+}
+
+function providerAvailabilitySummary(context) {
+  const providers = normalProviderCapabilities(context);
+  if (providers.length === 0) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return providers
+    .map((provider) => {
+      const source = safeObject(provider);
+      return `${overviewValue(source.name)}: status=${overviewValue(source.status)}, configured=${yesNoUnknown(source.configured)}, available=${yesNoUnknown(source.available)}`;
+    })
+    .join(" · ");
+}
+
+function providerCapabilityReadiness(context, adapterName) {
+  const provider =
+    currentProviderCapability(context) ||
+    providerCapabilities(context).find((item) => safeObject(item).name === adapterName);
+  if (!provider) {
+    return adapterReadiness(context.adapters, adapterName);
+  }
+  const status = String(safeObject(provider).status || "").toLowerCase();
+  if (status === "ok") {
+    return RUNTIME_OVERVIEW_READINESS.OK;
+  }
+  if (status === "missing") {
+    return RUNTIME_OVERVIEW_READINESS.MISSING;
+  }
+  if (status === "invalid") {
+    return RUNTIME_OVERVIEW_READINESS.INVALID;
+  }
+  return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+}
+
+function providerCapabilityDependency(context, adapterName) {
+  const provider =
+    currentProviderCapability(context) ||
+    providerCapabilities(context).find((item) => safeObject(item).name === adapterName);
+  if (!provider) {
+    return adapterDependency(context.adapters, adapterName);
+  }
+  const source = safeObject(provider);
+  return `configured=${yesNoUnknown(source.configured)}, available=${yesNoUnknown(source.available)}`;
+}
+
+function providerProjectionReadiness(provider, key) {
+  if (!provider) {
+    return RUNTIME_OVERVIEW_READINESS.UNKNOWN;
+  }
+  return projectionStatus(safeObject(provider)[key]);
+}
+
+function providerCurrentModel(context) {
+  return projectionValue(safeObject(currentProviderCapability(context)).current_model);
+}
+
+function providerCommandStatus(context) {
+  const provider = currentProviderCapability(context);
+  const command = safeObject(provider).provider_command_status;
+  const value = projectionValue(command);
+  if (!firstPresent(value)) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return `${overviewValue(value)} (${projectionStatus(command)})`;
+}
+
+function providerCredentialsStatus(context) {
+  const provider = currentProviderCapability(context);
+  const credentials = safeObject(provider).provider_credentials_status;
+  const value = projectionValue(credentials);
+  if (!firstPresent(value)) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return `${overviewValue(value)} (${projectionStatus(credentials)})`;
+}
+
+function providerSupportValue(context, key) {
+  const projection = safeObject(currentProviderCapability(context))[key];
+  const value = projectionValue(projection);
+  if (!firstPresent(value)) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return overviewValue(value);
+}
+
+function providerAllowedEffort(context) {
+  const value = projectionValue(safeObject(currentProviderCapability(context)).allowed_effort_values);
+  return Array.isArray(value) && value.length > 0 ? value.map(overviewValue).join(", ") : "none";
+}
+
+function providerEffortStatus(context) {
+  const effort = safeObject(currentProviderCapability(context)).effort;
+  const value = projectionValue(effort);
+  return `${overviewValue(value)} (${projectionStatus(effort)})`;
+}
+
+function providerFastSupport(context) {
+  const provider = safeObject(currentProviderCapability(context));
+  const supported = projectionValue(provider.fast_supported);
+  const current = projectionValue(provider.fast);
+  if (supported === "no") {
+    return "unsupported";
+  }
+  return `${overviewValue(supported)} · current=${overviewValue(current)}`;
+}
+
+function latestTurnProviderSummary(context) {
+  const adapter = projectionValue(safeObject(context.latestTurnTrace).provider_adapter);
+  const model = projectionValue(safeObject(context.latestTurnTrace).provider_model);
+  if (!firstPresent(adapter, model)) {
+    return RUNTIME_OVERVIEW_UNKNOWN;
+  }
+  return [adapter, model].filter((value) => firstPresent(value)).map(overviewValue).join(" / ");
+}
+
+function providerLatestError(context) {
+  const provider = currentProviderCapability(context);
+  const latestError = safeObject(provider).latest_error;
+  return firstPresent(projectionValue(latestError), latestEventIssue(context.events, ["brain", "provider", "adapter"]));
+}
+
+function readinessProjection(context, key) {
+  return safeObject(context.runtimeReadiness)[key];
+}
+
+function readinessValue(context, key) {
+  return projectionValue(readinessProjection(context, key));
+}
+
+function readinessStatus(context, key) {
+  return projectionStatus(readinessProjection(context, key));
+}
+
+function readinessWarnings(context, keys) {
+  const warnings = [];
+  for (const key of keys) {
+    const projection = readinessProjection(context, key);
+    const warning = projectionWarning(projection);
+    if (warning) {
+      warnings.push(overviewValue(warning));
+    }
+    const value = projectionValue(projection);
+    if (Array.isArray(value) && (key === "warnings" || key === "top_blockers")) {
+      warnings.push(...value.map(overviewValue));
+    }
+  }
+  return [...new Set(warnings.filter(Boolean))];
+}
+
+function readinessSummary(context) {
+  const summary = readinessValue(context, "summary");
+  const object = safeObject(summary);
+  const labels = ["OK", "Missing", "Invalid", "Unknown", "Warning"];
+  const parts = labels.map((label) => `${label}: ${overviewValue(object[label])}`);
+  return parts.join(", ");
+}
+
+function turnStateProjection(context, key) {
+  return safeObject(context.currentTurnState)[key];
+}
+
+function turnStateValue(context, key) {
+  return projectionValue(turnStateProjection(context, key));
+}
+
+function turnStateReadiness(context, key) {
+  return projectionStatus(turnStateProjection(context, key));
+}
+
+function turnStateWarnings(context, keys) {
+  return keys
+    .map((key) => projectionWarning(turnStateProjection(context, key)))
+    .filter(Boolean)
+    .map(overviewValue);
+}
+
+function traceProjection(context, key) {
+  return safeObject(context.latestTurnTrace)[key];
+}
+
+function traceValue(context, key) {
+  return projectionValue(traceProjection(context, key));
+}
+
+function traceReadiness(context, key) {
+  return projectionStatus(traceProjection(context, key));
+}
+
+function traceWarnings(context, keys) {
+  return keys
+    .map((key) => projectionWarning(traceProjection(context, key)))
+    .filter(Boolean)
+    .map(overviewValue);
+}
+
+function traceProviderModelSummary(context) {
+  return [traceValue(context, "provider_adapter"), traceValue(context, "provider_model")]
+    .filter((value) => firstPresent(value))
+    .map(overviewValue)
+    .join(" / ") || RUNTIME_OVERVIEW_UNKNOWN;
+}
+
+function traceVoiceRowsCreated(context) {
+  const rows = traceValue(context, "voice_rows_created");
+  return firstPresent(overviewScalarOrObjectSummary(rows), "filler: 0, final: 0, error: 0");
+}
+
+function traceCancellationSummary(context) {
+  const parts = [
+    ["reason", traceValue(context, "cancellation_reason")],
+    ["interrupted", traceValue(context, "interrupted_previous_response")],
+    ["cancelled_speech_id", traceValue(context, "cancelled_speech_id")],
+    ["previous_turn_id", traceValue(context, "previous_turn_id")],
+    ["new_turn_source", traceValue(context, "new_turn_source")],
+  ]
+    .filter(([, value]) => firstPresent(value))
+    .map(([key, value]) => `${key}: ${overviewValue(value)}`);
+  return parts.length > 0 ? parts.join(", ") : RUNTIME_OVERVIEW_UNKNOWN;
+}
+
+function traceTimestamps(context) {
+  return safeObject(traceValue(context, "timestamps"));
+}
+
+function traceTimestamp(context, keys) {
+  const timestamps = traceTimestamps(context);
+  for (const key of keys) {
+    const value = timestamps[key];
+    if (firstPresent(value)) {
+      return value;
+    }
+  }
+  return RUNTIME_OVERVIEW_UNKNOWN;
+}
+
+function traceLatestSafeError(context) {
+  return firstPresent(traceValue(context, "latest_safe_error"), "none");
+}
+
+function debugTimelineSummary(events) {
+  const rows = newestFirstEvents(events);
+  const safeRows = rows.slice(0, 8).map((event) => {
+    const item = safeEventTimelineItem(event);
+    const parts = [
+      `#${overviewValue(event && event.id)}`,
+      item.timestamp ? formatRelative(item.timestamp) : null,
+      `family: ${item.family}`,
+      item.type,
+      item.status ? `status: ${item.status}` : null,
+      item.severity && item.severity !== item.status ? `severity: ${item.severity}` : null,
+      item.summary || null,
+    ].filter(Boolean);
+    return parts.join(" · ");
+  });
+  return safeRows.length > 0 ? safeRows.join(" | ") : "no recent safe events";
+}
+
+function providerCompatibilityWarnings(context) {
+  const warnings = [];
+  const provider = safeObject(currentProviderCapability(context));
+  const name = String(provider.name || context.activeAdapter || "");
+  const model = safeObject(provider.current_model);
+  const effort = safeObject(provider.effort);
+  const fast = safeObject(provider.fast);
+  const fastSupported = safeObject(provider.fast_supported);
+
+  if (projectionStatus(effort) === RUNTIME_OVERVIEW_READINESS.INVALID) {
+    warnings.push("unsupported by current provider/model");
+  }
+  if (
+    projectionValue(fastSupported) === "no" ||
+    projectionStatus(fast) === RUNTIME_OVERVIEW_READINESS.INVALID
+  ) {
+    warnings.push("fast disabled/unsupported");
+  }
+  if (
+    name === "local" &&
+    [RUNTIME_OVERVIEW_READINESS.MISSING, RUNTIME_OVERVIEW_READINESS.INVALID].includes(
+      projectionStatus(model),
+    )
+  ) {
+    warnings.push("missing local model");
+  }
+  for (const projection of [model, effort, fast, fastSupported, safeObject(provider.latest_error)]) {
+    const warning = projectionWarning(projection);
+    if (warning) {
+      warnings.push(overviewValue(warning));
+    }
+  }
+  return [...new Set(warnings.filter(Boolean))];
+}
+
+function voiceQueueSummary(rows, payload) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return "empty";
+  }
+  const counts = {};
+  for (const row of rows) {
+    const status = overviewValue(row && row.status);
+    counts[status] = (counts[status] || 0) + 1;
+  }
+  const statusSummary = Object.entries(counts)
+    .map(([status, count]) => `${status}: ${count}`)
+    .join(", ");
+  const limit = safeObject(payload).limit;
+  return `${rows.length}${limit ? ` of ${limit}` : ""} rows (${statusSummary})`;
+}
+
+function voiceQueueCounts(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return "empty";
+  }
+  const counts = {};
+  for (const row of rows) {
+    const kind = overviewValue(row && row.kind);
+    const status = overviewValue(row && row.status);
+    const key = kind === RUNTIME_OVERVIEW_UNKNOWN ? status : `${kind}/${status}`;
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .map(([key, count]) => `${key}: ${count}`)
+    .join(", ");
+}
+
+function voiceQueueKindSummary(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return "empty";
+  }
+  const counts = { speaking: 0, final: 0, filler: 0 };
+  for (const row of rows) {
+    const status = String((row && row.status) || "").toLowerCase();
+    const kind = String((row && row.kind) || "").toLowerCase();
+    if (status === "speaking") {
+      counts.speaking += 1;
+    }
+    if (kind === "final") {
+      counts.final += 1;
+    }
+    if (kind === "filler") {
+      counts.filler += 1;
+    }
+  }
+  return Object.entries(counts)
+    .map(([key, count]) => `${key}: ${count}`)
+    .join(", ");
+}
+
+function latestQueueValue(rows, keys) {
+  if (!Array.isArray(rows)) {
+    return undefined;
+  }
+  for (const row of rows) {
+    for (const key of keys) {
+      const value = row && row[key];
+      if (value !== undefined && value !== null && value !== "") {
+        return value;
+      }
+    }
+  }
+  return undefined;
+}
+
+function latestVoiceLayerError(context, groupKey, eventFamilies) {
+  const groupError = voiceRuntimeGroup(context, groupKey).latest_safe_error;
+  return firstPresent(groupError, latestEventIssue(context.events, eventFamilies));
+}
+
+function toolRiskSummary(tools) {
+  if (!Array.isArray(tools) || tools.length === 0) {
+    return "none";
+  }
+  const risks = [...new Set(tools.map((tool) => overviewValue(tool.risk)))].sort();
+  return risks.join(", ");
+}
+
+function networkToolSummary(tools) {
+  const networkTools = networkToolCandidates(tools);
+  if (networkTools.length === 0) {
+    return "no network-capable tool detected";
+  }
+  return networkTools.map((tool) => overviewValue(tool.name)).join(", ");
+}
+
+function networkToolCandidates(tools) {
+  return Array.isArray(tools) ? tools.filter(toolSupportsNetwork) : [];
+}
+
+function toolSupportsNetwork(tool) {
+  const haystack = [
+    tool && tool.name,
+    tool && tool.risk,
+    tool && tool.description,
+    tool && tool.class,
+    tool && tool.capability,
+  ]
+    .map((value) => String(value || "").toLowerCase())
+    .join(" ");
+  return /\b(network|internet|http|https|url|web|browser|fetch)\b/.test(haystack);
+}
+
+function networkPolicyRequiresTool(context) {
+  const value = configuredSetting(context, [
+    "tools.internet_enabled",
+    "internet.enabled",
+    "network.enabled",
+    "provider.network_enabled",
+  ]);
+  return value === true || ["true", "yes", "on", "1", "required", "enabled"].includes(
+    String(value || "").toLowerCase(),
+  );
+}
+
+function runtimeOverviewCompatibilityWarnings(context) {
+  const warnings = [];
+  const adapter = adapterByName(context.adapters, context.activeAdapter);
+  const providerKnown = providerCapabilities(context).some(
+    (provider) => safeObject(provider).name === context.activeAdapter,
+  );
+  if (context.activeAdapter && !adapter && !providerKnown) {
+    warnings.push(`compat: active adapter ${overviewValue(context.activeAdapter)} is not registered`);
+  }
+
+  const effort = configuredSetting(context, [
+    "brain.effort",
+    "provider.effort",
+    "reasoning.effort",
+    "effort",
+  ]);
+  if (firstPresent(effort) && adapterCapability(adapter, ["supports_effort", "effort_supported"]) === false) {
+    warnings.push("compat: effort configured but active provider declares no effort support");
+  } else if (firstPresent(effort) && adapter && adapterCapability(adapter, ["supports_effort", "effort_supported"]) === undefined) {
+    warnings.push("unknown: effort configured but provider effort capability is not exposed");
+  }
+
+  const fastMode = configuredSetting(context, [
+    "brain.fast_mode",
+    "provider.fast_mode",
+    "fast_mode",
+  ]);
+  if (fastMode === true && adapterCapability(adapter, ["supports_fast_mode", "fast_mode_supported"]) === false) {
+    warnings.push("compat: fast mode enabled but active provider declares no fast-mode support");
+  } else if (fastMode === true && adapter && adapterCapability(adapter, ["supports_fast_mode", "fast_mode_supported"]) === undefined) {
+    warnings.push("unknown: fast mode enabled but provider fast-mode capability is not exposed");
+  }
+
+  if (context.tools.length > 0 && adapterCapability(adapter, ["supports_tools", "tools_supported"]) === false) {
+    warnings.push("compat: tools are registered but active provider declares no tool support");
+  }
+
+  const persona = configuredSetting(context, ["persona.profile"]);
+  if (firstPresent(persona) && !configuredSetting(context, ["persona.effective_profile"])) {
+    warnings.push("unknown: persona profile requested but effective profile/fallback is not exposed");
+  }
+
+  return warnings;
+}
+
+function adapterCapability(adapter, keys) {
+  const source = safeObject(adapter);
+  for (const key of keys) {
+    const value = valueAtPath(source, key);
+    if (value === true || value === false) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function runtimeOverviewSourceFailures(failures) {
+  if (!Array.isArray(failures) || failures.length === 0) {
+    return "none";
+  }
+  return failures.map(overviewValue).join(", ");
+}
+
+function latestBargeInSummary(events) {
+  const event = latestEvent(events, ["voice.speak.cancelled", "voice.speak.interrupted"]);
+  if (!event) {
+    return RUNTIME_OVERVIEW_NOT_EXPOSED;
+  }
+  return eventPayloadSummary(event.payload || {}) || eventLabel(event.type);
+}
+
+function latestEventIssue(events, families) {
+  const candidates = Array.isArray(events) ? [...events] : [];
+  candidates.sort((left, right) => Number(right.id || 0) - Number(left.id || 0));
+  const event = candidates.find((item) => eventMatchesIssue(item, families));
+  if (!event) {
+    return "none in recent events";
+  }
+  const summary = eventPayloadSummary(event.payload || {});
+  return summary ? `${eventLabel(event.type)} · ${summary}` : eventLabel(event.type);
+}
+
+function latestEvent(events, types) {
+  const candidates = Array.isArray(events) ? [...events] : [];
+  candidates.sort((left, right) => Number(right.id || 0) - Number(left.id || 0));
+  return (
+    candidates.find((item) => types.includes(String(item && item.type ? item.type : ""))) || null
+  );
+}
+
+function latestEventPayloadValue(events, keys) {
+  const candidates = Array.isArray(events) ? [...events] : [];
+  candidates.sort((left, right) => Number(right.id || 0) - Number(left.id || 0));
+  for (const event of candidates) {
+    const payload = safeObject(event.payload);
+    for (const key of keys) {
+      const value = payload[key];
+      if (value !== undefined && value !== null && value !== "") {
+        return value;
+      }
+    }
+  }
+  return undefined;
+}
+
+function eventMatchesIssue(event, families) {
+  const type = String(event && event.type ? event.type : "").toLowerCase();
+  if (!families.some((family) => type.includes(family))) {
+    return false;
+  }
+  const payload = safeObject(event.payload);
+  const status = String(payload.status || "").toLowerCase();
+  return (
+    type.includes("error") ||
+    type.includes("failed") ||
+    type.includes("failure") ||
+    status === "failed" ||
+    Boolean(payload.error)
+  );
+}
+
+async function sendTextInput(event) {
+  event.preventDefault();
+  clearError(el.inputError);
+
+  const text = el.textInput.value.trim();
+  if (!text || !cockpit.online) {
+    return;
+  }
+
+  const body = { text, source: "panel" };
+
+  // Optymistyczny dymek: wysłana wiadomość od razu ląduje w czacie i pole
+  // się czyści (jak w komunikatorze), a nie dopiero po odpowiedzi daemona.
+  appendPendingUserBubble(text);
+  el.textInput.value = "";
+  el.textInput.style.height = "";
+
+  setBusy(el.sendButton, true);
+  try {
+    const payload = await requestJson("/input/text", {
+      method: "POST",
+      body,
+    });
+    setSelectedConversation(payload.conversation_id || cockpit.selectedConversationId);
+    cockpit.composingNew = false;
+    await Promise.all([refreshHistory(), refreshEvents(), refreshTools()]);
+  } catch (error) {
+    renderError(el.inputError, error);
+  } finally {
+    setBusy(el.sendButton, false);
+  }
+}
+
+// Wysokość pola śledzi treść aż do limitu z CSS (max-height), potem scroll.
+// Reset (pusta wartość) wraca do bazowych dwóch rzędów.
+function autoGrowComposer() {
+  const field = el.textInput;
+  field.style.height = "auto";
+  field.style.height = `${field.scrollHeight}px`;
+}
+
+function appendPendingUserBubble(text) {
+  const emptyRow = el.turnList.querySelector(".empty-row");
+  if (emptyRow) {
+    emptyRow.remove();
+  }
+  el.turnList.appendChild(
+    chatTurn({ input_text: text, status: "received", source: "panel" }),
+  );
+  scrollChatToBottom();
+}
+
+async function refreshHistory() {
+  clearError(el.historyError);
+
+  try {
+    const payload = await requestJson("/conversations?limit=1");
+    const conversations = Array.isArray(payload.conversations) ? payload.conversations : [];
+    const conversationId = conversations[0] && conversations[0].id ? conversations[0].id : "dan";
+    setSelectedConversation(conversationId);
+    renderConversations(conversations);
+    await refreshTurns(conversationId);
+  } catch (error) {
+    clearNode(el.turnList);
+    renderError(el.historyError, error);
+  }
+}
+
+async function refreshTurns(conversationId) {
+  // Najnowsza wymiana ma być widoczna od razu na górze; oldest-first z limitem
+  // ucinało świeże tury w długich rozmowach i chowało resztę na dole listy.
+  const query = `/turns?conversation_id=${encodeURIComponent(conversationId)}&limit=20&newest_first=true`;
+  const payload = await requestJson(query);
+  const turns = Array.isArray(payload.turns) ? payload.turns : [];
+  renderTurns(turns);
+}
+
+// Rozmowy żyją w dropdownie przy czacie (nie w osobnej sekcji): wybór
+// przełącza przebieg, "+" zaczyna nową rozmowę.
+function renderConversations(conversations) {
+  // No dropdown. Keep the function as a no-op status sync for older call sites.
+  if (Array.isArray(conversations) && conversations[0] && conversations[0].id) {
+    setSelectedConversation(conversations[0].id);
+  }
+}
+
+function ensureNewConversationOption() {
+  // Single DAN conversation: no manual new-chat option.
+}
+
+// Kafelek bez tytułu dostaje początek pierwszego input_text rozmowy. Jedna
+// tania prośba (limit=1, oldest-first) na rozmowę, potem cache — pierwsza
+// tura jest niezmienna, więc nic tu nie musi się odświeżać.
+async function ensureConversationTitle(conversationId, node) {
+  if (cockpit.conversationTitles.has(conversationId)) {
+    return;
+  }
+  cockpit.conversationTitles.set(conversationId, "");
+  try {
+    const payload = await requestJson(
+      `/turns?conversation_id=${encodeURIComponent(conversationId)}&limit=1`,
+    );
+    const turns = Array.isArray(payload.turns) ? payload.turns : [];
+    const title = titleFromInput(turns.length > 0 ? turns[0].input_text : "");
+    if (title) {
+      cockpit.conversationTitles.set(conversationId, title);
+      setText(node, title);
+    }
+  } catch (error) {
+    // Fallbackowa etykieta z zegarem już stoi; spróbujemy przy kolejnym renderze.
+    cockpit.conversationTitles.delete(conversationId);
+  }
+}
+
+function titleFromInput(inputText) {
+  if (typeof inputText !== "string") {
+    return "";
+  }
+  const flat = inputText.replace(/\s+/g, " ").trim();
+  if (!flat) {
+    return "";
+  }
+  return flat.length > 60 ? `${flat.slice(0, 60)}…` : flat;
+}
+
+function renderTurns(turns) {
+  clearNode(el.turnList);
+
+  if (turns.length === 0) {
+    renderEmpty(el.turnList, "Pusta rozmowa — napisz coś poniżej.");
+    return;
+  }
+
+  // Fetch przychodzi newest-first (świeże tury nie giną przy limicie);
+  // czat czyta się chronologicznie, więc odwracamy i dowozimy scroll na dół.
+  const chronological = [...turns].reverse();
+  for (const turn of chronological) {
+    el.turnList.appendChild(chatTurn(turn));
+  }
+  scrollChatToBottom();
+}
+
+function scrollChatToBottom() {
+  el.turnList.scrollTop = el.turnList.scrollHeight;
+  // Wysokość logu potrafi się zmienić już po renderze (np. karta zgód
+  // urośnie w kolumnie ops) — dosuwamy jeszcze raz po przeliczeniu layoutu.
+  window.requestAnimationFrame(() => {
+    el.turnList.scrollTop = el.turnList.scrollHeight;
+  });
+}
+
+function chatTurn(turn) {
+  const wrap = document.createElement("article");
+  wrap.className = "chat-turn";
+  const status = turn.status || "unknown";
+  if (status === "failed") {
+    wrap.classList.add("failed");
+  }
+
+  if (turn.input_text) {
+    const user = document.createElement("div");
+    user.className = "chat-bubble user";
+    setText(user, turn.input_text);
+    wrap.appendChild(user);
+  }
+
+  const dan = document.createElement("div");
+  dan.className = "chat-bubble dan";
+  if (turn.final_text) {
+    setText(dan, turn.final_text);
+  } else {
+    dan.classList.add("placeholder");
+    setText(dan, turnPlaceholder(status));
+  }
+  wrap.appendChild(dan);
+
+  const meta = document.createElement("p");
+  meta.className = "chat-meta";
+  const metaText = document.createElement("span");
+  const statusLabel = status === "finished" ? "" : ` · ${status}`;
+  setText(metaText, `${turn.source || "unknown"}${statusLabel} · `);
+  meta.append(metaText, timeNode(turn.created_at));
+  wrap.appendChild(meta);
+
+  return wrap;
+}
+
+function turnPlaceholder(status) {
+  if (status === "failed") {
+    return "tura nieudana";
+  }
+  if (status === "cancelled") {
+    return "przerwana";
+  }
+  if (status === "finished") {
+    return "(bez odpowiedzi)";
+  }
+  return "…";
+}
+
+async function refreshMemory() {
+  clearError(el.memoryError);
+
+  try {
+    const [payload, itemsPayload] = await Promise.all([
+      requestJson("/memory?active_only=true&limit=25"),
+      requestJson("/memory/items"),
+    ]);
+    const blocks = Array.isArray(payload.memory) ? payload.memory : [];
+    const legacyBlocks = blocks.map((block) => ({ ...block, panel_source: "legacy_block" }));
+    const items = Array.isArray(itemsPayload.items) ? itemsPayload.items : [];
+    const activeItems = items
+      .filter((item) => String(item.status || "").toLowerCase() === "active")
+      .map(memoryItemToPanelRow);
+    renderMemory([...activeItems, ...legacyBlocks]);
+  } catch (error) {
+    clearNode(el.memoryList);
+    renderError(el.memoryError, error);
+  }
+}
+
+function memoryItemToPanelRow(item) {
+  return {
+    id: item.id,
+    kind: item.kind,
+    title: item.title || item.canonical_key || shortId(item.id),
+    body: item.content || item.claim || "",
+    priority: null,
+    active: item.status === "active",
+    panel_source: "memory_os_item",
+    status: item.status || "unknown",
+    metadata: {
+      memory_os_status: item.status || "unknown",
+      namespace: item.namespace || "",
+      scope: item.scope || "",
+      promoted_by: "backend",
+    },
+  };
+}
+
+async function createMemoryBlock(event) {
+  event.preventDefault();
+  clearError(el.memoryError);
+
+  const priority = Number.parseInt(el.memoryPriority.value, 10);
+  const body = {
+    kind: el.memoryKind.value.trim(),
+    title: el.memoryTitle.value.trim(),
+    body: el.memoryBody.value.trim(),
+    priority: Number.isFinite(priority) ? priority : 0,
+    active: true,
+  };
+
+  setBusy(el.createMemoryButton, true);
+  try {
+    await requestJson("/memory", {
+      method: "POST",
+      body,
+    });
+    el.memoryTitle.value = "";
+    el.memoryBody.value = "";
+    await Promise.all([refreshMemory(), refreshEvents()]);
+  } catch (error) {
+    renderError(el.memoryError, error);
+  } finally {
+    setBusy(el.createMemoryButton, false);
+  }
+}
+
+function renderMemory(blocks) {
+  clearNode(el.memoryList);
+
+  if (blocks.length === 0) {
+    renderEmpty(el.memoryList, "Brak aktywnej pamięci");
+    return;
+  }
+
+  for (const block of blocks) {
+    const row = document.createElement("article");
+    row.className = "list-row";
+
+    appendLine(row, block.title || shortId(block.id), "input-line");
+    if (block.body) {
+      appendLine(row, block.body, "final-line");
+    }
+
+    // Chipy: rodzaj po ludzku + priorytet — na jedno spojrzenie widać wagę.
+    const chips = document.createElement("div");
+    chips.className = "mem-chips";
+    const kindChip = document.createElement("span");
+    kindChip.className = "mem-chip";
+    setText(kindChip, memoryKindLabel(block.kind));
+    const priorityChip = document.createElement("span");
+    priorityChip.className = "mem-chip";
+    setText(
+      priorityChip,
+      block.panel_source === "memory_os_item" ? "Memory OS" : `Priorytet ${block.priority ?? 0}`,
+    );
+    chips.append(kindChip, priorityChip);
+    if (block.status) {
+      const statusChip = document.createElement("span");
+      statusChip.className = "mem-chip";
+      setText(statusChip, block.status);
+      chips.appendChild(statusChip);
+    }
+    row.appendChild(chips);
+
+    // Pochodzenie bloku po ludzku: kto zaproponował i kto zatwierdził.
+    const metadata = block.metadata || {};
+    if (metadata.proposed_by || metadata.promoted_by) {
+      appendLine(row, memorySourceLine(metadata), "muted");
+    }
+
+    if (block.panel_source === "memory_os_item") {
+      appendLine(row, "Memory OS item — widoczny w panelu; dobór do promptu zależy od polityki pamięci.", "muted");
+      el.memoryList.appendChild(row);
+      continue;
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+
+    const priorityInput = document.createElement("input");
+    priorityInput.type = "number";
+    priorityInput.className = "priority-input";
+    priorityInput.value = String(block.priority ?? 0);
+    priorityInput.setAttribute("aria-label", "Nowy");
+    const priorityButton = smallButton("Zapisz ");
+    priorityButton.addEventListener("click", async () => {
+      const priority = Number.parseInt(priorityInput.value, 10);
+      if (!Number.isFinite(priority)) {
+        return;
+      }
+      clearError(el.memoryError);
+      setBusy(priorityButton, true);
+      try {
+        await requestJson(`/memory/${encodeURIComponent(block.id)}`, {
+          method: "PATCH",
+          body: { priority },
+        });
+        await Promise.all([refreshMemory(), refreshEvents()]);
+      } catch (error) {
+        renderError(el.memoryError, error);
+      } finally {
+        setBusy(priorityButton, false);
+      }
+    });
+
+    const disableButton = smallButton("Wyłącz");
+    disableButton.classList.add("danger");
+    disableButton.addEventListener("click", async () => {
+      clearError(el.memoryError);
+      setBusy(disableButton, true);
+      try {
+        await requestJson(`/memory/${encodeURIComponent(block.id)}`, { method: "DELETE" });
+        await Promise.all([refreshMemory(), refreshEvents()]);
+      } catch (error) {
+        renderError(el.memoryError, error);
+      } finally {
+        setBusy(disableButton, false);
+      }
+    });
+
+    actions.append(priorityInput, priorityButton, disableButton);
+    row.appendChild(actions);
+    el.memoryList.appendChild(row);
+  }
+}
+
+// Pochodzenie notatki po ludzku zamiast surowego proposed_by/promoted_by.
+function memorySourceLine(metadata) {
+  const parts = [];
+  if (metadata.proposed_by) {
+    parts.push(`zaproponował: ${memoryActorLabel(metadata.proposed_by)}`);
+  }
+  if (metadata.promoted_by) {
+    parts.push(`zatwierdził: ${memoryActorLabel(metadata.promoted_by)}`);
+  }
+  return parts.join(" · ");
+}
+
+function memoryActorLabel(value) {
+  const actor = String(value || "");
+  if (actor === "assistant" || actor === "brain" || actor === "model") return "model";
+  if (actor === "memory_worker" || actor === "worker") return "proces pamięci";
+  if (actor === "panel" || actor === "user") return "Ty";
+  return actor.replace(/_/g, " ") || "backend";
+}
+
+async function refreshTools() {
+  clearError(el.toolsError);
+  try {
+    const toolsPayload = await requestJson("/tools");
+    renderTools(Array.isArray(toolsPayload.tools) ? toolsPayload.tools : []);
+  } catch (error) {
+    clearNode(el.toolList);
+    renderError(el.toolsError, error);
+  }
+}
+
+function setActivityRuntimeState(value) {
+  cockpit.runtimeState = String(value || "unknown");
+  renderActivity();
+}
+
+function resetActivity() {
+  cockpit.runtimeState = "unknown";
+  cockpit.runtimeStateRevision = 0;
+  cockpit.runtimeStateRequestId += 1;
+  cockpit.activity.lastEventId = 0;
+  cockpit.activity.stage = "Łączenie…";
+  cockpit.activity.toolName = "";
+  cockpit.activity.toolStatus = "";
+  cockpit.activity.resultSummary = "";
+  renderActivity();
+}
+
+function applyActivityEvents(events) {
+  const rows = Array.isArray(events) ? [...events] : [];
+  rows.sort((left, right) => {
+    const leftId = eventNumericId(left);
+    const rightId = eventNumericId(right);
+    if (leftId !== null && rightId !== null) {
+      return leftId - rightId;
+    }
+    if (leftId !== null) return -1;
+    if (rightId !== null) return 1;
+    return 0;
+  });
+  for (const event of rows) {
+    applyActivityEvent(event);
+  }
+}
+
+function applyActivityEvent(event) {
+  if (!event || typeof event !== "object") {
+    return;
+  }
+  const eventId = eventNumericId(event);
+  if (eventId !== null && eventId <= cockpit.activity.lastEventId) {
+    return;
+  }
+  if (eventId !== null) {
+    cockpit.activity.lastEventId = eventId;
+  }
+
+  const type = String(event.type || "");
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+
+  if (type === "turn.started") {
+    cockpit.activity.toolName = "";
+    cockpit.activity.toolStatus = "";
+    cockpit.activity.resultSummary = "";
+  }
+
+  if (type === "state.changed" && payload.new_state) {
+    cockpit.runtimeStateRevision += 1;
+    cockpit.runtimeState = String(payload.new_state);
+    const runtimeStage = ACTIVITY_RUNTIME_STAGE_LABELS[cockpit.runtimeState.toUpperCase()];
+    if (runtimeStage) {
+      cockpit.activity.stage = runtimeStage;
+    }
+  } else if (ACTIVITY_STAGE_LABELS[type]) {
+    cockpit.activity.stage = ACTIVITY_STAGE_LABELS[type];
+  }
+
+  if (type.startsWith("tool.")) {
+    const toolName = boundedActivityText(payload.tool_name, 80);
+    if (toolName) {
+      cockpit.activity.toolName = toolName;
+    }
+    if (type === "tool.requested") {
+      cockpit.activity.toolStatus = "requested";
+      cockpit.activity.resultSummary = "";
+    } else if (type === "tool.started") {
+      cockpit.activity.toolStatus = "started";
+      cockpit.activity.resultSummary = "";
+    } else if (type === "tool.finished") {
+      cockpit.activity.toolStatus = "success";
+      cockpit.activity.resultSummary = boundedActivityText(
+        payload.result_summary,
+        MAX_ACTIVITY_RESULT_SUMMARY_CHARS,
+      );
+    } else if (type === "tool.failed") {
+      cockpit.activity.toolStatus = "error";
+      cockpit.activity.resultSummary = "";
+    }
+  }
+
+  renderActivity();
+}
+
+function boundedActivityText(value, maxChars) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const text = value.trim();
+  if (text.length <= maxChars) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+function renderActivity() {
+  const runtimeState = cockpit.runtimeState || "unknown";
+  setText(el.stateLabel, runtimeState.toLowerCase() === "unknown" ? "…" : runtimeState);
+  setText(el.activityStage, cockpit.activity.stage || "Łączenie…");
+  if (el.activityStrip) {
+    el.activityStrip.dataset.runtimeState = runtimeState;
+  }
+
+  const hasTool = Boolean(cockpit.activity.toolName);
+  if (el.activityDetail) {
+    el.activityDetail.hidden = !hasTool;
+  }
+  setText(el.activityTool, cockpit.activity.toolName);
+
+  const status = cockpit.activity.toolStatus;
+  setText(el.activityStatus, ACTIVITY_TOOL_STATUS_LABELS[status] || "");
+  if (el.activityStatus) {
+    el.activityStatus.dataset.status = status;
+  }
+
+  const resultSummary = cockpit.activity.resultSummary;
+  setText(el.activityResult, resultSummary);
+  if (el.activityResult) {
+    el.activityResult.hidden = !resultSummary;
+  }
+}
+
+// Żywa ramka stanu: jeden atrybut body[data-state] steruje neonem na krawędzi
+// karty. Priorytet od najważniejszego: brak łącza (offline) > daemon pracuje
+// (busy: myśli/używa narzędzia/mówi/słucha) > spoczynek (online).
+// Ruch (obieganie) tylko przy busy — czyli gdy coś naprawdę trwa.
+function applyStateFrame() {
+  let state = "offline";
+  if (cockpit.online) {
+    if (isDaemonBusy()) {
+      state = "busy";
+    } else {
+      state = "online";
+    }
+  }
+  document.body.dataset.state = state;
+}
+
+// Daemon "pracuje", gdy jego RuntimeState wyszedł ze spoczynku (myśli, używa
+// narzędzia, mówi, słucha) albo mikrofon właśnie zbiera dźwięk. IDLE i wszystko nieznane =
+// spoczynek, żeby ramka nie kręciła się bez powodu.
+function isDaemonBusy() {
+  const state = String(cockpit.runtimeState || "").toUpperCase();
+  if (
+    state === "THINKING" ||
+    state === "TOOLING" ||
+    state === "SPEAKING" ||
+    state === "LISTENING"
+  ) {
+    return true;
+  }
+  return cockpit.voice.listening === true;
+}
+
+// Jeden widok naraz: zakładki przełączają panele, stan widoku żyje tylko
+// w DOM (thin client — żadnej persystencji poza tokenem API).
+function switchView(view) {
+  document.body.dataset.view = view;
+  for (const tab of document.querySelectorAll(".tab-button")) {
+    const active = tab.dataset.view === view;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  for (const panel of document.querySelectorAll(".view")) {
+    panel.classList.toggle("active", panel.id === `view-${view}`);
+  }
+  if (view === "chat") {
+    scrollChatToBottom();
+  }
+}
+
+function renderTools(tools) {
+  clearNode(el.toolList);
+
+  if (tools.length === 0) {
+    renderEmpty(el.toolList, "Brak narzędzi");
+    return;
+  }
+
+  for (const tool of tools) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+
+    // Ludzka nazwa + chip klasy ryzyka (nigdy „file_read - file_read”).
+    const head = document.createElement("div");
+    head.className = "tool-head";
+    const name = document.createElement("span");
+    name.className = "tool-name";
+    setText(name, toolLabel(tool.name));
+    const chip = document.createElement("span");
+    chip.className = `risk-chip ${riskTier(tool.risk)}`;
+    setText(chip, riskLabel(tool.risk));
+    head.append(name, chip);
+    row.appendChild(head);
+
+    if (tool.description) {
+      appendLine(row, tool.description, "muted");
+    }
+    el.toolList.appendChild(row);
+  }
+}
+
+async function refreshSettings() {
+  clearError(el.settingsError);
+
+  try {
+    const [settingsPayload, brainPayload] = await Promise.all([
+      requestJson("/settings"),
+      requestJson("/brain/adapters"),
+    ]);
+    renderBrainAdapters(brainPayload);
+    renderSettings(settingsPayload.settings || {});
+  } catch (error) {
+    clearNode(el.settingsList);
+    clearNode(el.brainAdapterSelect);
+    setText(el.brainAdapterLabel, "");
+    renderError(el.settingsError, error);
+  }
+}
+
+function renderBrainAdapters(payload) {
+  if (!el.brainAdapterSelect) {
+    return;
+  }
+  clearNode(el.brainAdapterSelect);
+
+  const adapters = Array.isArray(payload.adapters) ? payload.adapters : [];
+  for (const adapter of adapters) {
+    const option = document.createElement("option");
+    option.value = adapter.name;
+    setText(option, adapter.name);
+    el.brainAdapterSelect.appendChild(option);
+  }
+  if (payload.current) {
+    el.brainAdapterSelect.value = payload.current;
+  }
+  setText(
+    el.brainAdapterLabel,
+    `aktywny: ${payload.current || "n/a"} · domyślny: ${payload.default || "n/a"}`,
+  );
+}
+
+function renderSettings(settings) {
+  clearNode(el.settingsList);
+
+  const entries = Object.entries(settings);
+  if (entries.length === 0) {
+    renderEmpty(el.settingsList, "Brak ustawień");
+    return;
+  }
+
+  for (const [key, value] of entries) {
+    const row = document.createElement("article");
+    row.className = "list-row";
+    appendLine(row, key, "input-line");
+    appendLine(row, JSON.stringify(value), "final-line");
+
+    const actions = document.createElement("div");
+    actions.className = "row-actions";
+    const editButton = smallButton("Edit");
+    editButton.addEventListener("click", () => {
+      el.settingKey.value = key;
+      el.settingValue.value = JSON.stringify(value);
+      el.settingValue.focus();
+    });
+    actions.appendChild(editButton);
+    row.appendChild(actions);
+    el.settingsList.appendChild(row);
+  }
+}
+
+async function saveSetting(event) {
+  event.preventDefault();
+  clearError(el.settingsError);
+
+  const key = el.settingKey.value.trim();
+  if (!key || !cockpit.online) {
+    return;
+  }
+
+  let value;
+  try {
+    value = JSON.parse(el.settingValue.value);
+  } catch (error) {
+    renderError(
+      el.settingsError,
+      makeRequestError('Setting value must be valid JSON, e.g. true, 3 or "text"', {
+        value: el.settingValue.value,
+      }),
+    );
+    return;
+  }
+
+  setBusy(el.saveSettingButton, true);
+  try {
+    await requestJson("/settings", {
+      method: "POST",
+      body: { key, value },
+    });
+    el.settingKey.value = "";
+    el.settingValue.value = "";
+    await refreshSettings();
+  } catch (error) {
+    renderError(el.settingsError, error);
+  } finally {
+    setBusy(el.saveSettingButton, false);
+  }
+}
+
+async function switchBrain() {
+  clearError(el.settingsError);
+
+  const adapter = el.brainAdapterSelect.value;
+  if (!adapter || !cockpit.online) {
+    return;
+  }
+
+  setBusy(el.switchBrainButton, true);
+  try {
+    await requestJson("/brain/switch", {
+      method: "POST",
+      body: { adapter },
+    });
+    await Promise.all([refreshSettings(), refreshHealthAndState(), refreshEvents()]);
+  } catch (error) {
+    renderError(el.settingsError, error);
+  } finally {
+    setBusy(el.switchBrainButton, false);
+  }
+}
+
+async function refreshEvents() {
+  clearError(el.eventsError);
+
+  try {
+    const payload = await requestJson("/events?latest=true&limit=50");
+    const rawEvents = Array.isArray(payload.events) ? payload.events : [];
+    const events = rawEvents
+      .filter((event) => !isInactiveDecisionEvent(event && event.type));
+    applyActivityEvents(events);
+    renderEvents(events);
+    renderRuntimeLogsSummaryFromPayload(cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {}, events);
+    // The endpoint's watermark is read separately from its rows and may race
+    // ahead. Advance only through event IDs actually observed in this payload;
+    // include hidden legacy rows so they are not replayed forever.
+    const observedIds = rawEvents
+      .map(eventNumericId)
+      .filter((value) => value !== null);
+    const latestId = observedIds.length > 0 ? Math.max(...observedIds) : null;
+    if (Number.isFinite(latestId) && latestId > cockpit.stream.lastEventId) {
+      cockpit.stream.lastEventId = latestId;
+    }
+  } catch (error) {
+    clearNode(el.eventList);
+    renderError(el.eventsError, error);
+  }
+}
+
+function eventNumericId(event) {
+  const value = Number(event && event.id);
+  return Number.isFinite(value) ? value : null;
+}
+
+function newestFirstEvents(events) {
+  const rows = Array.isArray(events) ? events : [];
+  const indexed = rows.map((event, index) => ({
+    event,
+    index,
+    id: eventNumericId(event),
+  }));
+  indexed.sort((left, right) => {
+    if (left.id !== null && right.id !== null && left.id !== right.id) {
+      return right.id - left.id;
+    }
+    if (left.id !== null && right.id === null) {
+      return -1;
+    }
+    if (left.id === null && right.id !== null) {
+      return 1;
+    }
+    return left.index - right.index;
+  });
+
+  const seenIds = new Set();
+  const deduped = [];
+  for (const row of indexed) {
+    if (row.id !== null) {
+      const key = String(row.id);
+      if (seenIds.has(key)) {
+        continue;
+      }
+      seenIds.add(key);
+    }
+    deduped.push(row.event);
+  }
+  return deduped;
+}
+
+function eventCacheRows(events) {
+  return newestFirstEvents(events).slice(0, MAX_LIVE_EVENT_ROWS * 2);
+}
+
+function renderEvents(events) {
+  const rows = eventCacheRows(events);
+  cockpit.lastEvents = rows;
+  clearNode(el.eventList);
+
+  const filter = cockpit.logFilter || "all";
+  const shown = rows
+    .filter((event) => eventMatchesFilter(event.type, filter))
+    .slice(0, MAX_LIVE_EVENT_ROWS);
+  if (shown.length === 0) {
+    renderEmpty(
+      el.eventList,
+      filter === "all" ? "Brak zdarzeń" : "Brak zdarzeń w tym filtrze",
+    );
+    return;
+  }
+
+  for (const event of shown) {
+    el.eventList.appendChild(eventRow(event));
+  }
+}
+
+// Wiersz dziennika po ludzku: ludzka etykieta zdarzenia + meta
+// #id · źródło · czas względny (mono, najmniej ważna linijka).
+function eventRow(event) {
+  const row = document.createElement("div");
+  row.className = "list-row";
+  const item = safeEventTimelineItem(event);
+  appendLine(row, `${eventLabel(event.type)} · ${item.family}`, "input-line");
+  const compact = [
+    item.summary,
+    item.status ? `status: ${item.status}` : null,
+    item.severity && item.severity !== item.status ? `severity: ${item.severity}` : null,
+  ].filter(Boolean).join(" · ");
+  if (compact) {
+    appendLine(row, compact, "payload-line");
+  }
+
+  const meta = document.createElement("p");
+  meta.className = "event-meta";
+  const metaText = document.createElement("span");
+  setText(metaText, `#${event.id} · ${event.source || "system"} · `);
+  meta.append(metaText, timeNode(event.created_at));
+  row.appendChild(meta);
+  return row;
+}
+
+const EVENT_PAYLOAD_SUMMARY_KEYS = [
+  "turn_id",
+  "conversation_id",
+  "request_id",
+  "tool_name",
+  "status",
+  "kind",
+  "seq",
+  "reason",
+  "error",
+  "duration_seconds",
+  "voiced_seconds",
+  "rms",
+];
+const EVENT_PAYLOAD_REDACTION = "[REDACTED]";
+
+function safeEventTimelineItem(event) {
+  const payload = event && event.payload && typeof event.payload === "object" ? event.payload : {};
+  const summary = eventPayloadSummary(payload);
+  const status = eventStatus(payload, event && event.type);
+  return {
+    timestamp: event && event.created_at ? event.created_at : "",
+    family: eventFamily(event && event.type),
+    type: event && event.type ? String(event.type) : "unknown",
+    summary,
+    status,
+    severity: eventSeverity(event && event.type, status, payload),
+  };
+}
+
+function eventFamily(type) {
+  const value = String(type || "").toLowerCase();
+  if (!value) {
+    return "unknown";
+  }
+  if (value.startsWith("daemon.") || value.startsWith("state.") || value.startsWith("runtime.")) {
+    return "runtime";
+  }
+  if (value.startsWith("turn.") || value.startsWith("input.")) {
+    return "turn";
+  }
+  if (value.startsWith("voice.") || value.startsWith("audio.") || value.startsWith("listening.")) {
+    return "voice";
+  }
+  if (value.startsWith("brain.") || value.startsWith("provider.")) {
+    return "provider";
+  }
+  if (value.startsWith("memory.")) {
+    return "memory";
+  }
+  if (value.startsWith("tool.")) {
+    return "tool";
+  }
+  if (value.startsWith("panel.")) {
+    return "panel";
+  }
+  if (value.includes("failed") || value.includes("error")) {
+    return "error";
+  }
+  return "unknown";
+}
+
+function eventStatus(payload, type) {
+  const source = payload && typeof payload === "object" ? payload : {};
+  const raw = firstPresent(source.status, source.reason, source.kind);
+  if (raw !== undefined && raw !== null && raw !== "") {
+    return overviewValue(eventPayloadSummaryValue(raw));
+  }
+  const value = String(type || "").toLowerCase();
+  if (value.includes("failed")) {
+    return "failed";
+  }
+  if (value.includes("cancelled")) {
+    return "cancelled";
+  }
+  if (value.includes("finished") || value.includes("responded")) {
+    return "ok";
+  }
+  return "";
+}
+
+function eventSeverity(type, status, payload) {
+  const value = `${String(type || "").toLowerCase()} ${String(status || "").toLowerCase()}`;
+  if (value.includes("failed") || value.includes("error") || eventPayloadSummaryValue(payload && payload.error)) {
+    return "error";
+  }
+  if (value.includes("cancelled") || value.includes("warning") || value.includes("invalid")) {
+    return "warning";
+  }
+  if (status) {
+    return status;
+  }
+  return "info";
+}
+
+function eventPayloadSummary(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+  const parts = [];
+  for (const key of EVENT_PAYLOAD_SUMMARY_KEYS) {
+    const value = eventPayloadSummaryValue(payload[key]);
+    if (value === "") {
+      continue;
+    }
+    parts.push(`${key}: ${argumentPreview(value)}`);
+  }
+  return parts.join(" · ");
+}
+
+function eventPayloadSummaryValue(value) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  if (typeof value === "string") {
+    return redactEventSummaryText(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  return "";
+}
+
+function redactEventSummaryText(value) {
+  return value
+    .replace(/(\bAuthorization\s*[:=]\s*Bearer\s+)[^\s,;"']+/gi, `$1${EVENT_PAYLOAD_REDACTION}`)
+    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]+/gi, `$1${EVENT_PAYLOAD_REDACTION}`)
+    .replace(/(\bAuthorization\s*[:=]\s*Basic\s+)[A-Za-z0-9+/=._-]+/gi, `$1${EVENT_PAYLOAD_REDACTION}`)
+    .replace(/(\bBasic\s+)[A-Za-z0-9+/=._-]{8,}/gi, `$1${EVENT_PAYLOAD_REDACTION}`)
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{8,}/g, EVENT_PAYLOAD_REDACTION)
+    .replace(/\bgh[oprsu]_[A-Za-z0-9_]{8,}/g, EVENT_PAYLOAD_REDACTION)
+    .replace(/\bsk-[A-Za-z0-9][A-Za-z0-9._-]*/g, EVENT_PAYLOAD_REDACTION)
+    .replace(/\bxox[abps]-[A-Za-z0-9-]{8,}/g, EVENT_PAYLOAD_REDACTION)
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, EVENT_PAYLOAD_REDACTION)
+    .replace(
+      /\b(password|passwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|token|private[_-]?key|client[_-]?secret|credentials?)\b\s*[:=]\s*["']?[^\s"']{4,}["']?/gi,
+      `$1=${EVENT_PAYLOAD_REDACTION}`,
+    );
+}
+
+// --- Live event stream (GET /stream WebSocket, read-only; ADR-019) ---
+
+function streamUrl() {
+  const base = apiBase().replace(/^http/, "ws");
+  if (cockpit.stream.replayFromStart) {
+    return `${base}/stream?after_id=0`;
+  }
+  if (cockpit.stream.lastEventId > 0) {
+    return `${base}/stream?after_id=${cockpit.stream.lastEventId}`;
+  }
+  return `${base}/stream`;
+}
+
+function connectStream() {
+  const stream = cockpit.stream;
+  if (
+    stream.socket &&
+    stream.base === apiBase() &&
+    (stream.socket.readyState === WebSocket.OPEN ||
+      stream.socket.readyState === WebSocket.CONNECTING)
+  ) {
+    return;
+  }
+  disconnectStream("reconnecting");
+
+  // The browser cannot set X-DAN-Token on a WebSocket handshake, so the
+  // token rides along as a dan-token.<token> subprotocol entry.
+  const protocols = [STREAM_SUBPROTOCOL];
+  const token = apiToken();
+  if (token) {
+    protocols.push(`${STREAM_TOKEN_SUBPROTOCOL_PREFIX}${token}`);
+  }
+
+  let socket;
+  try {
+    socket = new WebSocket(streamUrl(), protocols);
+  } catch (error) {
+    setStreamStatus("stream off");
+    scheduleStreamReconnect();
+    return;
+  }
+
+  stream.socket = socket;
+  stream.base = apiBase();
+  setStreamStatus("stream connecting");
+
+  socket.addEventListener("open", () => {
+    if (stream.socket !== socket) {
+      return;
+    }
+    stream.retryMs = 2000;
+    stream.connected = true;
+    setStreamStatus("live");
+  });
+  socket.addEventListener("message", (message) => {
+    if (stream.socket !== socket) {
+      return;
+    }
+    handleStreamMessage(message.data);
+  });
+  socket.addEventListener("close", () => {
+    if (stream.socket === socket) {
+      stream.socket = null;
+      stream.connected = false;
+      setStreamStatus(apiToken() ? "stream off" : "stream off (token?)");
+      scheduleStreamReconnect();
+    }
+  });
+}
+
+function disconnectStream(reason) {
+  const stream = cockpit.stream;
+  if (stream.reconnectTimer !== null) {
+    clearTimeout(stream.reconnectTimer);
+    stream.reconnectTimer = null;
+  }
+  if (stream.socket) {
+    const socket = stream.socket;
+    stream.socket = null;
+    stream.connected = false;
+    try {
+      socket.close(1000, reason || "cockpit disconnect");
+    } catch (error) {
+      // already closed
+    }
+  }
+  setStreamStatus("stream off");
+}
+
+function scheduleStreamReconnect() {
+  const stream = cockpit.stream;
+  if (stream.reconnectTimer !== null || !cockpit.online) {
+    return;
+  }
+  stream.reconnectTimer = setTimeout(() => {
+    stream.reconnectTimer = null;
+    if (cockpit.online) {
+      connectStream();
+    }
+  }, stream.retryMs);
+  stream.retryMs = Math.min(stream.retryMs * 2, STREAM_MAX_RETRY_MS);
+}
+
+function handleStreamMessage(raw) {
+  let frame;
+  try {
+    frame = JSON.parse(raw);
+  } catch (error) {
+    return;
+  }
+
+  if (frame.type === "stream.hello") {
+    const serverLatestEventId = Number(frame.latest_event_id);
+    if (
+      Number.isFinite(serverLatestEventId) &&
+      serverLatestEventId < cockpit.stream.lastEventId
+    ) {
+      // The daemon/database event epoch changed underneath this browser. A
+      // monotonic-only cursor would otherwise suppress every new live event
+      // until IDs caught up with the previous database.
+      cockpit.stream.lastEventId = 0;
+      cockpit.stream.replayFromStart = true;
+      resetActivity();
+      renderEvents([]);
+      if (cockpit.stream.socket) {
+        disconnectStream("event epoch changed");
+        scheduleStreamReconnect();
+      }
+      return;
+    }
+    // This connection already carries the requested replay cursor. Future
+    // reconnects can resume from the first event actually accepted below.
+    cockpit.stream.replayFromStart = false;
+    return;
+  }
+  if (frame.type !== "event" || !frame.event) {
+    return;
+  }
+
+  const event = frame.event;
+  const eventId = Number(event.id);
+  if (Number.isFinite(eventId) && eventId > cockpit.stream.lastEventId) {
+    cockpit.stream.lastEventId = eventId;
+  }
+  if (isInactiveDecisionEvent(event.type)) {
+    return;
+  }
+  prependLiveEvent(event);
+  applyActivityEvent(event);
+
+  const type = String(event.type || "");
+  if (type === "state.changed" && event.payload && event.payload.new_state) {
+    // Stan pracy prosto ze strumienia — ramka reaguje natychmiast, bez
+    // czekania na następny heartbeat /state.
+    applyStateFrame();
+  }
+  if (type.startsWith("input.") || type.startsWith("turn.")) {
+    scheduleHistoryRefresh();
+  }
+  if (type.startsWith("memory.") || type === "tool.finished") {
+    scheduleMemoryRefresh();
+  }
+  if (type.startsWith("brain.")) {
+    scheduleSettingsRefresh();
+  }
+  if (type.startsWith("listening.") || type.startsWith("voice.")) {
+    scheduleVoiceRefresh();
+  }
+  if (type.startsWith("voice.")) {
+    scheduleVoiceQueueRefresh();
+  }
+  if (type.startsWith("daemon.") || type === "state.changed") {
+    scheduleRuntimeRefresh();
+  }
+  if (runtimeOverviewEventType(type)) {
+    scheduleRuntimeOverviewRefresh();
+  }
+}
+
+function runtimeOverviewEventType(type) {
+  return (
+    type === "state.changed" ||
+    type.startsWith("input.") ||
+    type.startsWith("turn.") ||
+    type.startsWith("voice.") ||
+    type.startsWith("brain.") ||
+    type.startsWith("daemon.") ||
+    type.startsWith("memory.") ||
+    type.startsWith("tool.")
+  );
+}
+
+function scheduleHistoryRefresh() {
+  const stream = cockpit.stream;
+  if (stream.historyTimer !== null) {
+    return;
+  }
+  stream.historyTimer = setTimeout(async () => {
+    stream.historyTimer = null;
+    try {
+      await refreshHistory();
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function scheduleMemoryRefresh() {
+  const stream = cockpit.stream;
+  if (stream.memoryTimer !== null) {
+    return;
+  }
+  stream.memoryTimer = setTimeout(async () => {
+    stream.memoryTimer = null;
+    try {
+      await refreshMemory();
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function scheduleVoiceRefresh() {
+  const stream = cockpit.stream;
+  if (stream.voiceTimer !== null) {
+    return;
+  }
+  stream.voiceTimer = setTimeout(async () => {
+    stream.voiceTimer = null;
+    try {
+      await refreshVoice();
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function scheduleVoiceQueueRefresh() {
+  const stream = cockpit.stream;
+  if (stream.voiceQueueTimer !== null) {
+    return;
+  }
+  stream.voiceQueueTimer = setTimeout(async () => {
+    stream.voiceQueueTimer = null;
+    try {
+      await refreshVoiceQueue();
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function prependLiveEvent(event) {
+  const rows = Array.isArray(cockpit.lastEvents) ? cockpit.lastEvents : [];
+  renderEvents([event, ...rows]);
+}
+
+function scheduleSettingsRefresh() {
+  const stream = cockpit.stream;
+  if (stream.settingsTimer !== null) {
+    return;
+  }
+  stream.settingsTimer = setTimeout(async () => {
+    stream.settingsTimer = null;
+    try {
+      await Promise.all([refreshSettings(), refreshHealthAndState()]);
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function scheduleRuntimeRefresh() {
+  const stream = cockpit.stream;
+  if (stream.runtimeTimer !== null) {
+    return;
+  }
+  stream.runtimeTimer = setTimeout(async () => {
+    stream.runtimeTimer = null;
+    try {
+      await Promise.all([refreshHealthAndState(), refreshRuntime()]);
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function scheduleRuntimeOverviewRefresh() {
+  const stream = cockpit.stream;
+  if (stream.runtimeOverviewTimer !== null) {
+    return;
+  }
+  stream.runtimeOverviewTimer = setTimeout(async () => {
+    stream.runtimeOverviewTimer = null;
+    try {
+      await refreshRuntimeOverview();
+    } catch (error) {
+      // section renders its own errors
+    }
+  }, 300);
+}
+
+function setStreamStatus(label) {
+  if (el.streamStatus) {
+    setText(el.streamStatus, label);
+    el.streamStatus.classList.toggle("live", label === "live");
+  }
+}
+
+async function refreshRuntime() {
+  clearError(el.runtimeError);
+
+  try {
+    const payload = await requestJson("/runtime/processes");
+    renderKeyValues(el.runtimeList, [
+      ["conflict_count", payload.conflict_count],
+      ["report_only", payload.report_only],
+      ["cleanup_automated", payload.cleanup_automated],
+    ]);
+    renderRuntimeObservations(Array.isArray(payload.observations) ? payload.observations : []);
+  } catch (error) {
+    clearNode(el.runtimeList);
+    clearNode(el.runtimeObservationList);
+    renderError(el.runtimeError, error);
+  }
+}
+
+function renderRuntimeObservations(observations) {
+  clearNode(el.runtimeObservationList);
+
+  if (observations.length === 0) {
+    renderEmpty(el.runtimeObservationList, "Brak obserwacji");
+    return;
+  }
+
+  for (const observation of observations) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+    appendLine(row, `${observation.label || "process"} - ${observation.risk || "unknown"}`, "input-line");
+    appendLine(row, observation.command || observation.process_name || "", "muted");
+    el.runtimeObservationList.appendChild(row);
+  }
+}
+
+const API_TOKEN_STORAGE_KEY = "dan-api-token";
+
+function apiToken() {
+  try {
+    return window.localStorage.getItem(API_TOKEN_STORAGE_KEY) || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function promptForApiToken() {
+  const entered = window.prompt(
+    "DAN API token required (see ~/.dan/runtime/api-token):",
+    "",
+  );
+  if (entered === null) {
+    return "";
+  }
+  const token = entered.trim();
+  try {
+    window.localStorage.setItem(API_TOKEN_STORAGE_KEY, token);
+  } catch (error) {
+    // storage unavailable - token works for this call only
+  }
+  return token;
+}
+
+async function requestJson(path, options = {}) {
+  const method = options.method || "GET";
+  const init = {
+    method,
+    headers: {},
+  };
+
+  // Every request carries the token now: private-data reads (conversations,
+  // memory, settings) require it too, not just mutations (FIX-06 follow-up).
+  const token = apiToken() || promptForApiToken();
+  if (token) {
+    init.headers["X-DAN-Token"] = token;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(options, "body")) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(options.body);
+  }
+
+  let response;
+  try {
+    response = await fetch(`${apiBase()}${path}`, init);
+  } catch (error) {
+    throw makeRequestError("Daemon unreachable", { route: path, detail: String(error) });
+  }
+
+  const payload = await readResponsePayload(response);
+  if (response.status === 401) {
+    try {
+      window.localStorage.removeItem(API_TOKEN_STORAGE_KEY);
+    } catch (error) {
+      // ignore storage errors
+    }
+    throw makeRequestError("Unauthorized - set the DAN API token and retry", {
+      route: path,
+      status: response.status,
+      payload,
+    });
+  }
+  if (!response.ok) {
+    throw makeRequestError(payload.error || `HTTP ${response.status}`, {
+      route: path,
+      status: response.status,
+      payload,
+    });
+  }
+  return payload;
+}
+
+async function readResponsePayload(response) {
+  const text = await response.text();
+  if (!text) {
+    return {};
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    return {
+      error: "Non-JSON response",
+      status: response.status,
+      body: text.slice(0, 300),
+    };
+  }
+}
+
+function makeRequestError(message, detail) {
+  const error = new Error(message);
+  error.detail = detail;
+  return error;
+}
+
+function apiBase() {
+  return cockpit.apiBase.replace(/\/+$/, "");
+}
+
+function setOnline(online) {
+  cockpit.online = online;
+  // Żywa ramka karty jest wskaźnikiem online/offline (teal/czerwień) — nie ma
+  // osobnej sekcji statusu; body.offline dodatkowo wygasza kompozytor.
+  document.body.classList.toggle("offline", !online);
+  applyStateFrame();
+  setInteractiveEnabled(online);
+  if (!online) {
+    cockpit.voice.enabled = false;
+    cockpit.voice.listening = false;
+    cockpit.voice.leases = [];
+    renderVoice();
+  }
+}
+
+function setInteractiveEnabled(enabled) {
+  const controls = [
+    el.textInput,
+    el.sendButton,
+    el.memoryKind,
+    el.memoryTitle,
+    el.memoryPriority,
+    el.memoryBody,
+    el.createMemoryButton,
+    el.brainAdapterSelect,
+    el.switchBrainButton,
+    el.refreshSettingsPreviewButton,
+    el.refreshActiveSettingsButton,
+    el.activeBrainProviderSelect,
+    el.activeBrainModelSelect,
+    el.activeBrainEffortSelect,
+    el.applyBrainSettingsButton,
+    el.voiceSpeakResponsesToggle,
+    el.voiceTtsSelect,
+    el.voiceTtsModelSelect,
+    el.voiceSttSelect,
+    el.voiceSttModelSelect,
+    el.voiceSttLanguageSelect,
+    el.voiceVoiceIdSelect,
+    el.voiceProfileSelect,
+    el.voiceSpeedInput,
+    el.applyTtsSettingsButton,
+    el.applySttSettingsButton,
+    el.pttModeSelect,
+    el.pttHotkeyInput,
+    el.pttMergeWindowInput,
+    el.applyPttSettingsButton,
+    el.refreshQueueButton,
+    el.cancelCurrentSpeechButton,
+    el.toolsEnabledToggle,
+    el.toolsNetworkEnabledToggle,
+    el.applyToolsSettingsButton,
+    el.personaProfileSelect,
+    el.applyPersonaSettingsButton,
+  ];
+
+  for (const control of controls) {
+    if (control) {
+      control.disabled = !enabled;
+    }
+  }
+  for (const control of [
+    el.brainAdapterSelect,
+    el.switchBrainButton,
+    el.settingKey,
+    el.settingValue,
+    el.saveSettingButton,
+  ]) {
+    if (control) {
+      control.disabled = !enabled;
+    }
+  }
+}
+
+function clearDynamicSections() {
+  // Nieaktualne błędy sekcji nie mogą wisieć pod świeżym stanem offline —
+  // jedyną diagnozą pozostaje healthError w Zaawansowane → Stan daemona.
+  for (const box of [
+    el.historyError,
+    el.inputError,
+    el.voiceError,
+    el.memoryError,
+    el.toolsError,
+    el.settingsPreviewError,
+    el.settingsError,
+    el.runtimeOverviewError,
+    el.eventsError,
+    el.runtimeError,
+  ]) {
+    clearError(box);
+  }
+  setText(el.missionControlRefreshStatus, "");
+  setText(el.activeSettingsStatus, "");
+  setText(el.brainApplyStatus, "");
+  setText(el.voiceApplyStatus, "");
+  setText(el.ttsApplyStatus, "");
+  setText(el.sttApplyStatus, "");
+  setText(el.pttApplyStatus, "");
+  setText(el.queueApplyStatus, "");
+  setText(el.toolsApplyStatus, "");
+  setText(el.personaApplyStatus, "");
+  clearNode(el.turnList);
+  clearNode(el.memoryList);
+  clearNode(el.healthHumanList);
+  clearNode(el.activeSettingsList);
+  clearNode(el.activeBrainProviderSelect);
+  clearNode(el.activeBrainModelSelect);
+  clearNode(el.activeBrainEffortSelect);
+  clearNode(el.voiceTtsSelect);
+  clearNode(el.voiceTtsModelSelect);
+  clearNode(el.voiceSttSelect);
+  clearNode(el.voiceSttModelSelect);
+  clearNode(el.voiceSttLanguageSelect);
+  clearNode(el.voiceVoiceIdSelect);
+  clearNode(el.voiceProfileSelect);
+  clearNode(el.pttModeSelect);
+  clearNode(el.personaProfileSelect);
+  clearNode(el.toolList);
+  clearNode(el.missionControlModules);
+  clearNode(el.missionControlChecklist);
+  clearNode(el.voiceDoctorList);
+  clearNode(el.queueBargeInList);
+  clearNode(el.latestTurnTraceList);
+  clearNode(el.runtimeLogsSummaryList);
+  clearNode(el.settingsPreviewList);
+  clearNode(el.settingsList);
+  clearNode(el.runtimeOverviewList);
+  clearNode(el.brainAdapterSelect);
+  clearNode(el.eventList);
+  clearNode(el.runtimeList);
+  clearNode(el.runtimeObservationList);
+  if (el.voiceQueueList) {
+    clearNode(el.voiceQueueList);
+  }
+  setText(el.brainAdapterLabel, "");
+  cockpit.voice.listening = false;
+  cockpit.voice.leases = [];
+  renderVoice();
+  // Jeden mocny komunikat offline z akcją zamiast szarego "Daemon offline"
+  // powtórzonego w każdej sekcji — czerwona ramka i pill niosą resztę.
+  renderOfflineHero();
+  renderMissionControl(missionControlOfflineSnapshot());
+}
+
+function renderOfflineHero() {
+  clearNode(el.turnList);
+  const hero = document.createElement("div");
+  hero.className = "offline-hero";
+
+  const title = document.createElement("p");
+  title.className = "offline-title";
+  setText(title, "Daemon nie odpowiada");
+
+  const hint = document.createElement("p");
+  hint.className = "offline-hint muted";
+  setText(hint, "Uruchom go w terminalu: dan start — panel połączy się sam.");
+
+  const retry = document.createElement("button");
+  retry.type = "button";
+  setText(retry, "Spróbuj teraz");
+  retry.addEventListener("click", refreshAll);
+
+  hero.append(title, hint, retry);
+  el.turnList.appendChild(hero);
+}
+
+function renderKeyValues(node, rows) {
+  clearNode(node);
+  for (const [label, value] of rows) {
+    const dt = document.createElement("dt");
+    const dd = document.createElement("dd");
+    setText(dt, label);
+    setText(dd, displayValue(value));
+    dt.title = displayValue(label);
+    dd.title = displayValue(value);
+    node.append(dt, dd);
+  }
+}
+
+function renderError(node, error) {
+  const payload = {
+    error: error.message || "Request failed",
+    detail: error.detail || null,
+  };
+  node.hidden = false;
+  setText(node, compactJson(payload));
+}
+
+function clearError(node) {
+  if (!node) {
+    return;
+  }
+  node.hidden = true;
+  node.textContent = "";
+}
+
+function clearNode(node) {
+  if (!node) {
+    return;
+  }
+  while (node.firstChild) {
+    node.removeChild(node.firstChild);
+  }
+}
+
+function renderEmpty(node, message) {
+  if (!node) {
+    return;
+  }
+  clearNode(node);
+  const row = document.createElement("div");
+  row.className = "empty-row";
+  setText(row, message);
+  node.appendChild(row);
+}
+
+function appendLine(parent, value, className) {
+  const node = document.createElement("p");
+  node.className = className;
+  setText(node, value);
+  parent.appendChild(node);
+}
+
+function argumentPreview(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (typeof text !== "string") {
+    return String(value);
+  }
+  return text.length > 220 ? `${text.slice(0, 220)}…` : text;
+}
+
+function smallButton(label) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "small-button";
+  setText(button, label);
+  return button;
+}
+
+function setBusy(button, busy) {
+  if (!button) {
+    return;
+  }
+  button.disabled = busy || !cockpit.online;
+  if (button.classList && typeof button.classList.toggle === "function") {
+    button.classList.toggle("busy", busy);
+  }
+}
+
+function setText(node, value) {
+  // A missing/commented-out element (getElementById -> null) must NOT throw and
+  // abort the whole status refresh — that once left the state pill stuck on
+  // "unknown" while the daemon was healthy. Optional UI stays optional.
+  if (!node) {
+    return;
+  }
+  node.textContent = displayValue(value);
+}
+
+function displayValue(value) {
+  if (value === null || value === undefined || value === "") {
+    return "n/a";
+  }
+  if (typeof value === "object") {
+    return compactJson(value);
+  }
+  return String(value);
+}
+
+function compactJson(value) {
+  return JSON.stringify(value, null, 2);
+}
+
+function shortId(value) {
+  if (!value) {
+    return "n/a";
+  }
+  const text = String(value);
+  if (text.length <= 12) {
+    return text;
+  }
+  return `${text.slice(0, 8)}...${text.slice(-4)}`;
+}
+
+// Węzeł czasu względnego: etykieta "2 min temu", pełna data w tooltipie,
+// ISO w dataset.timestamp, żeby ticker mógł odświeżać etykiety w miejscu.
+function timeNode(iso) {
+  const node = document.createElement("time");
+  if (iso) {
+    node.dataset.timestamp = iso;
+    node.title = formatFullDate(iso);
+  }
+  setText(node, formatRelative(iso));
+  return node;
+}
+
+function refreshRelativeTimes() {
+  for (const node of document.querySelectorAll("[data-timestamp]")) {
+    setText(node, formatRelative(node.dataset.timestamp));
+  }
+}
+
+function formatRelative(iso) {
+  if (!iso) {
+    return "?";
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "?";
+  }
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) {
+    return formatClock(iso);
+  }
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) {
+    return "przed chwilą";
+  }
+  if (minutes < 60) {
+    return `${minutes} min temu`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return hours === 1 ? "godzinę temu" : `${hours} godz. temu`;
+  }
+  return formatClock(iso);
+}
+
+function formatFullDate(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return String(iso);
+  }
+  return date.toLocaleString("pl-PL");
+}
+
+function formatClock(iso) {
+  if (!iso) {
+    return "?";
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "?";
+  }
+  const sameDay = date.toDateString() === new Date().toDateString();
+  const clock = date.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" });
+  if (sameDay) {
+    return clock;
+  }
+  const day = date.toLocaleDateString("pl-PL", { day: "2-digit", month: "2-digit" });
+  return `${day} ${clock}`;
+}

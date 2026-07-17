@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from jarvis.brain import BrainManager, BrainResponse, BrainToolCall, MockBrainAdapter
-from jarvis.daemon.app import DaemonApp, DaemonAppConflictError, create_daemon_app
-from jarvis.events.types import EventType
+from dan.brain import BrainManager, BrainResponse, BrainToolCall, MockBrainAdapter
+from dan.daemon.app import DaemonApp, DaemonAppConflictError, create_daemon_app
+from dan.events.types import EventType
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import write_config
 from tests.test_cli_history import config_args, history_server, run_cli
@@ -30,7 +30,7 @@ FORBIDDEN_RUNTIME_STRINGS = (
 
 
 def make_app(tmp_path: Path) -> DaemonApp:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     return create_daemon_app(config_path)
 
 
@@ -204,7 +204,7 @@ def test_new_input_after_pending_approval_is_allowed(tmp_path: Path) -> None:
         assert first["turn"]["status"] == "awaiting_approval"
         assert second_status == 200
         assert second["turn"]["status"] == "finished"
-        assert second["final_text"] == "Jarvis mock response: Plain follow-up"
+        assert second["final_text"] == "DAN mock response: Plain follow-up"
         assert app.state_machine is not None
         assert app.state_machine.state.value == "IDLE"
     finally:
@@ -330,9 +330,9 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 
 def test_runtime_code_and_scripts_do_not_contain_forbidden_legacy_strings() -> None:
-    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
     findings: list[str] = []
-    for root_name in ("jarvis", "scripts"):
+    for root_name in ("dan", "scripts"):
         for path in (ROOT / root_name).rglob("*"):
             if not path.is_file() or "__pycache__" in path.parts:
                 continue

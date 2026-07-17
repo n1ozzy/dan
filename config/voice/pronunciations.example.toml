@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # SŁOWNIK WYMOWY — angielskie słowo = polska fonetyka. Wspólny dla WSZYSTKICH
-# systemów: Jarvis daemon, DAN, skille (standup). Sąsiad: personas.toml (głosy).
+# systemów: DAN daemon, DAN, skille (standup). Sąsiad: personas.toml (głosy).
 #
 # Klucz case-insensitive, dopasowanie po rdzeniu (końcówka PL zostaje). Dłuższe
 # klucze dopasowują się pierwsze, więc odmiany (committed) wygrywają z rdzeniem.

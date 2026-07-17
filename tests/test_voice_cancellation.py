@@ -18,10 +18,10 @@ from typing import Callable
 
 import pytest
 
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.voice.cancellation import CancellationCoordinator, GenerationRegistry
-from jarvis.voice.queue import VoiceQueue
-from jarvis.voice.tts import MockTTSEngine, TTSEngineError
+from dan.store.db import close_quietly, initialize_database
+from dan.voice.cancellation import CancellationCoordinator, GenerationRegistry
+from dan.voice.queue import VoiceQueue
+from dan.voice.tts import MockTTSEngine, TTSEngineError
 
 
 @pytest.fixture
@@ -212,7 +212,7 @@ def test_cancel_active_speech_tombstones_cancelled_and_generating_turns(db_path:
     # must be refused at enqueue — for BOTH a turn that had queue rows and a
     # generation that had none yet (registry-only), since the mic barge-in fires
     # on active generation too.
-    from jarvis.voice.queue import VoiceQueueCancelledError
+    from dan.voice.queue import VoiceQueueCancelledError
 
     seed_queue(db_path)  # turn-a (rows), turn-b (rows)
     registry = GenerationRegistry()

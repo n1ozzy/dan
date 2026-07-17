@@ -1,4 +1,4 @@
-"""Contract checks for the Jarvis Memory OS design docs."""
+"""Contract checks for the DAN Memory OS design docs."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.memory.summarizer import MemorySummarizer
+from dan.memory.summarizer import MemorySummarizer
 
 
 ROOT = Path(__file__).resolve().parents[1]

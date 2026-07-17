@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 
-SCHEMA_GUARD_PATHS = ("jarvis/store/schema.sql", "jarvis/store/migrations.py")
+SCHEMA_GUARD_PATHS = ("dan/store/schema.sql", "dan/store/migrations.py")
 SCHEMA_GUARD_SKIP_REASON = "schema/migration patch check requires a git working tree"
 
 

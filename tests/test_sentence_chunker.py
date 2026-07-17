@@ -6,7 +6,7 @@ blocks hold emission fail-closed and are never spoken.
 
 from __future__ import annotations
 
-from jarvis.voice.chunker import SentenceChunker
+from dan.voice.chunker import SentenceChunker
 
 
 def collect(chunker: SentenceChunker, deltas: list[str]) -> list[str]:
@@ -103,20 +103,20 @@ def test_blank_line_before_tool_call_suspicion_stays_fail_closed() -> None:
 
     # Empty line consumed, the tool-call prefix suspicion is held, nothing
     # of the block ever comes out.
-    assert chunker.feed("Nagłówek bez kropki\n\n<jarvis_tool") == ["Nagłówek bez kropki"]
+    assert chunker.feed("Nagłówek bez kropki\n\n<dan_tool") == ["Nagłówek bez kropki"]
     assert chunker.flush() == []
 
 
 def test_tool_call_block_is_never_spoken() -> None:
     text = (
         "Muszę sprawdzić plik konfiguracyjny teraz. "
-        '<jarvis_tool_call>{"name":"file_read","arguments":{"path":"/x"}}</jarvis_tool_call> '
+        '<dan_tool_call>{"name":"file_read","arguments":{"path":"/x"}}</dan_tool_call> '
         "Wracam z wynikiem za chwilę."
     )
     chunks = collect(SentenceChunker(), [text])
 
     joined = " ".join(chunks)
-    assert "jarvis_tool_call" not in joined
+    assert "dan_tool_call" not in joined
     assert "file_read" not in joined
     assert chunks[0] == "Muszę sprawdzić plik konfiguracyjny teraz."
     assert any("Wracam z wynikiem" in chunk for chunk in chunks)
@@ -124,8 +124,8 @@ def test_tool_call_block_is_never_spoken() -> None:
 
 def test_tool_call_split_across_deltas_is_never_spoken() -> None:
     deltas = [
-        "Sprawdzam to od razu dla ciebie. <jarvis_",
-        'tool_call>{"name":"echo","arguments":{}}</jarvis_',
+        "Sprawdzam to od razu dla ciebie. <dan_",
+        'tool_call>{"name":"echo","arguments":{}}</dan_',
         "tool_call> Gotowe, wynik zaraz będzie.",
     ]
     chunks = collect(SentenceChunker(), deltas)
@@ -148,12 +148,12 @@ def test_false_prefix_is_released_as_ordinary_text() -> None:
 def test_unterminated_tool_call_is_held_forever_fail_closed() -> None:
     chunker = SentenceChunker()
 
-    emitted = chunker.feed("Zaczynam działanie narzędzia teraz. <jarvis_tool_call>{never closed")
+    emitted = chunker.feed("Zaczynam działanie narzędzia teraz. <dan_tool_call>{never closed")
     tail = chunker.flush()
 
     assert emitted == ["Zaczynam działanie narzędzia teraz."]
     # Fail-closed: a suspicious, unresolved block never leaves the buffer.
-    assert all("jarvis_tool_call" not in chunk for chunk in tail)
+    assert all("dan_tool_call" not in chunk for chunk in tail)
     assert all("never closed" not in chunk for chunk in tail)
 
 

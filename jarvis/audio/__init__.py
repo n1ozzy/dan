@@ -1,7 +1,0 @@
-"""Audio device policy scaffold."""
-
-from __future__ import annotations
-
-from jarvis.audio.models import AudioDeviceState
-
-__all__ = ["AudioDeviceState"]

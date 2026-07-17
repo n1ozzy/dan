@@ -9,17 +9,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-from jarvis.store.db import (
+from dan.store.db import (
     close_quietly,
     connect_db,
     get_schema_version,
     initialize_database,
     table_names,
 )
-from jarvis.store.migrations import LATEST_SCHEMA_VERSION, apply_migrations
+from dan.store.migrations import LATEST_SCHEMA_VERSION, apply_migrations
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_SQL = ROOT / "jarvis" / "store" / "schema.sql"
+SCHEMA_SQL = ROOT / "dan" / "store" / "schema.sql"
 
 MEMORY_OS_TABLES = {
     "memory_observations",
@@ -322,7 +322,7 @@ CRITICAL_COLUMNS = {
 def config_text(db_path: Path) -> str:
     return f"""
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "127.0.0.1"
 port = 41741
 log_level = "INFO"
@@ -379,12 +379,12 @@ destructive_tools_enabled = false
 home = "{db_path.parent}"
 logs_dir = "{db_path.parent / "logs"}"
 runtime_dir = "{db_path.parent / "runtime"}"
-pid_file = "{db_path.parent / "runtime" / "jarvisd.pid"}"
+pid_file = "{db_path.parent / "runtime" / "dand.pid"}"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd"
+label = "com.dan.dand"
 install_automatically = false
 """
 
@@ -396,10 +396,10 @@ def write_config(path: Path, db_path: Path) -> Path:
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env.pop("JARVIS_CONFIG", None)
+    env.pop("DAN_CONFIG", None)
     env["PYTHONPATH"] = str(ROOT)
     return subprocess.run(
-        [sys.executable, "-m", "jarvis.cli", *args],
+        [sys.executable, "-m", "dan.cli", *args],
         cwd=ROOT,
         env=env,
         text=True,
@@ -432,7 +432,7 @@ def _has_unique_index_on(conn: sqlite3.Connection, table: str, column: str) -> b
 
 
 def test_initialize_database_creates_db_at_tmp_path(tmp_path: Path) -> None:
-    db_path = tmp_path / "jarvis.db"
+    db_path = tmp_path / "dan.db"
     conn = initialize_database(db_path)
     close_quietly(conn)
 
@@ -440,7 +440,7 @@ def test_initialize_database_creates_db_at_tmp_path(tmp_path: Path) -> None:
 
 
 def test_initialize_database_creates_only_expected_parent_directory(tmp_path: Path) -> None:
-    db_path = tmp_path / "runtime-home" / "data" / "jarvis.db"
+    db_path = tmp_path / "runtime-home" / "data" / "dan.db"
 
     conn = initialize_database(db_path)
     close_quietly(conn)
@@ -450,7 +450,7 @@ def test_initialize_database_creates_only_expected_parent_directory(tmp_path: Pa
 
 
 def test_applying_migrations_twice_is_idempotent(tmp_path: Path) -> None:
-    db_path = tmp_path / "jarvis.db"
+    db_path = tmp_path / "dan.db"
     conn = initialize_database(db_path)
 
     apply_migrations(conn)
@@ -484,7 +484,7 @@ def test_schema_sql_declares_memory_os_v1_tables() -> None:
 def test_sidecar_migration_creates_memory_os_tables_for_preexisting_v2_database(
     tmp_path: Path,
 ) -> None:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
     _remove_memory_os_v1_schema(conn)
 
     apply_migrations(conn)
@@ -498,7 +498,7 @@ def test_sidecar_migration_creates_memory_os_tables_for_preexisting_v2_database(
 def test_v4_migration_creates_lineage_tables_for_preexisting_v3_database(
     tmp_path: Path,
 ) -> None:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
     conn.execute("DROP TABLE migration_record_map")
     conn.execute("DROP TABLE migration_sources")
     conn.execute("DELETE FROM schema_version WHERE version = 4")
@@ -514,7 +514,7 @@ def test_v4_migration_creates_lineage_tables_for_preexisting_v3_database(
 def test_sidecar_migration_does_not_migrate_existing_memory_blocks_data(
     tmp_path: Path,
 ) -> None:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
     _remove_memory_os_v1_schema(conn)
     conn.execute(
         """
@@ -563,7 +563,7 @@ def test_sidecar_migration_does_not_migrate_existing_memory_blocks_data(
 def test_migration_adds_spoken_at_to_a_preexisting_v1_voice_queue(tmp_path: Path) -> None:
     # An existing v1 database (voice_queue without spoken_at) must gain the
     # column through the idempotent v2 migration without losing its rows.
-    db_path = tmp_path / "jarvis.db"
+    db_path = tmp_path / "dan.db"
     conn = initialize_database(db_path)
     # Roll the fixture back to a real v1 shape: no spoken_at column, no index,
     # no v2 version row (the index must go before the column it references).
@@ -591,21 +591,21 @@ def test_migration_adds_spoken_at_to_a_preexisting_v1_voice_queue(tmp_path: Path
 
 
 def test_get_schema_version_returns_latest_schema_version(tmp_path: Path) -> None:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
 
     assert get_schema_version(conn) == LATEST_SCHEMA_VERSION
     close_quietly(conn)
 
 
 def test_all_required_tables_exist(tmp_path: Path) -> None:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
 
     assert REQUIRED_TABLES.issubset(table_names(conn))
     close_quietly(conn)
 
 
 def test_required_indexes_exist(tmp_path: Path) -> None:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
     indexes = {
         row[0]
         for row in conn.execute(
@@ -618,14 +618,14 @@ def test_required_indexes_exist(tmp_path: Path) -> None:
 
 
 def test_memory_topics_namespace_has_unique_index(tmp_path: Path) -> None:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
 
     assert _has_unique_index_on(conn, "memory_topics", "namespace")
     close_quietly(conn)
 
 
 def test_required_columns_exist_for_critical_tables(tmp_path: Path) -> None:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
 
     for table, expected_columns in CRITICAL_COLUMNS.items():
         columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -635,7 +635,7 @@ def test_required_columns_exist_for_critical_tables(tmp_path: Path) -> None:
 
 
 def test_existing_user_table_and_data_survives_migration_rerun(tmp_path: Path) -> None:
-    db_path = tmp_path / "jarvis.db"
+    db_path = tmp_path / "dan.db"
     conn = initialize_database(db_path)
     conn.execute("CREATE TABLE user_owned_data (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
     conn.execute("INSERT INTO user_owned_data (value) VALUES (?)", ("keep me",))
@@ -650,7 +650,7 @@ def test_existing_user_table_and_data_survives_migration_rerun(tmp_path: Path) -
 
 
 def test_connect_db_enables_foreign_keys(tmp_path: Path) -> None:
-    db_path = tmp_path / "jarvis.db"
+    db_path = tmp_path / "dan.db"
     sqlite3.connect(db_path).close()
 
     conn = connect_db(db_path)
@@ -661,7 +661,7 @@ def test_connect_db_enables_foreign_keys(tmp_path: Path) -> None:
 
 
 def test_connect_db_uses_wal_and_busy_timeout(tmp_path: Path) -> None:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
 
     journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
@@ -671,8 +671,8 @@ def test_connect_db_uses_wal_and_busy_timeout(tmp_path: Path) -> None:
 
 
 def test_db_status_cli_returns_json_and_does_not_create_database(tmp_path: Path) -> None:
-    db_path = tmp_path / "missing" / "jarvis.db"
-    config_path = write_config(tmp_path / "jarvis.toml", db_path)
+    db_path = tmp_path / "missing" / "dan.db"
+    config_path = write_config(tmp_path / "dan.toml", db_path)
 
     result = run_cli("--config", str(config_path), "db", "status")
 
@@ -686,8 +686,8 @@ def test_db_status_cli_returns_json_and_does_not_create_database(tmp_path: Path)
 
 
 def test_db_init_cli_initializes_temp_config_database(tmp_path: Path) -> None:
-    db_path = tmp_path / "safe-home" / "jarvis.db"
-    config_path = write_config(tmp_path / "jarvis.toml", db_path)
+    db_path = tmp_path / "safe-home" / "dan.db"
+    config_path = write_config(tmp_path / "dan.toml", db_path)
 
     result = run_cli("--config", str(config_path), "db", "init")
 
@@ -700,10 +700,10 @@ def test_db_init_cli_initializes_temp_config_database(tmp_path: Path) -> None:
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
     allowed_contracts = {
-        ("jarvis/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
-        ("jarvis/voice/shared_broker.py", "/tmp/dan"),
-        ("jarvis/migration/test_safety.py", "/tmp/dan"),
-        ("jarvis/migration/test_safety.py", "afplay"),
+        ("dan/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("dan/voice/shared_broker.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "afplay"),
     }
     forbidden = (
         "/Users/n1_ozzy/Documents/dev/dan",
@@ -712,7 +712,7 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
         "--dangerously-skip-permissions",
     )
     roots = (
-        ROOT / "jarvis",
+        ROOT / "dan",
         ROOT / "config",
         ROOT / "scripts",
         ROOT / "launchd",

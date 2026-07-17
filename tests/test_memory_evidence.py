@@ -9,17 +9,17 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.memory.evidence import (
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.memory.evidence import (
     MemoryEvidenceConflict,
     MemoryEvidenceNotFound,
     MemoryEvidenceRepository,
     MemoryEvidenceValidationError,
 )
-from jarvis.memory.inbox import MemoryCandidateRepository
-from jarvis.security.redaction import REDACTION_PLACEHOLDER
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import create_event_store
+from dan.memory.inbox import MemoryCandidateRepository
+from dan.security.redaction import REDACTION_PLACEHOLDER
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import create_event_store
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import (
     request_json,
@@ -36,7 +36,7 @@ RAW_QUOTE_SECRET = "sk-ant-evidencequote123"
 
 @pytest.fixture
 def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    connection = initialize_database(tmp_path / "jarvis.db")
+    connection = initialize_database(tmp_path / "dan.db")
     try:
         yield connection
     finally:
@@ -55,7 +55,7 @@ def repo(conn: sqlite3.Connection) -> MemoryEvidenceRepository:
 
 @pytest.fixture
 def config_path(tmp_path: Path) -> Path:
-    return write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    return write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
 
 
 @pytest.fixture
@@ -71,7 +71,7 @@ def create_candidate(repo: MemoryCandidateRepository, **overrides: object):
     payload: dict[str, object] = {
         "candidate_kind": "semantic",
         "scope": "project",
-        "namespace": "project/jarvis/memory",
+        "namespace": "project/dan/memory",
         "claim": "Candidate evidence stays provenance only.",
         "recommended_action": "approve",
     }
@@ -83,7 +83,7 @@ def candidate_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "candidate_kind": "semantic",
         "scope": "project",
-        "namespace": "project/jarvis/memory",
+        "namespace": "project/dan/memory",
         "claim": "Candidate evidence is review provenance.",
         "recommended_action": "approve",
     }

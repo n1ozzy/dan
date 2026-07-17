@@ -37,7 +37,7 @@ FORBIDDEN_SCRIPT_SNIPPETS = (
 )
 
 REQUIRED_SCRIPT_SNIPPETS = (
-    "python -m jarvis.cli",
+    "python -m dan.cli",
     "daemon run",
     "input text",
     "conversations list",
@@ -59,7 +59,7 @@ REQUIRED_CLAUDE_SMOKE_SNIPPETS = (
 )
 
 REQUIRED_TOOLS_SMOKE_SNIPPETS = (
-    "python -m jarvis.cli",
+    "python -m dan.cli",
     "daemon run",
     "/tools",
     "/tools/request",
@@ -73,7 +73,7 @@ REQUIRED_TOOLS_SMOKE_SNIPPETS = (
 )
 
 REQUIRED_MEMORY_SMOKE_SNIPPETS = (
-    "python -m jarvis.cli",
+    "python -m dan.cli",
     "daemon run",
     "memory create",
     "memory list",
@@ -88,7 +88,7 @@ REQUIRED_MEMORY_SMOKE_SNIPPETS = (
 )
 
 REQUIRED_CONTINUATION_SMOKE_SNIPPETS = (
-    "python -m jarvis.cli",
+    "python -m dan.cli",
     "daemon run",
     "/input/text",
     "awaiting_approval",
@@ -96,7 +96,7 @@ REQUIRED_CONTINUATION_SMOKE_SNIPPETS = (
     "/execute",
     "already executed",
     "approval_probe",
-    "jarvis_tool_call",
+    "dan_tool_call",
     "Continuation after approved tool execution",
     "tool_result_continuation",
     "pending_approval_count",
@@ -280,7 +280,7 @@ def test_stream_smoke_script_exercises_stream_contract() -> None:
     for snippet in (
         "GET /stream HTTP/1.1",
         "Sec-WebSocket-Key",
-        "jarvis-token.",
+        "dan-token.",
         "output_omitted",
         "1003",
     ):
@@ -386,7 +386,7 @@ def test_tools_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> No
         "kill \"$DAEMON_PID\"",
     ):
         assert snippet in text
-    assert "~/.jarvis" not in text
+    assert "~/.dan" not in text
 
 
 def test_memory_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> None:
@@ -410,7 +410,7 @@ def test_memory_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> N
         "launchd.enabled = false",
     ):
         assert snippet in text
-    assert "~/.jarvis" not in text
+    assert "~/.dan" not in text
 
 
 def test_continuation_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only() -> None:
@@ -428,7 +428,7 @@ def test_continuation_smoke_script_uses_temp_runtime_and_child_pid_cleanup_only(
         "kill \"$DAEMON_PID\"",
     ):
         assert snippet in text
-    assert "~/.jarvis" not in text
+    assert "~/.dan" not in text
 
 
 def test_pytest_only_syntax_checks_continuation_smoke_script() -> None:
@@ -459,7 +459,7 @@ REQUIRED_E2E_SMOKE_SNIPPETS = (
     "/health",
     "/input/text",
     "Restarting daemon",
-    "<jarvis_tool_call>",
+    "<dan_tool_call>",
     "/approvals/",
     "/execute",
     "/reject",
@@ -643,11 +643,11 @@ def test_schema_and_migrations_are_unchanged() -> None:
 
 
 def test_runtime_files_avoid_forbidden_legacy_strings() -> None:
-    scanned_roots = ("jarvis", "config", "scripts", "launchd", "README.md", "pyproject.toml")
+    scanned_roots = ("dan", "config", "scripts", "launchd", "README.md", "pyproject.toml")
     allowed_contracts = {
         ("README.md", "/Users/n1_ozzy/Documents/dev/dan"),
-        ("jarvis/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
-        ("jarvis/voice/shared_broker.py", "/tmp/dan"),
+        ("dan/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("dan/voice/shared_broker.py", "/tmp/dan"),
     }
     text_suffixes = {".py", ".sql", ".toml", ".md", ".sh", ".example", ".html", ".js", ".css", ""}
     offenders: list[tuple[str, str]] = []

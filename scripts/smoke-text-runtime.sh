@@ -13,9 +13,9 @@ fi
 HOST="127.0.0.1"
 PORT="41749"
 BASE_URL="http://$HOST:$PORT"
-SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-text-smoke.XXXXXX")"
-CONFIG="$SMOKE_DIR/jarvis-smoke.toml"
-DAEMON_LOG="$SMOKE_DIR/jarvisd.log"
+SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dan-text-smoke.XXXXXX")"
+CONFIG="$SMOKE_DIR/dan-smoke.toml"
+DAEMON_LOG="$SMOKE_DIR/dand.log"
 INPUT_JSON="$SMOKE_DIR/input.json"
 CONVERSATIONS_JSON="$SMOKE_DIR/conversations.json"
 TURNS_JSON="$SMOKE_DIR/turns.json"
@@ -42,7 +42,7 @@ trap cleanup EXIT INT TERM
 
 cd "$ROOT"
 
-printf 'Using CLI form: python -m jarvis.cli\n'
+printf 'Using CLI form: python -m dan.cli\n'
 
 "$PYTHON_BIN" - "$HOST" "$PORT" <<'PY'
 import socket
@@ -58,13 +58,13 @@ PY
 
 cat >"$CONFIG" <<EOF
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "$HOST"
 port = $PORT
 log_level = "INFO"
 
 [database]
-path = "$SMOKE_DIR/home/jarvis.db"
+path = "$SMOKE_DIR/home/dan.db"
 migrations = "manual"
 destroy_existing = false
 
@@ -115,23 +115,23 @@ destructive_tools_enabled = false
 home = "$SMOKE_DIR/home"
 logs_dir = "$SMOKE_DIR/logs"
 runtime_dir = "$SMOKE_DIR/runtime"
-pid_file = "$SMOKE_DIR/runtime/jarvisd.pid"
+pid_file = "$SMOKE_DIR/runtime/dand.pid"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd.smoke"
+label = "com.dan.dand.smoke"
 install_automatically = false
 EOF
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" daemon run >"$DAEMON_LOG" 2>&1 &
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" daemon run >"$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 
 wait_for_health() {
   attempt=1
   while [ "$attempt" -le 40 ]; do
     if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-      printf 'Temporary jarvisd exited before health became ready.\n' >&2
+      printf 'Temporary dand exited before health became ready.\n' >&2
       printf 'Daemon log: %s\n' "$DAEMON_LOG" >&2
       sed -n '1,120p' "$DAEMON_LOG" >&2 || true
       return 1
@@ -146,7 +146,7 @@ with urlopen(f"{sys.argv[1]}/health", timeout=0.5) as response:
     payload = json.loads(response.read().decode("utf-8"))
 if payload.get("ok") is not True:
     raise SystemExit(1)
-if payload.get("service") != "jarvisd":
+if payload.get("service") != "dand":
     raise SystemExit(1)
 PY
     then
@@ -165,7 +165,7 @@ PY
 
 wait_for_health
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" input text "Kim jesteś?" --url "$BASE_URL" >"$INPUT_JSON"
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" input text "Kim jesteś?" --url "$BASE_URL" >"$INPUT_JSON"
 
 CONVERSATION_ID="$("$PYTHON_BIN" - "$INPUT_JSON" <<'PY'
 import json
@@ -176,7 +176,7 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 if payload.get("ok") is not True:
     raise SystemExit("input response did not set ok=true")
 final_text = payload.get("final_text")
-if not isinstance(final_text, str) or "Jarvis mock response" not in final_text:
+if not isinstance(final_text, str) or "DAN mock response" not in final_text:
     raise SystemExit("input response did not contain MockBrain final_text")
 conversation_id = payload.get("conversation_id")
 if not isinstance(conversation_id, str) or not conversation_id:
@@ -206,7 +206,7 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 PY
 )"
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" conversations list --url "$BASE_URL" >"$CONVERSATIONS_JSON"
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" conversations list --url "$BASE_URL" >"$CONVERSATIONS_JSON"
 "$PYTHON_BIN" - "$CONVERSATIONS_JSON" "$CONVERSATION_ID" <<'PY'
 import json
 import sys
@@ -221,7 +221,7 @@ if not any(item.get("id") == conversation_id for item in conversations if isinst
     raise SystemExit(f"conversation not found in history: {conversation_id}")
 PY
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" turns list --conversation-id "$CONVERSATION_ID" --url "$BASE_URL" >"$TURNS_JSON"
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" turns list --conversation-id "$CONVERSATION_ID" --url "$BASE_URL" >"$TURNS_JSON"
 "$PYTHON_BIN" - "$TURNS_JSON" "$TURN_ID" <<'PY'
 import json
 import sys
@@ -236,7 +236,7 @@ if not any(item.get("id") == turn_id for item in turns if isinstance(item, dict)
     raise SystemExit(f"turn not found in history: {turn_id}")
 PY
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" events after --id 0 --url "$BASE_URL" >"$EVENTS_JSON"
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" events after --id 0 --url "$BASE_URL" >"$EVENTS_JSON"
 
 EVENT_COUNT="$("$PYTHON_BIN" - "$EVENTS_JSON" "$TURN_ID" <<'PY'
 import json

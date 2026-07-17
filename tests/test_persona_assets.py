@@ -1,4 +1,4 @@
-"""Jarvis and DAN share one external, versioned persona canon."""
+"""DAN and DAN share one external, versioned persona canon."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import importlib
 import sys
 from pathlib import Path
 
-from jarvis.brain import context_builder
-from jarvis.brain.context_builder import DEFAULT_PERSONA_PATH
+from dan.brain import context_builder
+from dan.brain.context_builder import DEFAULT_PERSONA_PATH
 from tests.git_guards import assert_schema_and_migrations_unchanged
 
 
@@ -22,9 +22,9 @@ def test_base_persona_exists_and_is_non_empty() -> None:
     assert "DAN_CANON_VERSION: 1" in text
 
 
-def test_jarvis_has_no_local_persona_copy() -> None:
+def test_dan_has_no_local_persona_copy() -> None:
     profiles = sorted(p.name for p in PERSONA_DIR.glob("*.md"))
-    assert profiles == [], f"Jarvis must point to the shared canon; found {profiles}"
+    assert profiles == [], f"DAN must point to the shared canon; found {profiles}"
 
 
 def test_context_builder_points_to_the_shared_canon() -> None:
@@ -36,7 +36,7 @@ def test_home_override_cannot_redirect_the_production_persona_path(
     monkeypatch,
 ) -> None:
     module_name = context_builder.__name__
-    brain_package = importlib.import_module("jarvis.brain")
+    brain_package = importlib.import_module("dan.brain")
     try:
         with monkeypatch.context() as patched:
             patched.setenv("HOME", str(tmp_path))

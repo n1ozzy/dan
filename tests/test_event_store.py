@@ -9,16 +9,16 @@ from typing import Any
 
 import pytest
 
-from jarvis.events.bus import EventBus
-from jarvis.events.models import (
+from dan.events.bus import EventBus
+from dan.events.models import (
     Event,
     event_from_row,
     event_to_row_payload,
     utc_now_iso,
 )
-from jarvis.events.types import EventType
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import EventStore, EventStoreError, create_event_store
+from dan.events.types import EventType
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import EventStore, EventStoreError, create_event_store
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,7 +78,7 @@ REQUIRED_EVENT_TYPES = {
 
 @pytest.fixture
 def conn(tmp_path: Path) -> sqlite3.Connection:
-    db_conn = initialize_database(tmp_path / "jarvis.db")
+    db_conn = initialize_database(tmp_path / "dan.db")
     try:
         yield db_conn
     finally:
@@ -329,7 +329,7 @@ def test_event_models_roundtrip_payload_json() -> None:
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
-    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
     forbidden = (
         "/Users/n1_ozzy/Documents/dev/dan",
         "/tmp/dan",
@@ -337,7 +337,7 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
         "--dangerously-skip-permissions",
     )
     roots = (
-        ROOT / "jarvis",
+        ROOT / "dan",
         ROOT / "config",
         ROOT / "scripts",
         ROOT / "launchd",

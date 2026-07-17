@@ -13,8 +13,8 @@ from email.message import Message
 
 import pytest
 
-from jarvis.tools.registry import ToolExecutionError
-from jarvis.tools.web_tool import DEFAULT_MAX_BYTES, WebFetchTool
+from dan.tools.registry import ToolExecutionError
+from dan.tools.web_tool import DEFAULT_MAX_BYTES, WebFetchTool
 
 
 class _FakeResponse:
@@ -44,7 +44,7 @@ class _FakeResponse:
 def _patch_urlopen(monkeypatch, factory):
     # web_fetch performs the GET through the guarded opener via _perform_request;
     # patching that seam keeps tests off the real network while exercising run().
-    monkeypatch.setattr("jarvis.tools.web_tool._perform_request", factory)
+    monkeypatch.setattr("dan.tools.web_tool._perform_request", factory)
 
 
 def test_fetches_body_and_metadata(monkeypatch):
@@ -153,7 +153,7 @@ def test_redirect_to_loopback_is_refused():
     # even when the originally-approved URL was public.
     from email.message import Message as _Msg
 
-    from jarvis.tools.web_tool import _GuardedRedirectHandler
+    from dan.tools.web_tool import _GuardedRedirectHandler
 
     handler = _GuardedRedirectHandler()
     req = urllib.request.Request("http://example.com/")
@@ -166,7 +166,7 @@ def test_redirect_to_loopback_is_refused():
 def test_redirect_to_public_host_is_allowed():
     from email.message import Message as _Msg
 
-    from jarvis.tools.web_tool import _GuardedRedirectHandler
+    from dan.tools.web_tool import _GuardedRedirectHandler
 
     handler = _GuardedRedirectHandler()
     req = urllib.request.Request("http://example.com/")

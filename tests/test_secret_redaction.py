@@ -7,12 +7,12 @@ import sqlite3
 from copy import deepcopy
 from pathlib import Path
 
-from jarvis.api.routes_events import event_to_dict
-from jarvis.daemon.app import create_daemon_app
-from jarvis.events.types import EventType
-from jarvis.security.redaction import REDACTION_PLACEHOLDER, redact_secrets
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import EventStore, create_event_store
+from dan.api.routes_events import event_to_dict
+from dan.daemon.app import create_daemon_app
+from dan.events.types import EventType
+from dan.security.redaction import REDACTION_PLACEHOLDER, redact_secrets
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import EventStore, create_event_store
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import request_json, running_server, write_config
 
@@ -27,7 +27,7 @@ FORBIDDEN_RUNTIME_STRINGS = (
 
 
 def make_store(tmp_path: Path) -> tuple[sqlite3.Connection, EventStore]:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
     return conn, create_event_store(conn)
 
 
@@ -280,7 +280,7 @@ def test_event_store_append_redacts_before_persistence(tmp_path: Path) -> None:
 
 def test_events_api_response_cannot_expose_secret_from_event_payload(tmp_path: Path) -> None:
     raw_secret = "sk-ant-apiresponse123"
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
         assert app.event_store is not None
@@ -316,9 +316,9 @@ def test_schema_and_migrations_were_not_changed() -> None:
 
 
 def test_forbidden_legacy_strings_are_absent_from_runtime_code_and_scripts() -> None:
-    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
     findings: list[str] = []
-    for root_name in ("jarvis", "scripts"):
+    for root_name in ("dan", "scripts"):
         for path in (ROOT / root_name).rglob("*"):
             if not path.is_file() or "__pycache__" in path.parts:
                 continue

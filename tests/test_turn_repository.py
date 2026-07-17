@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.repositories import MAX_REPOSITORY_LIMIT
-from jarvis.turns import (
+from dan.store.db import close_quietly, initialize_database
+from dan.store.repositories import MAX_REPOSITORY_LIMIT
+from dan.turns import (
     Conversation,
     ConversationRepository,
     ConversationRepositoryError,
@@ -84,7 +84,7 @@ def test_conversation_create_stores_conversation(conn: sqlite3.Connection) -> No
 
     conversation = repo.create(
         title="Main",
-        metadata={"topic": "jarvis"},
+        metadata={"topic": "dan"},
         conversation_id="conversation-main",
     )
 
@@ -92,13 +92,13 @@ def test_conversation_create_stores_conversation(conn: sqlite3.Connection) -> No
     assert conversation.id == "conversation-main"
     assert conversation.title == "Main"
     assert conversation.status == "active"
-    assert conversation.metadata == {"topic": "jarvis"}
+    assert conversation.metadata == {"topic": "dan"}
     assert conversation.created_at == "2026-07-01T12:00:00+00:00"
     row = conn.execute("SELECT id, title, status, metadata_json FROM conversations").fetchone()
     assert row[0] == "conversation-main"
     assert row[1] == "Main"
     assert row[2] == "active"
-    assert '"topic": "jarvis"' in row[3]
+    assert '"topic": "dan"' in row[3]
 
 
 def test_conversation_get_returns_stored_conversation(conn: sqlite3.Connection) -> None:
@@ -259,7 +259,7 @@ def test_turn_create_stores_turn_for_existing_conversation(conn: sqlite3.Connect
     turn = repo.create(
         "conversation-1",
         source="text",
-        input_text="Hello Jarvis",
+        input_text="Hello DAN",
         metadata={"channel": "test"},
         turn_id="turn-create",
     )
@@ -269,7 +269,7 @@ def test_turn_create_stores_turn_for_existing_conversation(conn: sqlite3.Connect
     assert turn.conversation_id == "conversation-1"
     assert turn.source == "text"
     assert turn.status == "received"
-    assert turn.input_text == "Hello Jarvis"
+    assert turn.input_text == "Hello DAN"
     assert turn.metadata == {"channel": "test"}
     assert turn.created_at == "2026-07-01T12:00:00+00:00"
 
@@ -570,9 +570,9 @@ def test_repositories_do_not_call_brain_context_voice_tools_or_workers() -> None
     forbidden_fragments = (
         "BrainManager",
         "ContextBuilder",
-        "jarvis.voice",
-        "jarvis.tools",
-        "jarvis.workers",
+        "dan.voice",
+        "dan.tools",
+        "dan.workers",
         "voice_queue",
         "tool_runs",
         "worker_jobs",
@@ -581,7 +581,7 @@ def test_repositories_do_not_call_brain_context_voice_tools_or_workers() -> None
         "import subprocess",
         "import urllib",
     )
-    for relative in ("jarvis/turns/repository.py", "jarvis/store/repositories.py"):
+    for relative in ("dan/turns/repository.py", "dan/store/repositories.py"):
         source = (ROOT / relative).read_text(encoding="utf-8")
         offenders = [fragment for fragment in forbidden_fragments if fragment in source]
         assert offenders == [], f"{relative} has forbidden fragments: {offenders}"
@@ -615,9 +615,9 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
         "--dangerously-skip-permissions",
     )
     scanned = (
-        ROOT / "jarvis" / "turns" / "models.py",
-        ROOT / "jarvis" / "turns" / "repository.py",
-        ROOT / "jarvis" / "store" / "repositories.py",
+        ROOT / "dan" / "turns" / "models.py",
+        ROOT / "dan" / "turns" / "repository.py",
+        ROOT / "dan" / "store" / "repositories.py",
     )
     offenders: list[tuple[str, str]] = []
 

@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.migration.sqlite_backup import BackupReport
+from dan.migration.sqlite_backup import BackupReport
 
 ROOT = Path(__file__).resolve().parents[1]
 MEMORY_SCHEMA_SQL = ROOT / "tests" / "fixtures" / "memory_v1.sql"
 
 
 def _create_jarvis_fixture(path: Path) -> Path:
-    from jarvis.store.db import initialize_database
+    from dan.store.db import initialize_database
 
     connection = initialize_database(path)
     try:
@@ -58,7 +58,7 @@ def _table_rows(path: Path, table: str) -> int:
 def test_dan_db_evolves_from_jarvis_snapshot_and_maps_every_real_memory_table(
     tmp_path: Path,
 ) -> None:
-    from jarvis.migration.legacy_data import migrate_databases
+    from dan.migration.legacy_data import migrate_databases
 
     jarvis = _create_jarvis_fixture(tmp_path / "jarvis.db")
     memory = _create_memory_fixture(tmp_path / "memory.db")
@@ -90,7 +90,7 @@ def test_dan_db_evolves_from_jarvis_snapshot_and_maps_every_real_memory_table(
     finally:
         connection.close()
 
-    from jarvis.migration.db_report import render_database_migration_report
+    from dan.migration.db_report import render_database_migration_report
 
     assert render_database_migration_report(report)["memory"]["classes"] == [
         {
@@ -113,7 +113,7 @@ def test_dan_db_evolves_from_jarvis_snapshot_and_maps_every_real_memory_table(
 
 
 def test_reimporting_the_same_backup_snapshot_is_idempotent(tmp_path: Path) -> None:
-    from jarvis.migration.legacy_data import migrate_databases
+    from dan.migration.legacy_data import migrate_databases
 
     jarvis = _create_jarvis_fixture(tmp_path / "jarvis.db")
     memory = _create_memory_fixture(tmp_path / "memory.db")
@@ -141,7 +141,7 @@ def test_same_title_and_body_only_merge_when_all_semantics_match(
     value: object,
     expected: object,
 ) -> None:
-    from jarvis.migration.legacy_data import migrate_databases
+    from dan.migration.legacy_data import migrate_databases
 
     jarvis = _create_jarvis_fixture(tmp_path / "jarvis.db")
     memory = _create_memory_fixture(tmp_path / "memory.db")
@@ -196,7 +196,7 @@ def test_json_metadata_preserves_boolean_and_number_types_recursively(
     target_metadata: str,
     source_metadata: str,
 ) -> None:
-    from jarvis.migration.legacy_data import migrate_databases
+    from dan.migration.legacy_data import migrate_databases
 
     jarvis = _create_jarvis_fixture(tmp_path / "jarvis.db")
     target_connection = sqlite3.connect(jarvis)
@@ -242,7 +242,7 @@ def test_json_metadata_preserves_boolean_and_number_types_recursively(
 
 
 def test_json_metadata_object_key_order_remains_semantically_equivalent(tmp_path: Path) -> None:
-    from jarvis.migration.legacy_data import migrate_databases
+    from dan.migration.legacy_data import migrate_databases
 
     jarvis = _create_jarvis_fixture(tmp_path / "jarvis.db")
     target_connection = sqlite3.connect(jarvis)
@@ -272,7 +272,7 @@ def test_json_metadata_object_key_order_remains_semantically_equivalent(tmp_path
 
 
 def test_fractional_source_timestamps_preserve_microseconds(tmp_path: Path) -> None:
-    from jarvis.migration.legacy_data import migrate_databases
+    from dan.migration.legacy_data import migrate_databases
 
     memory = _create_memory_fixture(tmp_path / "memory.db")
     connection = sqlite3.connect(memory)
@@ -303,8 +303,8 @@ def test_fractional_source_timestamps_preserve_microseconds(tmp_path: Path) -> N
 def test_existing_target_with_active_immediate_writer_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import jarvis.migration.sqlite_backup as sqlite_backup
-    from jarvis.migration.legacy_data import migrate_databases
+    import dan.migration.sqlite_backup as sqlite_backup
+    from dan.migration.legacy_data import migrate_databases
 
     jarvis = _create_jarvis_fixture(tmp_path / "jarvis.db")
     memory = _create_memory_fixture(tmp_path / "memory.db")
@@ -327,7 +327,7 @@ def test_existing_target_with_active_immediate_writer_is_rejected(
 
 
 def test_orphaned_compiled_context_is_rejected_with_auditable_reason(tmp_path: Path) -> None:
-    from jarvis.migration.legacy_data import migrate_databases
+    from dan.migration.legacy_data import migrate_databases
 
     memory = _create_memory_fixture(tmp_path / "memory.db")
     connection = sqlite3.connect(memory)
@@ -358,7 +358,7 @@ def test_orphaned_compiled_context_is_rejected_with_auditable_reason(tmp_path: P
 
 
 def test_unknown_or_drifted_memory_schema_fails_before_creating_target(tmp_path: Path) -> None:
-    from jarvis.migration.legacy_data import migrate_databases
+    from dan.migration.legacy_data import migrate_databases
 
     memory = _create_memory_fixture(tmp_path / "memory.db")
     connection = sqlite3.connect(memory)
@@ -375,7 +375,7 @@ def test_unknown_or_drifted_memory_schema_fails_before_creating_target(tmp_path:
 
 
 def test_migration_refuses_target_equal_to_a_source(tmp_path: Path) -> None:
-    from jarvis.migration.legacy_data import migrate_databases
+    from dan.migration.legacy_data import migrate_databases
 
     jarvis = _create_jarvis_fixture(tmp_path / "jarvis.db")
     with pytest.raises(ValueError, match="distinct database paths"):
@@ -383,8 +383,8 @@ def test_migration_refuses_target_equal_to_a_source(tmp_path: Path) -> None:
 
 
 def test_sanitized_report_excludes_paths_and_imported_private_text() -> None:
-    from jarvis.migration.db_report import render_database_migration_report
-    from jarvis.migration.legacy_data import DatabaseMigrationReport, MemoryMigrationReport
+    from dan.migration.db_report import render_database_migration_report
+    from dan.migration.legacy_data import DatabaseMigrationReport, MemoryMigrationReport
 
     report = DatabaseMigrationReport(
         backup=BackupReport(

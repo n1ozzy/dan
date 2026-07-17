@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.api.websocket import (
+from dan.api.websocket import (
     CLOSE_POLICY_VIOLATION,
     CLOSE_UNSUPPORTED_DATA,
     OP_CLOSE,
@@ -37,11 +37,11 @@ from jarvis.api.websocket import (
     validate_websocket_upgrade,
     websocket_accept_key,
 )
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.daemon.lifecycle import build_server
-from jarvis.events.models import Event
-from jarvis.security.redaction import REDACTION_PLACEHOLDER
-from jarvis.security.transport import API_TOKEN_HEADER
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.daemon.lifecycle import build_server
+from dan.events.models import Event
+from dan.security.redaction import REDACTION_PLACEHOLDER
+from dan.security.transport import API_TOKEN_HEADER
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import config_text
 from tests.test_api_transport_token import token_required_config_text
@@ -296,9 +296,9 @@ def test_stream_event_dict_redacts_secrets_defensively() -> None:
 
 @pytest.fixture
 def config_path(tmp_path: Path) -> Path:
-    path = tmp_path / "jarvis.toml"
+    path = tmp_path / "dan.toml"
     path.write_text(
-        token_required_config_text(tmp_path / "home" / "jarvis.db"),
+        token_required_config_text(tmp_path / "home" / "dan.db"),
         encoding="utf-8",
     )
     return path
@@ -318,7 +318,7 @@ def app(config_path: Path) -> Iterator[DaemonApp]:
 @pytest.fixture
 def server_address(app: DaemonApp) -> Iterator[tuple[str, int]]:
     server = build_server(app, "127.0.0.1", 0)
-    thread = threading.Thread(target=server.serve_forever, name="jarvis-stream-http", daemon=True)
+    thread = threading.Thread(target=server.serve_forever, name="dan-stream-http", daemon=True)
     thread.start()
     try:
         yield server.server_address
@@ -648,8 +648,8 @@ def test_stream_answers_client_ping_with_pong(app: DaemonApp, stream_client) -> 
 
 
 def test_stream_allows_tokenless_connect_when_token_not_required(tmp_path: Path) -> None:
-    config = tmp_path / "jarvis.toml"
-    config.write_text(config_text(tmp_path / "home" / "jarvis.db"), encoding="utf-8")
+    config = tmp_path / "dan.toml"
+    config.write_text(config_text(tmp_path / "home" / "dan.db"), encoding="utf-8")
     daemon_app = create_daemon_app(config)
     daemon_app.start()
     server = build_server(daemon_app, "127.0.0.1", 0)

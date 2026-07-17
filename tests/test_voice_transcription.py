@@ -19,9 +19,9 @@ from typing import Callable
 
 import pytest
 
-from jarvis.store.db import close_quietly, connect_db, initialize_database
-from jarvis.voice.stt import MockSTTEngine
-from jarvis.voice.transcription import TranscriptionPipeline
+from dan.store.db import close_quietly, connect_db, initialize_database
+from dan.voice.stt import MockSTTEngine
+from dan.voice.transcription import TranscriptionPipeline
 from tests.test_voice_capture_gate import as_wav, pcm_silence, pcm_tone
 
 
@@ -302,7 +302,7 @@ def test_transcript_with_a_secret_is_redacted_at_rest(db_path: Path) -> None:
 
 
 def _daemon_with_sox_and_stt(tmp_path: Path):
-    from jarvis.daemon.app import create_daemon_app
+    from dan.daemon.app import create_daemon_app
     from tests.test_api_smoke import config_text
     from tests.test_voice_recorder import write_script
 
@@ -323,7 +323,7 @@ sleep 30 &
 wait $!
 """,
     )
-    text = config_text(tmp_path / "home" / "jarvis.db")
+    text = config_text(tmp_path / "home" / "dan.db")
     text = text.replace("[voice]\nenabled = false", "[voice]\nenabled = true")
     text = text.replace(
         "queue_persisted = true",
@@ -336,7 +336,7 @@ wait $!
         "allow_bluetooth_microphone = false",
         "allow_bluetooth_microphone = true",
     )
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(text, encoding="utf-8")
     return create_daemon_app(config_path), argv_file
 
@@ -354,7 +354,7 @@ def test_daemon_wires_capture_to_stt_and_persists_the_event(tmp_path: Path) -> N
         recorder.stop()
         assert daemon_app.voice_stt.flush()
 
-        db = tmp_path / "home" / "jarvis.db"
+        db = tmp_path / "home" / "dan.db"
         events = transcribed_events(db)
         assert len(events) == 1
         # Mock default transcript carries sk-*: the event at rest proves

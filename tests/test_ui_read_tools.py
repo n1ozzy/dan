@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from jarvis.macos.accessibility import (
+from dan.macos.accessibility import (
     AccessibilityError,
     AccessibilityReader,
     FakeAccessibilityReader,
@@ -20,9 +20,9 @@ from jarvis.macos.accessibility import (
     MAX_TEXT_CHARS,
     sanitize_window_snapshot,
 )
-from jarvis.tools.registry import ToolRegistry, ToolRequest
-from jarvis.tools.permissions import RequestSource, ToolPermissionPolicy
-from jarvis.tools.ui_tool import UiActiveAppTool, UiReadWindowTool
+from dan.tools.registry import ToolRegistry, ToolRequest
+from dan.tools.permissions import RequestSource, ToolPermissionPolicy
+from dan.tools.ui_tool import UiActiveAppTool, UiReadWindowTool
 
 
 class ExplodingReader(AccessibilityReader):
@@ -191,19 +191,19 @@ def test_ui_read_window_end_to_end_matrix(source: RequestSource, expected: str) 
 
 
 def test_create_reader_builds_fake_backend() -> None:
-    from jarvis.macos.accessibility import create_reader
+    from dan.macos.accessibility import create_reader
 
     assert isinstance(create_reader("fake"), FakeAccessibilityReader)
 
 
 def test_create_reader_fails_closed_on_unknown_backend() -> None:
-    from jarvis.macos.accessibility import create_reader
+    from dan.macos.accessibility import create_reader
 
     with pytest.raises(AccessibilityError):
         create_reader("bogus")
 
 
 def test_security_config_defaults_to_ax_backend() -> None:
-    from jarvis.config import SecurityConfig
+    from dan.config import SecurityConfig
 
     assert SecurityConfig().ui_read_backend == "ax"

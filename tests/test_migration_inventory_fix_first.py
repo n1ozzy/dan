@@ -11,8 +11,8 @@ from typing import Any
 
 import pytest
 
-import jarvis.migration.inventory as inventory
-from jarvis.migration.inventory import (
+import dan.migration.inventory as inventory
+from dan.migration.inventory import (
     InventoryRoots,
     build_inventory,
     check_manifest,

@@ -11,8 +11,8 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from jarvis.daemon.app import create_daemon_app
-from jarvis.security.transport import API_TOKEN_HEADER
+from dan.daemon.app import create_daemon_app
+from dan.security.transport import API_TOKEN_HEADER
 from tests.test_api_smoke import running_server, write_config
 
 
@@ -20,7 +20,7 @@ def _token_config(tmp_path: Path) -> Path:
     """Create a config with API-token requirement enabled."""
 
     config_path = write_config(
-        tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db"
+        tmp_path / "dan.toml", tmp_path / "home" / "dan.db"
     )
     text = config_path.read_text(encoding="utf-8")
     text = text.replace("api_token_required = false", "api_token_required = true")
@@ -134,7 +134,7 @@ def test_workers_jobs_endpoint_requires_api_token_for_mutating_request(
 
 def test_workers_jobs_unknown_kind_is_disabled_via_api(tmp_path: Path) -> None:
     app = create_daemon_app(
-        write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+        write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     )
     app.start()
     try:
@@ -159,7 +159,7 @@ def test_workers_jobs_unknown_kind_is_disabled_via_api(tmp_path: Path) -> None:
         "status": 410,
         "error": (
             "workers are disabled on this runtime branch; "
-            "use the main Jarvis brain directly"
+            "use the main DAN brain directly"
         ),
         "jobs": [],
     }
@@ -167,7 +167,7 @@ def test_workers_jobs_unknown_kind_is_disabled_via_api(tmp_path: Path) -> None:
 
 def test_workers_jobs_former_mock_kind_is_disabled_when_tokened(tmp_path: Path) -> None:
     app = create_daemon_app(
-        write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+        write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     )
     app.start()
     try:
@@ -192,7 +192,7 @@ def test_workers_jobs_former_mock_kind_is_disabled_when_tokened(tmp_path: Path) 
         "status": 410,
         "error": (
             "workers are disabled on this runtime branch; "
-            "use the main Jarvis brain directly"
+            "use the main DAN brain directly"
         ),
         "jobs": [],
     }
@@ -202,7 +202,7 @@ def test_workers_have_no_default_broker(
     tmp_path: Path,
 ) -> None:
     config_path = write_config(
-        tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db"
+        tmp_path / "dan.toml", tmp_path / "home" / "dan.db"
     )
     app = create_daemon_app(config_path)
     app.start()

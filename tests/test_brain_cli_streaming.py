@@ -19,15 +19,15 @@ from typing import Any
 
 import pytest
 
-from jarvis.brain import BrainAdapterError, BrainMessage, BrainRequest
-from jarvis.brain.claude_cli_adapter import (
+from dan.brain import BrainAdapterError, BrainMessage, BrainRequest
+from dan.brain.claude_cli_adapter import (
     DEFAULT_STREAM_ARGS,
     ClaudeCliAdapter,
 )
-from jarvis.brain.codex_cli_adapter import CodexCliAdapter
-from jarvis.brain.manager import BrainManager
-from jarvis.brain.mock_adapter import MockBrainAdapter
-from jarvis.voice.cancellation import GenerationRegistry
+from dan.brain.codex_cli_adapter import CodexCliAdapter
+from dan.brain.manager import BrainManager
+from dan.brain.mock_adapter import MockBrainAdapter
+from dan.voice.cancellation import GenerationRegistry
 
 
 def make_request(text: str = "Opowiedz o pogodzie.") -> BrainRequest:
@@ -200,7 +200,7 @@ def test_manager_passes_on_delta_only_to_adapters_that_declare_it() -> None:
             return [self.default_model]
 
         def generate(self, request: BrainRequest):
-            from jarvis.brain import BrainResponse
+            from dan.brain import BrainResponse
 
             return BrainResponse(text="legacy działa", model=self.default_model)
 
@@ -288,8 +288,8 @@ def test_final_result_wins_over_deltas() -> None:
 
 def test_tool_call_blocks_in_result_are_parsed_not_spoken_text() -> None:
     canonical = (
-        'Sprawdzę plik. <jarvis_tool_call>{"name":"file_read",'
-        '"arguments":{"path":"/tmp/x"}}</jarvis_tool_call>'
+        'Sprawdzę plik. <dan_tool_call>{"name":"file_read",'
+        '"arguments":{"path":"/tmp/x"}}</dan_tool_call>'
     )
     process = FakeStreamProcess([result(canonical)])
     adapter, _ = streaming_adapter(process)
@@ -298,7 +298,7 @@ def test_tool_call_blocks_in_result_are_parsed_not_spoken_text() -> None:
 
     assert len(response.tool_calls) == 1
     assert response.tool_calls[0].name == "file_read"
-    assert "jarvis_tool_call" not in response.text
+    assert "dan_tool_call" not in response.text
 
 
 def test_streaming_maps_result_usage_when_present() -> None:
@@ -538,7 +538,7 @@ def test_barge_in_cancel_raises_generation_cancelled_not_failure() -> None:
     # Operator-priority fix (FIX-09): a cancel (barge-in leg 1) that kills the
     # CLI must be DISTINGUISHABLE from a real failure. rc=143/-15 after our own
     # cancel handle fired is a cancellation, so the turn is CANCELLED, not FAILED.
-    from jarvis.brain.base import BrainGenerationCancelled
+    from dan.brain.base import BrainGenerationCancelled
 
     registry = GenerationRegistry()
     process = FakeStreamProcess(
@@ -573,7 +573,7 @@ def test_barge_in_cancel_raises_generation_cancelled_not_failure() -> None:
 def test_genuine_nonzero_exit_stays_a_failure_not_a_cancellation() -> None:
     # A real crash (nonzero exit we did NOT cause by cancelling) is still a
     # plain failure — never misreported as a cancellation.
-    from jarvis.brain.base import BrainGenerationCancelled
+    from dan.brain.base import BrainGenerationCancelled
 
     process = FakeStreamProcess([partial("częściowo")], returncode=3, stderr="boom")
     adapter, _ = streaming_adapter(process)

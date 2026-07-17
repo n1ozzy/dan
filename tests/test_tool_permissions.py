@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 
-from jarvis.events.types import EventType
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import EventStore, create_event_store
-from jarvis.tools.file_tool import FileReadPlaceholderTool, FileWritePlaceholderTool
-from jarvis.tools.permissions import RequestSource, ToolDecision, ToolPermissionPolicy
-from jarvis.tools.registry import (
+from dan.events.types import EventType
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import EventStore, create_event_store
+from dan.tools.file_tool import FileReadPlaceholderTool, FileWritePlaceholderTool
+from dan.tools.permissions import RequestSource, ToolDecision, ToolPermissionPolicy
+from dan.tools.registry import (
     ApprovalGate,
     ApprovalProbeTool,
     Tool,
@@ -22,8 +22,8 @@ from jarvis.tools.registry import (
     ToolRequest,
     ToolRunRecorder,
 )
-from jarvis.tools.shell_tool import ShellReadPlaceholderTool, ShellWritePlaceholderTool
-from jarvis.tools.system_tool import SystemStatusTool
+from dan.tools.shell_tool import ShellReadPlaceholderTool, ShellWritePlaceholderTool
+from dan.tools.system_tool import SystemStatusTool
 
 from tests.git_guards import assert_schema_and_migrations_unchanged
 
@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def conn(tmp_path: Path) -> sqlite3.Connection:
-    db_conn = initialize_database(tmp_path / "jarvis.db")
+    db_conn = initialize_database(tmp_path / "dan.db")
     try:
         yield db_conn
     finally:

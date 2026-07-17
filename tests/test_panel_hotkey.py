@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.panel.hotkey import (
+from dan.panel.hotkey import (
     HotkeyEdgeDetector,
     HotkeySpecError,
     PttHotkeyClient,
@@ -212,7 +212,7 @@ def test_client_down_posts_to_ptt_down_with_source_and_token():
     assert len(poster.calls) == 1
     call = poster.calls[0]
     assert call["url"] == "http://127.0.0.1:41741/voice/ptt/down"
-    assert call["headers"]["X-Jarvis-Token"] == "tok123"
+    assert call["headers"]["X-DAN-Token"] == "tok123"
     assert b'"global_hotkey"' in call["data"]
 
 

@@ -8,31 +8,31 @@ from typing import Any
 
 import pytest
 
-from jarvis.brain import (
+from dan.brain import (
     BrainAdapterError,
     BrainMemoryBlock,
     BrainMessage,
     BrainRequest,
     BrainToolSpec,
 )
-from jarvis.brain.claude_cli_adapter import (
+from dan.brain.claude_cli_adapter import (
     ClaudeCliAdapter,
     format_cli_prompt,
     format_cli_system_prompt,
     format_cli_user_prompt,
 )
-from jarvis.brain.claude_cli_contract import (
+from dan.brain.claude_cli_contract import (
     ClaudeCliCommandSettings,
     build_claude_cli_command,
 )
-from jarvis.brain.codex_cli_adapter import CodexCliAdapter
-from jarvis.brain.codex_cli_contract import (
+from dan.brain.codex_cli_adapter import CodexCliAdapter
+from dan.brain.codex_cli_contract import (
     CodexCliCommandSettings,
     build_codex_cli_command,
 )
-from jarvis.brain.manager import BrainManager
-from jarvis.brain.tool_call_parser import parse_tool_call_blocks
-from jarvis.config import load_config
+from dan.brain.manager import BrainManager
+from dan.brain.tool_call_parser import parse_tool_call_blocks
+from dan.config import load_config
 from tests.git_guards import assert_schema_and_migrations_unchanged
 
 
@@ -92,7 +92,7 @@ class StaticFakeAdapter:
         return [self.default_model]
 
     def generate(self, request: BrainRequest):  # type: ignore[no-untyped-def]
-        from jarvis.brain import BrainResponse
+        from dan.brain import BrainResponse
 
         return BrainResponse(text=f"static: {request.input_text}", model=self.default_model)
 
@@ -105,7 +105,7 @@ def make_request() -> BrainRequest:
         context_messages=[
             BrainMessage(
                 role="system",
-                content="You are Jarvis, a concise local runtime.",
+                content="You are DAN, a concise local runtime.",
                 metadata={"kind": "persona"},
             ),
             BrainMessage(
@@ -159,13 +159,13 @@ def config_text(
 ) -> str:
     return f"""
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "127.0.0.1"
 port = 41741
 log_level = "INFO"
 
 [database]
-path = "~/.jarvis/jarvis.db"
+path = "~/.dan/dan.db"
 migrations = "manual"
 destroy_existing = false
 
@@ -231,28 +231,28 @@ require_approval_for_network = true
 destructive_tools_enabled = false
 
 [runtime]
-home = "~/.jarvis"
-logs_dir = "~/.jarvis/logs"
-runtime_dir = "~/.jarvis/runtime"
-pid_file = "~/.jarvis/runtime/jarvisd.pid"
+home = "~/.dan"
+logs_dir = "~/.dan/logs"
+runtime_dir = "~/.dan/runtime"
+pid_file = "~/.dan/runtime/dand.pid"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd"
+label = "com.dan.dand"
 install_automatically = false
 """
 
 
 def write_config(tmp_path: Path, **kwargs: object) -> Path:
-    path = tmp_path / "jarvis.toml"
+    path = tmp_path / "dan.toml"
     path.write_text(config_text(**kwargs), encoding="utf-8")
     return path
 
 
 def test_parser_extracts_one_valid_tool_call_block() -> None:
     parsed = parse_tool_call_blocks(
-        '<jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"demo"}}</jarvis_tool_call>'
+        '<dan_tool_call>{"name":"approval_probe","arguments":{"reason":"demo"}}</dan_tool_call>'
     )
 
     assert parsed.text == ""
@@ -269,8 +269,8 @@ def test_parser_ignores_model_declared_risk_and_fails_safe() -> None:
     # FIX-07: a model claiming a permissive risk for its own call must NOT set
     # it — the parser drops the field and fails safe (most restrictive).
     parsed = parse_tool_call_blocks(
-        '<jarvis_tool_call>{"name":"file_read","arguments":{"path":"/etc/x"},'
-        '"risk":"safe_read"}</jarvis_tool_call>'
+        '<dan_tool_call>{"name":"file_read","arguments":{"path":"/etc/x"},'
+        '"risk":"safe_read"}</dan_tool_call>'
     )
 
     assert len(parsed.tool_calls) == 1
@@ -281,8 +281,8 @@ def test_parser_extracts_multiple_valid_tool_call_blocks() -> None:
     parsed = parse_tool_call_blocks(
         "\n".join(
             [
-                '<jarvis_tool_call>{"name":"echo","arguments":{"text":"one"}}</jarvis_tool_call>',
-                '<jarvis_tool_call>{"id":"call-2","name":"approval_probe","arguments":{"reason":"two"},"risk":"shell_read"}</jarvis_tool_call>',
+                '<dan_tool_call>{"name":"echo","arguments":{"text":"one"}}</dan_tool_call>',
+                '<dan_tool_call>{"id":"call-2","name":"approval_probe","arguments":{"reason":"two"},"risk":"shell_read"}</dan_tool_call>',
             ]
         )
     )
@@ -300,7 +300,7 @@ def test_parser_extracts_multiple_valid_tool_call_blocks() -> None:
 
 def test_parser_removes_valid_block_from_visible_response_text() -> None:
     parsed = parse_tool_call_blocks(
-        'Before.\n<jarvis_tool_call>{"name":"approval_probe","arguments":{}}</jarvis_tool_call>\nAfter.'
+        'Before.\n<dan_tool_call>{"name":"approval_probe","arguments":{}}</dan_tool_call>\nAfter.'
     )
 
     assert parsed.text == "Before.\n\nAfter."
@@ -309,7 +309,7 @@ def test_parser_removes_valid_block_from_visible_response_text() -> None:
 
 def test_parser_returns_empty_text_when_output_only_contains_tool_call() -> None:
     parsed = parse_tool_call_blocks(
-        '   <jarvis_tool_call>{"name":"approval_probe","arguments":{}}</jarvis_tool_call>   '
+        '   <dan_tool_call>{"name":"approval_probe","arguments":{}}</dan_tool_call>   '
     )
 
     assert parsed.text == ""
@@ -317,7 +317,7 @@ def test_parser_returns_empty_text_when_output_only_contains_tool_call() -> None
 
 def test_parser_missing_name_produces_parse_error_without_tool_call() -> None:
     parsed = parse_tool_call_blocks(
-        '<jarvis_tool_call>{"arguments":{"reason":"missing"}}</jarvis_tool_call>'
+        '<dan_tool_call>{"arguments":{"reason":"missing"}}</dan_tool_call>'
     )
 
     assert parsed.tool_calls == []
@@ -327,7 +327,7 @@ def test_parser_missing_name_produces_parse_error_without_tool_call() -> None:
 
 def test_parser_non_object_arguments_produces_parse_error_without_tool_call() -> None:
     parsed = parse_tool_call_blocks(
-        '<jarvis_tool_call>{"name":"approval_probe","arguments":["not","object"]}</jarvis_tool_call>'
+        '<dan_tool_call>{"name":"approval_probe","arguments":["not","object"]}</dan_tool_call>'
     )
 
     assert parsed.tool_calls == []
@@ -336,7 +336,7 @@ def test_parser_non_object_arguments_produces_parse_error_without_tool_call() ->
 
 def test_parser_malformed_json_produces_parse_error_without_tool_call() -> None:
     parsed = parse_tool_call_blocks(
-        '<jarvis_tool_call>{"name":"approval_probe","arguments":</jarvis_tool_call>'
+        '<dan_tool_call>{"name":"approval_probe","arguments":</dan_tool_call>'
     )
 
     assert parsed.tool_calls == []
@@ -346,7 +346,7 @@ def test_parser_malformed_json_produces_parse_error_without_tool_call() -> None:
 def test_parser_preserves_non_protocol_bytes_and_markdown_exactly() -> None:
     before = "  **DAN**\n\nKurwa,  zostaw mój rytm.\n"
     after = "\n- pierwszy\n- drugi  \n"
-    block = '<jarvis_tool_call>{"name":"echo","arguments":{}}</jarvis_tool_call>'
+    block = '<dan_tool_call>{"name":"echo","arguments":{}}</dan_tool_call>'
 
     parsed = parse_tool_call_blocks(before + block + after)
 
@@ -365,7 +365,7 @@ def test_prompt_formatter_includes_persona_system_messages() -> None:
     prompt = format_cli_prompt(make_request())
 
     assert "System context" in prompt
-    assert "You are Jarvis, a concise local runtime." in prompt
+    assert "You are DAN, a concise local runtime." in prompt
 
 
 def test_prompt_formatter_preserves_raw_persona_structure() -> None:
@@ -397,11 +397,11 @@ def test_prompt_formatter_is_a_bare_header_not_a_legacy_instruction_wall() -> No
     # only anchors WHO is speaking, so the rest of the wall stays gone.
     prompt = format_cli_prompt(make_request())
 
-    assert prompt.startswith("You are Jarvis")
-    assert "Answer as Jarvis using the owner persona and the current runtime context." in prompt
+    assert prompt.startswith("You are DAN")
+    assert "Answer as DAN using the owner persona and the current runtime context." in prompt
     # The removed legacy instruction wall must not creep back verbatim.
     assert "roleplay the persona" not in prompt
-    assert "Provider sessions are not Jarvis memory" not in prompt
+    assert "Provider sessions are not DAN memory" not in prompt
     assert "Tools are not executable in this call" not in prompt
 
 
@@ -502,7 +502,7 @@ def test_prompt_formatter_includes_user_input() -> None:
 
 
 def test_prompt_formatter_is_stateless_carrying_full_context_each_request() -> None:
-    # The old "Provider sessions are not Jarvis memory" line was dropped in the
+    # The old "Provider sessions are not DAN memory" line was dropped in the
     # trim; statelessness is a structural property, not a prompt sentence — the
     # prompt carries the full memory/context every turn rather than relying on
     # provider-side session state.
@@ -518,14 +518,14 @@ def test_prompt_formatter_does_not_grant_tool_execution() -> None:
     # the model a tool is already granted. Real gating is the approval registry.
     prompt = format_cli_prompt(make_request())
 
-    assert "available through Jarvis runtime" in prompt
+    assert "available through DAN runtime" in prompt
     assert "pending approval" not in prompt.lower()
 
 
 def test_prompt_formatter_documents_tool_call_block_syntax() -> None:
     prompt = format_cli_prompt(make_request())
 
-    assert '<jarvis_tool_call>{"name":"tool_name","arguments":{...}}</jarvis_tool_call>' in prompt
+    assert '<dan_tool_call>{"name":"tool_name","arguments":{...}}</dan_tool_call>' in prompt
 
 
 def test_prompt_formatter_says_not_to_claim_a_tool_already_executed() -> None:
@@ -541,7 +541,7 @@ def test_system_prompt_requires_live_tools_for_volatile_machine_state() -> None:
 
     assert "current screen" in system
     assert "active app" in system
-    assert "must inspect it with an available Jarvis tool" in system
+    assert "must inspect it with an available DAN tool" in system
     assert "never infer volatile machine state from conversation history or memory" in system
 
 
@@ -559,20 +559,20 @@ def test_claude_cli_adapter_uses_injected_fake_runner() -> None:
 def test_claude_cli_persona_rides_the_system_prompt_not_stdin() -> None:
     """The persona/context must be the CLI's actual SYSTEM prompt, not pasted
     user input — pasted-as-input made the model answer as 'Claude Code w
-    terminalu' and refuse the Jarvis frame (live incident 2026-07-09)."""
+    terminalu' and refuse the DAN frame (live incident 2026-07-09)."""
 
     system = format_cli_system_prompt(make_request())
     user = format_cli_user_prompt(make_request())
 
     # System prompt: identity, persona and tools — but NOT memory/user data.
-    assert "You are Jarvis, a concise local runtime." in system
+    assert "You are DAN, a concise local runtime." in system
     assert "Prefer short direct replies." not in system
     assert "Available tools:" in system
     assert "Kim jesteś?" not in system
     # User prompt: conversation + explicitly historical memory, never persona.
     assert "Kim jesteś?" in user
     assert "Previous question" in user
-    assert "You are Jarvis, a concise local runtime." not in user
+    assert "You are DAN, a concise local runtime." not in user
     assert "Prefer short direct replies." in user
     assert "Historical memory data" in user
 
@@ -582,7 +582,7 @@ def test_claude_cli_system_prompt_frames_the_live_runtime() -> None:
     # transcript/harness (the exact misread that broke persona on 2026-07-09).
     system = format_cli_system_prompt(make_request())
 
-    assert "live Jarvis runtime" in system
+    assert "live DAN runtime" in system
     assert "owner-defined persona" in system
     assert "Do not soften" in system
 
@@ -596,19 +596,19 @@ def test_claude_cli_command_carries_system_prompt_and_isolated_settings() -> Non
     command = runner.calls[0]["command"]
     assert "--system-prompt" in command
     system_value = command[command.index("--system-prompt") + 1]
-    assert "You are Jarvis, a concise local runtime." in system_value
+    assert "You are DAN, a concise local runtime." in system_value
     # The brain session must not inherit the operator's Claude Code settings
-    # (global CLAUDE.md leaked in and argued against the Jarvis persona).
+    # (global CLAUDE.md leaked in and argued against the DAN persona).
     assert "--setting-sources" in command
     assert command[command.index("--setting-sources") + 1] == ""
     assert "--safe-mode" in command
     assert "--no-session-persistence" in command
     # stdin carries only the conversation, not the persona wall.
-    assert "You are Jarvis, a concise local runtime." not in runner.calls[0]["input_text"]
+    assert "You are DAN, a concise local runtime." not in runner.calls[0]["input_text"]
     assert "Kim jesteś?" in runner.calls[0]["input_text"]
 
 
-def test_claude_cli_disables_native_tools_so_every_tool_run_stays_in_jarvis() -> None:
+def test_claude_cli_disables_native_tools_so_every_tool_run_stays_in_dan() -> None:
     runner = FakeRunner(stdout="ok\n")
     adapter = ClaudeCliAdapter(
         command="fake-claude",
@@ -714,7 +714,7 @@ def test_codex_cli_adapter_uses_injected_fake_runner() -> None:
     assert "Kim jesteś?" in runner.calls[0]["input_text"]
 
 
-def test_codex_cli_adapter_receives_jarvis_memory_context() -> None:
+def test_codex_cli_adapter_receives_dan_memory_context() -> None:
     runner = FakeRunner(stdout="codex says hi\n")
     request = make_request()
     request.context_messages.append(
@@ -748,7 +748,7 @@ def test_claude_cli_adapter_parses_tool_call_blocks_from_fake_runner_stdout() ->
     runner = FakeRunner(
         stdout=(
             'I need approval.\n'
-            '<jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"adapter"}}</jarvis_tool_call>\n'
+            '<dan_tool_call>{"name":"approval_probe","arguments":{"reason":"adapter"}}</dan_tool_call>\n'
             'Waiting.'
         )
     )
@@ -765,7 +765,7 @@ def test_codex_cli_adapter_parses_tool_call_blocks_from_fake_runner_stdout() -> 
     runner = FakeRunner(
         stdout=(
             'Codex wants a probe.\n'
-            '<jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"codex"}}</jarvis_tool_call>'
+            '<dan_tool_call>{"name":"approval_probe","arguments":{"reason":"codex"}}</dan_tool_call>'
         )
     )
 
@@ -781,7 +781,7 @@ def test_cli_adapter_raw_metadata_includes_parsed_tool_call_count() -> None:
     response = ClaudeCliAdapter(
         command="fake-claude",
         runner=FakeRunner(
-            stdout='<jarvis_tool_call>{"name":"approval_probe","arguments":{}}</jarvis_tool_call>'
+            stdout='<dan_tool_call>{"name":"approval_probe","arguments":{}}</dan_tool_call>'
         ),
     ).generate(make_request())
 
@@ -792,7 +792,7 @@ def test_cli_adapter_raw_metadata_includes_parse_errors_for_malformed_blocks() -
     response = ClaudeCliAdapter(
         command="fake-claude",
         runner=FakeRunner(
-            stdout='Visible.\n<jarvis_tool_call>{"name":"approval_probe","arguments":</jarvis_tool_call>'
+            stdout='Visible.\n<dan_tool_call>{"name":"approval_probe","arguments":</dan_tool_call>'
         ),
     ).generate(make_request())
 
@@ -1139,7 +1139,7 @@ def test_codex_cli_command_builder_represents_model_change_as_exec_model() -> No
     assert contract.argv == ["codex", "exec", "--model", "gpt-5-codex"]
     assert contract.selected_model == "gpt-5-codex"
     assert contract.effective_model == "gpt-5-codex"
-    assert contract.model_source == "jarvis_explicit"
+    assert contract.model_source == "dan_explicit"
     assert contract.command_preview == "codex exec --model gpt-5-codex"
 
 
@@ -1184,7 +1184,7 @@ def test_codex_cli_command_builder_places_global_options_before_exec() -> None:
                 "never",
                 "--search",
                 "--cd",
-                "/tmp/jarvis",
+                "/tmp/dan",
             ],
             model="gpt-5.5",
         )
@@ -1201,7 +1201,7 @@ def test_codex_cli_command_builder_places_global_options_before_exec() -> None:
         "--sandbox",
         "read-only",
         "--cd",
-        "/tmp/jarvis",
+        "/tmp/dan",
     ]
 
 
@@ -1251,7 +1251,7 @@ def test_brain_cli_config_parses_first_class_claude_contract_settings(tmp_path: 
                 'tools = ["Bash", "Edit", "Read"]',
                 'allowed_tools = ["file_read", "shell_read"]',
                 'disallowed_tools = ["network"]',
-                'mcp_config_path = "/tmp/jarvis-claude-mcp.json"',
+                'mcp_config_path = "/var/empty/dan-claude-mcp.json"',
                 "strict_mcp_config = true",
                 "",
                 "[brain.codex_cli]",
@@ -1270,7 +1270,7 @@ def test_brain_cli_config_parses_first_class_claude_contract_settings(tmp_path: 
     assert claude.tools == ["Bash", "Edit", "Read"]
     assert claude.allowed_tools == ["file_read", "shell_read"]
     assert claude.disallowed_tools == ["network"]
-    assert claude.mcp_config_path == "/tmp/jarvis-claude-mcp.json"
+    assert claude.mcp_config_path == "/var/empty/dan-claude-mcp.json"
     assert claude.strict_mcp_config is True
 
 
@@ -1283,12 +1283,12 @@ def test_adapters_do_not_require_real_provider_cli_when_runner_is_injected() -> 
 
 
 def test_brain_manager_from_config_registers_production_adapters_by_default() -> None:
-    config = load_config(ROOT / "config" / "jarvis.example.toml")
+    config = load_config(ROOT / "config" / "dan.example.toml")
 
     manager = BrainManager.from_config(config)
 
     # Production adapter only: claude_cli. Codex CLI is intentionally never
-    # registered (owner decree: Jarvis runs on Claude Code only).
+    # registered (owner decree: DAN runs on Claude Code only).
     assert manager.adapter_names() == ["claude_cli"]
     assert manager.current_adapter_name == "claude_cli"
 
@@ -1371,10 +1371,10 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 def test_runtime_files_avoid_forbidden_legacy_strings() -> None:
     offenders: list[tuple[str, str]] = []
     allowed_contracts = {
-        ("jarvis/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
-        ("jarvis/voice/shared_broker.py", "/tmp/dan"),
+        ("dan/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("dan/voice/shared_broker.py", "/tmp/dan"),
     }
-    for path in (ROOT / "jarvis").rglob("*.py"):
+    for path in (ROOT / "dan").rglob("*.py"):
         if "__pycache__" in path.parts:
             continue
         source = path.read_text(encoding="utf-8")

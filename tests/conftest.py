@@ -1,11 +1,11 @@
-"""Shared test fixtures for Jarvis."""
+"""Shared test fixtures for DAN."""
 
 from __future__ import annotations
 
 import pytest
 from collections.abc import Generator
 
-import jarvis.brain.auto_detect as auto_detect
+import dan.brain.auto_detect as auto_detect
 
 
 @pytest.fixture(autouse=True)
@@ -20,14 +20,14 @@ def stub_claude_model_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep live Claude model discovery deterministic and hermetic in tests.
 
     ``ClaudeCliAdapter.available_models`` resolves the real model list from the
-    Claude Code CLI (cached in ~/.jarvis). Tests must never spawn ``claude`` nor
-    write to the real ~/.jarvis, so we replace the resolver the adapter imported
+    Claude Code CLI (cached in ~/.dan). Tests must never spawn ``claude`` nor
+    write to the real ~/.dan, so we replace the resolver the adapter imported
     with a fixed list. Tests that exercise the resolver itself
     (test_claude_models.py) call ``resolve_available_models`` directly with an
     injected runner + tmp cache, so they are unaffected by this stub.
     """
 
-    import jarvis.brain.claude_cli_adapter as cli_adapter
+    import dan.brain.claude_cli_adapter as cli_adapter
 
     def _fixed_models(command: str = "claude", **_kwargs: object) -> list[str]:
         return ["claude-opus-4-8", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
@@ -38,7 +38,7 @@ def stub_claude_model_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def mock_codex_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mock codex CLI as available."""
-    import jarvis.api.routes_runtime as routes_runtime
+    import dan.api.routes_runtime as routes_runtime
 
     monkeypatch.setattr(
         routes_runtime.shutil,
@@ -53,7 +53,7 @@ def mock_codex_cli(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def mock_claude_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mock Claude CLI as available."""
-    import jarvis.api.routes_runtime as routes_runtime
+    import dan.api.routes_runtime as routes_runtime
 
     monkeypatch.setattr(
         routes_runtime.shutil,

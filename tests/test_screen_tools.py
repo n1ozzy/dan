@@ -3,7 +3,7 @@
 Native capture/OCR needs the Screen Recording TCC grant and a live screen,
 so unit tests exercise the fake backend, the sanitizer contract, argument
 validation and the fail-closed backend factory. The native path is covered
-by its probe (`python -m jarvis.macos.screen`) and the live gate.
+by its probe (`python -m dan.macos.screen`) and the live gate.
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import SecurityConfig
-from jarvis.macos.screen import (
+from dan.config import SecurityConfig
+from dan.macos.screen import (
     MAX_OCR_LINE_CHARS,
     MAX_OCR_LINES,
     FakeScreenReader,
@@ -23,9 +23,9 @@ from jarvis.macos.screen import (
     create_screen_reader,
     sanitize_ocr_snapshot,
 )
-from jarvis.tools.permissions import RequestSource, ToolPermissionPolicy
-from jarvis.tools.registry import ToolExecutionError
-from jarvis.tools.screen_tool import ScreenOcrRegionTool, ScreenReadWindowTool
+from dan.tools.permissions import RequestSource, ToolPermissionPolicy
+from dan.tools.registry import ToolExecutionError
+from dan.tools.screen_tool import ScreenOcrRegionTool, ScreenReadWindowTool
 from tests.git_guards import assert_schema_and_migrations_unchanged
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.tools.permissions import (
+from dan.tools.permissions import (
     AUTO_SOURCES,
     RequestSource,
     ToolDecision,
@@ -144,10 +144,10 @@ def test_result_records_the_source() -> None:
 
 
 def test_execute_approved_blocks_approval_without_stored_source(tmp_path: Path) -> None:
-    from jarvis.daemon.app import create_daemon_app
+    from dan.daemon.app import create_daemon_app
     from tests.test_api_smoke import write_config
 
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
         app.start()

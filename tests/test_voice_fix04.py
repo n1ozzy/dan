@@ -17,18 +17,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.voice.broker import VoiceBroker
-from jarvis.voice.queue import VoiceQueue
-from jarvis.voice.recorder import MockRecorder
-from jarvis.voice.tts import MockTTSEngine, SynthesizedChunk
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.store.db import close_quietly, initialize_database
+from dan.voice.broker import VoiceBroker
+from dan.voice.queue import VoiceQueue
+from dan.voice.recorder import MockRecorder
+from dan.voice.tts import MockTTSEngine, SynthesizedChunk
 from tests.test_api_smoke import write_config
 
 
 @pytest.fixture
 def app(tmp_path: Path) -> Iterator[DaemonApp]:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     try:
         yield daemon_app
@@ -37,7 +37,7 @@ def app(tmp_path: Path) -> Iterator[DaemonApp]:
 
 
 def _write_voice_enabled_config(tmp_path: Path) -> Path:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     body = config_path.read_text(encoding="utf-8")
     body = body.replace(
         "[voice]\nenabled = false",
@@ -107,7 +107,7 @@ def test_sweeper_expires_stale_lease_without_any_api_call(db_path: Path) -> None
     """A crashed panel never calls release(); the daemon-side sweeper must
     expire the lease and stop the recorder on its own."""
 
-    from jarvis.voice.listening import ListeningLeaseManager, ListeningLeaseSweeper
+    from dan.voice.listening import ListeningLeaseManager, ListeningLeaseSweeper
 
     clock = {"now": "2026-07-03T10:00:00+00:00"}
     recorder = MockRecorder()
@@ -137,7 +137,7 @@ def test_sweeper_expires_stale_lease_without_any_api_call(db_path: Path) -> None
 
 
 def test_sweeper_survives_exceptions_and_stops_cleanly() -> None:
-    from jarvis.voice.listening import ListeningLeaseSweeper
+    from dan.voice.listening import ListeningLeaseSweeper
 
     calls = {"count": 0}
 
@@ -172,9 +172,9 @@ def test_shared_broker_mode_never_builds_local_tts_or_voice_broker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def forbidden_local_tts(*_args, **_kwargs):
-        pytest.fail("shared broker mode attempted to build Jarvis-local TTS")
+        pytest.fail("shared broker mode attempted to build DAN-local TTS")
 
-    monkeypatch.setattr("jarvis.voice.tts.build_tts_engine", forbidden_local_tts)
+    monkeypatch.setattr("dan.voice.tts.build_tts_engine", forbidden_local_tts)
     daemon_app = create_daemon_app(_write_voice_enabled_config(tmp_path))
     daemon_app.start()
     recorder = daemon_app.voice_recorder
@@ -235,7 +235,7 @@ def test_broker_thread_survives_non_tts_exception(db_path: Path) -> None:
             time.sleep(0.01)
 
         assert broker._thread is not None and broker._thread.is_alive(), (
-            "a non-TTSEngineError killed the broker thread — Jarvis is mute"
+            "a non-TTSEngineError killed the broker thread — DAN is mute"
         )
 
         # And it still speaks afterwards.

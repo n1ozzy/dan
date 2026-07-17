@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-import jarvis.migration.inventory as inventory
-from jarvis.migration.inventory import (
+import dan.migration.inventory as inventory
+from dan.migration.inventory import (
     InventoryRoots,
     build_inventory,
     check_manifest,
@@ -692,7 +692,7 @@ def test_inventory_collector_is_not_a_producer_or_quarantine_consumer(
     tmp_path: Path,
 ) -> None:
     roots = fixture_roots(tmp_path)
-    collector = roots.repo_root / "jarvis/migration/inventory.py"
+    collector = roots.repo_root / "dan/migration/inventory.py"
     collector.parent.mkdir(parents=True)
     collector.write_text(
         'SIGNATURE = "dan-voice/req"\n'
@@ -722,7 +722,7 @@ def test_process_inventory_excludes_the_running_collector(tmp_path: Path) -> Non
     def runner(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         if args == ["ps", "-axo", "pid=,ppid=,command="]:
             rows = (
-                f"{collector_pid} 1 python -m jarvis.migration.inventory --output manifest.json\n"
+                f"{collector_pid} 1 python -m dan.migration.inventory --output manifest.json\n"
                 "123 1 python voice_broker.py\n"
             )
             return subprocess.CompletedProcess(args, 0, rows, "")

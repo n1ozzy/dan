@@ -15,14 +15,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.audio.devices import (
+from dan.audio.devices import (
     AudioBackendError,
     AudioDeviceManager,
     parse_system_profiler_payload,
 )
-from jarvis.audio.models import AudioDevice, AudioDeviceState
-from jarvis.audio.policy import apply_policy
-from jarvis.store.db import close_quietly, initialize_database
+from dan.audio.models import AudioDevice, AudioDeviceState
+from dan.audio.policy import apply_policy
+from dan.store.db import close_quietly, initialize_database
 from tests.git_guards import assert_schema_and_migrations_unchanged
 
 
@@ -243,12 +243,12 @@ def test_snapshot_event_emitted_once_per_change(conn: sqlite3.Connection) -> Non
 
 
 def test_daemon_exposes_audio_devices_endpoint(tmp_path: Path) -> None:
-    from jarvis.daemon.app import create_daemon_app
+    from dan.daemon.app import create_daemon_app
     from tests.test_api_smoke import config_text, request_json, running_server
 
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(
-        config_text(tmp_path / "home" / "jarvis.db").replace(
+        config_text(tmp_path / "home" / "dan.db").replace(
             "[audio]\nenabled = false",
             '[audio]\nenabled = false\nbackend = "fake"',
         ),
@@ -270,12 +270,12 @@ def test_daemon_exposes_audio_devices_endpoint(tmp_path: Path) -> None:
 
 
 def test_daemon_refuses_unknown_audio_backend(tmp_path: Path) -> None:
-    from jarvis.daemon.app import create_daemon_app
+    from dan.daemon.app import create_daemon_app
     from tests.test_api_smoke import config_text
 
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(
-        config_text(tmp_path / "home" / "jarvis.db").replace(
+        config_text(tmp_path / "home" / "dan.db").replace(
             "[audio]\nenabled = false",
             '[audio]\nenabled = false\nbackend = "bogus"',
         ),
@@ -287,7 +287,7 @@ def test_daemon_refuses_unknown_audio_backend(tmp_path: Path) -> None:
 
 
 def test_manager_never_calls_system_mutation_commands() -> None:
-    source = (ROOT / "jarvis" / "audio" / "devices.py").read_text(encoding="utf-8")
+    source = (ROOT / "dan" / "audio" / "devices.py").read_text(encoding="utf-8")
 
     # Read-only manager: it inspects devices, it never switches them.
     for forbidden in ("SwitchAudioSource", "osascript", "set volume"):

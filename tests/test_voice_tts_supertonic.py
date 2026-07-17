@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.voice.tts import (
+from dan.voice.tts import (
     BannedEngineError,
     SupertonicEngine,
     SynthesizedChunk,

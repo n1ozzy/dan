@@ -1,4 +1,4 @@
-"""Prompt 09 Jarvis-owned BrainRequest context builder tests."""
+"""Prompt 09 DAN-owned BrainRequest context builder tests."""
 
 from __future__ import annotations
 
@@ -11,15 +11,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.brain import BrainRequest
-from jarvis.brain.context_builder import (
+from dan.brain import BrainRequest
+from dan.brain.context_builder import (
     DEFAULT_PERSONA_PATH,
     DEFAULT_PERSONA_PROFILE,
     ContextBuilder,
     ContextBuilderError,
 )
-from jarvis.memory import MemoryManager
-from jarvis.store.db import close_quietly, initialize_database
+from dan.memory import MemoryManager
+from dan.store.db import close_quietly, initialize_database
 from tests.git_guards import assert_schema_and_migrations_unchanged
 
 
@@ -37,9 +37,9 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 @pytest.fixture
 def persona_path(tmp_path: Path) -> Path:
-    path = tmp_path / "jarvis.md"
+    path = tmp_path / "dan.md"
     path.write_text(
-        "DAN_CANON_VERSION: 1\n\nPersona: Jarvis owns memory and answers from SQLite.",
+        "DAN_CANON_VERSION: 1\n\nPersona: DAN owns memory and answers from SQLite.",
         encoding="utf-8",
     )
     return path
@@ -352,7 +352,7 @@ def test_persona_file_is_included_as_first_system_message(
 
     assert request.context_messages[0].role == "system"
     assert request.context_messages[0].content == (
-        "DAN_CANON_VERSION: 1\n\nPersona: Jarvis owns memory and answers from SQLite."
+        "DAN_CANON_VERSION: 1\n\nPersona: DAN owns memory and answers from SQLite."
     )
     assert request.context_messages[0].metadata["kind"] == "persona"
 
@@ -548,7 +548,7 @@ def test_old_persona_py_is_not_imported_or_needed(
         input_text="No legacy persona",
     )
 
-    source = (ROOT / "jarvis" / "brain" / "context_builder.py").read_text(encoding="utf-8")
+    source = (ROOT / "dan" / "brain" / "context_builder.py").read_text(encoding="utf-8")
     assert "persona.py" not in source
 
 
@@ -933,7 +933,7 @@ def test_tight_budget_preserves_persona_before_recent_turns(
     )
 
     contents = "\n".join(message_contents(result.request))
-    assert "Persona: Jarvis owns memory" in contents
+    assert "Persona: DAN owns memory" in contents
     assert "Old turn that should be trimmed" not in contents
 
 
@@ -1000,7 +1000,7 @@ def test_provider_sessions_are_memory_is_false_in_settings_and_snapshot(
 
 
 def test_context_builder_has_no_provider_network_or_subprocess_dependencies() -> None:
-    source = (ROOT / "jarvis" / "brain" / "context_builder.py").read_text(encoding="utf-8")
+    source = (ROOT / "dan" / "brain" / "context_builder.py").read_text(encoding="utf-8")
     forbidden_fragments = (
         "import subprocess",
         "from subprocess",
@@ -1039,19 +1039,19 @@ def test_persona_profile_setting_does_not_override_owner_persona_file(
 
     first = result.request.context_messages[0]
     assert first.metadata["kind"] == "persona"
-    assert first.metadata["profile"] == "jarvis"
-    assert "Persona: Jarvis owns memory" in first.content
-    assert result.context_snapshot["persona_profile"] == "jarvis"
-    assert result.request.settings["persona.profile"] == "jarvis"
+    assert first.metadata["profile"] == "dan"
+    assert "Persona: DAN owns memory" in first.content
+    assert result.context_snapshot["persona_profile"] == "dan"
+    assert result.request.settings["persona.profile"] == "dan"
 
 
-def test_base_persona_profile_is_named_jarvis(
+def test_base_persona_profile_is_named_dan(
     conn: sqlite3.Connection,
     persona_path: Path,
 ) -> None:
-    # Ozzy 2026-07-08: there is exactly ONE persona and it is named "jarvis"
+    # Ozzy 2026-07-08: there is exactly ONE persona and it is named "dan"
     # (the base persona file, no more "default").
-    assert DEFAULT_PERSONA_PROFILE == "jarvis"
+    assert DEFAULT_PERSONA_PROFILE == "dan"
     insert_conversation(conn)
     builder = ContextBuilder(conn, config=config(), persona_path=persona_path, now=fixed_now())
 
@@ -1062,8 +1062,8 @@ def test_base_persona_profile_is_named_jarvis(
     )
 
     first = result.request.context_messages[0]
-    assert first.metadata["profile"] == "jarvis"
-    assert result.context_snapshot["persona_profile"] == "jarvis"
+    assert first.metadata["profile"] == "dan"
+    assert result.context_snapshot["persona_profile"] == "dan"
 
 
 def test_missing_persona_profile_setting_uses_base_persona(
@@ -1080,7 +1080,7 @@ def test_missing_persona_profile_setting_uses_base_persona(
     )
 
     first = result.request.context_messages[0]
-    assert "Persona: Jarvis owns memory" in first.content
+    assert "Persona: DAN owns memory" in first.content
     assert first.metadata["profile"] == DEFAULT_PERSONA_PROFILE
     assert result.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
 
@@ -1100,7 +1100,7 @@ def test_unknown_persona_profile_falls_back_to_base_persona(
     )
 
     first = result.request.context_messages[0]
-    assert "Persona: Jarvis owns memory" in first.content
+    assert "Persona: DAN owns memory" in first.content
     assert result.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
 
 
@@ -1123,7 +1123,7 @@ def test_persona_profile_path_traversal_is_rejected(
 
     first = result.request.context_messages[0]
     assert "EVIL PERSONA" not in first.content
-    assert "Persona: Jarvis owns memory" in first.content
+    assert "Persona: DAN owns memory" in first.content
     assert result.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
 
 
@@ -1141,7 +1141,7 @@ def test_non_string_persona_profile_falls_back_to_base_persona(
         input_text="Now",
     )
 
-    assert "Persona: Jarvis owns memory" in result.request.context_messages[0].content
+    assert "Persona: DAN owns memory" in result.request.context_messages[0].content
     assert result.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
 
 
@@ -1161,10 +1161,10 @@ def test_explicit_settings_do_not_override_owner_persona_file(
     )
 
     first = result.request.context_messages[0]
-    assert "Persona: Jarvis owns memory" in first.content
-    assert first.metadata["profile"] == "jarvis"
-    assert result.context_snapshot["persona_profile"] == "jarvis"
-    assert result.request.settings["persona.profile"] == "jarvis"
+    assert "Persona: DAN owns memory" in first.content
+    assert first.metadata["profile"] == "dan"
+    assert result.context_snapshot["persona_profile"] == "dan"
+    assert result.request.settings["persona.profile"] == "dan"
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
@@ -1175,16 +1175,16 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
         "--dangerously-skip-permissions",
     )
     scanned = (
-        ROOT / "jarvis" / "brain" / "context_builder.py",
-        ROOT / "jarvis" / "memory" / "manager.py",
-        ROOT / "jarvis" / "memory" / "policies.py",
-        ROOT / "jarvis" / "memory" / "retrieval.py",
+        ROOT / "dan" / "brain" / "context_builder.py",
+        ROOT / "dan" / "memory" / "manager.py",
+        ROOT / "dan" / "memory" / "policies.py",
+        ROOT / "dan" / "memory" / "retrieval.py",
     )
     offenders: list[tuple[str, str]] = []
 
     for path in scanned:
         source = path.read_text(encoding="utf-8")
-        if path == ROOT / "jarvis" / "brain" / "context_builder.py":
+        if path == ROOT / "dan" / "brain" / "context_builder.py":
             source = source.replace(f'"{DEFAULT_PERSONA_PATH}"', "")
         for snippet in forbidden:
             if snippet in source:

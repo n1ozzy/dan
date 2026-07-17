@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from jarvis.brain import (
+from dan.brain import (
     BrainAdapterError,
     BrainManager,
     BrainRequest,
@@ -23,20 +23,20 @@ from jarvis.brain import (
     BrainToolCall,
     MockBrainAdapter,
 )
-from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
-from jarvis.brain.context_builder import ContextBuilder, ContextBuilderError
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.daemon.lifecycle import build_server
-from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
-from jarvis.events.bus import EventBus
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import create_event_store
-from jarvis.turns.orchestrator import (
+from dan.brain.claude_cli_adapter import ClaudeCliAdapter
+from dan.brain.context_builder import ContextBuilder, ContextBuilderError
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.daemon.lifecycle import build_server
+from dan.daemon.state_machine import RuntimeState, RuntimeStateMachine
+from dan.events.bus import EventBus
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import create_event_store
+from dan.turns.orchestrator import (
     TurnOrchestrator,
     TurnOrchestratorBusyError,
     TurnOrchestratorError,
 )
-from jarvis.turns.repository import ConversationRepository, TurnRepository
+from dan.turns.repository import ConversationRepository, TurnRepository
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import write_config
 
@@ -46,7 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def app(tmp_path: Path) -> Iterator[DaemonApp]:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     try:
         yield daemon_app
@@ -66,7 +66,7 @@ def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 @contextmanager
 def running_server(app: DaemonApp) -> Iterator[str]:
     server = build_server(app, "127.0.0.1", 0)
-    thread = threading.Thread(target=server.serve_forever, name="jarvis-text-turn-http", daemon=True)
+    thread = threading.Thread(target=server.serve_forever, name="dan-text-turn-http", daemon=True)
     thread.start()
     try:
         yield server.base_url
@@ -186,7 +186,7 @@ class CancellingBrainAdapter:
         return [self.default_model]
 
     def generate(self, request: BrainRequest, *, on_delta=None) -> BrainResponse:
-        from jarvis.brain.base import BrainGenerationCancelled
+        from dan.brain.base import BrainGenerationCancelled
 
         raise BrainGenerationCancelled("cancelling generation cancelled (barge-in)")
 
@@ -240,15 +240,15 @@ def test_post_input_text_with_mock_brain_returns_200_json(app: DaemonApp) -> Non
         status, payload = request_json(
             "POST",
             f"{base_url}/input/text",
-            {"text": "Hello Jarvis", "metadata": {"client": "test"}, "extra": "ignored"},
+            {"text": "Hello DAN", "metadata": {"client": "test"}, "extra": "ignored"},
         )
 
     assert status == 200
     assert payload["ok"] is True
     assert isinstance(payload["turn_id"], str)
     assert isinstance(payload["conversation_id"], str)
-    assert payload["input_text"] == "Hello Jarvis"
-    assert payload["final_text"] == "Test response: Hello Jarvis"
+    assert payload["input_text"] == "Hello DAN"
+    assert payload["final_text"] == "Test response: Hello DAN"
     assert payload["brain_adapter"] == "test"
     assert payload["brain_model"] == "test-model"
     assert payload["state"] == "IDLE"
@@ -467,7 +467,7 @@ def test_event_bus_subscribers_receive_orchestrator_events(conn: sqlite3.Connect
 
     result = make_orchestrator(conn, event_bus=bus).handle_text(text="Bus")
 
-    assert result.final_text == "Jarvis mock response: Bus"
+    assert result.final_text == "DAN mock response: Bus"
     assert "input.text.received" in seen
     assert "turn.finished" in seen
 
@@ -482,11 +482,11 @@ def test_failing_event_bus_subscriber_does_not_fail_turn(conn: sqlite3.Connectio
 
     result = make_orchestrator(conn, event_bus=bus).handle_text(text="Still works")
 
-    assert result.final_text == "Jarvis mock response: Still works"
+    assert result.final_text == "DAN mock response: Still works"
     assert bus.last_errors
 
 
-def test_brain_request_is_assembled_from_jarvis_owned_context(conn: sqlite3.Connection) -> None:
+def test_brain_request_is_assembled_from_dan_owned_context(conn: sqlite3.Connection) -> None:
     conversations = ConversationRepository(conn)
     turns = TurnRepository(conn)
     conversation = conversations.create(conversation_id="conversation-owned")
@@ -576,7 +576,7 @@ def test_fake_claude_cli_tool_call_block_creates_approval_without_execution(
     runner = RecordingCliRunner(
         stdout=(
             'Need approval.\n'
-            '<jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"integration"}}</jarvis_tool_call>\n'
+            '<dan_tool_call>{"name":"approval_probe","arguments":{"reason":"integration"}}</dan_tool_call>\n'
             'Waiting.'
         )
     )
@@ -857,7 +857,7 @@ def test_barge_in_cancellation_marks_turn_cancelled_not_failed(conn: sqlite3.Con
     # Operator-priority fix (FIX-09): a generation killed by barge-in is a
     # CANCELLED turn, not a FAILED one — the panel reads the turn status, and
     # the runtime must land back in IDLE (not stranded through ERROR).
-    from jarvis.turns.orchestrator import TurnCancelledError
+    from dan.turns.orchestrator import TurnCancelledError
 
     manager = BrainManager([CancellingBrainAdapter()], default_adapter="cancelling")
     orchestrator = make_orchestrator(conn, brain_manager=manager)
@@ -981,10 +981,10 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
         "--dangerously-skip-permissions",
     )
     scanned = (
-        ROOT / "jarvis" / "turns" / "orchestrator.py",
-        ROOT / "jarvis" / "api" / "routes_input.py",
-        ROOT / "jarvis" / "daemon" / "app.py",
-        ROOT / "jarvis" / "daemon" / "lifecycle.py",
+        ROOT / "dan" / "turns" / "orchestrator.py",
+        ROOT / "dan" / "api" / "routes_input.py",
+        ROOT / "dan" / "daemon" / "app.py",
+        ROOT / "dan" / "daemon" / "lifecycle.py",
     )
     offenders: list[tuple[str, str]] = []
 

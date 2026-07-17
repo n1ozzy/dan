@@ -24,9 +24,9 @@ if [ ! -x "$PYTHON" ]; then
   fi
 fi
 
-SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-file-read-smoke.XXXXXX")"
-CONFIG="$SMOKE_DIR/jarvis-smoke.toml"
-DB_PATH="$SMOKE_DIR/jarvis-smoke.db"
+SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dan-file-read-smoke.XXXXXX")"
+CONFIG="$SMOKE_DIR/dan-smoke.toml"
+DB_PATH="$SMOKE_DIR/dan-smoke.db"
 BASE_URL="http://127.0.0.1:41771"
 DAEMON_PID=""
 
@@ -50,7 +50,7 @@ mkdir -p "$SMOKE_DIR/workspace"
 
 cat >"$CONFIG" <<EOF
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "127.0.0.1"
 port = 41771
 log_level = "INFO"
@@ -108,19 +108,19 @@ approved_roots = ["$SMOKE_DIR/workspace"]
 home = "$SMOKE_DIR/home"
 logs_dir = "$SMOKE_DIR/logs"
 runtime_dir = "$SMOKE_DIR/runtime"
-pid_file = "$SMOKE_DIR/runtime/jarvisd.pid"
+pid_file = "$SMOKE_DIR/runtime/dand.pid"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd.smoke"
+label = "com.dan.dand.smoke"
 install_automatically = false
 EOF
 
 echo "Smoke directory: $SMOKE_DIR"
 echo "Config: $CONFIG"
-echo "Starting daemon: python -m jarvis.cli --config \"$CONFIG\" daemon run"
-"$PYTHON" -m jarvis.cli --config "$CONFIG" daemon run >"$SMOKE_DIR/daemon.stdout.log" 2>"$SMOKE_DIR/daemon.stderr.log" &
+echo "Starting daemon: python -m dan.cli --config \"$CONFIG\" daemon run"
+"$PYTHON" -m dan.cli --config "$CONFIG" daemon run >"$SMOKE_DIR/daemon.stdout.log" 2>"$SMOKE_DIR/daemon.stderr.log" &
 DAEMON_PID="$!"
 echo "Daemon PID: $DAEMON_PID"
 
@@ -165,7 +165,7 @@ def auth_headers(method: str) -> dict:
     headers = {"Accept": "application/json"}
     token = api_token()
     if token and method in {"POST", "PATCH", "DELETE"}:
-        headers["X-Jarvis-Token"] = token
+        headers["X-DAN-Token"] = token
     return headers
 
 
@@ -256,7 +256,7 @@ status, write_requested = request_json_status(
     "/tools/request",
     {
         "tool_name": "file_write",
-        "arguments": {"path": write_target, "content": "written by jarvis smoke\n"},
+        "arguments": {"path": write_target, "content": "written by dan smoke\n"},
         "requested_by": "smoke",
     },
 )
@@ -274,7 +274,7 @@ status, executed = request_json_status("POST", f"/approvals/{approval_id}/execut
 if status != 200 or not executed.get("ok"):
     fail(f"file_write execute failed: {status} {executed}")
 with open(write_target, "r", encoding="utf-8") as handle:
-    if handle.read() != "written by jarvis smoke\n":
+    if handle.read() != "written by dan smoke\n":
         fail("file_write content mismatch")
 print("file_write lifecycle: approval -> execute -> file on disk PASS")
 

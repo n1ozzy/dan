@@ -1,4 +1,4 @@
-"""Prompt 09 Jarvis-owned memory manager tests."""
+"""Prompt 09 DAN-owned memory manager tests."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.brain import BrainMemoryBlock
-from jarvis.memory import MEMORY_KINDS, MemoryBlock, MemoryError, MemoryManager
-from jarvis.memory.policies import estimate_memory_chars, select_memory_for_budget
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import EventStore
+from dan.brain import BrainMemoryBlock
+from dan.memory import MEMORY_KINDS, MemoryBlock, MemoryError, MemoryManager
+from dan.memory.policies import estimate_memory_chars, select_memory_for_budget
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import EventStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,7 +36,7 @@ def test_create_block_stores_memory_block(conn: sqlite3.Connection) -> None:
     block = manager.create_block(
         "identity",
         "Name",
-        "Jarvis is the durable assistant identity.",
+        "DAN is the durable assistant identity.",
         priority=7,
         metadata={"source": "test"},
     )
@@ -48,7 +48,7 @@ def test_create_block_stores_memory_block(conn: sqlite3.Connection) -> None:
     assert block.created_at == "2026-07-01T12:00:00+00:00"
     row = conn.execute("SELECT title, body, metadata_json FROM memory_blocks").fetchone()
     assert row[0] == "Name"
-    assert row[1] == "Jarvis is the durable assistant identity."
+    assert row[1] == "DAN is the durable assistant identity."
     assert '"source": "test"' in row[2]
 
 
@@ -329,9 +329,9 @@ def test_memory_manager_has_no_provider_network_or_subprocess_dependencies() -> 
         "ollama",
     )
     for relative in (
-        "jarvis/memory/manager.py",
-        "jarvis/memory/policies.py",
-        "jarvis/memory/retrieval.py",
+        "dan/memory/manager.py",
+        "dan/memory/policies.py",
+        "dan/memory/retrieval.py",
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
         offenders = [fragment for fragment in forbidden_fragments if fragment in source]

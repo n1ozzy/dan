@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
+from dan.daemon.app import DaemonApp, create_daemon_app
 from tests.test_api_smoke import running_server, write_config
 
 
@@ -21,7 +21,7 @@ def _request_raw(url: str) -> tuple[int, object, bytes]:
 
 
 def _app(tmp_path: Path) -> Iterator[DaemonApp]:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     try:
         yield daemon_app

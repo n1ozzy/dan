@@ -24,9 +24,9 @@ fi
 HOST="127.0.0.1"
 PORT="41773"
 BASE_URL="http://$HOST:$PORT"
-SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-voice-speech-smoke.XXXXXX")"
-CONFIG="$SMOKE_DIR/jarvis-smoke.toml"
-DB_PATH="$SMOKE_DIR/jarvis-smoke.db"
+SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dan-voice-speech-smoke.XXXXXX")"
+CONFIG="$SMOKE_DIR/dan-smoke.toml"
+DB_PATH="$SMOKE_DIR/dan-smoke.db"
 FAKE_BRAIN="$SMOKE_DIR/fake-brain.sh"
 DAEMON_PID=""
 
@@ -83,7 +83,7 @@ if printf '%s' "$PROMPT" | tail -n 6 | grep -q "SLOW_TURN"; then
   sleep 2
   emit 'Wolna odpowiedz przyszla teraz. Drugie zdanie wolnej odpowiedzi.'
 elif printf '%s' "$PROMPT" | tail -n 6 | grep -q "TOOL_TURN"; then
-  emit 'Zaraz sprawdze plik dla ciebie. <jarvis_tool_call>{"name":"approval_probe","arguments":{"reason":"voice smoke"}}</jarvis_tool_call>'
+  emit 'Zaraz sprawdze plik dla ciebie. <dan_tool_call>{"name":"approval_probe","arguments":{"reason":"voice smoke"}}</dan_tool_call>'
 else
   emit 'Pierwsze zdanie odpowiedzi glosowej. Drugie zdanie odpowiedzi glosowej.'
 fi
@@ -92,7 +92,7 @@ chmod +x "$FAKE_BRAIN"
 
 cat >"$CONFIG" <<EOF
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "$HOST"
 port = $PORT
 log_level = "INFO"
@@ -160,17 +160,17 @@ destructive_tools_enabled = false
 home = "$SMOKE_DIR/home"
 logs_dir = "$SMOKE_DIR/logs"
 runtime_dir = "$SMOKE_DIR/runtime"
-pid_file = "$SMOKE_DIR/runtime/jarvisd.pid"
+pid_file = "$SMOKE_DIR/runtime/dand.pid"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd.smoke"
+label = "com.dan.dand.smoke"
 install_automatically = false
 EOF
 
 echo "Smoke directory: $SMOKE_DIR"
-"$PYTHON" -m jarvis.cli --config "$CONFIG" daemon run >"$SMOKE_DIR/daemon.stdout.log" 2>"$SMOKE_DIR/daemon.stderr.log" &
+"$PYTHON" -m dan.cli --config "$CONFIG" daemon run >"$SMOKE_DIR/daemon.stdout.log" 2>"$SMOKE_DIR/daemon.stderr.log" &
 DAEMON_PID="$!"
 echo "Daemon PID: $DAEMON_PID"
 
@@ -208,7 +208,7 @@ def post(path: str, payload: dict, timeout: float = 60) -> dict:
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "X-Jarvis-Token": api_token(),
+        "X-DAN-Token": api_token(),
     }
     request = Request(
         f"{base_url}{path}",

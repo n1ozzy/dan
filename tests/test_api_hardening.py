@@ -16,16 +16,16 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon import lifecycle
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.daemon.lifecycle import build_server
+from dan.daemon import lifecycle
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.daemon.lifecycle import build_server
 from tests.test_api_smoke import config_text
 from tests.test_api_stream import StreamClient
 from tests.test_api_transport_token import token_required_config_text
 
 
 def _make_app(tmp_path: Path, text: str) -> DaemonApp:
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(text, encoding="utf-8")
     app = create_daemon_app(config_path)
     app.start()
@@ -34,7 +34,7 @@ def _make_app(tmp_path: Path, text: str) -> DaemonApp:
 
 @pytest.fixture
 def open_app(tmp_path: Path) -> Iterator[DaemonApp]:
-    app = _make_app(tmp_path, config_text(tmp_path / "home" / "jarvis.db"))
+    app = _make_app(tmp_path, config_text(tmp_path / "home" / "dan.db"))
     try:
         yield app
     finally:
@@ -44,7 +44,7 @@ def open_app(tmp_path: Path) -> Iterator[DaemonApp]:
 
 @pytest.fixture
 def token_app(tmp_path: Path) -> Iterator[DaemonApp]:
-    app = _make_app(tmp_path, token_required_config_text(tmp_path / "home" / "jarvis.db"))
+    app = _make_app(tmp_path, token_required_config_text(tmp_path / "home" / "dan.db"))
     try:
         yield app
     finally:
@@ -55,7 +55,7 @@ def token_app(tmp_path: Path) -> Iterator[DaemonApp]:
 @contextmanager
 def running_server(app: DaemonApp) -> Iterator[tuple[str, int]]:
     server = build_server(app, "127.0.0.1", 0)
-    thread = threading.Thread(target=server.serve_forever, name="jarvis-hardening-http", daemon=True)
+    thread = threading.Thread(target=server.serve_forever, name="dan-hardening-http", daemon=True)
     thread.start()
     try:
         host, port = server.server_address

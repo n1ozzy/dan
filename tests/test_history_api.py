@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.turns.repository import ConversationRepository
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.turns.repository import ConversationRepository
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import request_json, write_config
 from tests.test_text_turn_pipeline import running_server, table_count
@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def app(tmp_path: Path) -> DaemonApp:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     try:
         yield daemon_app
@@ -286,8 +286,8 @@ def test_history_endpoints_do_not_touch_voice_tools_or_workers(app: DaemonApp) -
 
 
 def test_no_real_home_is_touched_by_history_tests(tmp_path: Path) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
-    config = write_config(tmp_path / "jarvis.toml", db_path)
+    db_path = tmp_path / "home" / "dan.db"
+    config = write_config(tmp_path / "dan.toml", db_path)
 
     daemon_app = create_daemon_app(config)
     try:
@@ -309,10 +309,10 @@ def test_runtime_history_files_do_not_contain_forbidden_legacy_strings() -> None
         "--dangerously-skip-permissions",
     )
     scanned = (
-        ROOT / "jarvis" / "api" / "routes_history.py",
-        ROOT / "jarvis" / "daemon" / "app.py",
-        ROOT / "jarvis" / "daemon" / "lifecycle.py",
-        ROOT / "jarvis" / "cli.py",
+        ROOT / "dan" / "api" / "routes_history.py",
+        ROOT / "dan" / "daemon" / "app.py",
+        ROOT / "dan" / "daemon" / "lifecycle.py",
+        ROOT / "dan" / "cli.py",
     )
     offenders: list[tuple[str, str]] = []
 

@@ -17,9 +17,9 @@ if [ ! -x "$PYTHON" ]; then
   fi
 fi
 
-SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-stream-smoke.XXXXXX")"
-CONFIG="$SMOKE_DIR/jarvis-smoke.toml"
-DB_PATH="$SMOKE_DIR/jarvis-smoke.db"
+SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dan-stream-smoke.XXXXXX")"
+CONFIG="$SMOKE_DIR/dan-smoke.toml"
+DB_PATH="$SMOKE_DIR/dan-smoke.db"
 PORT=41791
 BASE_URL="http://127.0.0.1:$PORT"
 DAEMON_PID=""
@@ -44,7 +44,7 @@ trap cleanup EXIT HUP INT TERM
 # smoke proves the /stream handshake refuses tokenless clients.
 cat >"$CONFIG" <<EOF
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "127.0.0.1"
 port = $PORT
 log_level = "INFO"
@@ -101,19 +101,19 @@ destructive_tools_enabled = false
 home = "$SMOKE_DIR/home"
 logs_dir = "$SMOKE_DIR/logs"
 runtime_dir = "$SMOKE_DIR/runtime"
-pid_file = "$SMOKE_DIR/runtime/jarvisd.pid"
+pid_file = "$SMOKE_DIR/runtime/dand.pid"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd.smoke"
+label = "com.dan.dand.smoke"
 install_automatically = false
 EOF
 
 echo "Smoke directory: $SMOKE_DIR"
 echo "Config: $CONFIG"
-echo "Starting daemon: python -m jarvis.cli --config \"$CONFIG\" daemon run"
-"$PYTHON" -m jarvis.cli --config "$CONFIG" daemon run >"$SMOKE_DIR/daemon.stdout.log" 2>"$SMOKE_DIR/daemon.stderr.log" &
+echo "Starting daemon: python -m dan.cli --config \"$CONFIG\" daemon run"
+"$PYTHON" -m dan.cli --config "$CONFIG" daemon run >"$SMOKE_DIR/daemon.stdout.log" 2>"$SMOKE_DIR/daemon.stderr.log" &
 DAEMON_PID="$!"
 echo "Daemon PID: $DAEMON_PID"
 
@@ -163,7 +163,7 @@ def api_token() -> str:
 def request_json(method: str, path: str, payload: dict | None = None) -> dict:
     headers = {"Accept": "application/json"}
     if method in {"POST", "PATCH", "DELETE"}:
-        headers["X-Jarvis-Token"] = api_token()
+        headers["X-DAN-Token"] = api_token()
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -195,7 +195,7 @@ class StreamClient:
             "Sec-WebSocket-Version: 13",
         ]
         if token is not None:
-            lines.append(f"X-Jarvis-Token: {token}")
+            lines.append(f"X-DAN-Token: {token}")
         if subprotocols:
             lines.append(f"Sec-WebSocket-Protocol: {', '.join(subprotocols)}")
         self.sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("utf-8"))
@@ -325,11 +325,11 @@ hello = client.recv_json()
 if hello.get("type") != "stream.hello":
     fail(f"first frame was not stream.hello: {hello}")
 
-# 3. Browser-style handshake: token via subprotocol, jarvis.v1 echoed back.
+# 3. Browser-style handshake: token via subprotocol, dan.v1 echoed back.
 sub_client = StreamClient()
-if sub_client.handshake(subprotocols=["jarvis.v1", f"jarvis-token.{token}"]) != 101:
+if sub_client.handshake(subprotocols=["dan.v1", f"dan-token.{token}"]) != 101:
     fail(f"subprotocol /stream handshake was not 101: {sub_client.status}")
-if sub_client.headers.get("sec-websocket-protocol") != "jarvis.v1":
+if sub_client.headers.get("sec-websocket-protocol") != "dan.v1":
     fail(f"subprotocol response header wrong: {sub_client.headers}")
 sub_hello = sub_client.recv_json()
 if sub_hello.get("type") != "stream.hello":

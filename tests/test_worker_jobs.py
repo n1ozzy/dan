@@ -9,22 +9,22 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.workers.broker import (
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.workers.broker import (
     UnknownWorkerKindError,
     WorkerBroker,
     WorkerBrokerError,
 )
-from jarvis.workers.jobs import WorkerJob, WorkerMemoryCandidate, WorkerResult
-from jarvis.workers.mock_worker import MockWorker
+from dan.workers.jobs import WorkerJob, WorkerMemoryCandidate, WorkerResult
+from dan.workers.mock_worker import MockWorker
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import ROOT, config_text, request_json, running_server
 
 
 @pytest.fixture
 def app(tmp_path: Path) -> Iterator[DaemonApp]:
-    config_path = tmp_path / "jarvis.toml"
-    config_path.write_text(config_text(tmp_path / "home" / "jarvis.db"), encoding="utf-8")
+    config_path = tmp_path / "dan.toml"
+    config_path.write_text(config_text(tmp_path / "home" / "dan.db"), encoding="utf-8")
     daemon_app = create_daemon_app(config_path)
     daemon_app.start()
     try:
@@ -129,7 +129,7 @@ def test_execute_success_creates_inactive_memory_candidate(app: DaemonApp) -> No
     assert row["started_at"] is not None
     assert row["finished_at"] is not None
 
-    # jarvisd (the broker) wrote the candidate, and only as INACTIVE memory:
+    # dand (the broker) wrote the candidate, and only as INACTIVE memory:
     # it never enters brain context until a human promotes it (ADR-009).
     candidate_id = json.loads(row["metadata_json"]).get("memory_candidate_id")
     assert isinstance(candidate_id, str) and candidate_id
@@ -344,7 +344,7 @@ def _assert_workers_disabled(
         "status": 410,
         "error": (
             "workers are disabled on this runtime branch; "
-            "use the main Jarvis brain directly"
+            "use the main DAN brain directly"
         ),
         "jobs": [],
     }
@@ -406,9 +406,9 @@ def test_worker_job_api_listing_is_disabled_before_filter_validation(
 
 
 def test_worker_job_api_requires_transport_token(tmp_path: Path) -> None:
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(
-        config_text(tmp_path / "home" / "jarvis.db").replace(
+        config_text(tmp_path / "home" / "dan.db").replace(
             "api_token_required = false", "api_token_required = true"
         ),
         encoding="utf-8",

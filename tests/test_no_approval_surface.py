@@ -2,15 +2,15 @@
 
 from pathlib import Path
 
-from jarvis.api.routes_input import post_text_input
-from jarvis.api.routes_runtime import get_runtime_settings
-from jarvis.api.routes_tools import post_tool_request
-from jarvis.daemon.app import create_daemon_app
+from dan.api.routes_input import post_text_input
+from dan.api.routes_runtime import get_runtime_settings
+from dan.api.routes_tools import post_tool_request
+from dan.daemon.app import create_daemon_app
 from tests.test_api_smoke import request_json, running_server, write_config
 
 
 def test_approval_routes_are_not_exposed(tmp_path: Path) -> None:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
         app.start()
@@ -28,7 +28,7 @@ def test_approval_routes_are_not_exposed(tmp_path: Path) -> None:
 
 
 def test_active_runtime_payloads_do_not_advertise_approvals(tmp_path: Path) -> None:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
         app.start()

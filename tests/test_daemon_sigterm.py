@@ -1,4 +1,4 @@
-"""`jarvis daemon run` must write daemon.stopped on SIGTERM.
+"""`dan daemon run` must write daemon.stopped on SIGTERM.
 
 launchd stops the daemon with SIGTERM; without a handler Python dies
 mid-loop, `app.stop()` never runs and events keep a dangling
@@ -16,14 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis import cli as jarvis_cli
-from jarvis.logging import LOGGER_NAME
+from dan import cli as dan_cli
+from dan.logging import LOGGER_NAME
 from tests.test_api_smoke import write_config
 
 
 @pytest.fixture
-def jarvis_logger() -> Iterator[logging.Logger]:
-    """Snapshot and restore the global `jarvis` logger around the test."""
+def dan_logger() -> Iterator[logging.Logger]:
+    """Snapshot and restore the global `dan` logger around the test."""
 
     logger = logging.getLogger(LOGGER_NAME)
     saved_handlers = list(logger.handlers)
@@ -61,11 +61,11 @@ def _read_events(db_path: Path) -> list[tuple[str, dict]]:
 def test_daemon_run_writes_daemon_stopped_on_sigterm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    jarvis_logger: logging.Logger,
+    dan_logger: logging.Logger,
     restore_sigterm: None,
 ) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
-    config_path = write_config(tmp_path / "jarvis.toml", db_path)
+    db_path = tmp_path / "home" / "dan.db"
+    config_path = write_config(tmp_path / "dan.toml", db_path)
 
     def fake_serve_forever(app: object, host: str, port: int) -> None:
         # Deliver SIGTERM to ourselves exactly where launchd would: while
@@ -77,9 +77,9 @@ def test_daemon_run_writes_daemon_stopped_on_sigterm(
         if callable(signal.getsignal(signal.SIGTERM)):
             signal.raise_signal(signal.SIGTERM)
 
-    monkeypatch.setattr(jarvis_cli, "serve_forever", fake_serve_forever)
+    monkeypatch.setattr(dan_cli, "serve_forever", fake_serve_forever)
 
-    rc = jarvis_cli.main(["--config", str(config_path), "daemon", "run"])
+    rc = dan_cli.main(["--config", str(config_path), "daemon", "run"])
 
     assert rc == 0
     events = _read_events(db_path)

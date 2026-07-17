@@ -59,7 +59,7 @@ def _valid_report(**overrides: object) -> dict[str, object]:
 
 
 def test_every_collected_test_has_a_safety_class(repo_root: Path) -> None:
-    from jarvis.migration.test_safety import classify_node_ids, collect_node_ids
+    from dan.migration.test_safety import classify_node_ids, collect_node_ids
 
     collected = collect_node_ids(repo_root)
     classified = classify_node_ids(repo_root, collected)
@@ -69,7 +69,7 @@ def test_every_collected_test_has_a_safety_class(repo_root: Path) -> None:
 
 
 def test_automatic_group_has_no_live_primitives(repo_root: Path) -> None:
-    from jarvis.migration.test_safety import scan_automatic_tests
+    from dan.migration.test_safety import scan_automatic_tests
 
     assert scan_automatic_tests(repo_root) == []
 
@@ -94,7 +94,7 @@ def test_automatic_group_has_no_live_primitives(repo_root: Path) -> None:
 def test_unmarked_live_primitives_are_manual_and_reported(
     tmp_path: Path, source: str, reason: str
 ) -> None:
-    from jarvis.migration.test_safety import classify_node_ids, scan_node_ids
+    from dan.migration.test_safety import classify_node_ids, scan_node_ids
 
     node_id = _write_test_file(tmp_path, source)
     assert classify_node_ids(tmp_path, (node_id,))[node_id].safety == "live-manual"
@@ -102,7 +102,7 @@ def test_unmarked_live_primitives_are_manual_and_reported(
 
 
 def test_ancestor_conftest_autouse_fixture_is_manual_and_reported(tmp_path: Path) -> None:
-    from jarvis.migration.test_safety import classify_node_ids, scan_node_ids
+    from dan.migration.test_safety import classify_node_ids, scan_node_ids
 
     _write_source(
         tmp_path,
@@ -118,7 +118,7 @@ def test_ancestor_conftest_autouse_fixture_is_manual_and_reported(tmp_path: Path
 
 
 def test_explicit_local_plugin_fixture_is_manual_and_reported(tmp_path: Path) -> None:
-    from jarvis.migration.test_safety import classify_node_ids, scan_node_ids
+    from dan.migration.test_safety import classify_node_ids, scan_node_ids
 
     _write_source(
         tmp_path,
@@ -138,7 +138,7 @@ def test_explicit_local_plugin_fixture_is_manual_and_reported(tmp_path: Path) ->
 
 
 def test_unresolved_explicit_plugin_fails_closed(tmp_path: Path) -> None:
-    from jarvis.migration.test_safety import classify_node_ids, scan_node_ids
+    from dan.migration.test_safety import classify_node_ids, scan_node_ids
 
     node_id = _write_test_file(
         tmp_path,
@@ -161,7 +161,7 @@ def test_unresolved_explicit_plugin_fails_closed(tmp_path: Path) -> None:
     ],
 )
 def test_explicit_manual_marker_is_not_an_automatic_violation(tmp_path: Path, source: str) -> None:
-    from jarvis.migration.test_safety import classify_node_ids, scan_node_ids
+    from dan.migration.test_safety import classify_node_ids, scan_node_ids
 
     node_id = "tests/test_live.py::TestX::test_hardware" if "class TestX" in source else _write_test_file(tmp_path, source)
     if "class TestX" in source:
@@ -325,12 +325,12 @@ def test_report_write_is_private_and_does_not_follow_fixed_temp_symlink(tmp_path
 
 def test_baseline_refuses_manual_nodes_before_pytest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     baseline = _load_baseline_script()
-    from jarvis.migration.test_safety import SafetyClassification
+    from dan.migration.test_safety import SafetyClassification
 
     node_id = "tests/test_live.py::test_hardware"
     monkeypatch.setenv("DAN_TEST_REPORT_HOME", str(tmp_path))
     monkeypatch.setattr(baseline, "collect_node_ids", lambda *args, **kwargs: (node_id,))
-    from jarvis.migration.test_safety import SafetyClassification
+    from dan.migration.test_safety import SafetyClassification
     monkeypatch.setattr(baseline, "classify_node_ids", lambda *args, **kwargs: {node_id: SafetyClassification(node_id, "isolated")})
     monkeypatch.setattr(baseline, "scan_node_ids", lambda *args, **kwargs: [])
     monkeypatch.setattr(baseline, "classify_node_ids", lambda *args, **kwargs: {node_id: SafetyClassification(node_id, "live-manual", ("explicit",))})
@@ -340,7 +340,7 @@ def test_baseline_refuses_manual_nodes_before_pytest(tmp_path: Path, monkeypatch
 
 def test_baseline_runs_each_isolated_node_explicitly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     baseline = _load_baseline_script()
-    from jarvis.migration.test_safety import SafetyClassification
+    from dan.migration.test_safety import SafetyClassification
 
     nodes = ("tests/test_one.py::test_one", "tests/test_two.py::test_two")
     monkeypatch.setenv("DAN_TEST_REPORT_HOME", str(tmp_path))
@@ -359,6 +359,81 @@ def test_baseline_runs_each_isolated_node_explicitly(tmp_path: Path, monkeypatch
     assert seen["env"]["DAN_DISABLE_AUDIO"] == "1"
 
 
+def test_compare_snapshots_same_canonical_path_before_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baseline = _load_baseline_script()
+    from dan.migration.test_safety import SafetyClassification
+
+    node_id = "tests/test_one.py::test_one"
+    report = tmp_path / ".dan" / "migration" / "test-baseline.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps(_valid_report(failures=[node_id])), encoding="utf-8")
+    report.chmod(0o600)
+    monkeypatch.setenv("DAN_TEST_REPORT_HOME", str(tmp_path))
+    monkeypatch.setattr(baseline, "collect_node_ids", lambda *args, **kwargs: (node_id,))
+    monkeypatch.setattr(
+        baseline,
+        "classify_node_ids",
+        lambda *args, **kwargs: {node_id: SafetyClassification(node_id, "isolated")},
+    )
+    monkeypatch.setattr(baseline, "scan_node_ids", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        baseline.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv,
+            1,
+            stdout=f"FAILED {node_id} - AssertionError\nFAILED tests/test_new.py::test_new - AssertionError\n",
+            stderr="",
+        ),
+    )
+
+    assert baseline.main(["--compare", str(report)]) == 2
+    comparison = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert comparison["new"] == ["tests/test_new.py::test_new"]
+
+
+def test_compare_accepts_known_failures_and_current_collection_delta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    baseline = _load_baseline_script()
+    from dan.migration.test_safety import SafetyClassification
+
+    nodes = ("tests/test_one.py::test_one", "tests/test_two.py::test_two")
+    report = tmp_path / "reference.json"
+    report.write_text(json.dumps(_valid_report(failures=[nodes[0]])), encoding="utf-8")
+    report.chmod(0o400)
+    monkeypatch.setenv("DAN_TEST_REPORT_HOME", str(tmp_path / "output"))
+    monkeypatch.setattr(baseline, "collect_node_ids", lambda *args, **kwargs: nodes)
+    monkeypatch.setattr(
+        baseline,
+        "classify_node_ids",
+        lambda *args, **kwargs: {
+            node_id: SafetyClassification(node_id, "isolated") for node_id in nodes
+        },
+    )
+    monkeypatch.setattr(baseline, "scan_node_ids", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        baseline.subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, stdout=f"FAILED {nodes[0]} - AssertionError\n", stderr=""
+        ),
+    )
+
+    assert baseline.main(["--compare", str(report)]) == 0
+    comparison = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert comparison == {"new": [], "removed": [], "unchanged": [nodes[0]]}
+    current = json.loads(
+        (tmp_path / "output" / ".dan" / "migration" / "test-baseline.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert current["expected_collected"] == 2
+    assert current["collected"] == 2
+
+
 def test_baseline_refuses_collection_mismatch_before_pytest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -366,7 +441,7 @@ def test_baseline_refuses_collection_mismatch_before_pytest(
     node_id = "tests/test_one.py::test_one"
     monkeypatch.setenv("DAN_TEST_REPORT_HOME", str(tmp_path))
     monkeypatch.setattr(baseline, "collect_node_ids", lambda *args, **kwargs: (node_id,))
-    from jarvis.migration.test_safety import SafetyClassification
+    from dan.migration.test_safety import SafetyClassification
     monkeypatch.setattr(baseline, "classify_node_ids", lambda *args, **kwargs: {node_id: SafetyClassification(node_id, "isolated")})
     monkeypatch.setattr(baseline, "scan_node_ids", lambda *args, **kwargs: [])
     monkeypatch.setattr(baseline.subprocess, "run", lambda *args, **kwargs: pytest.fail("pytest ran"))
@@ -376,7 +451,7 @@ def test_baseline_refuses_collection_mismatch_before_pytest(
 def test_test_environment_is_minimal_and_blocks_ambient_python_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import jarvis.migration.test_safety as safety
+    import dan.migration.test_safety as safety
 
     monkeypatch.setenv("PYTHONPATH", "/private/ambient-python")
     monkeypatch.setenv("PYTHONUSERBASE", "/private/ambient-user-site")
@@ -399,7 +474,7 @@ def test_test_environment_is_minimal_and_blocks_ambient_python_state(
 def test_collection_uses_isolated_controlled_interpreter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import jarvis.migration.test_safety as safety
+    import dan.migration.test_safety as safety
 
     seen: dict[str, object] = {}
 

@@ -17,16 +17,16 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.events.models import utc_now_iso
-from jarvis.store.db import ThreadLocalConnection
-from jarvis.workers.jobs import WorkerJob, WorkerResult
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.events.models import utc_now_iso
+from dan.store.db import ThreadLocalConnection
+from dan.workers.jobs import WorkerJob, WorkerResult
 from tests.test_api_smoke import write_config
 
 
 @pytest.fixture
 def app(tmp_path: Path) -> Iterator[DaemonApp]:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     try:
         yield daemon_app
@@ -52,7 +52,7 @@ def _event_count(conn, marker: str) -> int:
 
 
 def test_thread_local_connection_releases_finished_request_thread(tmp_path: Path) -> None:
-    conn = ThreadLocalConnection(tmp_path / "jarvis.db")
+    conn = ThreadLocalConnection(tmp_path / "dan.db")
     raw_connections = []
     errors: list[BaseException] = []
 
@@ -163,7 +163,7 @@ class _GatedWorker:
 
 
 def test_stop_waits_for_worker_threads_before_daemon_stopped(app: DaemonApp) -> None:
-    from jarvis.workers import WorkerBroker
+    from dan.workers import WorkerBroker
 
     worker = _GatedWorker()
     app.worker_broker = WorkerBroker(

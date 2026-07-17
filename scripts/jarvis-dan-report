@@ -14,4 +14,4 @@ if [ ! -x "$PYTHON" ]; then
   PYTHON="$(command -v python3)"
 fi
 
-exec "$PYTHON" -m jarvis.diagnostics.legacy_dan "$@"
+exec "$PYTHON" -m dan.diagnostics.legacy_dan "$@"

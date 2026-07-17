@@ -24,9 +24,9 @@ if [ ! -x "$PYTHON" ]; then
   fi
 fi
 
-SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-ui-act-smoke.XXXXXX")"
-CONFIG="$SMOKE_DIR/jarvis-smoke.toml"
-DB_PATH="$SMOKE_DIR/jarvis-smoke.db"
+SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dan-ui-act-smoke.XXXXXX")"
+CONFIG="$SMOKE_DIR/dan-smoke.toml"
+DB_PATH="$SMOKE_DIR/dan-smoke.db"
 BASE_URL="http://127.0.0.1:41773"
 DAEMON_PID=""
 
@@ -48,7 +48,7 @@ trap cleanup EXIT HUP INT TERM
 
 cat >"$CONFIG" <<EOF
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "127.0.0.1"
 port = 41773
 log_level = "INFO"
@@ -106,19 +106,19 @@ ui_read_backend = "fake"
 home = "$SMOKE_DIR/home"
 logs_dir = "$SMOKE_DIR/logs"
 runtime_dir = "$SMOKE_DIR/runtime"
-pid_file = "$SMOKE_DIR/runtime/jarvisd.pid"
+pid_file = "$SMOKE_DIR/runtime/dand.pid"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd.smoke"
+label = "com.dan.dand.smoke"
 install_automatically = false
 EOF
 
 echo "Smoke directory: $SMOKE_DIR"
 echo "Config: $CONFIG"
-echo "Starting daemon: python -m jarvis.cli --config \"$CONFIG\" daemon run"
-"$PYTHON" -m jarvis.cli --config "$CONFIG" daemon run >"$SMOKE_DIR/daemon.stdout.log" 2>"$SMOKE_DIR/daemon.stderr.log" &
+echo "Starting daemon: python -m dan.cli --config \"$CONFIG\" daemon run"
+"$PYTHON" -m dan.cli --config "$CONFIG" daemon run >"$SMOKE_DIR/daemon.stdout.log" 2>"$SMOKE_DIR/daemon.stderr.log" &
 DAEMON_PID="$!"
 echo "Daemon PID: $DAEMON_PID"
 
@@ -164,7 +164,7 @@ def request_json_status(method: str, path: str, payload: dict | None = None, tim
     headers = {"Accept": "application/json"}
     token = api_token()
     if token and method in {"POST", "PATCH", "DELETE"}:
-        headers["X-Jarvis-Token"] = token
+        headers["X-DAN-Token"] = token
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from jarvis import cli as jarvis_cli
+from dan import cli as dan_cli
 from tests.test_api_smoke import write_config
 
 
@@ -63,7 +63,7 @@ def input_server(
             self.wfile.write(body)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, name="jarvis-cli-input-test", daemon=True)
+    thread = threading.Thread(target=server.serve_forever, name="dan-cli-input-test", daemon=True)
     thread.start()
     try:
         host, port = server.server_address[:2]
@@ -76,13 +76,13 @@ def input_server(
 
 
 def run_cli(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, str, str]:
-    rc = jarvis_cli.main(list(args))
+    rc = dan_cli.main(list(args))
     captured = capsys.readouterr()
     return rc, captured.out, captured.err
 
 
 def config_args() -> tuple[str, str]:
-    return "--config", str(ROOT / "config" / "jarvis.example.toml")
+    return "--config", str(ROOT / "config" / "dan.example.toml")
 
 
 def unused_local_url() -> str:
@@ -99,7 +99,7 @@ def test_cli_input_text_sends_post_to_input_text(capsys: pytest.CaptureFixture[s
             *config_args(),
             "input",
             "text",
-            "Hello Jarvis",
+            "Hello DAN",
             "--url",
             base_url,
         )
@@ -266,7 +266,7 @@ def test_cli_input_text_does_not_start_daemon(
     def fail_create_daemon_app(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("input text must not start DaemonApp")
 
-    monkeypatch.setattr(jarvis_cli, "create_daemon_app", fail_create_daemon_app)
+    monkeypatch.setattr(dan_cli, "create_daemon_app", fail_create_daemon_app)
 
     with input_server() as (base_url, _records):
         rc, _out, _err = run_cli(capsys, *config_args(), "input", "text", "No start", "--url", base_url)
@@ -279,13 +279,13 @@ def test_cli_input_text_does_not_initialize_or_create_db(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
-    config_path = write_config(tmp_path / "jarvis.toml", db_path)
+    db_path = tmp_path / "home" / "dan.db"
+    config_path = write_config(tmp_path / "dan.toml", db_path)
 
     def fail_initialize_database(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("input text must not initialize SQLite")
 
-    monkeypatch.setattr(jarvis_cli, "initialize_database", fail_initialize_database)
+    monkeypatch.setattr(dan_cli, "initialize_database", fail_initialize_database)
 
     with input_server() as (base_url, _records):
         rc, _out, _err = run_cli(

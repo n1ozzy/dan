@@ -1,0 +1,1927 @@
+/* DAN Cockpit — aplikacja jednowidokowa w popoverze, w stylistyce
+   HUD-u DAN-a ze Starka: głęboka czerń-granat, holograficzny arc-reactor
+   blue, złoto Starka dla uwagi, czerwień Iron Mana dla alarmów; cienkie
+   świecące linie. Jeden widok naraz (Czat / Pamięć / Logi / System) +
+   dolny pasek zakładek; zero scrolla strony, widoki przewijają się
+   wewnętrznie. Sygnatura: animowana ramka wokół karty niosąca stan (holo-
+   błękit online, jasny błękit podczas pracy, czerwień offline). */
+
+:root {
+  color-scheme: dark;
+
+  /* Paleta „DAN / Stark HUD”: głęboka czerń-granat jak wnętrze hełmu,
+     holograficzny arc-reactor blue jako główny akcent, złoto Starka dla
+     rzeczy wymagających uwagi, czerwień Iron Mana dla alarmów. Tekst
+     chromowo-srebrny. Cienkie świecące linie, techniczny sznyt. */
+  --bg: #080b12;
+  --panel: #0e1420;
+  --panel-2: #0a0f18;
+  --line: #1a2942;
+  --line-strong: #294061;
+  --text: #e9f0f8;
+  --text-dim: #8fa4c0;
+  --text-faint: #6d829e;
+
+  /* Holo-błękit HUD (arc reactor) — akcent podstawowy. */
+  --accent: #45b6ff;
+  --accent-soft: rgba(69, 182, 255, 0.14);
+  --accent-line: #2e9de8;
+  /* Złoto Starka — uwaga (nazwa --amber została). */
+  --amber: #f0b445;
+  --amber-deep: #8a6118;
+  /* Czerwień Iron Mana — offline / destrukcyjne. */
+  --red: #ff5555;
+
+  --user-bubble: #133150;
+  --dan-bubble: #0f1a2a;
+
+  /* Żywa ramka stanu: obrys bazowy (przygaszony, zawsze) + gorący punkt,
+     który obiega, gdy DAN pracuje. Barwa = stan; ruch = trwający proces. */
+  --frame-base: rgba(69, 182, 255, 0.5);
+  --frame-hot: transparent;
+  --frame-glow: transparent;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  font-family: var(--font-sans);
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* --- Żywa ramka stanu --------------------------------------------------------
+   Neon na krawędzi karty: bazowy obrys barwi się stanem, a gorący punkt
+   obiega dookoła, gdy DAN myśli/mówi/słucha. Technika,
+   która działa w WebKit (animacja kąta conic-gradientu przez @property NIE
+   repaintuje): stały obrys to tło .state-frame, a obiegające światło to
+   OBRACANY kwadrat z conic-gradientem w ::before — maska rodzica przycina go
+   do samego 2px obrysu, więc jasny sektor wędruje po krawędzi. drop-shadow
+   dokłada poświatę tylko przy pracy. JS: body[data-state] —
+   offline > busy > online. */
+.state-frame {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  padding: 2px;
+  border-radius: 16px;
+  pointer-events: none;
+  overflow: hidden;
+  background: var(--frame-base);
+  /* Pokaż tylko obrys (obszar paddingu): wytnij content-box z pełnego boxa. */
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  /* Holo-poświata ramki — wyraźniejsza przy pracy (glow ≠ 0). */
+  filter: drop-shadow(0 0 5px var(--frame-glow));
+  transition: filter 0.4s ease;
+}
+
+/* Obiegające światło: kwadrat większy niż przekątna karty, wyśrodkowany,
+   z jednym jasnym sektorem conic. Obrót przenosi sektor po całym obwodzie. */
+.state-frame::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 240%;
+  aspect-ratio: 1 / 1;
+  transform: translate(-50%, -50%) rotate(0deg);
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    var(--frame-hot) 26deg,
+    transparent 72deg,
+    transparent 360deg
+  );
+}
+
+@keyframes state-frame-spin {
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+/* Ruch tylko dla rzeczy, które trwają: praca daemona. */
+body[data-state="busy"] .state-frame::before {
+  animation: state-frame-spin 2.6s linear infinite;
+}
+
+body[data-state="online"] {
+  --frame-base: rgba(69, 182, 255, 0.42);
+  --frame-hot: transparent;
+  --frame-glow: transparent;
+}
+
+body[data-state="busy"] {
+  --frame-base: rgba(69, 182, 255, 0.55);
+  --frame-hot: #a5d8ff;
+  --frame-glow: rgba(69, 182, 255, 0.55);
+}
+
+body[data-state="offline"] {
+  --frame-base: rgba(255, 85, 85, 0.55);
+  --frame-hot: transparent;
+  --frame-glow: transparent;
+}
+
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background:
+    radial-gradient(1200px 500px at 70% -10%, rgba(69, 182, 255, 0.05), transparent 60%),
+    var(--bg);
+}
+
+h1,
+h2,
+h3,
+p,
+pre,
+dl {
+  margin: 0;
+}
+
+/* --- Szkielet aplikacji -----------------------------------------------------
+   Stan systemu bez ozdób: pill stanu w toolbarze (czerwony offline), hero
+   offline w czacie. Ruch jest zarezerwowany dla
+   rzeczy, które naprawdę trwają (fala słuchającego mikrofonu, puls badge). */
+
+.cockpit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100vh;
+  padding: 12px;
+  overflow: hidden;
+}
+
+/* Szersze okno przeglądarki: panel trzyma proporcje apki, wycentrowany. */
+@media (min-width: 760px) {
+  .cockpit {
+    width: 100%;
+    max-width: 680px;
+    margin: 0 auto;
+  }
+}
+
+.views {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.view {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.view.active {
+  display: flex;
+}
+
+/* Widoki listowe przewijają się wewnętrznie; czat zarządza scrollem sam. */
+#view-memory.view,
+#view-logs.view,
+#view-system.view {
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 10px;
+}
+
+#view-system {
+  --system-row-bg: rgba(7, 11, 18, 0.58);
+  --system-row-border: rgba(71, 92, 119, 0.52);
+}
+
+/* --- Pasek zakładek ---------------------------------------------------------- */
+
+.tabbar {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 3px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.tab-button {
+  position: relative;
+  min-height: 34px;
+  padding: 9px 4px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.tab-button:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.tab-button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  /* Holo-świecenie aktywnej zakładki — subtelny HUD-owy blask. */
+  text-shadow: 0 0 10px rgba(69, 182, 255, 0.55);
+}
+
+.tab-button:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+}
+
+/* --- Kontrolki bazowe --------------------------------------------------------- */
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  /* Jedna skala kontrolek (13px) — mniejsza niż treść czatu (13.5px), ale
+     spójna między polami, selectami i przyciskami akcji. */
+  font-size: 13px;
+}
+
+button {
+  min-height: 26px;
+  padding: 6px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #1a2432;
+  color: var(--text);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled),
+button:focus-visible {
+  border-color: var(--accent-line);
+  background: #203040;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+/* Widoczny fokus z klawiatury — zmiana obrysu przycisku to za mało. */
+button:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+}
+
+::selection {
+  background: rgba(69, 182, 255, 0.28);
+}
+
+button.ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--text-dim);
+}
+
+button.ghost:hover:not(:disabled),
+button.ghost:focus-visible {
+  color: var(--text);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+button.primary {
+  border-color: var(--accent-line);
+  background: #0c2a45;
+  color: #a5d8ff;
+  font-weight: 650;
+  /* Holo-kontur: cienki błękitny blask jak podświetlony przycisk HUD. */
+  box-shadow: 0 0 12px rgba(69, 182, 255, 0.16);
+}
+
+button.primary:hover:not(:disabled),
+button.primary:focus-visible {
+  background: #103a5c;
+  box-shadow: 0 0 16px rgba(69, 182, 255, 0.28);
+}
+
+#listenToggle.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
+textarea {
+  resize: vertical;
+}
+
+/* --- Widok: czat ---------------------------------------------------------------- */
+
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-toolbar select {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  font-size: 13px;
+}
+
+.activity-strip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(69, 182, 255, 0.05);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.activity-label {
+  color: var(--text-faint);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.activity-state,
+.activity-stage,
+.activity-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.activity-state strong {
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.activity-stage {
+  overflow: hidden;
+  color: var(--text-dim);
+}
+
+.activity-stage > :last-child,
+.activity-result {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-detail {
+  grid-column: 1 / -1;
+  color: var(--text-dim);
+}
+
+.activity-detail[hidden],
+.activity-result[hidden] {
+  display: none;
+}
+
+.activity-detail code {
+  color: var(--text);
+}
+
+.activity-status {
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--accent);
+}
+
+.activity-status[data-status="error"] {
+  border-color: #5a2530;
+  color: #ffc0c0;
+}
+
+.activity-status[data-status="success"] {
+  color: #90ddb4;
+}
+
+.activity-result {
+  color: var(--text-faint);
+}
+
+.activity-strip[data-runtime-state="TOOLING"] .activity-state strong,
+.activity-strip[data-runtime-state="THINKING"] .activity-state strong {
+  color: #a5d8ff;
+}
+
+body.offline .activity-state strong {
+  color: var(--red);
+}
+
+.state-pill {
+  max-width: 110px;
+  overflow: hidden;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.offline .state-pill {
+  color: var(--red);
+  background: rgba(255, 85, 85, 0.1);
+}
+
+.hud-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-item.live {
+  color: var(--accent);
+}
+
+/* Jawne display na .hud-item nadpisuje user-agentowe [hidden] — przywróć. */
+.hud-item[hidden] {
+  display: none;
+}
+
+.chat-log {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+/* Kotwica dołu: gdy przebieg nie wypełnia logu, dosuwa rozmowę do dołu jak
+   w komunikatorze; przy przepełnieniu normalny scroll. */
+.chat-log > :first-child {
+  margin-top: auto;
+}
+
+.chat-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-bubble {
+  max-width: 82%;
+  padding: 8px 12px;
+  border-radius: 14px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-bubble.user {
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+  background: var(--user-bubble);
+  color: #dcf1ff;
+}
+
+.chat-bubble.dan {
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+  border: 1px solid var(--line);
+  /* Kręgosłup w kolorze DANa: dymki asystenta mają jego barwę. */
+  border-left: 2px solid rgba(69, 182, 255, 0.4);
+  background: var(--dan-bubble);
+  color: #d9e2ee;
+}
+
+.chat-bubble.placeholder {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.chat-turn.failed .chat-bubble.dan {
+  border-color: #5a2530;
+  background: #1a0e12;
+  color: #ffc0c0;
+}
+
+.chat-meta {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--text-faint);
+}
+
+.chat-turn.failed .chat-meta {
+  color: #f0a3ad;
+}
+
+.composer {
+  display: grid;
+  gap: 6px;
+}
+
+/* Rząd komunikatorowy: pole rośnie, „Wyślij” po prawej na pełną wysokość pola. */
+.composer-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.composer-row textarea {
+  min-height: 44px;
+  max-height: 132px;
+  overflow-y: auto;
+  resize: none;
+}
+
+/* Status mikrofonu i wybór trybu jako dyskretna linijka pod polem, z lewej. */
+.composer-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 2px;
+}
+
+/* Tryb słuchania: segmenty PTT | Nasłuch obok siebie — przełącznik trybu,
+   nie przycisk do trzymania (PTT trzyma się globalnym hotkeyem). */
+.voice-mode {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.voice-queue-list {
+  margin-top: 8px;
+}
+
+.mode-button {
+  min-height: 30px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mode-button + .mode-button {
+  border-left: 1px solid var(--line-strong);
+}
+
+.mode-button:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.mode-button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.mode-button.ptt-hold {
+  background: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 0 12px var(--accent);
+  animation: ptt-pulse 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes ptt-pulse {
+  from { box-shadow: 0 0 8px var(--accent); }
+  to { box-shadow: 0 0 20px var(--accent), 0 0 30px var(--accent); }
+}
+
+/* Fala głosu przy statusie: słupki ożywają tylko, gdy mikrofon zbiera. */
+.hud-item .wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 12px;
+}
+
+.wave i {
+  display: block;
+  width: 2px;
+  height: 4px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.85;
+}
+
+.hud-item.live .wave i {
+  animation: wave-bounce 0.9s ease-in-out infinite;
+}
+
+.hud-item.live .wave i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.hud-item.live .wave i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+.hud-item.live .wave i:nth-child(4) {
+  animation-delay: 0.45s;
+}
+
+@keyframes wave-bounce {
+  0%,
+  100% {
+    height: 4px;
+  }
+  50% {
+    height: 12px;
+  }
+}
+
+/* Offline: kompozytor wyraźnie wygaszony — kontrolki i tak są disabled. */
+body.offline .composer {
+  opacity: 0.55;
+}
+
+/* Jeden komunikat offline z akcją, wycentrowany w pustym logu czatu. */
+.offline-hero {
+  margin: auto;
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  max-width: 280px;
+  text-align: center;
+}
+
+.offline-title {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--red);
+}
+
+/* --- Nagłówki i sekcje ------------------------------------------------------------ */
+
+h2 {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+h3,
+h4 {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* Ludzki stan daemona: etykieta + wartość, czytelniej niż mono kv. */
+.health-human {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  font-size: 12px;
+}
+
+.health-human dt {
+  color: var(--text-dim);
+}
+
+.health-human dd {
+  margin: 0;
+  color: var(--text);
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.section-head > * {
+  min-width: 0;
+}
+
+.section-desc {
+  line-height: 1.4;
+}
+
+.section-tools {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+/* Zwijane sekcje (widok System): natywne <details>, domyślnie zwinięte. */
+details.card.collapsible summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+details.card.collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+details.card.collapsible summary::after {
+  /* \203A = › ; escape zamiast surowego znaku, bo statyczny serwer potrafi
+     podać CSS bez charsetu i chevron zmienia się w mojibake. */
+  content: "\203A";
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+details.card.collapsible[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.summary-hint {
+  margin-left: auto;
+}
+
+/* Karty-akordeony w zakładce System: cała karta jest <details>, nagłówek to <summary>.
+   Chevron = statyczny wskaźnik stanu (bez animacji dekoracyjnej); ruch tylko dla procesów. */
+.sys-section.collapsible-card > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sys-section.collapsible-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sys-section.collapsible-card > summary > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sys-section.collapsible-card > summary .mission-actions {
+  flex: 0 0 auto;
+}
+
+.sys-section.collapsible-card > summary::after {
+  /* \203A = › ; escape zamiast surowego znaku, bo statyczny serwer bez charsetu
+     zamienia chevron w mojibake. */
+  content: "\203A";
+  flex: 0 0 auto;
+  align-self: center;
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.sys-section.collapsible-card[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+.subsection {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* --- Listy / wiersze ------------------------------------------------------------------ */
+
+.muted {
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.list {
+  display: grid;
+  gap: 6px;
+}
+
+.compact-list {
+  max-height: 190px;
+  overflow-y: auto;
+}
+
+.list-row,
+.empty-row {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  text-align: left;
+}
+
+.empty-row {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.input-line,
+.final-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.input-line {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.final-line {
+  color: #c3cedd;
+  font-size: 12px;
+}
+
+.payload-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.error-line {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.argument-line {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.tool-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tool-name {
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* Chip ryzyka barwiony wagą: odczyt spokojny, zapis uważny, destructive alarm. */
+.risk-chip {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.risk-chip.read {
+  border: 1px solid var(--line-strong);
+  background: rgba(143, 164, 192, 0.14);
+  color: var(--text-dim);
+}
+
+.risk-chip.write {
+  border: 1px solid var(--amber-deep);
+  background: rgba(138, 97, 24, 0.16);
+  color: var(--amber);
+}
+
+.risk-chip.destructive {
+  border: 1px solid #7a2a2a;
+  background: rgba(255, 85, 85, 0.12);
+  color: var(--red);
+}
+
+.event-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Filtr dziennika: label „Pokaż” + select w jednej wąskiej linijce. */
+.log-filter {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.log-filter > select {
+  width: auto;
+}
+
+/* Sekcja System (płaska): nagłówek + treść jak karta, bez zwijania. */
+.sys-section {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(9, 13, 20, 0.78);
+}
+
+.system-section-label {
+  margin: 3px 2px -1px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.restart-required-banner {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid rgba(255, 191, 92, 0.42);
+  border-radius: 7px;
+  background: rgba(45, 29, 8, 0.94);
+  color: #ffd48a;
+  font-size: 12px;
+}
+
+.restart-required-banner[hidden] {
+  display: none;
+}
+
+.sys-section > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.sys-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sys-section > summary h2 {
+  min-width: 0;
+}
+
+.runtime-checks-section {
+  border-color: var(--border-subtle);
+  background: rgba(15, 18, 25, 0.92);
+}
+
+.cockpit-summary-card {
+  min-width: 0;
+}
+
+.cockpit-summary-card .kv-list {
+  min-width: 0;
+}
+
+.mission-control {
+  gap: 8px;
+  border-color: rgba(69, 182, 255, 0.32);
+  background:
+    linear-gradient(180deg, rgba(69, 182, 255, 0.08), transparent 60px),
+    rgba(10, 15, 24, 0.9);
+}
+
+.mission-head {
+  align-items: flex-start;
+}
+
+.mission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.production-badge,
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.production-badge {
+  border-color: rgba(71, 188, 139, 0.55);
+  color: #9ee7c1;
+}
+
+.mission-summary {
+  display: grid;
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(10, 15, 24, 0.78);
+}
+
+.mission-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.mission-summary-title {
+  min-width: 0;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.mission-refresh-status {
+  min-height: 16px;
+}
+
+.mission-glance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.mission-glance-item {
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid rgba(69, 182, 255, 0.18);
+  border-radius: 7px;
+  background: rgba(7, 11, 18, 0.62);
+}
+
+.mission-glance-label,
+.mission-issue-label {
+  display: block;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.mission-glance-value {
+  display: block;
+  min-width: 0;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-issue-list {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 5px;
+  overflow: hidden;
+}
+
+.mission-issue-label {
+  flex: 0 0 58px;
+}
+
+.mission-issue-pill,
+.mission-issue-empty,
+.mission-module-fact {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(7, 11, 18, 0.64);
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-issue-blocked .mission-issue-pill {
+  border-color: rgba(255, 85, 85, 0.45);
+  color: #ffb7b7;
+}
+
+.mission-issue-warning .mission-issue-pill {
+  border-color: rgba(240, 180, 69, 0.48);
+  color: #f7dc96;
+}
+
+.mission-issue-action .mission-issue-pill {
+  border-color: rgba(69, 182, 255, 0.42);
+  color: #b6def8;
+}
+
+.module-grid,
+.doctor-grid,
+.checklist-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.module-grid,
+.doctor-grid {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.checklist-grid {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.mission-card,
+.doctor-panel,
+.checklist-item {
+  min-width: 0;
+  border-radius: 8px;
+}
+
+#view-system .kv-list {
+  grid-template-columns: minmax(88px, 32%) minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 11px;
+}
+
+#view-system .kv-list dt {
+  min-width: 0;
+  overflow: hidden;
+  word-break: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#view-system .kv-list dd {
+  min-width: 0;
+  overflow: hidden;
+  word-break: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#view-system .mission-card .input-line,
+#view-system .checklist-item .input-line {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.mission-card {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+}
+
+.mission-card-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-module-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.mission-module-fact {
+  flex: 0 1 auto;
+}
+
+#view-system .active-settings-section {
+  gap: 7px;
+  border-color: rgba(69, 182, 255, 0.18);
+  background: rgba(9, 13, 20, 0.7);
+}
+
+#view-system .active-settings-section .section-head {
+  align-items: flex-start;
+  gap: 8px;
+}
+
+#view-system .active-settings-section h2 {
+  font-size: 14px;
+}
+
+#view-system .active-settings-section .section-desc {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#view-system .list {
+  gap: 5px;
+}
+
+#view-system .compact-list {
+  max-height: 150px;
+}
+
+#view-system .list-row,
+#view-system .empty-row {
+  gap: 3px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: rgba(7, 11, 18, 0.62);
+}
+
+#view-system .payload-line,
+#view-system .error-line,
+#view-system .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-card.status-ready,
+.status-chip.status-ready,
+.checklist-item.status-pass {
+  border-color: rgba(69, 182, 255, 0.5);
+}
+
+.mission-card.status-degraded,
+.status-chip.status-degraded,
+.checklist-item.status-manual {
+  border-color: rgba(240, 180, 69, 0.55);
+}
+
+.mission-card.status-blocked,
+.mission-card.status-offline,
+.status-chip.status-blocked,
+.status-chip.status-offline,
+.checklist-item.status-fail {
+  border-color: rgba(255, 85, 85, 0.55);
+}
+
+.doctor-panel,
+.checklist-panel {
+  display: grid;
+  gap: 6px;
+}
+
+.doctor-panel {
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: rgba(10, 15, 24, 0.54);
+}
+
+.doctor-panel h3,
+.checklist-panel h3 {
+  font-size: 13px;
+}
+
+.checklist-item {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.checklist-item .input-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.status-chip.status-ready,
+.status-chip.status-pass {
+  color: #a5d8ff;
+}
+
+.status-chip.status-degraded,
+.status-chip.status-manual,
+.status-chip.status-unknown {
+  color: #f7dc96;
+}
+
+.status-chip.status-blocked,
+.status-chip.status-offline,
+.status-chip.status-fail {
+  color: #ffb4b4;
+}
+
+/* Odrzuć: czerwony outline (waga niższa niż pełny akcent Zatwierdź). */
+.small-button.reject {
+  border-color: #6a3038;
+  background: transparent;
+  color: #ff9a9a;
+}
+
+.small-button.reject:hover:not(:disabled),
+.small-button.reject:focus-visible {
+  background: #241012;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.small-button {
+  min-height: 24px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.small-button.strong {
+  border-color: var(--accent-line);
+  background: #0c2a45;
+  color: #a5d8ff;
+}
+
+.small-button.danger {
+  border-color: #6a3038;
+  background: #241012;
+  color: #ff9a9a;
+}
+
+.priority-input {
+  width: 64px;
+  min-height: 24px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.kv-list {
+  display: grid;
+  grid-template-columns: minmax(92px, auto) 1fr;
+  gap: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.kv-list dt {
+  color: var(--text-dim);
+}
+
+.kv-list dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.inline-field span {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Nowa notatka schowana za rozwijanym „+ Nowa notatka”; lista + przycisk
+   widoczne od razu, formularz na żądanie. */
+.memory-new {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.memory-new summary {
+  padding: 9px 12px;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.memory-new summary::-webkit-details-marker {
+  display: none;
+}
+
+.memory-new[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.memory-form {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+/* Pola z widocznymi labelami nad inputem — nie gołe placeholdery. */
+.field-label {
+  display: grid;
+  gap: 4px;
+}
+
+.field-label > span {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Opcjonalny wpis ręczny obok selecta (model, effort, głos, model/język STT).
+   Wpisana wartość nadpisuje wybór z listy i trafia do tego samego draftu. */
+.manual-input {
+  font-size: 12px;
+}
+
+.manual-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* Jawne display:grid na .field-label nadpisuje user-agentowe [hidden] — przywróć
+   ukrywanie, gdy JS chowa jednoopcyjne/niedostępne pole. */
+.field-label[hidden] {
+  display: none;
+}
+
+.settings-control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 158px), 1fr));
+  gap: 7px;
+  min-width: 0;
+}
+
+#view-system .field-label,
+#view-system .inline-toggle {
+  min-height: 0;
+  padding: 2px 0;
+}
+
+#view-system .field-label > span,
+#view-system .inline-toggle > span:first-child {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+#view-system .field-label select,
+#view-system .field-label input[type="number"],
+#view-system .field-label input[type="text"] {
+  min-height: 30px;
+  padding: 5px 7px;
+}
+
+#view-system .inline-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+#view-system .field-help {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.3;
+  text-transform: none;
+}
+
+#view-system .voice-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 1px;
+}
+
+#view-system .ptt-operator-controls {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+#view-system .voice-mode .mode-button {
+  min-height: 34px;
+  border-radius: 7px;
+}
+
+.inline-toggle {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.inline-toggle input {
+  inline-size: 16px;
+  block-size: 16px;
+  justify-self: start;
+  margin: 0;
+}
+
+.inline-toggle span {
+  min-width: 0;
+  overflow-wrap: normal;
+  word-break: keep-all;
+  white-space: normal;
+}
+
+.read-only-setting {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.status-badge.status-on {
+  border-color: rgba(69, 182, 255, 0.45);
+  color: #a5d8ff;
+}
+
+.status-badge.status-off,
+.status-badge.status-unknown {
+  border-color: rgba(240, 180, 69, 0.55);
+  color: #f7dc96;
+}
+
+.apply-status {
+  min-height: 18px;
+  overflow-wrap: break-word;
+}
+
+.active-settings-section select,
+.active-settings-section input[type="number"] {
+  min-width: 0;
+  width: 100%;
+}
+
+.active-settings-section button:disabled,
+.settings-control-grid input:disabled,
+.settings-control-grid select:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+/* Chipy bloku pamięci: rodzaj + priorytet, spokojna szarość. */
+.mem-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mem-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: rgba(143, 164, 192, 0.12);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+}
+
+.brain-switch-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.brain-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+}
+
+.settings-preview-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.settings-preview-banner,
+.settings-preview-diff {
+  border-color: rgba(240, 180, 69, 0.4);
+}
+
+.settings-preview-section {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-preview-field {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid rgba(41, 64, 97, 0.8);
+  border-radius: 8px;
+  background: rgba(10, 15, 24, 0.62);
+}
+
+.settings-preview-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settings-preview-field-head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.settings-preview-badge {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.settings-preview-badge.status-ok {
+  border-color: rgba(69, 182, 255, 0.45);
+  color: #a5d8ff;
+}
+
+.settings-preview-badge.status-missing,
+.settings-preview-badge.status-unknown {
+  border-color: rgba(240, 180, 69, 0.55);
+  color: #f7dc96;
+}
+
+.settings-preview-badge.status-invalid,
+.settings-preview-badge.status-unsupported {
+  border-color: rgba(255, 85, 85, 0.5);
+  color: #ffb4b4;
+}
+
+.settings-preview-values {
+  grid-template-columns: minmax(74px, auto) 1fr;
+}
+
+.settings-preview-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-preview-control select {
+  min-width: 0;
+}
+
+#streamStatus.live,
+#voiceStatus.live {
+  color: var(--accent);
+}
+
+.error-box {
+  max-height: 130px;
+  overflow: auto;
+  border-radius: 8px;
+  padding: 8px;
+  border: 1px solid #5a2530;
+  color: #ffc0c0;
+  background: #1a0e12;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+/* Dane liczbowe (czasy, liczniki) w mono z cyframi tabelarycznymi. */
+.hud-item,
+.chat-meta,
+.kv-list,
+.state-pill {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dyskretne scrollbary wewnętrznych stref. */
+.chat-log::-webkit-scrollbar,
+.view::-webkit-scrollbar,
+.compact-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-log::-webkit-scrollbar-thumb,
+.view::-webkit-scrollbar-thumb,
+.compact-list::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--line-strong);
+}
+
+.chat-log::-webkit-scrollbar-track,
+.view::-webkit-scrollbar-track,
+.compact-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* --- Ruch i wąskie okna ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-item.live .wave i {
+    animation: none;
+  }
+
+  /* Bez obiegania: ramka nie kręci się, tylko barwi. Gorący punkt gaśnie
+     (zamrożony sektor wyglądałby jak wgniecenie), a obrys jaśnieje, więc
+     „pracuje” dalej czytać na kolor i poświatę. */
+  body[data-state="busy"] .state-frame::before {
+    animation: none;
+  }
+
+  body[data-state="busy"] {
+    --frame-base: rgba(69, 182, 255, 0.85);
+    --frame-hot: transparent;
+  }
+
+  .hud-item.live .wave i {
+    height: 10px;
+  }
+
+  details.card.collapsible summary::after {
+    transition: none;
+  }
+}
+
+/* Menubar popover (~420×620/760) i wąskie okna: ciaśniejsze odstępy. */
+@media (max-width: 480px) {
+  .cockpit {
+    padding: 9px;
+    gap: 7px;
+  }
+
+  .memory-form,
+  .settings-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .module-grid,
+  .doctor-grid,
+  .checklist-grid {
+    grid-template-columns: 1fr;
+  }
+
+  #view-system .kv-list {
+    grid-template-columns: minmax(82px, 32%) minmax(0, 1fr);
+  }
+}

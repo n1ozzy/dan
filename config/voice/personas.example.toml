@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # GŁOSY PERSON — kto jakim głosem gada. Wspólne dla WSZYSTKICH systemów:
-# Jarvis daemon, DAN, skille (standup). Sąsiad: pronunciations.toml (wymowa).
+# DAN daemon, DAN, skille (standup). Sąsiad: pronunciations.toml (wymowa).
 #
 # voice     = kod głosu supertonica (M1..M5 męskie, F1..F5 damskie)
 # mastering = profil ffmpeg: "clean" | "bastard" | "gritty" | "raw" (=surowy)
@@ -9,11 +9,6 @@
 # Zmiana tutaj = zmiana wszędzie. Brak pliku → każdy system jedzie na swoich
 # wbudowanych mapach (zero regresji). Wersjonowany wzór: repo → config/voice/.
 # ─────────────────────────────────────────────────────────────────────────────
-
-[jarvis]
-voice = "M2"          # Ozzy A/B 2026-07-08: „numer 2" = M2
-mastering = "bastard"   # „wariant 2" = clean, bez sztucznych pauz
-speed = 1.35
 
 [dan]
 voice = "M3"

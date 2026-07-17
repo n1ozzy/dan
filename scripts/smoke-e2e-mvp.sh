@@ -25,9 +25,9 @@ fi
 HOST="127.0.0.1"
 PORT="41799"
 BASE_URL="http://$HOST:$PORT"
-SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-e2e-mvp-smoke.XXXXXX")"
-CONFIG="$SMOKE_DIR/jarvis-smoke.toml"
-DB_PATH="$SMOKE_DIR/jarvis-smoke.db"
+SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dan-e2e-mvp-smoke.XXXXXX")"
+CONFIG="$SMOKE_DIR/dan-smoke.toml"
+DB_PATH="$SMOKE_DIR/dan-smoke.db"
 FAKE_BRAIN="$SMOKE_DIR/fake-brain.sh"
 PROMPT_DUMP="$SMOKE_DIR/fake-brain-prompt.txt"
 WORKSPACE="$SMOKE_DIR/workspace"
@@ -81,7 +81,7 @@ if printf '%s' "\$PROMPT" | grep -q "Continuation after approved tool execution"
   printf 'E2E continuation: approved tool result received.\n'
 elif printf '%s' "\$PROMPT" | tail -n 6 | grep -q "E2E_TOOL_TURN"; then
   printf 'Need to read the secret note.\n'
-  printf '<jarvis_tool_call>{"name":"file_read","arguments":{"path":"$WORKSPACE/secret-note.txt"}}</jarvis_tool_call>\n'
+  printf '<dan_tool_call>{"name":"file_read","arguments":{"path":"$WORKSPACE/secret-note.txt"}}</dan_tool_call>\n'
 else
   printf 'E2E plain answer.\n'
 fi
@@ -90,7 +90,7 @@ chmod +x "$FAKE_BRAIN"
 
 cat >"$CONFIG" <<EOF
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "$HOST"
 port = $PORT
 log_level = "INFO"
@@ -155,17 +155,17 @@ approved_roots = ["$WORKSPACE"]
 home = "$SMOKE_DIR/home"
 logs_dir = "$SMOKE_DIR/logs"
 runtime_dir = "$SMOKE_DIR/runtime"
-pid_file = "$SMOKE_DIR/runtime/jarvisd.pid"
+pid_file = "$SMOKE_DIR/runtime/dand.pid"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd.smoke"
+label = "com.dan.dand.smoke"
 install_automatically = false
 EOF
 
 start_daemon() {
-  "$PYTHON" -m jarvis.cli --config "$CONFIG" daemon run >>"$SMOKE_DIR/daemon.stdout.log" 2>>"$SMOKE_DIR/daemon.stderr.log" &
+  "$PYTHON" -m dan.cli --config "$CONFIG" daemon run >>"$SMOKE_DIR/daemon.stdout.log" 2>>"$SMOKE_DIR/daemon.stderr.log" &
   DAEMON_PID="$!"
   echo "Daemon PID: $DAEMON_PID"
 }
@@ -232,7 +232,7 @@ def api_token() -> str:
 def request_json_status(method, path, payload=None, *, with_token=True, timeout=30):
     headers = {"Accept": "application/json"}
     if with_token and method in {"POST", "PATCH", "DELETE"}:
-        headers["X-Jarvis-Token"] = api_token()
+        headers["X-DAN-Token"] = api_token()
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -291,8 +291,8 @@ class StreamClient:
             "Connection: Upgrade",
             f"Sec-WebSocket-Key: {WS_KEY}",
             "Sec-WebSocket-Version: 13",
-            f"X-Jarvis-Token: {api_token()}",
-            "Sec-WebSocket-Protocol: jarvis.v1",
+            f"X-DAN-Token: {api_token()}",
+            "Sec-WebSocket-Protocol: dan.v1",
         ]
         self.sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("utf-8"))
         raw = b""

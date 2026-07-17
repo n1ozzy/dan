@@ -1,10 +1,10 @@
-"""AntiEchoGate tests (G4c — echo of Jarvis's own TTS never becomes a turn).
+"""AntiEchoGate tests (G4c — echo of DAN's own TTS never becomes a turn).
 
 The gate compares an incoming transcript against what the daemon recently
 sent to the speaker — read from the persisted voice_queue (daemon state,
 never a /tmp flag — AUDIO_RUNTIME §4). Deterministic token-overlap: same
 inputs, same decision. Fail-closed for turn creation: a dropped user
-sentence that duplicates Jarvis's own words is acceptable; an echo that
+sentence that duplicates DAN's own words is acceptable; an echo that
 becomes a turn is a contract violation by construction.
 """
 
@@ -18,9 +18,9 @@ from typing import Callable
 
 import pytest
 
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.voice.anti_echo import AntiEchoGate
-from jarvis.voice.queue import VoiceQueue
+from dan.store.db import close_quietly, initialize_database
+from dan.voice.anti_echo import AntiEchoGate
+from dan.voice.queue import VoiceQueue
 
 
 @pytest.fixture
@@ -153,7 +153,7 @@ def test_echo_spanning_multiple_spoken_chunks_is_rejected(db_path: Path) -> None
     # Regression (G4 live gate 2026-07-02): a 14 s PTT capture picked up
     # SEVERAL consecutive TTS sentences. Against any single row the token
     # overlap was ~0.52 < 0.75, so the echo became a turn and its barge-in
-    # killed Jarvis's own answer mid-sentence. Coverage must be computed
+    # killed DAN's own answer mid-sentence. Coverage must be computed
     # against the union of everything recently spoken, not row by row.
     speak_and_finish(db_path, "Chcesz szczegóły, to siadaj wygodnie.")
     speak_and_finish(db_path, "Architektura jest prostsza niż twoje oczekiwania.")
@@ -336,7 +336,7 @@ def test_shared_broker_ring_parser_is_bounded_and_ignores_bad_or_stale_rows(
     db_path: Path,
     tmp_path: Path,
 ) -> None:
-    from jarvis.voice.anti_echo import MAX_SHARED_RING_BYTES
+    from dan.voice.anti_echo import MAX_SHARED_RING_BYTES
 
     now = 1_720_000_000.0
     ring = tmp_path / "spoken-recent.txt"

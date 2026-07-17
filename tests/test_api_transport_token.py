@@ -20,12 +20,12 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from jarvis.brain import BrainManager, BrainRequest
-from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
-from jarvis.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.daemon.lifecycle import build_server
-from jarvis.security.transport import (
+from dan.brain import BrainManager, BrainRequest
+from dan.brain.claude_cli_adapter import ClaudeCliAdapter
+from dan.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.daemon.lifecycle import build_server
+from dan.security.transport import (
     API_TOKEN_HEADER,
     api_token_path,
     ensure_api_token,
@@ -47,9 +47,9 @@ def token_required_config_text(db_path: Path) -> str:
 
 @pytest.fixture
 def config_path(tmp_path: Path) -> Path:
-    path = tmp_path / "jarvis.toml"
+    path = tmp_path / "dan.toml"
     path.write_text(
-        token_required_config_text(tmp_path / "home" / "jarvis.db"),
+        token_required_config_text(tmp_path / "home" / "dan.db"),
         encoding="utf-8",
     )
     return path
@@ -94,7 +94,7 @@ def app(config_path: Path, forbid_production_claude: list[str]) -> Iterator[Daem
 @pytest.fixture
 def base_url(app: DaemonApp) -> Iterator[str]:
     server = build_server(app, "127.0.0.1", 0)
-    thread = threading.Thread(target=server.serve_forever, name="jarvis-token-http", daemon=True)
+    thread = threading.Thread(target=server.serve_forever, name="dan-token-http", daemon=True)
     thread.start()
     try:
         yield server.base_url
@@ -237,9 +237,9 @@ def test_patch_and_delete_require_token(app: DaemonApp, base_url: str) -> None:
 
 
 def test_token_not_required_when_disabled_in_config(tmp_path: Path) -> None:
-    config_file = tmp_path / "jarvis.toml"
+    config_file = tmp_path / "dan.toml"
     config_file.write_text(
-        config_text(tmp_path / "home" / "jarvis.db"),
+        config_text(tmp_path / "home" / "dan.db"),
         encoding="utf-8",
     )
     daemon_app = create_daemon_app(config_file)
@@ -281,7 +281,7 @@ def test_cli_sends_token_for_mutating_requests(
         [
             sys.executable,
             "-m",
-            "jarvis.cli",
+            "dan.cli",
             "--config",
             str(config_path),
             "input",

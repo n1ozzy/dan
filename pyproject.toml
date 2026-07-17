@@ -3,9 +3,9 @@ requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
-name = "jarvis-runtime"
+name = "dan-runtime"
 version = "4.2.0a0"
-description = "Jarvis v4.2 local runtime daemon"
+description = "DAN local runtime daemon"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Proprietary" }
@@ -39,8 +39,9 @@ panel = [
 ]
 
 [project.scripts]
-jarvisd = "jarvis.cli:main"
-jarvis-memory-mcp = "jarvis.mcp.memory_server:main"
+dan = "dan.cli:main"
+dand = "dan.cli:daemon_main"
+dan-memory-mcp = "dan.mcp.memory_server:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -57,4 +58,4 @@ line-length = 100
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["jarvis"]
+packages = ["dan"]

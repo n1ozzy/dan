@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.brain import (
+from dan.brain import (
     BrainAdapterError,
     BrainManager,
     BrainManagerError,
@@ -21,9 +21,9 @@ from jarvis.brain import (
     BrainUsage,
     MockBrainAdapter,
 )
-from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
-from jarvis.brain.codex_cli_adapter import CodexCliAdapter
-from jarvis.brain.openai_adapter import OpenAIAdapter
+from dan.brain.claude_cli_adapter import ClaudeCliAdapter
+from dan.brain.codex_cli_adapter import CodexCliAdapter
+from dan.brain.openai_adapter import OpenAIAdapter
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,14 +100,14 @@ def test_mock_brain_adapter_returns_deterministic_response() -> None:
     second = adapter.generate(request)
 
     assert first == second
-    assert first.text == "Jarvis mock response: What now?"
+    assert first.text == "DAN mock response: What now?"
     assert first.model == "mock-local"
 
 
 def test_mock_brain_adapter_handles_blank_input_deterministically() -> None:
     response = MockBrainAdapter().generate(make_request("  \n\t"))
 
-    assert response.text == "Jarvis mock response: empty input"
+    assert response.text == "DAN mock response: empty input"
     assert response.model == "mock-local"
 
 
@@ -161,7 +161,7 @@ def test_brain_manager_generate_uses_current_default_adapter() -> None:
 
     response = manager.generate(make_request("default path"))
 
-    assert response.text == "Jarvis mock response: default path"
+    assert response.text == "DAN mock response: default path"
     assert response.model == "mock-local"
 
 
@@ -215,12 +215,12 @@ def test_brain_modules_do_not_import_runtime_side_effect_dependencies() -> None:
         "import socket",
         "import urllib",
         "from urllib",
-        "jarvis.store",
-        "jarvis.events",
-        "jarvis.memory",
-        "jarvis.voice",
+        "dan.store",
+        "dan.events",
+        "dan.memory",
+        "dan.voice",
     )
-    for path in (ROOT / "jarvis" / "brain").glob("*.py"):
+    for path in (ROOT / "dan" / "brain").glob("*.py"):
         source = path.read_text(encoding="utf-8")
         offenders = [fragment for fragment in forbidden_fragments if fragment in source]
         assert offenders == [], f"{path.relative_to(ROOT)} imports runtime side effects: {offenders}"
@@ -249,7 +249,7 @@ def test_brain_runtime_files_avoid_forbidden_legacy_strings() -> None:
     )
 
     offenders: list[tuple[str, str]] = []
-    for path in (ROOT / "jarvis" / "brain").glob("*.py"):
+    for path in (ROOT / "dan" / "brain").glob("*.py"):
         source = path.read_text(encoding="utf-8")
         for snippet in forbidden:
             if snippet in source:

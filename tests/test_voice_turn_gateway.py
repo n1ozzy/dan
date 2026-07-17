@@ -4,7 +4,7 @@ The gateway is the single wiring point between the STT pipeline and the
 TurnOrchestrator (ADR-011: voice enters the same orchestrator as text). An
 echo can never become a turn by construction: the anti-echo gate runs
 before any turn is started. A transcript that survives the gate while
-Jarvis is speaking is the mic-side barge-in trigger — cancellation (all 3
+DAN is speaking is the mic-side barge-in trigger — cancellation (all 3
 legs) fires BEFORE the new turn starts. Turns run on the gateway's own
 worker so the STT thread is never blocked by a generating brain.
 """
@@ -20,10 +20,10 @@ from typing import Any
 
 import pytest
 
-from jarvis.store.db import close_quietly
-from jarvis.voice.anti_echo import EchoDecision
-from jarvis.voice.gateway import VoiceTurnGateway
-from jarvis.voice.queue import VoiceQueue
+from dan.store.db import close_quietly
+from dan.voice.anti_echo import EchoDecision
+from dan.voice.gateway import VoiceTurnGateway
+from dan.voice.queue import VoiceQueue
 
 
 class BusyError(Exception):
@@ -106,7 +106,7 @@ def test_accepted_transcript_becomes_exactly_one_turn() -> None:
 
 
 def test_echo_transcript_never_starts_a_turn_and_never_triggers_barge_in() -> None:
-    # An echo heard while Jarvis speaks is exactly the case the interrupt
+    # An echo heard while DAN speaks is exactly the case the interrupt
     # policy must NOT treat as barge-in (AUDIO_RUNTIME §5).
     harness = Harness(accepted=False, speech_active=True)
     gateway = harness.gateway()
@@ -197,7 +197,7 @@ def test_cancelled_turn_is_logged_as_cancellation_not_failure(caplog) -> None:
     harness = Harness(starter_error=TurnCancelled("brain generation cancelled"))
     gateway = harness.gateway(cancelled_exceptions=(TurnCancelled,))
     try:
-        with caplog.at_level("INFO", logger="jarvis.voice.gateway"):
+        with caplog.at_level("INFO", logger="dan.voice.gateway"):
             gateway.handle_transcript("Przerwane w połowie.")
             assert gateway.flush(timeout=5)
     finally:
@@ -245,12 +245,12 @@ def test_stopped_gateway_drops_transcripts_quietly() -> None:
 
 
 def voice_daemon_app(tmp_path: Path, *, speak_responses: bool = False):
-    from jarvis.daemon.app import create_daemon_app
+    from dan.daemon.app import create_daemon_app
     from tests.test_api_smoke import config_text
 
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     text = (
-        config_text(tmp_path / "home" / "jarvis.db")
+        config_text(tmp_path / "home" / "dan.db")
         .replace("[voice]\nenabled = false", "[voice]\nenabled = true")
     )
     if speak_responses:
@@ -297,12 +297,12 @@ def test_daemon_wires_transcript_into_a_voice_turn(tmp_path: Path) -> None:
 
 
 def test_daemon_echo_never_turns_or_cancels_active_speech(tmp_path: Path) -> None:
-    from jarvis.voice.stt import MockSTTEngine
+    from dan.voice.stt import MockSTTEngine
 
     app = voice_daemon_app(tmp_path)
     app.start()
     try:
-        # What the mock STT will "hear" is exactly what Jarvis just spoke.
+        # What the mock STT will "hear" is exactly what DAN just spoke.
         transcript = MockSTTEngine.DEFAULT_TRANSCRIPT
         conn = app.conn
         queue = VoiceQueue(conn)

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The only official DAN label (ADR-007). Installed ONLY by a human
+       running scripts/install-launchd.sh; __HOME__ is substituted there, so
+       loading this example file directly fails loudly instead of silently. -->
+  <key>Label</key>
+  <string>com.dan.dand</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.dan/bin/dand</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.dan/logs/dand.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.dan/logs/dand.err.log</string>
+</dict>
+</plist>

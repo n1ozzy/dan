@@ -7,8 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from jarvis.runtime.models import RuntimeProcessObservation, RuntimeRisk
-from jarvis.runtime.supervisor import RuntimeSupervisor
+from dan.runtime.models import RuntimeProcessObservation, RuntimeRisk
+from dan.runtime.supervisor import RuntimeSupervisor
 
 
 FIXED_NOW = "2026-07-01T12:00:00+00:00"
@@ -80,10 +80,10 @@ def test_long_process_command_is_truncated() -> None:
 
 
 def test_process_command_redacts_secret_like_values() -> None:
-    observations = supervisor_for_processes("python voice_broker.py JARVIS_API_KEY=sk-secret123").observe_processes()
+    observations = supervisor_for_processes("python voice_broker.py DAN_API_KEY=sk-secret123").observe_processes()
 
     assert "sk-secret123" not in (observations[0].command or "")
-    assert "JARVIS_API_KEY=[REDACTED]" in (observations[0].command or "")
+    assert "DAN_API_KEY=[REDACTED]" in (observations[0].command or "")
 
 
 def test_launch_agent_file_existence_is_reported_from_injected_home(tmp_path: Path) -> None:
@@ -107,13 +107,13 @@ def test_official_plist_metadata_reports_not_checked_loaded_state(tmp_path: Path
     home = tmp_path / "home"
     launch_agents = home / "Library" / "LaunchAgents"
     launch_agents.mkdir(parents=True)
-    (launch_agents / "com.ozzy.jarvisd.plist").write_text("placeholder", encoding="utf-8")
+    (launch_agents / "com.dan.dand.plist").write_text("placeholder", encoding="utf-8")
 
     supervisor = RuntimeSupervisor(home=home, process_provider=lambda: [], now=lambda: FIXED_NOW)
 
     snapshot = supervisor.startup_snapshot()
 
-    assert snapshot.official_label == "com.ozzy.jarvisd"
+    assert snapshot.official_label == "com.dan.dand"
     assert snapshot.official_plist_installed is True
     assert snapshot.official_plist_loaded == "not_checked"
 
@@ -150,7 +150,7 @@ def test_startup_snapshot_contains_required_fields_and_warnings(tmp_path: Path) 
 
     assert payload["pid"] > 0
     assert payload["launch_mode"] == "cli"
-    assert payload["official_label"] == "com.ozzy.jarvisd"
+    assert payload["official_label"] == "com.dan.dand"
     assert payload["official_plist_loaded"] == "not_checked"
     assert payload["warnings"]
 
@@ -214,7 +214,7 @@ def test_runtime_code_does_not_contain_forbidden_legacy_strings() -> None:
     )
     offenders: list[tuple[str, str]] = []
 
-    for path in (root / "jarvis" / "runtime").rglob("*.py"):
+    for path in (root / "dan" / "runtime").rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         for snippet in forbidden:
             if snippet in text:

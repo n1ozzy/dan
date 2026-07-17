@@ -7,12 +7,12 @@ apart: the block is stripped from the display, its inner text becomes speech.
 
 from __future__ import annotations
 
-from jarvis.brain.speech_text import resolve_display_and_speech, split_display_and_speech
+from dan.brain.speech_text import resolve_display_and_speech, split_display_and_speech
 
 
 def test_extracts_spoken_form_and_strips_block_from_display() -> None:
     raw = (
-        "Zrobione ✅ — `auto_approve_mode = \"all\"` w `~/.jarvis/jarvis.toml`, "
+        "Zrobione ✅ — `auto_approve_mode = \"all\"` w `~/.dan/config.toml`, "
         "daemon zrestartowany (pid 24483).\n\n"
         "[[GŁOS]]\nZrobione. Ustawiłem auto-run i zrestartowałem — teraz leci "
         "bez pytania.\n[[/GŁOS]]"
@@ -132,7 +132,7 @@ def test_model_voice_block_redacts_real_secret_without_rewriting_persona() -> No
 def test_model_voice_block_removes_only_tool_protocol_block() -> None:
     raw = (
         "[[GŁOS]]No i gotowe, kurwa. "
-        '<jarvis_tool_result>{"stdout":"sekret"}</jarvis_tool_result>'
+        '<dan_tool_result>{"stdout":"sekret"}</dan_tool_result>'
         " Dalej jestem tym samym DAN-em.[[/GŁOS]]\nPełny raport na czacie."
     )
 
@@ -140,7 +140,7 @@ def test_model_voice_block_removes_only_tool_protocol_block() -> None:
 
     assert display == "Pełny raport na czacie."
     assert speech == "No i gotowe, kurwa.  Dalej jestem tym samym DAN-em."
-    assert "jarvis_tool_result" not in speech
+    assert "dan_tool_result" not in speech
 
 
 def test_machine_only_answer_is_not_replaced_with_a_polite_fallback() -> None:

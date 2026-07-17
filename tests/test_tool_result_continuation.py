@@ -10,13 +10,13 @@ from typing import Any
 import pytest
 
 
-from jarvis.brain import BrainAdapterError, BrainManager, BrainRequest, BrainResponse, BrainToolCall
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.events.types import EventType
-from jarvis.tools.registry import Tool
-from jarvis.turns.models import TurnStatus
-from jarvis.turns.orchestrator import TurnCancelledError, TurnOrchestratorError
-from jarvis.turns.repository import TurnRepository
+from dan.brain import BrainAdapterError, BrainManager, BrainRequest, BrainResponse, BrainToolCall
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.events.types import EventType
+from dan.tools.registry import Tool
+from dan.turns.models import TurnStatus
+from dan.turns.orchestrator import TurnCancelledError, TurnOrchestratorError
+from dan.turns.repository import TurnRepository
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import write_config
 from tests.test_model_tool_permission_policy import table_count
@@ -87,7 +87,7 @@ class FailOnceOnToolFinishedEventStore:
 
 
 def make_app(tmp_path: Path, adapter: SequenceBrainAdapter | None = None) -> DaemonApp:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     if adapter is not None:
         app.brain_manager = BrainManager([adapter], default_adapter=adapter.name)
@@ -154,7 +154,7 @@ def test_one_shot_tool_continues_original_turn_directly(tmp_path: Path) -> None:
         assert stored["final_text"] == "Continuation answer from tool result."
 
         continuation_request = adapter.requests[1]
-        assert "Continuation after direct Jarvis tool execution" in continuation_request.input_text
+        assert "Continuation after direct DAN tool execution" in continuation_request.input_text
         assert "Use the continuation tool" in continuation_request.input_text
         assert tool.name in continuation_request.input_text
         assert '"answer": "tool says yes"' in continuation_request.input_text
@@ -611,8 +611,8 @@ def test_cancelled_voice_turn_keeps_one_durable_conversation(tmp_path: Path) -> 
     the turn raised). With one durable conversation, a cancelled turn changes
     nothing — the next utterance lands in the same chat."""
 
-    from jarvis.brain import BrainGenerationCancelled
-    from jarvis.turns.orchestrator import TurnCancelledError
+    from dan.brain import BrainGenerationCancelled
+    from dan.turns.orchestrator import TurnCancelledError
 
     adapter = SequenceBrainAdapter(
         BrainGenerationCancelled("barge-in killed it"),  # turn 1 cancelled
@@ -657,7 +657,7 @@ def test_voice_conversation_id_is_durable_across_restart(tmp_path: Path) -> None
     assert first == second
 
 
-def test_divergent_legacy_conversation_settings_converge_on_one_jarvis_id(
+def test_divergent_legacy_conversation_settings_converge_on_one_dan_id(
     tmp_path: Path,
 ) -> None:
     app = make_app(
@@ -668,16 +668,16 @@ def test_divergent_legacy_conversation_settings_converge_on_one_jarvis_id(
         app.start()
         app.update_settings(
             {
-                "jarvis.conversation_id": "jarvis-durable-conversation",
+                "dan.conversation_id": "dan-durable-conversation",
                 "voice.conversation_id": "legacy-voice-conversation",
             }
         )
 
-        resolved = app._resolve_jarvis_conversation_id()
+        resolved = app._resolve_dan_conversation_id()
         settings = app.get_settings()
 
-        assert resolved == "jarvis-durable-conversation"
-        assert settings["jarvis.conversation_id"] == resolved
+        assert resolved == "dan-durable-conversation"
+        assert settings["dan.conversation_id"] == resolved
         assert settings["voice.conversation_id"] == resolved
     finally:
         app.close()
@@ -853,7 +853,7 @@ def test_continuation_failure_keeps_tool_run_and_records_predictable_metadata(tm
 def test_continuation_cancellation_marks_turn_cancelled_not_failed(tmp_path: Path) -> None:
     # FIX-09: a barge-in that kills the continuation generation is a CANCELLED
     # turn, not a FAILED one — same fix as the main handle_text path.
-    from jarvis.brain.base import BrainGenerationCancelled
+    from dan.brain.base import BrainGenerationCancelled
 
     tool = RecordingContinuationTool()
     adapter = SequenceBrainAdapter(
@@ -915,11 +915,11 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 def test_runtime_code_and_scripts_do_not_contain_forbidden_legacy_strings() -> None:
     allowed_contracts = {
-        ("jarvis/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
-        ("jarvis/voice/shared_broker.py", "/tmp/dan"),
+        ("dan/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("dan/voice/shared_broker.py", "/tmp/dan"),
     }
     findings: list[str] = []
-    for root_name in ("jarvis", "scripts"):
+    for root_name in ("dan", "scripts"):
         for path in (ROOT / root_name).rglob("*"):
             if not path.is_file() or "__pycache__" in path.parts:
                 continue

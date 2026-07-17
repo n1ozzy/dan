@@ -13,10 +13,10 @@ fi
 HOST="127.0.0.1"
 PORT="41789"
 BASE_URL="http://$HOST:$PORT"
-SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-memory-smoke.XXXXXX")"
-CONFIG="$SMOKE_DIR/jarvis-memory-smoke.toml"
-DB_PATH="$SMOKE_DIR/home/jarvis.db"
-DAEMON_LOG="$SMOKE_DIR/jarvisd.log"
+SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dan-memory-smoke.XXXXXX")"
+CONFIG="$SMOKE_DIR/dan-memory-smoke.toml"
+DB_PATH="$SMOKE_DIR/home/dan.db"
+DAEMON_LOG="$SMOKE_DIR/dand.log"
 MEMORY_CREATE_JSON="$SMOKE_DIR/memory-create.json"
 MEMORY_ACTIVE_BEFORE_JSON="$SMOKE_DIR/memory-active-before.json"
 FIRST_INPUT_JSON="$SMOKE_DIR/first-input.json"
@@ -49,7 +49,7 @@ trap cleanup EXIT INT TERM
 
 cd "$ROOT"
 
-printf 'Using CLI form: python -m jarvis.cli\n'
+printf 'Using CLI form: python -m dan.cli\n'
 
 if ! command -v claude >/dev/null 2>&1; then
   printf 'Claude CLI not found on PATH.\n' >&2
@@ -73,7 +73,7 @@ PY
 # launchd.enabled = false inside SMOKE_DIR.
 cat >"$CONFIG" <<EOF
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "$HOST"
 port = $PORT
 log_level = "INFO"
@@ -137,19 +137,19 @@ destructive_tools_enabled = false
 home = "$SMOKE_DIR/home"
 logs_dir = "$SMOKE_DIR/logs"
 runtime_dir = "$SMOKE_DIR/runtime"
-pid_file = "$SMOKE_DIR/runtime/jarvisd.pid"
+pid_file = "$SMOKE_DIR/runtime/dand.pid"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd.memory-smoke"
+label = "com.dan.dand.memory-smoke"
 install_automatically = false
 EOF
 
 printf 'Smoke directory: %s\n' "$SMOKE_DIR"
 printf 'Config: %s\n' "$CONFIG"
-printf 'Starting daemon: python -m jarvis.cli --config "%s" daemon run\n' "$CONFIG"
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" daemon run >"$DAEMON_LOG" 2>&1 &
+printf 'Starting daemon: python -m dan.cli --config "%s" daemon run\n' "$CONFIG"
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" daemon run >"$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 printf 'Daemon PID: %s\n' "$DAEMON_PID"
 
@@ -157,7 +157,7 @@ wait_for_health() {
   attempt=1
   while [ "$attempt" -le 60 ]; do
     if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-      printf 'Temporary jarvisd exited before health became ready.\n' >&2
+      printf 'Temporary dand exited before health became ready.\n' >&2
       printf 'Daemon log: %s\n' "$DAEMON_LOG" >&2
       sed -n '1,160p' "$DAEMON_LOG" >&2 || true
       return 1
@@ -172,7 +172,7 @@ with urlopen(f"{sys.argv[1]}/health", timeout=0.5) as response:
     payload = json.loads(response.read().decode("utf-8"))
 if payload.get("ok") is not True:
     raise SystemExit(1)
-if payload.get("service") != "jarvisd":
+if payload.get("service") != "dand":
     raise SystemExit(1)
 PY
     then
@@ -191,7 +191,7 @@ PY
 
 wait_for_health
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" memory create \
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" memory create \
   --kind fact \
   --title "Manual memory smoke phrase" \
   --body "Zapamiętana fraza testowa: fioletowy gołąb." \
@@ -221,7 +221,7 @@ print(memory_id)
 PY
 )"
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" memory list \
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" memory list \
   --active-only \
   --kind fact \
   --url "$BASE_URL" \
@@ -245,8 +245,8 @@ if "fioletowy gołąb" not in str(matches[0].get("body", "")):
     raise SystemExit("active memory list block is missing smoke phrase")
 PY
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" input text \
-  "Odpowiedz dokładnie zapamiętaną frazą z aktywnej pamięci Jarvisa. Jaka to fraza?" \
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" input text \
+  "Odpowiedz dokładnie zapamiętaną frazą z aktywnej pamięci DANa. Jaka to fraza?" \
   --url "$BASE_URL" \
   --timeout 180 \
   >"$FIRST_INPUT_JSON"
@@ -281,7 +281,7 @@ print(turn_id)
 PY
 )"
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" memory disable \
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" memory disable \
   --id "$MEMORY_ID" \
   --url "$BASE_URL" \
   --timeout 10 \
@@ -303,7 +303,7 @@ if memory.get("active") is not False:
     raise SystemExit("memory disable did not soft-disable the block")
 PY
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" memory list \
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" memory list \
   --active-only \
   --kind fact \
   --url "$BASE_URL" \
@@ -324,7 +324,7 @@ if any(isinstance(block, dict) and block.get("id") == memory_id for block in blo
     raise SystemExit("disabled memory block is still present in active memory list")
 PY
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" input text \
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" input text \
   "Po wyłączeniu aktywnej pamięci odpowiedz krótko, czy aktywne bloki pamięci zawierają frazę z poprzedniej tury." \
   --url "$BASE_URL" \
   --timeout 180 \
@@ -353,7 +353,7 @@ print(turn_id)
 PY
 )"
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" events after \
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" events after \
   --id 0 \
   --limit 100 \
   --url "$BASE_URL" \

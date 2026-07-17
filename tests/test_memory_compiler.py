@@ -12,21 +12,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.brain.context_builder import ContextBuilder
-from jarvis.memory.compiler import (
+from dan.brain.context_builder import ContextBuilder
+from dan.memory.compiler import (
     MemoryCompiler,
     MemoryCompilerConfig,
     MemoryCompilerRequest,
 )
-from jarvis.memory.items import MemoryItemRepository
-from jarvis.memory.manager import MemoryManager
-from jarvis.security.redaction import REDACTION_PLACEHOLDER
-from jarvis.store.db import close_quietly, initialize_database
+from dan.memory.items import MemoryItemRepository
+from dan.memory.manager import MemoryManager
+from dan.security.redaction import REDACTION_PLACEHOLDER
+from dan.store.db import close_quietly, initialize_database
 
 
 @pytest.fixture
 def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    connection = initialize_database(tmp_path / "jarvis.db")
+    connection = initialize_database(tmp_path / "dan.db")
     try:
         yield connection
     finally:
@@ -59,7 +59,7 @@ def test_selects_active_semantic_memory_item_with_linked_evidence(
     assert selected.canonical_key == "key-mem-active"
     assert selected.kind == "semantic"
     assert selected.scope == "project"
-    assert selected.namespace == "project/jarvis"
+    assert selected.namespace == "project/dan"
     assert selected.title == "Title mem-active"
     assert selected.claim == "Use SQLite as memory."
     assert selected.reason_selected == "eligible"
@@ -243,7 +243,7 @@ def test_item_containing_fake_secret_does_not_leak_raw_secret_in_selected_output
     insert_memory_item(
         conn,
         memory_id="mem-secret",
-        canonical_key=f"semantic:project:project/jarvis:token {fake_secret}",
+        canonical_key=f"semantic:project:project/dan:token {fake_secret}",
         kind=raw_kind,
         title=f"Token {fake_secret}",
         claim=f"Use token {fake_secret} never.",
@@ -261,7 +261,7 @@ def test_item_containing_fake_secret_does_not_leak_raw_secret_in_selected_output
     assert fake_secret not in rendered
     assert REDACTION_PLACEHOLDER in rendered
     assert context.selected_items[0].canonical_key == (
-        f"semantic:project:project/jarvis:token {REDACTION_PLACEHOLDER}"
+        f"semantic:project:project/dan:token {REDACTION_PLACEHOLDER}"
     )
     assert context.selected_items[0].kind == f"semantic {REDACTION_PLACEHOLDER}"
     assert fake_secret not in context.selected_items[0].kind
@@ -279,7 +279,7 @@ def test_selected_canonical_key_is_redacted_without_mutating_stored_value(
 ) -> None:
     fake_secret = "sk-canonicalkeyleak1234567890"
     raw_canonical_key = (
-        "semantic:project:project/jarvis:"
+        "semantic:project:project/dan:"
         f"title {fake_secret}:claim {fake_secret}"
     )
     raw_quote = f"Evidence quote contains {fake_secret} and must stay private."
@@ -846,7 +846,7 @@ def test_namespace_filter_orders_exact_before_global_and_skips_mismatch(
     insert_memory_item(
         conn,
         memory_id="mem-exact",
-        namespace="project/jarvis",
+        namespace="project/dan",
         updated_at="2026-07-04T12:00:00+00:00",
     )
     insert_memory_item(conn, memory_id="mem-other", namespace="project/other")
@@ -858,7 +858,7 @@ def test_namespace_filter_orders_exact_before_global_and_skips_mismatch(
             config=MemoryCompilerConfig(
                 max_items=10,
                 max_chars=5000,
-                namespace_filter="project/jarvis",
+                namespace_filter="project/dan",
             )
         )
     )
@@ -1039,7 +1039,7 @@ def insert_memory_item(
     canonical_key: str | None = None,
     kind: str = "semantic",
     scope: str = "project",
-    namespace: str = "project/jarvis",
+    namespace: str = "project/dan",
     title: str | None = None,
     claim: str | None = None,
     content: str | None = None,

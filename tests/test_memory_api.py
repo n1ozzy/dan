@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.brain.manager import BrainManager
-from jarvis.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
-from jarvis.daemon.app import DaemonApp, create_daemon_app
+from dan.brain.manager import BrainManager
+from dan.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
+from dan.daemon.app import DaemonApp, create_daemon_app
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import (
     event_types,
@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def config_path(tmp_path: Path) -> Path:
-    return write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    return write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def create_memory(base_url: str, **overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "kind": "fact",
         "title": "Useful fact",
-        "body": "Jarvis memory is stored in SQLite.",
+        "body": "DAN memory is stored in SQLite.",
         "priority": 3,
         "active": True,
         "metadata": {"source": "test"},
@@ -98,7 +98,7 @@ def test_post_memory_creates_block_and_get_memory_lists_it(app: DaemonApp) -> No
     assert created["id"]
     assert created["kind"] == "fact"
     assert created["title"] == "Useful fact"
-    assert created["body"] == "Jarvis memory is stored in SQLite."
+    assert created["body"] == "DAN memory is stored in SQLite."
     assert created["priority"] == 3
     assert created["active"] is True
     assert created["metadata"] == {"source": "test"}
@@ -342,10 +342,10 @@ def test_runtime_memory_api_files_do_not_contain_forbidden_legacy_strings() -> N
         "--dangerously-skip-permissions",
     )
     scanned = (
-        ROOT / "jarvis" / "api" / "routes_memory.py",
-        ROOT / "jarvis" / "daemon" / "app.py",
-        ROOT / "jarvis" / "daemon" / "lifecycle.py",
-        ROOT / "jarvis" / "cli.py",
+        ROOT / "dan" / "api" / "routes_memory.py",
+        ROOT / "dan" / "daemon" / "app.py",
+        ROOT / "dan" / "daemon" / "lifecycle.py",
+        ROOT / "dan" / "cli.py",
     )
     offenders: list[tuple[str, str]] = []
 

@@ -18,9 +18,9 @@ fi
 HOST="127.0.0.1"
 PORT="41750"
 BASE_URL="http://$HOST:$PORT"
-SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-claude-smoke.XXXXXX")"
-CONFIG="$SMOKE_DIR/jarvis-claude-smoke.toml"
-DAEMON_LOG="$SMOKE_DIR/jarvisd.log"
+SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dan-claude-smoke.XXXXXX")"
+CONFIG="$SMOKE_DIR/dan-claude-smoke.toml"
+DAEMON_LOG="$SMOKE_DIR/dand.log"
 INPUT_JSON="$SMOKE_DIR/input.json"
 EVENTS_JSON="$SMOKE_DIR/events.json"
 DAEMON_PID=""
@@ -59,13 +59,13 @@ PY
 
 cat >"$CONFIG" <<EOF
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "$HOST"
 port = $PORT
 log_level = "INFO"
 
 [database]
-path = "$SMOKE_DIR/home/jarvis.db"
+path = "$SMOKE_DIR/home/dan.db"
 migrations = "manual"
 destroy_existing = false
 
@@ -123,23 +123,23 @@ destructive_tools_enabled = false
 home = "$SMOKE_DIR/home"
 logs_dir = "$SMOKE_DIR/logs"
 runtime_dir = "$SMOKE_DIR/runtime"
-pid_file = "$SMOKE_DIR/runtime/jarvisd.pid"
+pid_file = "$SMOKE_DIR/runtime/dand.pid"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd.claude-smoke"
+label = "com.dan.dand.claude-smoke"
 install_automatically = false
 EOF
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" daemon run >"$DAEMON_LOG" 2>&1 &
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" daemon run >"$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 
 wait_for_health() {
   attempt=1
   while [ "$attempt" -le 40 ]; do
     if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-      printf 'Temporary jarvisd exited before health became ready.\n' >&2
+      printf 'Temporary dand exited before health became ready.\n' >&2
       printf 'Daemon log: %s\n' "$DAEMON_LOG" >&2
       sed -n '1,120p' "$DAEMON_LOG" >&2 || true
       return 1
@@ -154,7 +154,7 @@ with urlopen(f"{sys.argv[1]}/health", timeout=0.5) as response:
     payload = json.loads(response.read().decode("utf-8"))
 if payload.get("ok") is not True:
     raise SystemExit(1)
-if payload.get("service") != "jarvisd":
+if payload.get("service") != "dand":
     raise SystemExit(1)
 PY
     then
@@ -173,7 +173,7 @@ PY
 
 wait_for_health
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" input text "Kim jesteś?" --url "$BASE_URL" --timeout 180 >"$INPUT_JSON"
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" input text "Kim jesteś?" --url "$BASE_URL" --timeout 180 >"$INPUT_JSON"
 
 TURN_ID="$("$PYTHON_BIN" - "$INPUT_JSON" <<'PY'
 import json
@@ -197,7 +197,7 @@ print(turn_id)
 PY
 )"
 
-"$PYTHON_BIN" -m jarvis.cli --config "$CONFIG" events after --id 0 --url "$BASE_URL" >"$EVENTS_JSON"
+"$PYTHON_BIN" -m dan.cli --config "$CONFIG" events after --id 0 --url "$BASE_URL" >"$EVENTS_JSON"
 
 EVENT_COUNT="$("$PYTHON_BIN" - "$EVENTS_JSON" "$TURN_ID" <<'PY'
 import json

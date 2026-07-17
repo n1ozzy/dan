@@ -6,19 +6,19 @@ import json
 import sqlite3
 from pathlib import Path
 
-from jarvis.api.routes_runtime import get_runtime_settings
-from jarvis.api.routes_voice import get_voice_runtime
-from jarvis.config import VoiceConfig
-from jarvis.daemon.app import create_daemon_app
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.voice.shared_broker import SharedBrokerClient
-from jarvis.voice.speech import SpeechPipeline
+from dan.api.routes_runtime import get_runtime_settings
+from dan.api.routes_voice import get_voice_runtime
+from dan.config import VoiceConfig
+from dan.daemon.app import create_daemon_app
+from dan.store.db import close_quietly, initialize_database
+from dan.voice.shared_broker import SharedBrokerClient
+from dan.voice.speech import SpeechPipeline
 from tests.test_api_smoke import rewrite_voice_section, write_config
 
 
 def _shared_voice_config(tmp_path: Path) -> Path:
     return rewrite_voice_section(
-        write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db"),
+        write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db"),
         "\n".join(
             (
                 "enabled = true",
@@ -164,9 +164,9 @@ def test_shared_publish_emits_truthful_backend_lifecycle_without_fake_ack(
         speak_responses=True,
         broker_enabled=True,
         default_tts="supertonic",
-        persona_voices={"jarvis": "M3"},
-        persona_speeds={"jarvis": 1.35},
-        persona_mastering={"jarvis": "clean"},
+        persona_voices={"dan": "M3"},
+        persona_speeds={"dan": 1.35},
+        persona_mastering={"dan": "clean"},
     )
     client = SharedBrokerClient(
         config,

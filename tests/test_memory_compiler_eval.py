@@ -12,20 +12,20 @@ from typing import Any
 
 import pytest
 
-from jarvis.memory.compiler import (
+from dan.memory.compiler import (
     CompiledMemoryContext,
     MemoryCompiler,
     MemoryCompilerConfig,
     MemoryCompilerRequest,
 )
-from jarvis.memory.items import MemoryItemRepository
-from jarvis.memory.manager import MemoryManager
-from jarvis.store.db import close_quietly, initialize_database
+from dan.memory.items import MemoryItemRepository
+from dan.memory.manager import MemoryManager
+from dan.store.db import close_quietly, initialize_database
 
 
 @pytest.fixture
 def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    connection = initialize_database(tmp_path / "jarvis.db")
+    connection = initialize_database(tmp_path / "dan.db")
     try:
         yield connection
     finally:

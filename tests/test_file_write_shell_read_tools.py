@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.tools.file_tool import FileWriteTool, HARD_MAX_BYTES
-from jarvis.tools.permissions import RequestSource
-from jarvis.tools.registry import ToolExecutionError
-from jarvis.tools.shell_tool import (
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.tools.file_tool import FileWriteTool, HARD_MAX_BYTES
+from dan.tools.permissions import RequestSource
+from dan.tools.registry import ToolExecutionError
+from dan.tools.shell_tool import (
     DEFAULT_SHELL_READ_WHITELIST,
     MAX_OUTPUT_CHARS,
     ShellReadTool,
@@ -142,7 +142,7 @@ def test_write_refuses_preplanted_symlink_at_temp_path(
     outside = tmp_path / "outside_target.txt"
     outside.write_text("original", encoding="utf-8")
     target = approved_root / "out.txt"
-    temp_path = f"{target.resolve()}.jarvis-write-{os.getpid()}.tmp"
+    temp_path = f"{target.resolve()}.dan-write-{os.getpid()}.tmp"
     os.symlink(outside, temp_path)
 
     with pytest.raises(ToolExecutionError):
@@ -307,7 +307,7 @@ def test_default_whitelist_contains_no_mutating_commands() -> None:
 
 @pytest.fixture
 def app(tmp_path: Path) -> DaemonApp:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     daemon_app.start()
     try:
@@ -325,7 +325,7 @@ def test_daemon_registers_write_and_shell_tools(app: DaemonApp) -> None:
 
 
 def test_file_write_full_approval_lifecycle(app: DaemonApp) -> None:
-    target = Path(app.paths.home) / "written-by-jarvis.txt"
+    target = Path(app.paths.home) / "written-by-dan.txt"
 
     requested = app.request_tool(
         tool_name="file_write",

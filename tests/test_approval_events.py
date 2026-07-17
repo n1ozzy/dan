@@ -10,13 +10,13 @@ from typing import Any
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, DaemonAppConflictError, create_daemon_app
-from jarvis.events.types import EventType
-from jarvis.security.redaction import REDACTION_PLACEHOLDER
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import EventStore, create_event_store
-from jarvis.tools.permissions import RequestSource, ToolPermissionPolicy
-from jarvis.tools.registry import (
+from dan.daemon.app import DaemonApp, DaemonAppConflictError, create_daemon_app
+from dan.events.types import EventType
+from dan.security.redaction import REDACTION_PLACEHOLDER
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import EventStore, create_event_store
+from dan.tools.permissions import RequestSource, ToolPermissionPolicy
+from dan.tools.registry import (
     ApprovalGate,
     Tool,
     ToolRegistry,
@@ -38,7 +38,7 @@ FORBIDDEN_RUNTIME_STRINGS = (
 
 @pytest.fixture
 def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    db_conn = initialize_database(tmp_path / "jarvis.db")
+    db_conn = initialize_database(tmp_path / "dan.db")
     try:
         yield db_conn
     finally:
@@ -52,7 +52,7 @@ def event_store(conn: sqlite3.Connection) -> EventStore:
 
 @pytest.fixture
 def app(tmp_path: Path) -> Iterator[DaemonApp]:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     try:
         yield daemon_app
@@ -326,9 +326,9 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 
 def test_runtime_code_and_scripts_do_not_contain_forbidden_legacy_strings() -> None:
-    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
     findings: list[str] = []
-    for root_name in ("jarvis", "scripts"):
+    for root_name in ("dan", "scripts"):
         for path in (ROOT / root_name).rglob("*"):
             if not path.is_file() or "__pycache__" in path.parts:
                 continue

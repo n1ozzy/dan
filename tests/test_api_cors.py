@@ -1,4 +1,4 @@
-"""Local cockpit CORS tests for the Jarvis HTTP API."""
+"""Local cockpit CORS tests for the DAN HTTP API."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
+from dan.daemon.app import DaemonApp, create_daemon_app
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import event_types, running_server, write_config
 
@@ -30,7 +30,7 @@ FORBIDDEN_RUNTIME_SNIPPETS = (
 
 @pytest.fixture
 def app(tmp_path: Path) -> Iterator[DaemonApp]:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     try:
         yield daemon_app
@@ -63,7 +63,7 @@ def assert_allowed_cors_headers(headers: object, origin: str) -> None:
     assert headers.get("Access-Control-Allow-Origin") == origin
     assert headers.get("Vary") == "Origin"
     assert headers.get("Access-Control-Allow-Credentials") != "true"
-    assert headers.get("Access-Control-Allow-Headers") == "Content-Type, X-Jarvis-Token"
+    assert headers.get("Access-Control-Allow-Headers") == "Content-Type, X-DAN-Token"
     methods = {method.strip() for method in headers.get("Access-Control-Allow-Methods", "").split(",")}
     assert methods == set(ALLOWED_METHODS)
 
@@ -138,7 +138,7 @@ def test_no_origin_health_response_keeps_curl_behavior(app: DaemonApp) -> None:
         status, headers, body = request_raw("GET", f"{base_url}/health")
 
     assert status == 200
-    assert '"service": "jarvisd"' in body
+    assert '"service": "dand"' in body
     assert headers.get("Access-Control-Allow-Origin") is None
     assert headers.get("Access-Control-Allow-Credentials") != "true"
 
@@ -148,11 +148,11 @@ def test_schema_and_migrations_are_unchanged() -> None:
 
 
 def test_runtime_code_avoids_forbidden_legacy_strings() -> None:
-    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
     text_suffixes = {".py", ".sql", ".toml", ".md", ".sh", ".example", ".html", ".js", ".css", ""}
     offenders: list[tuple[str, str]] = []
 
-    for root in (ROOT / "jarvis", ROOT / "scripts"):
+    for root in (ROOT / "dan", ROOT / "scripts"):
         for path in root.rglob("*"):
             if "__pycache__" in path.parts or not path.is_file() or path.suffix not in text_suffixes:
                 continue

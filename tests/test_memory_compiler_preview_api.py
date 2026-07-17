@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.memory.compiler import MemoryCompilerConfig, MemoryCompilerRequest
-from jarvis.security.redaction import REDACTION_PLACEHOLDER
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.memory.compiler import MemoryCompilerConfig, MemoryCompilerRequest
+from dan.security.redaction import REDACTION_PLACEHOLDER
 from tests.test_api_smoke import (
     request_json,
     request_raw,
@@ -28,7 +28,7 @@ from tests.test_memory_compiler import (
 
 @pytest.fixture
 def config_path(tmp_path: Path) -> Path:
-    return write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    return write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
 
 
 @pytest.fixture
@@ -445,7 +445,7 @@ def test_response_field_inventory_has_no_unclassified_fields(
                 "conversation_id": "conversation-inventory",
                 "current_turn_id": "turn-inventory",
                 "scope_filter": "project",
-                "namespace_filter": "project/jarvis",
+                "namespace_filter": "project/dan",
                 "max_items": 10,
                 "max_chars": 5000,
             },

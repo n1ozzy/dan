@@ -10,15 +10,15 @@ from typing import Any
 import pytest
 
 from tests.git_guards import assert_schema_and_migrations_unchanged
-from jarvis.daemon.state_machine import (
+from dan.daemon.state_machine import (
     RuntimeState,
     RuntimeStateMachine,
     StateTransitionError,
 )
-from jarvis.events.bus import EventBus
-from jarvis.events.models import Event
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import EventStore, EventStoreError, create_event_store
+from dan.events.bus import EventBus
+from dan.events.models import Event
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import EventStore, EventStoreError, create_event_store
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,7 +56,7 @@ NORMAL_TRANSITIONS = [
 
 @pytest.fixture
 def conn(tmp_path: Path) -> sqlite3.Connection:
-    db_conn = initialize_database(tmp_path / "jarvis.db")
+    db_conn = initialize_database(tmp_path / "dan.db")
     try:
         yield db_conn
     finally:
@@ -438,7 +438,7 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
-    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
     forbidden = (
         "/Users/n1_ozzy/Documents/dev/dan",
         "/tmp/dan",
@@ -446,7 +446,7 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
         "--dangerously-skip-permissions",
     )
     roots = (
-        ROOT / "jarvis",
+        ROOT / "dan",
         ROOT / "config",
         ROOT / "scripts",
         ROOT / "launchd",

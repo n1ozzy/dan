@@ -1,4 +1,4 @@
-"""FIX-11: the always-on daemon log (`jarvisd.log`) must rotate.
+"""FIX-11: the always-on daemon log (`dand.log`) must rotate.
 
 `RunAtLoad` launchd means the process never restarts on its own, so a plain
 `FileHandler` grows without bound. `configure_logging` must attach a size-capped
@@ -18,15 +18,15 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import JarvisConfig, load_config
-from jarvis.logging import LOGGER_NAME, configure_logging
-from jarvis.paths import resolve_runtime_paths
+from dan.config import DANConfig, load_config
+from dan.logging import LOGGER_NAME, configure_logging
+from dan.paths import resolve_runtime_paths
 from tests.test_api_smoke import write_config
 
 
 @pytest.fixture
-def jarvis_logger() -> Iterator[logging.Logger]:
-    """Snapshot and restore the global `jarvis` logger around the test."""
+def dan_logger() -> Iterator[logging.Logger]:
+    """Snapshot and restore the global `dan` logger around the test."""
 
     logger = logging.getLogger(LOGGER_NAME)
     saved_handlers = list(logger.handlers)
@@ -43,9 +43,9 @@ def jarvis_logger() -> Iterator[logging.Logger]:
         logger.propagate = saved_propagate
 
 
-def _make_config(tmp_path: Path, **daemon_overrides: object) -> JarvisConfig:
+def _make_config(tmp_path: Path, **daemon_overrides: object) -> DANConfig:
     config = load_config(
-        write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+        write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     )
     if daemon_overrides:
         config = replace(config, daemon=replace(config.daemon, **daemon_overrides))
@@ -57,15 +57,15 @@ def _rotating_handlers(logger: logging.Logger) -> list[RotatingFileHandler]:
 
 
 def test_file_log_uses_size_capped_rotating_handler(
-    tmp_path: Path, jarvis_logger: logging.Logger
+    tmp_path: Path, dan_logger: logging.Logger
 ) -> None:
     config = _make_config(tmp_path)
     paths = resolve_runtime_paths(config)
 
     configure_logging(config, paths)
 
-    handlers = _rotating_handlers(jarvis_logger)
-    assert len(handlers) == 1, "jarvisd.log must be served by a RotatingFileHandler"
+    handlers = _rotating_handlers(dan_logger)
+    assert len(handlers) == 1, "dand.log must be served by a RotatingFileHandler"
     handler = handlers[0]
     assert Path(handler.baseFilename) == paths.log_file
     assert handler.maxBytes > 0, "maxBytes==0 disables rotation entirely"
@@ -73,20 +73,20 @@ def test_file_log_uses_size_capped_rotating_handler(
 
 
 def test_rotation_knobs_are_honoured(
-    tmp_path: Path, jarvis_logger: logging.Logger
+    tmp_path: Path, dan_logger: logging.Logger
 ) -> None:
     config = _make_config(tmp_path, log_max_bytes=4096, log_backup_count=3)
     paths = resolve_runtime_paths(config)
 
     configure_logging(config, paths)
 
-    handler = _rotating_handlers(jarvis_logger)[0]
+    handler = _rotating_handlers(dan_logger)[0]
     assert handler.maxBytes == 4096
     assert handler.backupCount == 3
 
 
 def test_rotated_backups_stay_owner_only(
-    tmp_path: Path, jarvis_logger: logging.Logger
+    tmp_path: Path, dan_logger: logging.Logger
 ) -> None:
     # Tiny cap so a handful of records force a rollover, exercising the perms
     # of the rotated backup (the umask-perms regression FIX-10 guards against).

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.tools.permissions import (
+from dan.tools.permissions import (
     AUTO_SOURCES,
     PermissionClass,
     RequestSource,

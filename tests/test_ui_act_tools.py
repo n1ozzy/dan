@@ -1,7 +1,7 @@
 """FAZA D2: UI action tools over a pluggable actor backend.
 
 Contract (docs/MACOS_OPERATOR_CONTRACT.md + ADR-018): actions always cross
-ApprovalGate, Jarvis never owns or extracts credentials — typing into a
+ApprovalGate, DAN never owns or extracts credentials — typing into a
 secure text field is refused at the tool layer no matter what the backend
 would accept, and typed text is never echoed back in tool output.
 """
@@ -12,16 +12,16 @@ import json
 
 import pytest
 
-from jarvis.macos.accessibility import (
+from dan.macos.accessibility import (
     AccessibilityActor,
     AccessibilityError,
     FakeAccessibilityActor,
     MAX_TYPE_CHARS,
     create_actor,
 )
-from jarvis.tools.permissions import RequestSource, ToolPermissionPolicy
-from jarvis.tools.registry import ToolRegistry, ToolRequest
-from jarvis.tools.ui_tool import UiClickTool, UiFocusAppTool, UiTypeTool
+from dan.tools.permissions import RequestSource, ToolPermissionPolicy
+from dan.tools.registry import ToolRegistry, ToolRequest
+from dan.tools.ui_tool import UiClickTool, UiFocusAppTool, UiTypeTool
 
 
 def make_request(tool_name: str, arguments: dict | None = None) -> ToolRequest:
@@ -97,7 +97,7 @@ def test_ui_click_runs_and_reports_backend() -> None:
 
 
 def test_ui_click_requires_label() -> None:
-    from jarvis.tools.registry import ToolExecutionError
+    from dan.tools.registry import ToolExecutionError
 
     with pytest.raises(ToolExecutionError):
         UiClickTool(FakeAccessibilityActor()).run({})
@@ -105,15 +105,15 @@ def test_ui_click_requires_label() -> None:
 
 def test_ui_type_types_text_without_echoing_it() -> None:
     actor = FakeAccessibilityActor()
-    output = UiTypeTool(actor).run({"text": "notatka od jarvisa"})
+    output = UiTypeTool(actor).run({"text": "notatka od dana"})
     assert output["ok"] is True
-    assert output["chars_typed"] == len("notatka od jarvisa")
-    assert "notatka od jarvisa" not in json.dumps(output)
+    assert output["chars_typed"] == len("notatka od dana")
+    assert "notatka od dana" not in json.dumps(output)
     assert actor.performed[-1]["action"] == "type_text"
 
 
 def test_ui_type_refuses_secure_focused_element_via_tool() -> None:
-    from jarvis.tools.registry import ToolExecutionError
+    from dan.tools.registry import ToolExecutionError
 
     actor = FakeAccessibilityActor(
         focused_element={"role": "AXTextField", "subrole": "AXSecureTextField", "secure": True}
@@ -124,7 +124,7 @@ def test_ui_type_refuses_secure_focused_element_via_tool() -> None:
 
 
 def test_ui_type_rejects_oversized_text() -> None:
-    from jarvis.tools.registry import ToolExecutionError
+    from dan.tools.registry import ToolExecutionError
 
     with pytest.raises(ToolExecutionError):
         UiTypeTool(FakeAccessibilityActor()).run({"text": "x" * (MAX_TYPE_CHARS + 1)})
@@ -138,7 +138,7 @@ def test_ui_type_refuses_control_characters(payload: str) -> None:
     # FIX-08 (LOW): the "Enter stays with the human" invariant must hold at the
     # tool layer, not depend on the backend — a newline (or any control char)
     # could submit a form / send a message. Mirrors validate_paste_text.
-    from jarvis.tools.registry import ToolExecutionError
+    from dan.tools.registry import ToolExecutionError
 
     actor = FakeAccessibilityActor()
     with pytest.raises(ToolExecutionError, match="control character"):
@@ -156,7 +156,7 @@ def test_ui_type_still_allows_ordinary_unicode_text() -> None:
 
 
 def test_ui_focus_app_requires_app_name() -> None:
-    from jarvis.tools.registry import ToolExecutionError
+    from dan.tools.registry import ToolExecutionError
 
     with pytest.raises(ToolExecutionError):
         UiFocusAppTool(FakeAccessibilityActor()).run({"app_name": "   "})

@@ -1,6 +1,6 @@
 """Per-persona voice + mastering binding (2026-07-08).
 
-Switching `persona.profile` (panel dropdown / settings) must change how Jarvis
+Switching `persona.profile` (panel dropdown / settings) must change how DAN
 SOUNDS, not only his text tone: the mapped supertonic voice and mastering
 profile are resolved per-chunk from a lightweight persona provider, so a live
 persona switch takes effect on the next spoken chunk without a daemon restart.
@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from jarvis.voice.tts import SupertonicEngine, mastering_filter
+from dan.voice.tts import SupertonicEngine, mastering_filter
 
 from tests.test_voice_tts_supertonic import (  # reuse the fake-CLI harness
     fake_player,

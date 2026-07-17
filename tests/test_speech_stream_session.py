@@ -1,6 +1,6 @@
 """SpeechStreamSession tests (G4d — deltas → chunker → VoiceQueue, live).
 
-The session is the jarvisd-side consumer of adapter deltas (G0 §5): each
+The session is the dand-side consumer of adapter deltas (G0 §5): each
 completed sentence becomes one VoiceRequest the moment the chunker emits
 it — this is what makes first-sound fast. Deltas are NEVER persisted (the
 only events are the frozen voice.speak.* family), tool-call blocks hold
@@ -17,8 +17,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.voice.speech import SpeechPipeline
+from dan.store.db import close_quietly, initialize_database
+from dan.voice.speech import SpeechPipeline
 
 
 @pytest.fixture
@@ -183,7 +183,7 @@ def test_shared_broker_mode_does_not_arm_an_uncancellable_filler(
     def forbidden_timer(*_args, **_kwargs):
         pytest.fail("shared broker mode must not schedule a filler")
 
-    monkeypatch.setattr("jarvis.voice.speech.FillerTimer", forbidden_timer)
+    monkeypatch.setattr("dan.voice.speech.FillerTimer", forbidden_timer)
 
     timer = pipeline.arm_filler(turn_id="turn-1")
     timer.disarm()
@@ -195,12 +195,12 @@ def test_shared_broker_mode_does_not_arm_an_uncancellable_filler(
 def test_tool_call_block_split_across_deltas_is_never_spoken(db_path: Path) -> None:
     session = pipeline_for(db_path).start_stream(turn_id="turn-1")
 
-    session.feed("Sprawdzam plik dla ciebie. <jarvis_tool")
-    session.feed('_call>{"name":"file_read"}</jarvis_tool_call>')
+    session.feed("Sprawdzam plik dla ciebie. <dan_tool")
+    session.feed('_call>{"name":"file_read"}</dan_tool_call>')
     session.feed(" Po bloku jeszcze jedno zdanie.")
     session.finalize(
         "Sprawdzam plik dla ciebie. "
-        '<jarvis_tool_call>{"name":"file_read"}</jarvis_tool_call>'
+        '<dan_tool_call>{"name":"file_read"}</dan_tool_call>'
         " Po bloku jeszcze jedno zdanie."
     )
 

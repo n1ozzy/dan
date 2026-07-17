@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import VoiceConfig
+from dan.config import VoiceConfig
 
 
 def _shared_broker_module():
     try:
-        return importlib.import_module("jarvis.voice.shared_broker")
+        return importlib.import_module("dan.voice.shared_broker")
     except ModuleNotFoundError:
         pytest.fail("shared broker transport is not implemented")
 
@@ -30,9 +30,9 @@ def test_client_writes_exact_dan_request_atomically(
         broker_enabled=True,
         default_tts="supertonic",
         supertonic_lang="pl",
-        persona_voices={"jarvis": "M3"},
-        persona_speeds={"jarvis": 1.35},
-        persona_mastering={"jarvis": "clean"},
+        persona_voices={"dan": "M3"},
+        persona_speeds={"dan": 1.35},
+        persona_mastering={"dan": "clean"},
     )
     client = module.SharedBrokerClient(
         config,
@@ -81,9 +81,9 @@ def test_multiple_response_lanes_never_overwrite_each_other_at_the_same_tick(
         VoiceConfig(
             broker_enabled=True,
             default_tts="supertonic",
-            persona_voices={"jarvis": "M3"},
-            persona_speeds={"jarvis": 1.35},
-            persona_mastering={"jarvis": "clean"},
+            persona_voices={"dan": "M3"},
+            persona_speeds={"dan": 1.35},
+            persona_mastering={"dan": "clean"},
         ),
         request_dir=request_dir,
         clock=lambda: 1_720_000_000.125,
@@ -97,7 +97,7 @@ def test_multiple_response_lanes_never_overwrite_each_other_at_the_same_tick(
         client.enqueue(text="Final głosowy.", session="turn-1", lane="final"),
     ]
 
-    # DAN's shared broker orders equal-priority requests by file mtime. Jarvis
+    # DAN's shared broker orders equal-priority requests by file mtime. DAN
     # must therefore publish strictly increasing mtimes even when its injected
     # wall clock returns the exact same tick for commentary and final.
     base_ns = int(1_720_000_000.125 * 1_000_000_000)

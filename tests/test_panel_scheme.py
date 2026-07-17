@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.panel.menubar_app import ASSETS_DIR, resolve_panel_asset
+from dan.panel.menubar_app import ASSETS_DIR, resolve_panel_asset
 
 
 def test_root_path_serves_index_html() -> None:
@@ -33,7 +33,7 @@ def test_missing_asset_returns_none() -> None:
 
 @pytest.mark.parametrize(
     "attack",
-    ["/../lifecycle.py", "/../../jarvis/daemon/lifecycle.py", "/../__init__.py"],
+    ["/../lifecycle.py", "/../../dan/daemon/lifecycle.py", "/../__init__.py"],
 )
 def test_path_traversal_escapes_root_and_is_refused(attack: str) -> None:
     path, _mime = resolve_panel_asset(attack)

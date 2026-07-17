@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jarvis.brain import (
+from dan.brain import (
     BrainManager,
     EcoBrainAdapter,
     GroqAdapter,
@@ -170,7 +170,7 @@ class TestBrainManagerRegistration:
         )
         config.brain.codex_cli = SimpleNamespace(enabled=False, command="codex", args=[], model="", timeout_seconds=120)
 
-        with patch("jarvis.brain.groq_adapter.create_groq_adapter") as mock_create:
+        with patch("dan.brain.groq_adapter.create_groq_adapter") as mock_create:
             mock_adapter = MagicMock()
             mock_adapter.name = "groq"
             mock_create.return_value = mock_adapter

@@ -13,11 +13,11 @@ from typing import Any
 
 import pytest
 
-from jarvis.brain.base import BrainMessage, BrainRequest
-from jarvis.brain.base import BrainAdapterError, BrainGenerationCancelled
-from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter
-from jarvis.brain.manager import BrainManager
-from jarvis.voice.cancellation import GenerationRegistry
+from dan.brain.base import BrainMessage, BrainRequest
+from dan.brain.base import BrainAdapterError, BrainGenerationCancelled
+from dan.brain.claude_cli_adapter import ClaudeCliAdapter
+from dan.brain.manager import BrainManager
+from dan.voice.cancellation import GenerationRegistry
 
 
 def stream_line(payload: dict[str, Any]) -> str:
@@ -157,7 +157,7 @@ def request(
 ) -> BrainRequest:
     return BrainRequest(
         turn_id=turn_id,
-        conversation_id="jarvis-conversation",
+        conversation_id="dan-conversation",
         input_text=text,
         context_messages=[
             BrainMessage(
@@ -354,7 +354,7 @@ def test_checkpoint_is_mode_0600_and_new_adapter_resumes_durable_session(
     assert payload["message"]["content"][0]["text"] == "druga"
     persisted = json.loads(state_path.read_text(encoding="utf-8"))
     assert persisted["generation"] == 2
-    assert persisted["conversation_id"] == "jarvis-conversation"
+    assert persisted["conversation_id"] == "dan-conversation"
     assert persisted["checkpoint_prompt"]
 
 
@@ -932,7 +932,7 @@ def test_compact_transport_failure_preserves_completed_response_and_recycles_nex
     assert next_response.text == "next response"
     assert len(first.stdin.writes) == 2
     assert json.loads(first.stdin.writes[0])["message"]["content"][0]["text"].endswith(
-        "Respond now as Jarvis.\n"
+        "Respond now as DAN.\n"
     )
     assert json.loads(first.stdin.writes[1])["message"]["content"][0]["text"] == "/compact"
     assert len(recycled.stdin.writes) == 1

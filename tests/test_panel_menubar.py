@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import load_config
-from jarvis.panel import menubar_app
-from jarvis.panel.menubar_app import (
+from dan.config import load_config
+from dan.panel import menubar_app
+from dan.panel.menubar_app import (
     MenuBarApp,
     PanelShellError,
     ShellSettings,
@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _config(tmp_path: Path):
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     return load_config(config_path)
 
 
@@ -39,7 +39,7 @@ class TestResolveShellSettings:
         assert settings.api_base_url == "http://127.0.0.1:41741"
         assert settings.width == 420
         assert settings.height == 620
-        assert settings.index_path == ROOT / "jarvis" / "panel" / "assets" / "index.html"
+        assert settings.index_path == ROOT / "dan" / "panel" / "assets" / "index.html"
         assert settings.index_path.is_file()
 
     def test_reads_api_token_from_runtime_dir(self, tmp_path: Path) -> None:
@@ -65,13 +65,13 @@ class TestTokenBootstrapScript:
             api_base_url="http://127.0.0.1:41888/",
         )
 
-        assert "window.JARVIS_API_BASE" in script
+        assert "window.DAN_API_BASE" in script
         assert '"http://127.0.0.1:41888"' in script
 
     def test_seeds_cockpit_local_storage_key(self) -> None:
         script = token_bootstrap_script("cafe1234")
 
-        assert "jarvis-api-token" in script
+        assert "dan-api-token" in script
         assert '"cafe1234"' in script
         assert "localStorage.setItem" in script
 
@@ -94,7 +94,7 @@ class TestMenuBarAppGuard:
     def test_module_imports_without_pyobjc(self) -> None:
         # The module was imported at the top of this file; the real guard is
         # that it must not import AppKit/WebKit at module import time.
-        source = (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+        source = (ROOT / "dan" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
         for line in source.splitlines():
             # Only top-level (column-0) imports run at module import time;
             # indented ones are the intended lazy imports inside functions.
@@ -165,19 +165,19 @@ class TestPanelAppearance:
     idiom as the lazy-import guard above."""
 
     def test_panel_forces_dark_appearance(self) -> None:
-        source = (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+        source = (ROOT / "dan" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
 
         assert "NSAppearanceNameDarkAqua" in source
         assert "setAppearance_" in source
 
     def test_webview_underlay_matches_cockpit_background(self) -> None:
-        source = (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+        source = (ROOT / "dan" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
 
         assert "setUnderPageBackgroundColor_" in source
 
     def test_edit_menu_wires_standard_shortcuts(self) -> None:
         # Bez menu Edit macOS nie routuje ⌘A/⌘C/⌘V/⌘X do pól webview.
-        source = (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+        source = (ROOT / "dan" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
 
         assert "setMainMenu_" in source
         for selector in ('"copy:"', '"paste:"', '"cut:"', '"selectAll:"'):
@@ -191,7 +191,7 @@ class TestWidgetPanel:
     z cornerRadius + 2pt borderem stanu, cień od okna, zero strzałki."""
 
     def _source(self) -> str:
-        return (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+        return (ROOT / "dan" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
 
     def test_shell_hosts_borderless_nonactivating_panel_not_popover(self) -> None:
         source = self._source()
@@ -230,7 +230,7 @@ class TestWidgetPanel:
 
 
 class TestStateBorder:
-    """Żywa ramka stanu OBIEGA dookoła, gdy Jarvis pracuje, i barwi się
+    """Żywa ramka stanu OBIEGA dookoła, gdy DAN pracuje, i barwi się
     stanem — a to wymaga gradientu maskowanego do obrysu, którego płaski
     `CALayer.border` nie potrafi. Więc ramkę rysuje CSS w webview (sterowany
     realnym stanem z JS, który cockpit i tak pobiera), a natywna warstwa robi
@@ -238,7 +238,7 @@ class TestStateBorder:
     jedno źródło stanu (JS cockpitu), jedna warstwa renderingu."""
 
     def _source(self) -> str:
-        return (ROOT / "jarvis" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
+        return (ROOT / "dan" / "panel" / "menubar_app.py").read_text(encoding="utf-8")
 
     def test_native_layer_only_clips_it_does_not_paint_state_color(self) -> None:
         source = self._source()
@@ -260,10 +260,10 @@ class TestStateBorder:
 
     def test_state_frame_lives_in_cockpit_css_not_native_layer(self) -> None:
         styles = (
-            ROOT / "jarvis" / "panel" / "assets" / "styles.css"
+            ROOT / "dan" / "panel" / "assets" / "styles.css"
         ).read_text(encoding="utf-8")
         markup = (
-            ROOT / "jarvis" / "panel" / "assets" / "index.html"
+            ROOT / "dan" / "panel" / "assets" / "index.html"
         ).read_text(encoding="utf-8")
 
         assert "state-frame" in markup
@@ -274,7 +274,7 @@ class TestStatusIcon:
     def test_icon_asset_exists_in_panel_assets(self) -> None:
         path = menubar_app.status_icon_path()
 
-        assert path == ROOT / "jarvis" / "panel" / "assets" / "menubar-icon.png"
+        assert path == ROOT / "dan" / "panel" / "assets" / "menubar-icon.png"
         assert path.is_file()
 
     def test_icon_is_a_png(self) -> None:
@@ -297,19 +297,19 @@ class TestRunbook:
 
 class TestLauncher:
     def test_launcher_script_execs_menubar_module(self) -> None:
-        launcher = ROOT / "scripts" / "jarvis-panel"
+        launcher = ROOT / "scripts" / "dan-panel"
         text = launcher.read_text(encoding="utf-8")
 
-        assert "jarvis.panel.menubar_app" in text
+        assert "dan.panel.menubar_app" in text
         assert launcher.stat().st_mode & stat.S_IXUSR
 
     def test_launcher_never_touches_daemon_state(self) -> None:
-        text = (ROOT / "scripts" / "jarvis-panel").read_text(encoding="utf-8")
+        text = (ROOT / "scripts" / "dan-panel").read_text(encoding="utf-8")
 
-        assert "jarvis.db" not in text
+        assert "dan.db" not in text
         assert "/tmp" not in text
 
     def test_launcher_rejects_example_config_as_runtime(self) -> None:
-        text = (ROOT / "scripts" / "jarvis-panel").read_text(encoding="utf-8")
+        text = (ROOT / "scripts" / "dan-panel").read_text(encoding="utf-8")
 
-        assert "config/jarvis.example.toml is not a runtime config" in text
+        assert "config/dan.example.toml is not a runtime config" in text

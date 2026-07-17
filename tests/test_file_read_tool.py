@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.tools.file_tool import (
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.tools.file_tool import (
     DEFAULT_MAX_BYTES,
     FileReadTool,
     HARD_MAX_BYTES,
 )
-from jarvis.tools.permissions import RequestSource
-from jarvis.tools.registry import ToolExecutionError
+from dan.tools.permissions import RequestSource
+from dan.tools.registry import ToolExecutionError
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import ROOT, write_config
 
@@ -154,7 +154,7 @@ def test_default_max_bytes_is_sane() -> None:
 
 @pytest.fixture
 def app(tmp_path: Path) -> DaemonApp:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     daemon_app.start()
     try:
@@ -178,7 +178,7 @@ def test_daemon_registers_file_read_tool(app: DaemonApp) -> None:
 
 
 def test_direct_user_request_reads_file_immediately(app: DaemonApp) -> None:
-    target = home_file(app, "hello.txt", "hello jarvis")
+    target = home_file(app, "hello.txt", "hello dan")
 
     result = app.request_tool(
         tool_name="file_read",
@@ -189,7 +189,7 @@ def test_direct_user_request_reads_file_immediately(app: DaemonApp) -> None:
 
     assert result.status == "finished"
     assert result.output is not None
-    assert result.output["content"] == "hello jarvis"
+    assert result.output["content"] == "hello dan"
     assert app.conn is not None
     run_count = int(app.conn.execute("SELECT COUNT(*) FROM tool_runs").fetchone()[0])
     assert run_count == 1
@@ -263,12 +263,12 @@ def test_config_approved_roots_override_default_home(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "readme.md").write_text("workspace file", encoding="utf-8")
-    raw = config_text(tmp_path / "home" / "jarvis.db")
+    raw = config_text(tmp_path / "home" / "dan.db")
     raw = raw.replace(
         "[security]",
         f'[security]\napproved_roots = ["{workspace}"]',
     )
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(raw, encoding="utf-8")
 
     app = create_daemon_app(config_path)

@@ -6,14 +6,14 @@ import sqlite3
 from importlib import import_module
 from pathlib import Path
 
-from jarvis.store.db import close_quietly, initialize_database, table_names
-from jarvis.store.migrations import LATEST_SCHEMA_VERSION, apply_migrations
+from dan.store.db import close_quietly, initialize_database, table_names
+from dan.store.migrations import LATEST_SCHEMA_VERSION, apply_migrations
 
 
 def test_database_initializes_separate_memory_archive_and_fts5_tables(
     tmp_path: Path,
 ) -> None:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
     try:
         tables = table_names(conn)
 
@@ -78,7 +78,7 @@ def test_migration_rejects_non_fts_table_conflict_before_recording_v3() -> None:
 
 
 def test_canonical_memory_id_is_stable_and_source_scoped() -> None:
-    archive = import_module("jarvis.memory.archive")
+    archive = import_module("dan.memory.archive")
 
     first = archive.canonical_memory_id("claude_jsonl", "/tmp/session.jsonl", "line:7")
     repeated = archive.canonical_memory_id("claude_jsonl", "/tmp/session.jsonl", "line:7")
@@ -91,7 +91,7 @@ def test_canonical_memory_id_is_stable_and_source_scoped() -> None:
 
 
 def test_canonical_memory_id_has_no_delimiter_collisions() -> None:
-    archive = import_module("jarvis.memory.archive")
+    archive = import_module("dan.memory.archive")
 
     left = archive.canonical_memory_id("a\0b", "c", "d")
     right = archive.canonical_memory_id("a", "b\0c", "d")
@@ -100,7 +100,7 @@ def test_canonical_memory_id_has_no_delimiter_collisions() -> None:
 
 
 def test_canonical_memory_id_rejects_empty_identity_parts() -> None:
-    archive = import_module("jarvis.memory.archive")
+    archive = import_module("dan.memory.archive")
 
     for parts in (("", "uri", "item"), ("kind", " ", "item"), ("kind", "uri", "")):
         try:
@@ -111,8 +111,8 @@ def test_canonical_memory_id_rejects_empty_identity_parts() -> None:
 
 
 def test_archive_redacts_document_before_persisting_or_indexing(tmp_path: Path) -> None:
-    archive_module = import_module("jarvis.memory.archive")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    archive_module = import_module("dan.memory.archive")
+    conn = initialize_database(tmp_path / "dan.db")
     archive = archive_module.MemoryArchive(conn, now=lambda: "2026-07-16T12:00:00Z")
     raw_secret = "sk-ant-never-store-this"
 
@@ -140,8 +140,8 @@ def test_archive_redacts_document_before_persisting_or_indexing(tmp_path: Path) 
 
 
 def test_archive_upsert_is_idempotent_for_unchanged_source_item(tmp_path: Path) -> None:
-    archive_module = import_module("jarvis.memory.archive")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    archive_module = import_module("dan.memory.archive")
+    conn = initialize_database(tmp_path / "dan.db")
     timestamps = iter(("2026-07-16T12:00:00Z", "2026-07-16T13:00:00Z"))
     archive = archive_module.MemoryArchive(conn, now=lambda: next(timestamps))
     document = archive_module.ArchiveDocument(
@@ -162,8 +162,8 @@ def test_archive_upsert_is_idempotent_for_unchanged_source_item(tmp_path: Path) 
 
 
 def test_archive_rejects_untrusted_non_iso_source_timestamp(tmp_path: Path) -> None:
-    archive_module = import_module("jarvis.memory.archive")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    archive_module = import_module("dan.memory.archive")
+    conn = initialize_database(tmp_path / "dan.db")
     archive = archive_module.MemoryArchive(conn)
 
     try:
@@ -185,8 +185,8 @@ def test_archive_rejects_untrusted_non_iso_source_timestamp(tmp_path: Path) -> N
 
 
 def test_recall_returns_deterministic_canonical_results(tmp_path: Path) -> None:
-    archive_module = import_module("jarvis.memory.archive")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    archive_module = import_module("dan.memory.archive")
+    conn = initialize_database(tmp_path / "dan.db")
     archive = archive_module.MemoryArchive(conn, now=lambda: "2026-07-16T12:00:00Z")
     for source_item_id in ("message:b", "message:a"):
         archive.upsert(
@@ -213,13 +213,13 @@ def test_recall_returns_deterministic_canonical_results(tmp_path: Path) -> None:
 
 
 def test_recall_serializes_one_canonical_transport_payload(tmp_path: Path) -> None:
-    archive_module = import_module("jarvis.memory.archive")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    archive_module = import_module("dan.memory.archive")
+    conn = initialize_database(tmp_path / "dan.db")
     archive = archive_module.MemoryArchive(conn, now=lambda: "2026-07-16T12:00:00Z")
     archive.upsert(
         archive_module.ArchiveDocument(
-            source_type="jarvis_turn",
-            source_uri="jarvis.db",
+            source_type="dan_turn",
+            source_uri="dan.db",
             source_item_id="turn:1:assistant",
             content="the recall payload is shared",
             metadata={"role": "assistant"},
@@ -235,8 +235,8 @@ def test_recall_serializes_one_canonical_transport_payload(tmp_path: Path) -> No
         "results": [
             {
                 "canonical_id": payload["results"][0]["canonical_id"],
-                "source_type": "jarvis_turn",
-                "source_uri": "jarvis.db",
+                "source_type": "dan_turn",
+                "source_uri": "dan.db",
                 "source_item_id": "turn:1:assistant",
                 "title": None,
                 "content": "the recall payload is shared",
@@ -249,8 +249,8 @@ def test_recall_serializes_one_canonical_transport_payload(tmp_path: Path) -> No
 
 
 def test_sync_source_is_incremental_idempotent_and_records_cursor(tmp_path: Path) -> None:
-    archive_module = import_module("jarvis.memory.archive")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    archive_module = import_module("dan.memory.archive")
+    conn = initialize_database(tmp_path / "dan.db")
     timestamps = iter(("2026-07-16T12:00:00Z", "2026-07-16T13:00:00Z"))
     archive = archive_module.MemoryArchive(conn, now=lambda: next(timestamps))
     document = archive_module.ArchiveDocument(

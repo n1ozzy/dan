@@ -13,9 +13,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.voice.listening import ListeningLeaseManager, ListeningLeaseError
-from jarvis.voice.recorder import MockRecorder, RecorderBackendError, build_recorder
+from dan.store.db import close_quietly, initialize_database
+from dan.voice.listening import ListeningLeaseManager, ListeningLeaseError
+from dan.voice.recorder import MockRecorder, RecorderBackendError, build_recorder
 from tests.git_guards import assert_schema_and_migrations_unchanged
 
 
@@ -291,12 +291,12 @@ def test_recorder_factory_rejects_unknown_backend() -> None:
 
 
 def _daemon(tmp_path: Path, *, voice_enabled: bool):
-    from jarvis.daemon.app import create_daemon_app
+    from dan.daemon.app import create_daemon_app
     from tests.test_api_smoke import config_text
 
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(
-        config_text(tmp_path / "home" / "jarvis.db").replace(
+        config_text(tmp_path / "home" / "dan.db").replace(
             "[voice]\nenabled = false",
             f"[voice]\nenabled = {'true' if voice_enabled else 'false'}",
         ),
@@ -367,7 +367,7 @@ def test_ptt_lifecycle_through_the_api(tmp_path: Path) -> None:
 
 
 def test_ptt_down_acquires_hold_lease_without_cancelling_active_speech(tmp_path: Path) -> None:
-    from jarvis.voice.queue import VoiceQueue
+    from dan.voice.queue import VoiceQueue
     from tests.test_api_smoke import request_json, running_server
 
     daemon_app = _daemon(tmp_path, voice_enabled=True)
@@ -415,7 +415,7 @@ def test_ptt_down_acquires_hold_lease_without_cancelling_active_speech(tmp_path:
 def test_ptt_unknown_source_is_bad_request(tmp_path: Path) -> None:
     # An unknown `source` is bad client input, not a server fault: the
     # ListeningLeaseError acquire() raises must map to 400, not 500 (FIX-17).
-    from jarvis.voice.queue import VoiceQueue
+    from dan.voice.queue import VoiceQueue
     from tests.test_api_smoke import request_json, running_server
 
     daemon_app = _daemon(tmp_path, voice_enabled=True)

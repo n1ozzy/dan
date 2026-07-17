@@ -5,7 +5,7 @@ grant, so unit tests exercise the fake backend, the sanitizer contract,
 paste validation, the fail-closed factory, and the *structure* of the
 osascript invocation (fixed script sources, parameters via argv — never
 interpolated). The live path is covered by the probe
-(`python -m jarvis.macos.terminal`) and the live gate.
+(`python -m dan.macos.terminal`) and the live gate.
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.config import SecurityConfig
-from jarvis.macos import terminal as terminal_module
-from jarvis.macos.terminal import (
+from dan.config import SecurityConfig
+from dan.macos import terminal as terminal_module
+from dan.macos.terminal import (
     MAX_PASTE_CHARS,
     MAX_TERMINAL_LINE_CHARS,
     MAX_TERMINAL_LINES,
@@ -31,8 +31,8 @@ from jarvis.macos.terminal import (
     sanitize_terminal_snapshot,
     validate_paste_text,
 )
-from jarvis.tools.registry import ToolExecutionError
-from jarvis.tools.terminal_tool import TerminalPasteTool, TerminalReadScreenTool
+from dan.tools.registry import ToolExecutionError
+from dan.tools.terminal_tool import TerminalPasteTool, TerminalReadScreenTool
 from tests.git_guards import assert_schema_and_migrations_unchanged
 
 

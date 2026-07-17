@@ -14,8 +14,8 @@ import struct
 import wave
 from types import SimpleNamespace
 
-from jarvis.voice.stt import MockSTTEngine
-from jarvis.voice.vad import CaptureGate, analyze_capture, pcm_from_wav
+from dan.voice.stt import MockSTTEngine
+from dan.voice.vad import CaptureGate, analyze_capture, pcm_from_wav
 
 
 SAMPLE_RATE = 16000
@@ -178,12 +178,12 @@ def test_gate_thresholds_come_from_config() -> None:
 
 
 def test_too_short_capture_skips_stt_turn_and_barge_in(tmp_path) -> None:
-    from jarvis.daemon.app import create_daemon_app
-    from jarvis.voice.queue import VoiceQueue
+    from dan.daemon.app import create_daemon_app
+    from dan.voice.queue import VoiceQueue
     from tests.test_api_smoke import config_text
 
-    config_path = tmp_path / "jarvis.toml"
-    text = config_text(tmp_path / "home" / "jarvis.db").replace(
+    config_path = tmp_path / "dan.toml"
+    text = config_text(tmp_path / "home" / "dan.db").replace(
         "[voice]\nenabled = false", "[voice]\nenabled = true"
     )
     config_path.write_text(text, encoding="utf-8")

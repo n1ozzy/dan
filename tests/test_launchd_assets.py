@@ -16,14 +16,15 @@ from tests.git_guards import assert_schema_and_migrations_unchanged
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PLIST_EXAMPLE = ROOT / "launchd" / "com.ozzy.jarvisd.plist.example"
-WRAPPER = ROOT / "scripts" / "jarvisd"
+PLIST_EXAMPLE = ROOT / "launchd" / "com.dan.dand.plist.example"
+WRAPPER = ROOT / "scripts" / "dand"
 INSTALL = ROOT / "scripts" / "install-launchd.sh"
 UNINSTALL = ROOT / "scripts" / "uninstall-launchd.sh"
 RUNBOOK = ROOT / "docs" / "runbooks" / "LAUNCHD.md"
 
-OFFICIAL_LABEL = "com.ozzy.jarvisd"
+OFFICIAL_LABEL = "com.dan.dand"
 LEGACY_LABELS = (
+    "com.ozzy.jarvisd",
     "com.ozzy.jarvis</string>",
     "com.dan.voice-broker",
     "com.dan.xtts-server",
@@ -58,8 +59,8 @@ def test_plist_example_logs_and_wrapper_live_outside_documents() -> None:
     # ADR-014: launchd cannot read scripts under ~/Documents (TCC trap).
     text = read(PLIST_EXAMPLE)
 
-    assert ".jarvis/logs" in text
-    assert ".jarvis/bin" in text
+    assert ".dan/logs" in text
+    assert ".dan/bin" in text
     assert "Documents" not in text
 
 
@@ -68,7 +69,7 @@ def test_wrapper_script_runs_the_real_daemon() -> None:
     text = read(WRAPPER)
 
     assert "daemon run" in text
-    assert "jarvis.cli" in text
+    assert "dan.cli" in text
     assert "not implemented" not in text
 
 
@@ -76,8 +77,8 @@ def test_wrapper_rejects_example_config_as_runtime() -> None:
     text = read(WRAPPER)
     install_text = read(INSTALL)
 
-    assert "config/jarvis.example.toml is not a runtime config" in text
-    assert "config/jarvis.example.toml is not a runtime config" in install_text
+    assert "config/dan.example.toml is not a runtime config" in text
+    assert "config/dan.example.toml is not a runtime config" in install_text
 
 
 def test_install_script_prints_plan_and_requires_explicit_yes() -> None:
@@ -105,8 +106,8 @@ def test_uninstall_script_unloads_but_never_deletes_the_database() -> None:
     assert "does not delete" in lowered or "never deletes" in lowered
     for line in text.splitlines():
         if line.strip().startswith("rm "):
-            assert "jarvis.db" not in line
-            assert ".jarvis/logs" not in line
+            assert "dan.db" not in line
+            assert ".dan/logs" not in line
 
 
 def test_lifecycle_scripts_pass_shebang_syntax_check() -> None:

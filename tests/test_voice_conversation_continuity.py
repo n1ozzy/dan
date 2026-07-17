@@ -1,6 +1,6 @@
 """Voice turns must roll into ONE conversation, not a fresh session each time.
 
-Ozzy's report: every spoken message started a new session, so Jarvis never
+Ozzy's report: every spoken message started a new session, so DAN never
 remembered the previous utterance. `_start_voice_turn` passed no
 conversation_id, so `get_or_create(None)` minted a fresh conversation per turn
 (74 turns had spread across 72 conversations). The daemon must keep a rolling
@@ -11,14 +11,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jarvis.daemon.app import create_daemon_app
+from dan.daemon.app import create_daemon_app
 from tests.test_api_smoke import config_text
 
 
 def _voice_app(tmp_path: Path):
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(
-        config_text(tmp_path / "home" / "jarvis.db"), encoding="utf-8"
+        config_text(tmp_path / "home" / "dan.db"), encoding="utf-8"
     )
     app = create_daemon_app(config_path)
     app.start()

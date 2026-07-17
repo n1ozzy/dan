@@ -12,7 +12,7 @@ import json
 import stat
 from pathlib import Path
 
-from jarvis.diagnostics.legacy_dan import (
+from dan.diagnostics.legacy_dan import (
     Finding,
     collect_findings,
     main,
@@ -22,7 +22,7 @@ from jarvis.diagnostics.legacy_dan import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE = ROOT / "jarvis" / "diagnostics" / "legacy_dan.py"
+MODULE = ROOT / "dan" / "diagnostics" / "legacy_dan.py"
 
 
 def _plant_artifacts(home: Path, tmp: Path) -> None:
@@ -93,7 +93,7 @@ class TestCollectFindings:
     def test_legacy_ozzy_jarvis_plist_is_covered_via_supervisor_registry(
         self, tmp_path: Path
     ) -> None:
-        # jarvis.runtime.supervisor is the source of truth for known legacy
+        # dan.runtime.supervisor is the source of truth for known legacy
         # names; com.ozzy.jarvis.plist has no "dan" in it and only that
         # registry knows it is legacy.
         home, tmp = tmp_path / "home", tmp_path / "tmp"
@@ -145,7 +145,7 @@ class TestProcessMatcher:
             "125 python chatterbox_stream.py",
             "126 claude --allow-dangerously-skip-permissions --model claude-fable-5",
             "127 /usr/sbin/distnoted agent",
-            "128 python -m jarvis.diagnostics.legacy_dan",
+            "128 python -m dan.diagnostics.legacy_dan",
         ]
 
         matched = match_process_lines(lines)
@@ -153,7 +153,7 @@ class TestProcessMatcher:
         assert [line.split()[0] for line in matched] == ["123", "124", "125"]
 
     def test_matches_supervisor_registry_patterns(self) -> None:
-        # Script names known to jarvis.runtime.supervisor (e.g. auto_jarvis.py)
+        # Script names known to dan.runtime.supervisor (e.g. auto_jarvis.py)
         # must match even though they carry no dan/xtts/chatterbox substring.
         lines = ["321 /usr/bin/python3 auto_jarvis.py --loop"]
 
@@ -252,5 +252,5 @@ class TestLauncher:
         launcher = ROOT / "scripts" / "jarvis-dan-report"
         text = launcher.read_text(encoding="utf-8")
 
-        assert "jarvis.diagnostics.legacy_dan" in text
+        assert "dan.diagnostics.legacy_dan" in text
         assert launcher.stat().st_mode & stat.S_IXUSR

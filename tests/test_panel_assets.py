@@ -1,4 +1,4 @@
-"""Static Jarvis cockpit asset contract tests."""
+"""Static DAN cockpit asset contract tests."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from tests.git_guards import assert_schema_and_migrations_unchanged
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PANEL_DIR = ROOT / "jarvis" / "panel" / "assets"
+PANEL_DIR = ROOT / "dan" / "panel" / "assets"
 INDEX_HTML = PANEL_DIR / "index.html"
 APP_JS = PANEL_DIR / "app.js"
 STYLES_CSS = PANEL_DIR / "styles.css"
@@ -128,7 +128,7 @@ def test_app_fetches_turns_newest_first() -> None:
 def test_cockpit_is_single_view_app_with_tabbar() -> None:
     # Architektura popover-first: jeden widok naraz (Czat / Pamięć /
     # System) + dolny pasek zakładek. Czat = pełna powierzchnia, dymki
-    # user/jarvis z metą; strona się nie scrolluje, widoki przewijają się
+    # user/dan z metą; strona się nie scrolluje, widoki przewijają się
     # wewnętrznie.
     markup = INDEX_HTML.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
@@ -150,7 +150,7 @@ def test_cockpit_is_single_view_app_with_tabbar() -> None:
     assert "chat-bubble" in styles
     assert "switchView" in script
     assert "chat-bubble user" in script
-    assert "chat-bubble jarvis" in script
+    assert "chat-bubble dan" in script
     assert "chat-meta" in script
 
 
@@ -186,7 +186,7 @@ def test_chat_has_static_backend_driven_activity_strip() -> None:
 
 def test_state_frame_is_animated_and_driven_by_live_state() -> None:
     # Sygnatura panelu: neonowa ramka na krawędzi karty, która OBIEGA dookoła,
-    # gdy Jarvis pracuje (THINKING/TOOLING/SPEAKING/LISTENING) i barwi się stanem
+    # gdy DAN pracuje (THINKING/TOOLING/SPEAKING/LISTENING) i barwi się stanem
     # (teal online, jasny błękit podczas pracy, czerwień offline). Ruch niesie
     # informację o trwającym procesie — nie jest dekoracją; spoczynek (IDLE)
     # zostawia ramkę statyczną. Renderuje ją CSS w webview, sterowany realnym
@@ -492,7 +492,7 @@ def test_panel_has_no_poc_mode_or_poc_runtime_guards() -> None:
     for marker in (
         f"{old_mode}_NO_PERSISTENCE_GUARD",
         f"{old_mode} mode",
-        f"Jarvis {old_mode} status",
+        f"DAN {old_mode} status",
         f"Mission Control {old_mode}",
         f"{old_mode_lower}-badge",
         f"{old_mode_lower}ChecklistItems",
@@ -583,7 +583,7 @@ def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) 
                 tools: {{ ok: true, path: "/tools" }},
                 events: {{ ok: true, path: "/events?latest=true&limit=50" }},
               }},
-              health: {{ service: "jarvisd", state: "IDLE", voice_enabled: true }},
+              health: {{ service: "dand", state: "IDLE", voice_enabled: true }},
               state: {{ state: "IDLE", brain_adapter: "mock" }},
               runtimeSettings: {{
                 runtime_readiness: {{
@@ -858,7 +858,7 @@ def test_tools_internet_controls_do_not_expose_legacy_decision_controls() -> Non
         "grantTerminalToggle",
         "grantMemoryToggle",
         "destructiveEnabledToggle",
-        "Jarvis może sam",
+        "DAN może sam",
         "Wymagaj zgody",
     ):
         assert marker not in markup
@@ -1295,11 +1295,11 @@ def test_claude_cli_provider_controls_render_and_apply_semantics_gate(
                         current_model: "claude-sonnet",
                         selected_model: "claude-sonnet",
                         effective_model: "claude-sonnet",
-                        model_source: "jarvis_explicit",
+                        model_source: "dan_explicit",
                         allowed_effort_values: ["low", "xhigh"],
                         selected_effort: "xhigh",
                         effective_effort: "xhigh",
-                        effort_source: "jarvis_explicit",
+                        effort_source: "dan_explicit",
                         fast_supported: false,
                         command_status: "found",
                         auth_status: "logged_in",
@@ -1657,11 +1657,11 @@ def test_brain_apply_sends_changed_fields_for_backend_validation(tmp_path: Path)
                       current_model: "claude-old",
                       selected_model: "claude-old",
                       effective_model: "claude-old",
-                      model_source: "jarvis_explicit",
+                      model_source: "dan_explicit",
                       allowed_effort_values: ["low", "high"],
                       selected_effort: "low",
                       effective_effort: "low",
-                      effort_source: "jarvis_explicit",
+                      effort_source: "dan_explicit",
                       fast_supported: false,
                       command_status: "found",
                       auth_status: "logged_in",
@@ -1854,7 +1854,7 @@ def test_codex_brain_apply_uses_backend_model_only_pending_rows(tmp_path: Path) 
                       current_model: "codex-old",
                       selected_model: "codex-old",
                       effective_model: "codex-old",
-                      model_source: "jarvis_explicit",
+                      model_source: "dan_explicit",
                       allowed_effort_values: [],
                       fast_supported: false,
                       command_status: "found",
@@ -2049,7 +2049,7 @@ def test_codex_brain_apply_sends_missing_auth_attempt_but_blocks_unknown_model_v
                       current_model: overrides.currentModel || "codex-old",
                       selected_model: overrides.currentModel || "codex-old",
                       effective_model: overrides.currentModel || "codex-old",
-                      model_source: "jarvis_explicit",
+                      model_source: "dan_explicit",
                       allowed_effort_values: [],
                       fast_supported: false,
                       command_status: "found",
@@ -3004,7 +3004,7 @@ def test_system_tab_is_actionable_first_and_logs_own_diagnostics() -> None:
     assert "Settings Preview" not in system_view
     assert "Latest Turn Trace" not in system_view
     assert "Runtime Logs" not in system_view
-    assert "Możliwości Jarvisa" not in system_view
+    assert "Możliwości DANa" not in system_view
     assert "Diagnostyka (surowe)" not in system_view
 
     for moved_heading in (
@@ -3553,7 +3553,7 @@ def test_index_splits_basic_and_collapsible_views() -> None:
 
     # Operator-first: czat/kompozytor/rozmowy zawsze widoczne. Zdarzenia
     # przeniesione do własnej zakładki LOGI, narzędzia do płaskiej sekcji
-    # System („Możliwości Jarvisa”) — żadne z nich nie jest już zwijane.
+    # System („Możliwości DANa”) — żadne z nich nie jest już zwijane.
     # Surowa diagnostyka (API/health/ustawienia/runtime) zostaje w <details>.
     assert "<details" in markup
     assert "<summary" in markup
@@ -3848,7 +3848,7 @@ def test_event_payload_summary_is_whitelisted_and_redacted(tmp_path: Path) -> No
               password: secretValue,
               auth: `Bearer ${{secretValue}}`,
               headers: {{ authorization: `Bearer ${{secretValue}}` }},
-              cookies: `jarvis=${{secretValue}}`,
+              cookies: `dan=${{secretValue}}`,
               api_key: secretValue,
             }});
             assert.strictEqual(arbitrary, "");
@@ -4163,7 +4163,7 @@ def test_live_state_event_wins_over_an_older_inflight_state_snapshot(tmp_path: P
           let resolveState;
           context.requestJson = async (path) => {
             if (path === "/health") {
-              return { service: "jarvis", state: "IDLE" };
+              return { service: "dan", state: "IDLE" };
             }
             if (path === "/state") {
               return new Promise((resolve) => {
@@ -4758,7 +4758,7 @@ def test_app_stream_client_is_read_only() -> None:
     script = APP_JS.read_text(encoding="utf-8")
 
     assert "new WebSocket" in script
-    assert "jarvis-token." in script
+    assert "dan-token." in script
     # Display-only client: the socket never sends application data.
     assert ".send(" not in script
 
@@ -4783,8 +4783,8 @@ def test_schema_and_migrations_are_unchanged() -> None:
 
 
 def test_runtime_files_avoid_forbidden_legacy_strings() -> None:
-    scanned_roots = (ROOT / "jarvis", ROOT / "scripts")
-    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
+    scanned_roots = (ROOT / "dan", ROOT / "scripts")
+    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
     text_suffixes = {".py", ".sql", ".toml", ".md", ".sh", ".example", ".html", ".js", ".css", ""}
     offenders: list[tuple[str, str]] = []
 

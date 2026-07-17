@@ -2,13 +2,13 @@
 
 The model opens its answer with a [[GŁOS]]…[[/GŁOS]] block (a short, redacted
 form for the ear); the router forwards only that inner text to TTS as deltas
-arrive, so Jarvis starts talking immediately, and drops the rich chat text that
+arrive, so DAN starts talking immediately, and drops the rich chat text that
 follows. Markers may be split across delta boundaries.
 """
 
 from __future__ import annotations
 
-from jarvis.voice.speech_form_stream import SpeechFormStreamRouter
+from dan.voice.speech_form_stream import SpeechFormStreamRouter
 
 
 def _run(deltas: list[str]) -> str:

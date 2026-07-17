@@ -1,0 +1,47 @@
+#!/bin/sh
+# DAN daemon entry wrapper (LAUNCH_SUPERVISION.md §5).
+#
+# Run by hand from the repo, or installed to ~/.dan/bin/dand by
+# scripts/install-launchd.sh (which pins DAN_REPO to an absolute path,
+# because launchd cannot resolve paths relative to this repo).
+set -eu
+
+if [ -z "${DAN_REPO:-}" ]; then
+  DAN_REPO="$(cd "$(dirname "$0")/.." && pwd)"
+fi
+
+PYTHON="$DAN_REPO/.venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+  PYTHON="$(command -v python3)"
+fi
+
+# Config resolution: explicit DAN_CONFIG wins; otherwise prefer the
+# user-owned config outside the repo, falling back to the repo default.
+if [ -z "${DAN_CONFIG:-}" ] && [ -f "$HOME/.dan/config.toml" ]; then
+  DAN_CONFIG="$HOME/.dan/config.toml"
+  export DAN_CONFIG
+fi
+
+if [ -n "${DAN_CONFIG:-}" ]; then
+  DAN_CONFIG_REAL="$("$PYTHON" - "$DAN_CONFIG" <<'PY'
+import sys
+from pathlib import Path
+
+print(Path(sys.argv[1]).expanduser().resolve(strict=False))
+PY
+)"
+  DAN_EXAMPLE_REAL="$("$PYTHON" - "$DAN_REPO/config/dan.example.toml" <<'PY'
+import sys
+from pathlib import Path
+
+print(Path(sys.argv[1]).expanduser().resolve(strict=False))
+PY
+)"
+  if [ "$DAN_CONFIG_REAL" = "$DAN_EXAMPLE_REAL" ]; then
+    echo "config/dan.example.toml is not a runtime config." >&2
+    echo "Use ~/.dan/config.toml or $DAN_REPO/config/dan.toml." >&2
+    exit 1
+  fi
+fi
+
+exec "$PYTHON" -m dan.cli daemon run "$@"

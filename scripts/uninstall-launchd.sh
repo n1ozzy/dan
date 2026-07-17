@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Manual launchd uninstall for the official com.ozzy.jarvisd agent
+# Manual launchd uninstall for the official com.dan.dand agent
 # (LAUNCH_SUPERVISION.md §5, FROZEN). Unloads the agent and removes the
 # plist and wrapper. It NEVER deletes the database, logs, or the API token.
 # Without --yes it only prints the plan and exits.
 set -euo pipefail
 
-LABEL="com.ozzy.jarvisd"
-JARVIS_HOME="$HOME/.jarvis"
-WRAPPER_DST="$JARVIS_HOME/bin/jarvisd"
+LABEL="com.dan.dand"
+DAN_HOME="$HOME/.dan"
+WRAPPER_DST="$DAN_HOME/bin/dand"
 PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 
@@ -20,7 +20,7 @@ elif [ -n "${1:-}" ]; then
 fi
 
 cat <<PLAN
-Jarvis launchd uninstall plan (label: $LABEL)
+DAN launchd uninstall plan (label: $LABEL)
 ==============================================
 This will do EXACTLY the following, nothing else:
 
@@ -29,9 +29,9 @@ This will do EXACTLY the following, nothing else:
   3. rm $WRAPPER_DST
 
 It NEVER deletes:
-  - the database  $JARVIS_HOME/jarvis.db
-  - the logs      $JARVIS_HOME/logs/
-  - the API token $JARVIS_HOME/runtime/api-token
+  - the database  $DAN_HOME/dan.db
+  - the logs      $DAN_HOME/logs/
+  - the API token $DAN_HOME/runtime/api-token
 PLAN
 
 if [ "$APPLY" -ne 1 ]; then

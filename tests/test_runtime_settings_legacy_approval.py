@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from jarvis.daemon.app import create_daemon_app
+from dan.daemon.app import create_daemon_app
 from tests.test_api_smoke import request_json, running_server, write_config
 
 
@@ -22,7 +22,7 @@ LEGACY_APPROVAL_SETTING_KEYS = (
 def test_post_runtime_settings_apply_rejects_legacy_approval_settings_without_persisting(
     tmp_path: Path,
 ) -> None:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
         before = app.get_settings()
@@ -48,7 +48,7 @@ def test_post_runtime_settings_apply_rejects_legacy_approval_settings_without_pe
 def test_runtime_settings_do_not_project_legacy_approval_rows(
     tmp_path: Path,
 ) -> None:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
         app.update_settings({key: True for key in LEGACY_APPROVAL_SETTING_KEYS})

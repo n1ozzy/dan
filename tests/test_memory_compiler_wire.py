@@ -11,18 +11,18 @@ from typing import Any
 
 import pytest
 
-from jarvis.brain.base import BrainMessage, BrainRequest
-from jarvis.brain.context_builder import ContextBuilder
-from jarvis.memory.compiler import (
+from dan.brain.base import BrainMessage, BrainRequest
+from dan.brain.context_builder import ContextBuilder
+from dan.memory.compiler import (
     CompiledMemoryContext,
     MemoryCompiler,
     SelectedMemoryItem,
     SkippedMemoryItem,
 )
-from jarvis.memory.items import MemoryItemRepository
-from jarvis.memory.manager import MemoryManager
-from jarvis.security.redaction import REDACTION_PLACEHOLDER
-from jarvis.store.db import close_quietly, initialize_database
+from dan.memory.items import MemoryItemRepository
+from dan.memory.manager import MemoryManager
+from dan.security.redaction import REDACTION_PLACEHOLDER
+from dan.store.db import close_quietly, initialize_database
 
 
 @pytest.fixture
@@ -36,8 +36,8 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 @pytest.fixture
 def persona_path(tmp_path: Path) -> Path:
-    path = tmp_path / "jarvis.md"
-    path.write_text("Persona: Jarvis owns memory.", encoding="utf-8")
+    path = tmp_path / "dan.md"
+    path.write_text("Persona: DAN owns memory.", encoding="utf-8")
     return path
 
 
@@ -849,7 +849,7 @@ def test_flag_on_includes_selected_compiled_memory(
         conn,
         memory_id="mem-active",
         title="Project truth",
-        claim="Use SQLite as Jarvis memory.",
+        claim="Use SQLite as DAN memory.",
     )
     insert_evidence(conn, memory_id="mem-active")
     builder = enabled_builder(conn, persona_path)
@@ -867,7 +867,7 @@ def test_flag_on_includes_selected_compiled_memory(
     assert messages[0].content == (
         "Compiled memory:\n"
         "- title: Project truth\n"
-        "  claim: Use SQLite as Jarvis memory.\n"
+        "  claim: Use SQLite as DAN memory.\n"
         "  evidence_count: 1"
     )
 
@@ -2518,7 +2518,7 @@ def selected_memory_item(
         canonical_key="canonical-selected",
         kind="semantic",
         scope="project",
-        namespace="project/jarvis",
+        namespace="project/dan",
         title=title,
         claim=claim,
         reason_selected="eligible",
@@ -2577,7 +2577,7 @@ def insert_memory_item(
     canonical_key: str | None = None,
     kind: str = "semantic",
     scope: str = "project",
-    namespace: str = "project/jarvis",
+    namespace: str = "project/dan",
     title: str | None = None,
     claim: str | None = None,
     content: str | None = None,

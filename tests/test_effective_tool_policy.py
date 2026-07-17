@@ -7,8 +7,8 @@ the panel is what the engine enforces on the next turn — no restart.
 
 from __future__ import annotations
 
-from jarvis.daemon.app import _policy_with_settings_overlay
-from jarvis.tools.permissions import RequestSource, ToolDecision, ToolPermissionPolicy
+from dan.daemon.app import _policy_with_settings_overlay
+from dan.tools.permissions import RequestSource, ToolDecision, ToolPermissionPolicy
 
 
 def _decide_shell(policy: ToolPermissionPolicy) -> ToolDecision:

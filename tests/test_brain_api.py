@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import (
+from dan.daemon.app import (
     BRAIN_ADAPTER_SETTING_KEY,
     DaemonApp,
     create_daemon_app,
@@ -48,8 +48,8 @@ def write_fake_cli(tmp_path: Path, *, answer: str = "fake cli answer") -> tuple[
 
 @pytest.fixture
 def app(tmp_path: Path) -> Iterator[DaemonApp]:
-    config_path = tmp_path / "jarvis.toml"
-    config_path.write_text(config_text(tmp_path / "home" / "jarvis.db"), encoding="utf-8")
+    config_path = tmp_path / "dan.toml"
+    config_path.write_text(config_text(tmp_path / "home" / "dan.db"), encoding="utf-8")
     daemon_app = create_daemon_app(config_path)
     daemon_app.start()
     try:
@@ -61,9 +61,9 @@ def app(tmp_path: Path) -> Iterator[DaemonApp]:
 @pytest.fixture
 def cli_app(tmp_path: Path) -> Iterator[DaemonApp]:
     script, prompt_dump = write_fake_cli(tmp_path)
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(
-        config_text_with_cli(tmp_path / "home" / "jarvis.db", script),
+        config_text_with_cli(tmp_path / "home" / "dan.db", script),
         encoding="utf-8",
     )
     daemon_app = create_daemon_app(config_path)
@@ -206,9 +206,9 @@ def test_post_brain_switch_same_adapter_is_idempotent(app: DaemonApp) -> None:
 
 def test_persisted_adapter_survives_daemon_restart(tmp_path: Path) -> None:
     script, _ = write_fake_cli(tmp_path)
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(
-        config_text_with_cli(tmp_path / "home" / "jarvis.db", script),
+        config_text_with_cli(tmp_path / "home" / "dan.db", script),
         encoding="utf-8",
     )
 
@@ -230,9 +230,9 @@ def test_persisted_adapter_survives_daemon_restart(tmp_path: Path) -> None:
 
 def test_stale_persisted_adapter_falls_back_to_config_default(tmp_path: Path) -> None:
     script, _ = write_fake_cli(tmp_path)
-    config_with_cli = tmp_path / "jarvis-cli.toml"
+    config_with_cli = tmp_path / "dan-cli.toml"
     config_with_cli.write_text(
-        config_text_with_cli(tmp_path / "home" / "jarvis.db", script),
+        config_text_with_cli(tmp_path / "home" / "dan.db", script),
         encoding="utf-8",
     )
     first = create_daemon_app(config_with_cli)
@@ -243,9 +243,9 @@ def test_stale_persisted_adapter_falls_back_to_config_default(tmp_path: Path) ->
 
     # Same DB, but the config no longer registers claude_cli: the stale
     # persisted choice must not brick the daemon.
-    config_without_cli = tmp_path / "jarvis-plain.toml"
+    config_without_cli = tmp_path / "dan-plain.toml"
     config_without_cli.write_text(
-        config_text(tmp_path / "home" / "jarvis.db"), encoding="utf-8"
+        config_text(tmp_path / "home" / "dan.db"), encoding="utf-8"
     )
     second = create_daemon_app(config_without_cli)
     try:
@@ -281,8 +281,8 @@ def test_conversation_history_survives_brain_switch(cli_app: DaemonApp) -> None:
 
 
 def test_brain_switch_requires_transport_token(tmp_path: Path) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
-    config_path = tmp_path / "jarvis.toml"
+    db_path = tmp_path / "home" / "dan.db"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(
         config_text(db_path).replace("api_token_required = false", "api_token_required = true"),
         encoding="utf-8",

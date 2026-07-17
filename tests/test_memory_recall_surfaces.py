@@ -9,17 +9,17 @@ from pathlib import Path
 
 import pytest
 
-from jarvis import cli as jarvis_cli
-from jarvis.memory.archive import ArchiveDocument, MemoryArchive, memory_recall_to_dict
-from jarvis.daemon.app import create_daemon_app
-from jarvis.store.db import initialize_database
-from jarvis.tools.registry import ToolRegistry, ToolRequest
+from dan import cli as dan_cli
+from dan.memory.archive import ArchiveDocument, MemoryArchive, memory_recall_to_dict
+from dan.daemon.app import create_daemon_app
+from dan.store.db import initialize_database
+from dan.tools.registry import ToolRegistry, ToolRequest
 from tests.test_api_smoke import request_json, running_server, write_config
 from tests.test_cli_memory import config_args, memory_server
 
 
 def _seed_archive(tmp_path: Path) -> tuple[MemoryArchive, dict[str, object]]:
-    conn = initialize_database(tmp_path / "jarvis.db")
+    conn = initialize_database(tmp_path / "dan.db")
     archive = MemoryArchive(conn, now=lambda: "2026-07-16T12:00:00Z")
     archive.upsert(
         ArchiveDocument(
@@ -34,7 +34,7 @@ def _seed_archive(tmp_path: Path) -> tuple[MemoryArchive, dict[str, object]]:
 
 
 def test_memory_recall_tool_returns_canonical_payload(tmp_path: Path) -> None:
-    tool_module = import_module("jarvis.tools.memory_recall_tool")
+    tool_module = import_module("dan.tools.memory_recall_tool")
     archive, expected = _seed_archive(tmp_path)
     registry = ToolRegistry()
     registry.register(tool_module.MemoryRecallTool(archive))
@@ -53,7 +53,7 @@ def test_memory_recall_tool_returns_canonical_payload(tmp_path: Path) -> None:
 
 
 def test_memory_recall_rejects_unknown_arguments_through_registry(tmp_path: Path) -> None:
-    tool_module = import_module("jarvis.tools.memory_recall_tool")
+    tool_module = import_module("dan.tools.memory_recall_tool")
     archive, _expected = _seed_archive(tmp_path)
     registry = ToolRegistry()
     registry.register(tool_module.MemoryRecallTool(archive))
@@ -72,7 +72,7 @@ def test_memory_recall_rejects_unknown_arguments_through_registry(tmp_path: Path
 
 
 def test_memory_recall_api_returns_canonical_payload(tmp_path: Path) -> None:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
         assert app.conn is not None
@@ -108,7 +108,7 @@ def test_memory_recall_cli_returns_canonical_payload(
 ) -> None:
     _archive, expected = _seed_archive(tmp_path)
     with memory_server(response_payload=expected) as (base_url, records):
-        exit_code = jarvis_cli.main(
+        exit_code = dan_cli.main(
             [
                 *config_args(),
                 "memory",
@@ -135,8 +135,8 @@ def test_memory_recall_cli_returns_canonical_payload(
 
 
 def test_memory_recall_local_mcp_returns_canonical_structured_content(tmp_path: Path) -> None:
-    mcp_module = import_module("jarvis.mcp.memory_server")
-    tool_module = import_module("jarvis.tools.memory_recall_tool")
+    mcp_module = import_module("dan.mcp.memory_server")
+    tool_module = import_module("dan.tools.memory_recall_tool")
     archive, expected = _seed_archive(tmp_path)
     requests = io.StringIO(
         json.dumps(
@@ -166,14 +166,14 @@ def test_memory_recall_local_mcp_returns_canonical_structured_content(tmp_path: 
     mcp_module.serve(requests, responses, tool_module.MemoryRecallTool(archive))
 
     messages = [json.loads(line) for line in responses.getvalue().splitlines()]
-    assert messages[0]["result"]["serverInfo"]["name"] == "jarvis-memory"
+    assert messages[0]["result"]["serverInfo"]["name"] == "dan-memory"
     assert messages[1]["result"]["structuredContent"] == expected
     assert messages[1]["result"]["isError"] is False
 
 
 def test_memory_mcp_rejects_unsupported_protocol_version(tmp_path: Path) -> None:
-    mcp_module = import_module("jarvis.mcp.memory_server")
-    tool_module = import_module("jarvis.tools.memory_recall_tool")
+    mcp_module = import_module("dan.mcp.memory_server")
+    tool_module = import_module("dan.tools.memory_recall_tool")
     archive, _expected = _seed_archive(tmp_path)
     requests = io.StringIO(
         json.dumps(

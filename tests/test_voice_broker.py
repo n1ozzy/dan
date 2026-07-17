@@ -15,11 +15,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.voice.broker import VoiceBroker
-from jarvis.voice.queue import VoiceQueue
-from jarvis.voice.speech import SpeechPipeline
-from jarvis.voice.tts import (
+from dan.store.db import close_quietly, initialize_database
+from dan.voice.broker import VoiceBroker
+from dan.voice.queue import VoiceQueue
+from dan.voice.speech import SpeechPipeline
+from dan.voice.tts import (
     BannedEngineError,
     MockTTSEngine,
     PlaybackCancelled,
@@ -388,7 +388,7 @@ def test_speak_text_never_enqueues_tool_call_blocks(db_path: Path) -> None:
         turn_id="turn-1",
         text=(
             "Sprawdzam plik dla ciebie teraz. "
-            '<jarvis_tool_call>{"name":"file_read"}</jarvis_tool_call> '
+            '<dan_tool_call>{"name":"file_read"}</dan_tool_call> '
             "Zaraz wrócę z wynikiem pliku."
         ),
     )
@@ -443,7 +443,7 @@ def test_filler_delay_uses_milliseconds(monkeypatch: pytest.MonkeyPatch, db_path
         def disarm(self) -> None:
             return None
 
-    monkeypatch.setattr("jarvis.voice.speech.FillerTimer", FakeFillerTimer)
+    monkeypatch.setattr("dan.voice.speech.FillerTimer", FakeFillerTimer)
     pipeline = SpeechPipeline(lambda: connect(db_path), config=voice_config(filler_after_ms=150))
 
     pipeline.arm_filler(turn_id="turn-delay")
@@ -473,7 +473,7 @@ def test_finished_speech_is_published_once_to_isolated_shared_broker(
     db_path: Path,
     tmp_path: Path,
 ) -> None:
-    from jarvis.voice.shared_broker import SharedBrokerClient
+    from dan.voice.shared_broker import SharedBrokerClient
 
     request_dir = tmp_path / "isolated-shared-broker" / "req"
     config = voice_config(
@@ -483,9 +483,9 @@ def test_finished_speech_is_published_once_to_isolated_shared_broker(
         supertonic_voice="M3",
         supertonic_speed=1.35,
         mastering_profile="clean",
-        persona_voices={"jarvis": "M3"},
-        persona_speeds={"jarvis": 1.35},
-        persona_mastering={"jarvis": "clean"},
+        persona_voices={"dan": "M3"},
+        persona_speeds={"dan": 1.35},
+        persona_mastering={"dan": "clean"},
     )
     client = SharedBrokerClient(config, request_dir=request_dir)
     pipeline = SpeechPipeline(
@@ -509,12 +509,12 @@ def test_finished_speech_is_published_once_to_isolated_shared_broker(
 
 
 def test_banned_engine_in_config_kills_daemon_at_startup(tmp_path: Path) -> None:
-    from jarvis.daemon.app import create_daemon_app
+    from dan.daemon.app import create_daemon_app
     from tests.test_api_smoke import config_text
 
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(
-        config_text(tmp_path / "home" / "jarvis.db")
+        config_text(tmp_path / "home" / "dan.db")
         .replace("[voice]\nenabled = false", "[voice]\nenabled = true")
         .replace('default_tts = "mock"', 'default_tts = "edgetts"'),
         encoding="utf-8",

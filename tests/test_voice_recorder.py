@@ -21,7 +21,7 @@ from typing import Callable
 
 import pytest
 
-from jarvis.voice.recorder import (
+from dan.voice.recorder import (
     MockRecorder,
     RecorderBackendError,
     SoxRecorder,
@@ -408,7 +408,7 @@ def test_segment_mode_off_by_default_keeps_one_capture(tmp_path: Path) -> None:
 def _daemon_config_path(tmp_path: Path, binary: Path) -> Path:
     from tests.test_api_smoke import config_text
 
-    text = config_text(tmp_path / "home" / "jarvis.db")
+    text = config_text(tmp_path / "home" / "dan.db")
     text = text.replace(
         "queue_persisted = true",
         f'queue_persisted = true\nrecorder = "sox"\nrecorder_binary = "{binary}"',
@@ -422,13 +422,13 @@ def _daemon_config_path(tmp_path: Path, binary: Path) -> Path:
         "allow_bluetooth_microphone = false",
         "allow_bluetooth_microphone = true",
     )
-    config_path = tmp_path / "jarvis.toml"
+    config_path = tmp_path / "dan.toml"
     config_path.write_text(text, encoding="utf-8")
     return config_path
 
 
 def test_daemon_builds_sox_recorder_wired_to_audio_policy(tmp_path: Path) -> None:
-    from jarvis.daemon.app import create_daemon_app
+    from dan.daemon.app import create_daemon_app
 
     binary, argv_file = fake_sox(tmp_path)
     daemon_app = create_daemon_app(_daemon_config_path(tmp_path, binary))
@@ -448,7 +448,7 @@ def test_daemon_builds_sox_recorder_wired_to_audio_policy(tmp_path: Path) -> Non
 
 
 def test_daemon_dies_at_startup_on_missing_sox_binary(tmp_path: Path) -> None:
-    from jarvis.daemon.app import create_daemon_app
+    from dan.daemon.app import create_daemon_app
 
     daemon_app = create_daemon_app(
         _daemon_config_path(tmp_path, tmp_path / "no-such-sox")

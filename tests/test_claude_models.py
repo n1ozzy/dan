@@ -1,4 +1,4 @@
-"""Tests for live Claude model discovery (jarvis/brain/claude_models.py).
+"""Tests for live Claude model discovery (dan/brain/claude_models.py).
 
 The real `claude` binary is never spawned here — every path uses an injected
 runner or a tmp cache file.
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.brain.claude_models import (
+from dan.brain.claude_models import (
     _FALLBACK_MODELS,
     _PINNED_MODELS,
     filter_model_ids,

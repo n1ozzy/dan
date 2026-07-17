@@ -7,16 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.memory import (
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.memory import (
     MemoryCandidateRepository,
     MemoryEvidenceRepository,
     MemoryItemRepository,
     MemoryManager,
 )
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.tools.memory_tool import MAX_BODY_CHARS, MAX_TITLE_CHARS, MemorySaveTool
-from jarvis.tools.permissions import RequestSource
+from dan.store.db import close_quietly, initialize_database
+from dan.tools.memory_tool import MAX_BODY_CHARS, MAX_TITLE_CHARS, MemorySaveTool
+from dan.tools.permissions import RequestSource
 from tests.test_api_smoke import write_config
 
 
@@ -49,7 +49,7 @@ def tool(conn: sqlite3.Connection) -> MemorySaveTool:
 
 @pytest.fixture
 def app(tmp_path: Path) -> DaemonApp:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     daemon_app.start()
     try:
@@ -228,7 +228,7 @@ def test_daemon_app_registers_memory_save(app: DaemonApp) -> None:
 def test_memory_save_request_executes_directly_without_approval_row(app: DaemonApp) -> None:
     requested = app.request_tool(
         tool_name="memory_save",
-        arguments={"kind": "project", "title": "Jarvis v4", "body": "Repo w ~/Documents/dev."},
+        arguments={"kind": "project", "title": "DAN v4", "body": "Repo w ~/Documents/dev."},
         requested_by="model",
         source=RequestSource.MODEL_ORIGINATED,
     )

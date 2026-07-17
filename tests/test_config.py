@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-import jarvis.config as config_module
-from jarvis.config import (
+import dan.config as config_module
+from dan.config import (
     BrainConfig,
     COMPILED_MEMORY_ENABLED_ENV,
     COMPILED_MEMORY_FORCE_DISABLED_ENV,
@@ -19,9 +19,9 @@ from jarvis.config import (
     compiled_memory_operator_env_controls,
     load_config,
 )
-from jarvis.logging import redact_secrets
-from jarvis.memory.compiler import MemoryCompilerConfig
-from jarvis.paths import ensure_runtime_dirs, expand_user_path, resolve_runtime_paths
+from dan.logging import redact_secrets
+from dan.memory.compiler import MemoryCompilerConfig
+from dan.paths import ensure_runtime_dirs, expand_user_path, resolve_runtime_paths
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,8 +86,8 @@ def test_persistent_brain_context_policy_rejects_invalid_config(
 def canonical_config(**overrides: str | int | bool) -> str:
     daemon_port = overrides.get("daemon_port", 41741)
     brain_adapter = overrides.get("brain_adapter", "mock")
-    runtime_home = overrides.get("runtime_home", "~/.jarvis")
-    db_path = overrides.get("db_path", "~/.jarvis/jarvis.db")
+    runtime_home = overrides.get("runtime_home", "~/.dan")
+    db_path = overrides.get("db_path", "~/.dan/dan.db")
     memory_enabled = overrides.get("memory_enabled", True)
     compiled_context_enabled = overrides.get("compiled_context_enabled", False)
     compiled_context_max_items = overrides.get(
@@ -101,7 +101,7 @@ def canonical_config(**overrides: str | int | bool) -> str:
     )
     return f"""
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "127.0.0.1"
 port = {daemon_port}
 log_level = "INFO"
@@ -160,14 +160,14 @@ destructive_tools_enabled = false
 
 [runtime]
 home = "{runtime_home}"
-logs_dir = "~/.jarvis/logs"
-runtime_dir = "~/.jarvis/runtime"
-pid_file = "~/.jarvis/runtime/jarvisd.pid"
+logs_dir = "~/.dan/logs"
+runtime_dir = "~/.dan/runtime"
+pid_file = "~/.dan/runtime/dand.pid"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd"
+label = "com.dan.dand"
 install_automatically = false
 """
 
@@ -179,12 +179,12 @@ def write_config(path: Path, **overrides: str | int | bool) -> Path:
 
 def run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     merged_env = os.environ.copy()
-    merged_env.pop("JARVIS_CONFIG", None)
+    merged_env.pop("DAN_CONFIG", None)
     merged_env["PYTHONPATH"] = str(ROOT)
     if env:
         merged_env.update(env)
     return subprocess.run(
-        [sys.executable, "-m", "jarvis.cli", *args],
+        [sys.executable, "-m", "dan.cli", *args],
         cwd=ROOT,
         env=merged_env,
         text=True,
@@ -193,30 +193,30 @@ def run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.Complet
     )
 
 
-def test_default_config_fails_without_real_jarvis_toml(
+def test_default_config_fails_without_real_dan_toml(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("JARVIS_CONFIG", raising=False)
+    monkeypatch.delenv("DAN_CONFIG", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", tmp_path / "missing-repo.toml")
 
-    with pytest.raises(ConfigError, match="Jarvis config not found"):
+    with pytest.raises(ConfigError, match="DAN config not found"):
         load_config()
 
 
-def test_loads_home_jarvis_toml_before_repo_default(
+def test_loads_home_config_toml_before_repo_default(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     home = tmp_path / "home"
-    home_config = home / ".jarvis" / "jarvis.toml"
-    repo_config = tmp_path / "repo" / "config" / "jarvis.toml"
+    home_config = home / ".dan" / "config.toml"
+    repo_config = tmp_path / "repo" / "config" / "dan.toml"
     home_config.parent.mkdir(parents=True)
     repo_config.parent.mkdir(parents=True)
     write_config(home_config, daemon_port=41901)
     write_config(repo_config, daemon_port=41902)
-    monkeypatch.delenv("JARVIS_CONFIG", raising=False)
+    monkeypatch.delenv("DAN_CONFIG", raising=False)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", repo_config)
 
@@ -226,12 +226,12 @@ def test_loads_home_jarvis_toml_before_repo_default(
     assert config.daemon.port == 41901
 
 
-def test_loads_repo_jarvis_toml_when_home_config_is_absent(
+def test_loads_repo_dan_toml_when_home_config_is_absent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repo_config = write_config(tmp_path / "repo-jarvis.toml", daemon_port=41903)
-    monkeypatch.delenv("JARVIS_CONFIG", raising=False)
+    repo_config = write_config(tmp_path / "repo-dan.toml", daemon_port=41903)
+    monkeypatch.delenv("DAN_CONFIG", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(config_module, "DEFAULT_CONFIG_PATH", repo_config)
 
@@ -242,20 +242,20 @@ def test_loads_repo_jarvis_toml_when_home_config_is_absent(
 
 
 def test_explicit_example_config_still_loads() -> None:
-    config = load_config(ROOT / "config" / "jarvis.example.toml")
+    config = load_config(ROOT / "config" / "dan.example.toml")
 
-    assert config.source_path == ROOT / "config" / "jarvis.example.toml"
-    assert config.daemon.name == "jarvisd"
+    assert config.source_path == ROOT / "config" / "dan.example.toml"
+    assert config.daemon.name == "dand"
     assert config.daemon.port == 41741
     assert config.memory.compiled_context_enabled is False
     assert config.memory.compiled_context_max_items == MemoryCompilerConfig().max_items
     assert config.memory.compiled_context_max_chars == MemoryCompilerConfig().max_chars
     assert config.memory.compiled_context_include_procedural is False
-    assert config.launchd.label == "com.ozzy.jarvisd"
+    assert config.launchd.label == "com.dan.dand"
 
 
 def test_example_config_compiled_memory_defaults_off() -> None:
-    config = load_config(ROOT / "config" / "jarvis.example.toml")
+    config = load_config(ROOT / "config" / "dan.example.toml")
 
     assert config.memory.compiled_context_enabled is False
     assert config.memory.compiled_context_max_items == MemoryCompilerConfig().max_items
@@ -394,11 +394,11 @@ def test_compiled_memory_config_rejects_invalid_types(
 
 
 def test_default_voice_fillers_have_enough_variation(monkeypatch: pytest.MonkeyPatch) -> None:
-    from jarvis.voice.speech import DEFAULT_FILLERS
+    from dan.voice.speech import DEFAULT_FILLERS
 
-    monkeypatch.delenv("JARVIS_CONFIG", raising=False)
+    monkeypatch.delenv("DAN_CONFIG", raising=False)
 
-    fillers = load_config(ROOT / "config" / "jarvis.example.toml").voice.fillers
+    fillers = load_config(ROOT / "config" / "dan.example.toml").voice.fillers
 
     assert len(fillers) >= 4
     assert fillers == DEFAULT_FILLERS
@@ -408,7 +408,7 @@ def test_default_voice_fillers_have_enough_variation(monkeypatch: pytest.MonkeyP
 def test_explicit_config_path_overrides_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("JARVIS_CONFIG", raising=False)
+    monkeypatch.delenv("DAN_CONFIG", raising=False)
     config_path = write_config(tmp_path / "custom.toml", daemon_port=41888)
 
     config = load_config(config_path)
@@ -417,11 +417,11 @@ def test_explicit_config_path_overrides_default(
     assert config.daemon.port == 41888
 
 
-def test_jarvis_config_environment_variable_keeps_single_production_adapter(
+def test_dan_config_environment_variable_keeps_single_production_adapter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_path = write_config(tmp_path / "env.toml", brain_adapter="env-mock")
-    monkeypatch.setenv("JARVIS_CONFIG", str(config_path))
+    monkeypatch.setenv("DAN_CONFIG", str(config_path))
 
     config = load_config()
 
@@ -450,7 +450,7 @@ def test_runtime_path_expansion_resolves_tilde(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    assert expand_user_path("~/.jarvis/jarvis.db") == tmp_path / ".jarvis" / "jarvis.db"
+    assert expand_user_path("~/.dan/dan.db") == tmp_path / ".dan" / "dan.db"
 
 
 def test_resolve_runtime_paths_does_not_create_files(
@@ -462,8 +462,8 @@ def test_resolve_runtime_paths_does_not_create_files(
 
     paths = resolve_runtime_paths(config)
 
-    assert paths.home == tmp_path / ".jarvis"
-    assert paths.db_path == tmp_path / ".jarvis" / "jarvis.db"
+    assert paths.home == tmp_path / ".dan"
+    assert paths.db_path == tmp_path / ".dan" / "dan.db"
     assert not paths.home.exists()
     assert not paths.db_path.exists()
     assert not paths.pid_file.exists()
@@ -479,9 +479,9 @@ def test_ensure_runtime_dirs_creates_only_expected_directories(
     ensure_runtime_dirs(paths)
 
     expected_dirs = {
-        tmp_path / ".jarvis",
-        tmp_path / ".jarvis" / "logs",
-        tmp_path / ".jarvis" / "runtime",
+        tmp_path / ".dan",
+        tmp_path / ".dan" / "logs",
+        tmp_path / ".dan" / "runtime",
     }
     actual_dirs = {path for path in tmp_path.rglob("*") if path.is_dir()}
     assert actual_dirs == expected_dirs
@@ -489,7 +489,7 @@ def test_ensure_runtime_dirs_creates_only_expected_directories(
     assert not paths.pid_file.exists()
 
 
-# --- FIX-10: owner-only permissions on Jarvis-owned runtime state -------------
+# --- FIX-10: owner-only permissions on DAN-owned runtime state -------------
 
 
 def _mode(path: Path) -> int:
@@ -512,7 +512,7 @@ def test_ensure_runtime_dirs_are_owner_only(
 
 
 def test_database_file_is_owner_only(tmp_path: Path) -> None:
-    from jarvis.store.db import close_quietly, initialize_database
+    from dan.store.db import close_quietly, initialize_database
 
     db_path = tmp_path / "state.db"
     conn = initialize_database(db_path)
@@ -525,7 +525,7 @@ def test_database_file_is_owner_only(tmp_path: Path) -> None:
 def test_log_file_is_owner_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from jarvis.logging import configure_logging
+    from dan.logging import configure_logging
 
     monkeypatch.setenv("HOME", str(tmp_path))
     config = load_config(write_config(tmp_path / "log.toml"))
@@ -575,8 +575,8 @@ def test_cli_paths_show_returns_valid_json(tmp_path: Path, monkeypatch: pytest.M
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["home"] == str(tmp_path / ".jarvis")
-    assert payload["db_path"] == str(tmp_path / ".jarvis" / "jarvis.db")
+    assert payload["home"] == str(tmp_path / ".dan")
+    assert payload["db_path"] == str(tmp_path / ".dan" / "dan.db")
 
 
 def test_cli_doctor_returns_expected_keys(tmp_path: Path) -> None:
@@ -600,7 +600,7 @@ def test_cli_doctor_returns_expected_keys(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert set(payload) == expected_keys
     assert payload["config_ok"] is True
-    assert payload["launchd_label"] == "com.ozzy.jarvisd"
+    assert payload["launchd_label"] == "com.dan.dand"
     assert payload["voice_enabled"] is False
 
 
@@ -631,14 +631,14 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
         "--dangerously-skip-permissions",
     )
     roots = (
-        ROOT / "jarvis",
+        ROOT / "dan",
         ROOT / "config",
         ROOT / "scripts",
         ROOT / "launchd",
     )
     text_suffixes = {".py", ".toml", ".md", ".sh", ".example"}
     offenders: list[tuple[str, str]] = []
-    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
 
     for root in roots:
         files = [path for path in root.rglob("*") if path.is_file()]

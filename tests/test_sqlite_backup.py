@@ -50,7 +50,7 @@ def _rows(path: Path, table: str) -> int:
 
 
 def test_backup_preserves_committed_wal_rows_and_is_owner_only(tmp_path: Path) -> None:
-    from jarvis.migration.sqlite_backup import backup_database
+    from dan.migration.sqlite_backup import backup_database
 
     source, writer = _create_live_wal_database(tmp_path / "source.db", rows=3)
     destination = tmp_path / "backup.db"
@@ -67,7 +67,7 @@ def test_backup_preserves_committed_wal_rows_and_is_owner_only(tmp_path: Path) -
 
 
 def test_backup_refuses_unapproved_writer(tmp_path: Path) -> None:
-    from jarvis.migration.sqlite_backup import (
+    from dan.migration.sqlite_backup import (
         ActiveWriterError,
         DatabaseHandle,
         assert_quiescent_database,
@@ -81,7 +81,7 @@ def test_backup_refuses_unapproved_writer(tmp_path: Path) -> None:
 def test_quiescence_runs_concrete_lsof_contract_and_parses_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import jarvis.migration.sqlite_backup as sqlite_backup
+    import dan.migration.sqlite_backup as sqlite_backup
 
     source = _create_wal_database(tmp_path / "source.db", rows=0)
     observed: list[list[str]] = []
@@ -101,7 +101,7 @@ def test_quiescence_runs_concrete_lsof_contract_and_parses_process(
 def test_backup_failure_does_not_leave_destination_or_sidecars(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import jarvis.migration.sqlite_backup as sqlite_backup
+    import dan.migration.sqlite_backup as sqlite_backup
 
     source = _create_wal_database(tmp_path / "source.db", rows=1)
     destination = tmp_path / "backup.db"

@@ -14,8 +14,8 @@ Two things that the durable path must do and the model path must NOT:
 
 from __future__ import annotations
 
-from jarvis.security.redaction import REDACTION_PLACEHOLDER, redact_secrets
-from jarvis.tools.registry import _redact
+from dan.security.redaction import REDACTION_PLACEHOLDER, redact_secrets
+from dan.tools.registry import _redact
 
 
 def test_persisted_redaction_masks_separator_variant_keys() -> None:

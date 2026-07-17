@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from jarvis import cli as jarvis_cli
+from dan import cli as dan_cli
 from tests.test_api_smoke import write_config
 
 
@@ -63,7 +63,7 @@ def history_server(
             self.wfile.write(body)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, name="jarvis-cli-history-test", daemon=True)
+    thread = threading.Thread(target=server.serve_forever, name="dan-cli-history-test", daemon=True)
     thread.start()
     try:
         host, port = server.server_address[:2]
@@ -76,13 +76,13 @@ def history_server(
 
 
 def run_cli(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, str, str]:
-    rc = jarvis_cli.main(list(args))
+    rc = dan_cli.main(list(args))
     captured = capsys.readouterr()
     return rc, captured.out, captured.err
 
 
 def config_args() -> tuple[str, str]:
-    return "--config", str(ROOT / "config" / "jarvis.example.toml")
+    return "--config", str(ROOT / "config" / "dan.example.toml")
 
 
 def unused_local_url() -> str:
@@ -182,7 +182,7 @@ def test_cli_turns_list_requires_conversation_id_locally(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as exc_info:
-        jarvis_cli.main([*config_args(), "turns", "list"])
+        dan_cli.main([*config_args(), "turns", "list"])
     captured = capsys.readouterr()
 
     assert exc_info.value.code == 2
@@ -314,7 +314,7 @@ def test_cli_history_commands_do_not_start_daemon(
     def fail_create_daemon_app(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("history commands must not start DaemonApp")
 
-    monkeypatch.setattr(jarvis_cli, "create_daemon_app", fail_create_daemon_app)
+    monkeypatch.setattr(dan_cli, "create_daemon_app", fail_create_daemon_app)
 
     with history_server() as (base_url, _records):
         rc, _out, _err = run_cli(capsys, *config_args(), *command, "--url", base_url)
@@ -335,13 +335,13 @@ def test_cli_history_commands_do_not_initialize_or_create_db(
     tmp_path: Path,
     command: tuple[str, ...],
 ) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
-    config_path = write_config(tmp_path / "jarvis.toml", db_path)
+    db_path = tmp_path / "home" / "dan.db"
+    config_path = write_config(tmp_path / "dan.toml", db_path)
 
     def fail_initialize_database(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("history commands must not initialize SQLite")
 
-    monkeypatch.setattr(jarvis_cli, "initialize_database", fail_initialize_database)
+    monkeypatch.setattr(dan_cli, "initialize_database", fail_initialize_database)
 
     with history_server() as (base_url, _records):
         rc, _out, _err = run_cli(

@@ -9,15 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.memory.inbox import (
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.memory.inbox import (
     MemoryCandidateConflict,
     MemoryCandidateNotFound,
     MemoryCandidateRepository,
 )
-from jarvis.security.redaction import REDACTION_PLACEHOLDER
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import create_event_store
+from dan.security.redaction import REDACTION_PLACEHOLDER
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import create_event_store
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import (
     request_json,
@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
 def conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    connection = initialize_database(tmp_path / "jarvis.db")
+    connection = initialize_database(tmp_path / "dan.db")
     try:
         yield connection
     finally:
@@ -47,7 +47,7 @@ def repo(conn: sqlite3.Connection) -> MemoryCandidateRepository:
 
 @pytest.fixture
 def config_path(tmp_path: Path) -> Path:
-    return write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    return write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def create_candidate(
     payload: dict[str, object] = {
         "candidate_kind": "semantic",
         "scope": "project",
-        "namespace": "project/jarvis/memory",
+        "namespace": "project/dan/memory",
         "claim": "Memory Inbox candidates are review queue items.",
         "recommended_action": "approve",
     }
@@ -78,7 +78,7 @@ def candidate_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "candidate_kind": "semantic",
         "scope": "project",
-        "namespace": "project/jarvis/memory",
+        "namespace": "project/dan/memory",
         "claim": "Candidate review does not activate memory.",
         "recommended_action": "approve",
     }
@@ -119,7 +119,7 @@ def test_create_candidate_stores_required_and_optional_fields(
 
     assert candidate.candidate_kind == "semantic"
     assert candidate.scope == "project"
-    assert candidate.namespace == "project/jarvis/memory"
+    assert candidate.namespace == "project/dan/memory"
     assert candidate.claim == "Memory Inbox candidates are review queue items."
     assert candidate.title == "Memory Inbox"
     assert candidate.reason == "User asked to remember a project rule."
@@ -291,7 +291,7 @@ def test_candidate_create_approve_reject_emit_concise_events(conn: sqlite3.Conne
         "candidate_id": created.id,
         "candidate_kind": "semantic",
         "scope": "project",
-        "namespace": "project/jarvis/memory",
+        "namespace": "project/dan/memory",
         "status": "needs_review",
         "target_memory_id": "memory-old",
     }

@@ -24,21 +24,21 @@ REQUIRED_DOCS = (
 
 REQUIRED_DIRS = (
     "config",
-    "jarvis",
-    "jarvis/daemon",
-    "jarvis/runtime",
-    "jarvis/api",
-    "jarvis/store",
-    "jarvis/events",
-    "jarvis/turns",
-    "jarvis/brain",
-    "jarvis/memory",
-    "jarvis/audio",
-    "jarvis/voice",
-    "jarvis/tools",
-    "jarvis/workers",
-    "jarvis/panel",
-    "jarvis/panel/assets",
+    "dan",
+    "dan/daemon",
+    "dan/runtime",
+    "dan/api",
+    "dan/store",
+    "dan/events",
+    "dan/turns",
+    "dan/brain",
+    "dan/memory",
+    "dan/audio",
+    "dan/voice",
+    "dan/tools",
+    "dan/workers",
+    "dan/panel",
+    "dan/panel/assets",
     "scripts",
     "launchd",
     "tests",
@@ -48,15 +48,15 @@ REQUIRED_TOP_LEVEL_FILES = (
     "README.md",
     "pyproject.toml",
     ".gitignore",
-    "config/jarvis.example.toml",
-    "jarvis/store/schema.sql",
-    "jarvis/panel/assets/index.html",
-    "jarvis/panel/assets/app.js",
-    "jarvis/panel/assets/styles.css",
-    "scripts/jarvisd",
-    "scripts/jarvis-panel",
+    "config/dan.example.toml",
+    "dan/store/schema.sql",
+    "dan/panel/assets/index.html",
+    "dan/panel/assets/app.js",
+    "dan/panel/assets/styles.css",
+    "scripts/dand",
+    "scripts/dan-panel",
     "scripts/dev-reset-local-state.sh",
-    "launchd/com.ozzy.jarvisd.plist.example",
+    "launchd/com.dan.dand.plist.example",
 )
 
 FORBIDDEN_RUNTIME_SNIPPETS = (
@@ -68,8 +68,11 @@ FORBIDDEN_RUNTIME_SNIPPETS = (
 
 ALLOWED_RUNTIME_SNIPPETS = {
     ("README.md", "/Users/n1_ozzy/Documents/dev/dan"),
-    ("jarvis/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
-    ("jarvis/voice/shared_broker.py", "/tmp/dan"),
+    ("dan/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+    # The test gate detects these literals in source; it never executes them.
+    ("dan/migration/test_safety.py", "/tmp/dan"),
+    ("dan/migration/test_safety.py", "afplay"),
+    ("dan/voice/shared_broker.py", "/tmp/dan"),
 }
 
 
@@ -82,6 +85,7 @@ def test_review_handoff_contains_required_orientation() -> None:
     handoff = (ROOT / "docs/REVIEW_HANDOFF.md").read_text(encoding="utf-8")
 
     required_snippets = (
+        # Historical review provenance remains intentionally named Jarvis.
         "Jarvis v4.2 Reviewer Handoff",
         "JARVIS-V3-EXECUTION-ROADMAP.md is historical only",
         "read-only reference",
@@ -130,7 +134,7 @@ def test_required_scaffold_files_exist() -> None:
 
 
 def test_runtime_scaffold_avoids_legacy_escape_hatches() -> None:
-    scanned_roots = ("jarvis", "config", "scripts", "launchd", "README.md", "pyproject.toml")
+    scanned_roots = ("dan", "config", "scripts", "launchd", "README.md", "pyproject.toml")
     text_suffixes = {".py", ".sql", ".toml", ".md", ".sh", ".example", ".html", ".js", ".css", ""}
     offenders: list[tuple[str, str]] = []
 

@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jarvis.voice.stt import (
+from dan.voice.stt import (
     MlxWhisperEngine,
     MockSTTEngine,
     STTEngineError,
@@ -43,7 +43,7 @@ def _mlx_available(monkeypatch: pytest.MonkeyPatch) -> None:
     # construction guard (_mlx_whisper_available) would otherwise block every
     # engine test in environments without it (CI / this venv). Force it True;
     # the one test that exercises the missing-package path re-patches to False.
-    monkeypatch.setattr("jarvis.voice.stt._mlx_whisper_available", lambda: True)
+    monkeypatch.setattr("dan.voice.stt._mlx_whisper_available", lambda: True)
 
 
 # --- build_stt_engine ---------------------------------------------------------
@@ -77,7 +77,7 @@ def test_build_mlx_whisper_accepts_hyphenated_name(tmp_path: Path) -> None:
 def test_mlx_whisper_missing_package_fails_at_startup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("jarvis.voice.stt._mlx_whisper_available", lambda: False)
+    monkeypatch.setattr("dan.voice.stt._mlx_whisper_available", lambda: False)
     with pytest.raises(STTEngineError, match="mlx_whisper"):
         build_stt_engine("mlx_whisper", config=mlx_config(tmp_path))
 

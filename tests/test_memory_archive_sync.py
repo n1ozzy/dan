@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from jarvis import cli as jarvis_cli
-from jarvis.memory.archive import MemoryArchive
-from jarvis.store.db import close_quietly, initialize_database
+from dan import cli as dan_cli
+from dan.memory.archive import MemoryArchive
+from dan.store.db import close_quietly, initialize_database
 from tests.test_api_smoke import write_config
 
 
 def test_claude_jsonl_sync_imports_only_new_visible_messages(tmp_path: Path) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source = tmp_path / "claude-session.jsonl"
     source.write_text(
@@ -83,8 +83,8 @@ def test_claude_jsonl_sync_imports_only_new_visible_messages(tmp_path: Path) -> 
 def test_jsonl_sync_detects_rewritten_prefix_and_reconciles_stale_records(
     tmp_path: Path,
 ) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source = tmp_path / "rewritten.jsonl"
 
@@ -114,8 +114,8 @@ def test_jsonl_sync_detects_rewritten_prefix_and_reconciles_stale_records(
 def test_jsonl_sync_detects_same_size_rewrite_outside_sampled_edges(
     tmp_path: Path,
 ) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source = tmp_path / "large-rewritten.jsonl"
 
@@ -151,8 +151,8 @@ def test_jsonl_sync_detects_same_size_rewrite_outside_sampled_edges(
 
 
 def test_jsonl_rewrite_waits_for_complete_line_before_reconciliation(tmp_path: Path) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source = tmp_path / "rotating.jsonl"
     old_row = json.dumps(
@@ -184,8 +184,8 @@ def test_jsonl_rewrite_waits_for_complete_line_before_reconciliation(tmp_path: P
 
 
 def test_jsonl_move_keeps_logical_session_identity(tmp_path: Path) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source = tmp_path / "active.jsonl"
     source.write_text(
@@ -210,8 +210,8 @@ def test_jsonl_move_keeps_logical_session_identity(tmp_path: Path) -> None:
 
 
 def test_explicit_directory_sync_discovers_supported_session_files(tmp_path: Path) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source_root = tmp_path / "claude-projects"
     source_root.mkdir()
@@ -237,8 +237,8 @@ def test_explicit_directory_sync_discovers_supported_session_files(tmp_path: Pat
 
 
 def test_directory_sync_reconciles_sources_removed_from_disk(tmp_path: Path) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source_root = tmp_path / "codex-memory"
     source_root.mkdir()
@@ -267,8 +267,8 @@ def test_directory_sync_reconciles_sources_removed_from_disk(tmp_path: Path) -> 
 def test_directory_sync_rolls_back_documents_when_any_candidate_fails(
     tmp_path: Path,
 ) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source_root = tmp_path / "codex-memory"
     source_root.mkdir()
@@ -288,8 +288,8 @@ def test_directory_sync_rolls_back_documents_when_any_candidate_fails(
 
 
 def test_codex_session_sync_indexes_messages_not_reasoning_or_tools(tmp_path: Path) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source = tmp_path / "codex-rollout.jsonl"
     rows = [
@@ -337,8 +337,8 @@ def test_codex_session_sync_indexes_messages_not_reasoning_or_tools(tmp_path: Pa
 def test_codex_fallback_id_is_stable_when_ignored_records_move_offsets(
     tmp_path: Path,
 ) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source = tmp_path / "codex-rollout.jsonl"
     session = {
@@ -380,8 +380,8 @@ def test_codex_fallback_id_is_stable_when_ignored_records_move_offsets(
 
 
 def test_codex_fallback_ids_preserve_identical_message_occurrences(tmp_path: Path) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source = tmp_path / "codex-rollout.jsonl"
     rows = [
@@ -420,8 +420,8 @@ def test_markdown_memory_sources_update_one_stable_document(
     tmp_path: Path,
     source_type: str,
 ) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
     source = tmp_path / f"{source_type}.md"
     source.write_text("# Memory\n\nfirst durable paragraph\n", encoding="utf-8")
@@ -445,9 +445,9 @@ def test_markdown_memory_sources_update_one_stable_document(
     assert conn.execute("SELECT COUNT(*) FROM memory_archive_documents").fetchone()[0] == 0
 
 
-def test_jarvis_turn_sync_reprocesses_updated_turn_without_duplicate_ids(tmp_path: Path) -> None:
-    sync_module = import_module("jarvis.memory.sync")
-    conn = initialize_database(tmp_path / "jarvis.db")
+def test_dan_turn_sync_reprocesses_updated_turn_without_duplicate_ids(tmp_path: Path) -> None:
+    sync_module = import_module("dan.memory.sync")
+    conn = initialize_database(tmp_path / "dan.db")
     conn.execute(
         """
         INSERT INTO conversations (id, created_at, updated_at, status, metadata_json)
@@ -469,7 +469,7 @@ def test_jarvis_turn_sync_reprocesses_updated_turn_without_duplicate_ids(tmp_pat
     conn.commit()
     synchronizer = sync_module.MemorySourceSynchronizer(MemoryArchive(conn), conn)
 
-    first = synchronizer.sync_jarvis_turns()
+    first = synchronizer.sync_dan_turns()
     conn.execute(
         """
         UPDATE turns
@@ -478,7 +478,7 @@ def test_jarvis_turn_sync_reprocesses_updated_turn_without_duplicate_ids(tmp_pat
         """
     )
     conn.commit()
-    revised = synchronizer.sync_jarvis_turns()
+    revised = synchronizer.sync_dan_turns()
 
     assert first.imported == 2
     assert (revised.updated, revised.unchanged) == (1, 1)
@@ -497,7 +497,7 @@ def test_jarvis_turn_sync_reprocesses_updated_turn_without_duplicate_ids(tmp_pat
         """
     )
     conn.commit()
-    cleared = synchronizer.sync_jarvis_turns()
+    cleared = synchronizer.sync_dan_turns()
     assert cleared.deleted == 1
     assert conn.execute("SELECT COUNT(*) FROM memory_archive_documents").fetchone()[0] == 1
 
@@ -506,12 +506,12 @@ def test_cli_runs_explicit_local_source_sync(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
-    config_path = write_config(tmp_path / "jarvis.toml", db_path)
+    db_path = tmp_path / "home" / "dan.db"
+    config_path = write_config(tmp_path / "dan.toml", db_path)
     source = tmp_path / "memory.md"
     source.write_text("local explicit sync fact\n", encoding="utf-8")
 
-    exit_code = jarvis_cli.main(
+    exit_code = dan_cli.main(
         [
             "--config",
             str(config_path),

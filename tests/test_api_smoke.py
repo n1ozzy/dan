@@ -20,23 +20,23 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from jarvis.security.redaction import REDACTION_PLACEHOLDER
-from jarvis.tools.permissions import RequestSource
+from dan.security.redaction import REDACTION_PLACEHOLDER
+from dan.tools.permissions import RequestSource
 
 from tests.git_guards import assert_schema_and_migrations_unchanged
-from jarvis.brain import BrainManager, BrainRequest
-from jarvis.brain.claude_cli_adapter import ClaudeCliAdapter, apply_claude_system_prompt
-from jarvis.brain.claude_cli_contract import build_claude_cli_command
-from jarvis.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
-from jarvis.config import COMPILED_MEMORY_ENABLED_ENV, COMPILED_MEMORY_FORCE_DISABLED_ENV
-from jarvis.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp, create_daemon_app
-from jarvis.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
-from jarvis.daemon.state_machine import RuntimeState
-from jarvis.memory.compiler import CompiledMemoryContext, MemoryCompiler, MemoryCompilerConfig
-from jarvis.runtime.supervisor import RuntimeSupervisor
-from jarvis.store.db import close_quietly
-from jarvis.store.migrations import LATEST_SCHEMA_VERSION
-from jarvis.tools.registry import Tool, ToolRunRecorder
+from dan.brain import BrainManager, BrainRequest
+from dan.brain.claude_cli_adapter import ClaudeCliAdapter, apply_claude_system_prompt
+from dan.brain.claude_cli_contract import build_claude_cli_command
+from dan.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
+from dan.config import COMPILED_MEMORY_ENABLED_ENV, COMPILED_MEMORY_FORCE_DISABLED_ENV
+from dan.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp, create_daemon_app
+from dan.daemon.lifecycle import MAX_REQUEST_BODY_BYTES, DaemonServer, build_server
+from dan.daemon.state_machine import RuntimeState
+from dan.memory.compiler import CompiledMemoryContext, MemoryCompiler, MemoryCompilerConfig
+from dan.runtime.supervisor import RuntimeSupervisor
+from dan.store.db import close_quietly
+from dan.store.migrations import LATEST_SCHEMA_VERSION
+from dan.tools.registry import Tool, ToolRunRecorder
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,7 +69,7 @@ def config_text(
     return (
         f"""
 [daemon]
-name = "jarvisd"
+name = "dand"
 host = "127.0.0.1"
 port = {port}
 log_level = "INFO"
@@ -138,12 +138,12 @@ model = "test-model"
 home = "{runtime_home}"
 logs_dir = "{runtime_home / "logs"}"
 runtime_dir = "{runtime_home / "runtime"}"
-pid_file = "{runtime_home / "runtime" / "jarvisd.pid"}"
+pid_file = "{runtime_home / "runtime" / "dand.pid"}"
 legacy_detection = "report_only"
 
 [launchd]
 enabled = false
-label = "com.ozzy.jarvisd"
+label = "com.dan.dand"
 install_automatically = false
 """
         + extra_toml
@@ -197,7 +197,7 @@ def rewrite_voice_section(path: Path, voice_toml: str) -> Path:
 
 @pytest.fixture
 def config_path(tmp_path: Path) -> Path:
-    return write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    return write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
 
 
 @pytest.fixture
@@ -219,7 +219,7 @@ def app(config_path: Path) -> Iterator[DaemonApp]:
 @contextmanager
 def running_server(app: DaemonApp) -> Iterator[str]:
     server = build_server(app, "127.0.0.1", 0)
-    thread = threading.Thread(target=server.serve_forever, name="jarvis-test-http", daemon=True)
+    thread = threading.Thread(target=server.serve_forever, name="dan-test-http", daemon=True)
     thread.start()
     try:
         yield server.base_url
@@ -305,12 +305,12 @@ def request_declared_json_length(method: str, url: str, content_length: int) -> 
 
 def run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     merged_env = os.environ.copy()
-    merged_env.pop("JARVIS_CONFIG", None)
+    merged_env.pop("DAN_CONFIG", None)
     merged_env["PYTHONPATH"] = str(ROOT)
     if env:
         merged_env.update(env)
     return subprocess.run(
-        [sys.executable, "-m", "jarvis.cli", *args],
+        [sys.executable, "-m", "dan.cli", *args],
         cwd=ROOT,
         env=merged_env,
         text=True,
@@ -379,7 +379,7 @@ def insert_runtime_memory_item(
             canonical_key or f"key-{memory_id}",
             "semantic",
             "project",
-            "project/jarvis",
+            "project/dan",
             title,
             claim,
             content if content is not None else claim,
@@ -582,8 +582,8 @@ def test_create_daemon_app_default_runtime_path_does_not_call_memory_compiler(
 
     monkeypatch.delenv(COMPILED_MEMORY_ENABLED_ENV, raising=False)
     monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
-    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
-    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("dan.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("dan.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
 
     daemon_app = create_daemon_app(config_path)
     try:
@@ -619,9 +619,9 @@ def test_create_daemon_app_default_runtime_path_does_not_call_memory_compiler(
 
 
 def test_create_daemon_app_config_enabled_wires_compiled_memory_context(tmp_path: Path) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
+    db_path = tmp_path / "home" / "dan.db"
     config_path = write_config(
-        tmp_path / "jarvis.toml",
+        tmp_path / "dan.toml",
         db_path,
         compiled_context_enabled=True,
         compiled_context_max_items=1,
@@ -716,9 +716,9 @@ def test_env_enable_true_wires_compiled_memory_without_prompt_or_diagnostics_lea
 ) -> None:
     monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "true")
     monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
-    db_path = tmp_path / "home" / "jarvis.db"
+    db_path = tmp_path / "home" / "dan.db"
     config_path = write_config(
-        tmp_path / "jarvis.toml",
+        tmp_path / "dan.toml",
         db_path,
         compiled_context_enabled=False,
     )
@@ -811,8 +811,8 @@ def test_request_override_false_remains_request_local_with_env_enablement(
 ) -> None:
     monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "true")
     monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
-    db_path = tmp_path / "home" / "jarvis.db"
-    config_path = write_config(tmp_path / "jarvis.toml", db_path)
+    db_path = tmp_path / "home" / "dan.db"
+    config_path = write_config(tmp_path / "dan.toml", db_path)
 
     daemon_app = create_daemon_app(config_path)
     try:
@@ -869,11 +869,11 @@ def test_env_force_disabled_blocks_every_runtime_enablement_path(
 
     monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "true")
     monkeypatch.setenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, "true")
-    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
-    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
-    db_path = tmp_path / "home" / "jarvis.db"
+    monkeypatch.setattr("dan.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("dan.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+    db_path = tmp_path / "home" / "dan.db"
     config_path = write_config(
-        tmp_path / "jarvis.toml",
+        tmp_path / "dan.toml",
         db_path,
         compiled_context_enabled=True,
     )
@@ -881,7 +881,7 @@ def test_env_force_disabled_blocks_every_runtime_enablement_path(
     daemon_app = create_daemon_app(
         config_path,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-runtime", "jarvis"),
+            ("conversation-runtime", "dan"),
         ),
     )
     try:
@@ -942,11 +942,11 @@ def test_memory_disabled_blocks_env_enablement_and_request_override(
 
     monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "true")
     monkeypatch.delenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, raising=False)
-    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
-    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
-    db_path = tmp_path / "home" / "jarvis.db"
+    monkeypatch.setattr("dan.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("dan.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+    db_path = tmp_path / "home" / "dan.db"
     config_path = write_config(
-        tmp_path / "jarvis.toml",
+        tmp_path / "dan.toml",
         db_path,
         memory_enabled=False,
         compiled_context_enabled=True,
@@ -955,7 +955,7 @@ def test_memory_disabled_blocks_env_enablement_and_request_override(
     daemon_app = create_daemon_app(
         config_path,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-runtime", "jarvis"),
+            ("conversation-runtime", "dan"),
         ),
     )
     try:
@@ -1036,10 +1036,10 @@ def test_invalid_env_force_disabled_value_blocks_env_enablement(
 
     monkeypatch.setenv(COMPILED_MEMORY_ENABLED_ENV, "true")
     monkeypatch.setenv(COMPILED_MEMORY_FORCE_DISABLED_ENV, "definitely")
-    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
-    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
-    db_path = tmp_path / "home" / "jarvis.db"
-    config_path = write_config(tmp_path / "jarvis.toml", db_path)
+    monkeypatch.setattr("dan.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("dan.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+    db_path = tmp_path / "home" / "dan.db"
+    config_path = write_config(tmp_path / "dan.toml", db_path)
 
     daemon_app = create_daemon_app(config_path)
     try:
@@ -1074,15 +1074,15 @@ def test_invalid_env_force_disabled_value_blocks_env_enablement(
 
 def test_compiled_memory_operator_env_controls_are_not_panel_or_api_toggles() -> None:
     forbidden_markers = (
-        "JARVIS_COMPILED_MEMORY",
+        "DAN_COMPILED_MEMORY",
         "compiled_memory",
         "compiled-memory",
         "compiled memory",
     )
     user_facing_paths = [
-        ROOT / "jarvis" / "daemon" / "lifecycle.py",
-        *sorted((ROOT / "jarvis" / "api").glob("*.py")),
-        *sorted((ROOT / "jarvis" / "panel" / "assets").glob("*")),
+        ROOT / "dan" / "daemon" / "lifecycle.py",
+        *sorted((ROOT / "dan" / "api").glob("*.py")),
+        *sorted((ROOT / "dan" / "panel" / "assets").glob("*")),
     ]
 
     offenders: list[tuple[str, str]] = []
@@ -1105,11 +1105,11 @@ def test_create_daemon_app_force_disabled_blocks_config_enabled_compiled_memory(
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             raise AssertionError("force-disabled runtime must not create MemoryCompiler")
 
-    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
-    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
-    db_path = tmp_path / "home" / "jarvis.db"
+    monkeypatch.setattr("dan.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("dan.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+    db_path = tmp_path / "home" / "dan.db"
     config_path = write_config(
-        tmp_path / "jarvis.toml",
+        tmp_path / "dan.toml",
         db_path,
         compiled_context_enabled=True,
     )
@@ -1174,9 +1174,9 @@ def test_create_daemon_app_force_disabled_blocks_config_enabled_compiled_memory(
 def test_create_daemon_app_scoped_enablement_uses_config_gate_without_global_leak(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
+    db_path = tmp_path / "home" / "dan.db"
     config_path = write_config(
-        tmp_path / "jarvis.toml",
+        tmp_path / "dan.toml",
         db_path,
         compiled_context_enabled=True,
     )
@@ -1184,7 +1184,7 @@ def test_create_daemon_app_scoped_enablement_uses_config_gate_without_global_lea
     daemon_app = create_daemon_app(
         config_path,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-runtime", "jarvis"),
+            ("conversation-runtime", "dan"),
         ),
     )
     try:
@@ -1239,9 +1239,9 @@ def test_create_daemon_app_scoped_enablement_uses_config_gate_without_global_lea
 def test_create_daemon_app_empty_scoped_allow_list_does_not_enable_globally(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
+    db_path = tmp_path / "home" / "dan.db"
     config_path = write_config(
-        tmp_path / "jarvis.toml",
+        tmp_path / "dan.toml",
         db_path,
         compiled_context_enabled=True,
     )
@@ -1293,9 +1293,9 @@ def test_create_daemon_app_empty_scoped_allow_list_does_not_enable_globally(
 def test_create_daemon_app_scoped_enablement_requires_config_gate(
     tmp_path: Path,
 ) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
+    db_path = tmp_path / "home" / "dan.db"
     config_path = write_config(
-        tmp_path / "jarvis.toml",
+        tmp_path / "dan.toml",
         db_path,
         compiled_context_enabled=False,
     )
@@ -1305,7 +1305,7 @@ def test_create_daemon_app_scoped_enablement_requires_config_gate(
         config_path,
         memory_compiler=compiler,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-runtime", "jarvis"),
+            ("conversation-runtime", "dan"),
         ),
     )
     try:
@@ -1349,11 +1349,11 @@ def test_memory_disabled_overrides_compiled_context_config(
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             raise AssertionError("memory.enabled=false must not create MemoryCompiler")
 
-    monkeypatch.setattr("jarvis.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
-    monkeypatch.setattr("jarvis.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
-    db_path = tmp_path / "home" / "jarvis.db"
+    monkeypatch.setattr("dan.daemon.app.MemoryCompiler", ExplodingMemoryCompiler)
+    monkeypatch.setattr("dan.brain.context_builder.MemoryCompiler", ExplodingMemoryCompiler)
+    db_path = tmp_path / "home" / "dan.db"
     config_path = write_config(
-        tmp_path / "jarvis.toml",
+        tmp_path / "dan.toml",
         db_path,
         memory_enabled=False,
         compiled_context_enabled=True,
@@ -1401,8 +1401,8 @@ def test_memory_disabled_overrides_compiled_context_config(
 
 
 def test_create_daemon_app_initialize_false_does_not_create_db(tmp_path: Path) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
-    config = write_config(tmp_path / "jarvis.toml", db_path)
+    db_path = tmp_path / "home" / "dan.db"
+    config = write_config(tmp_path / "dan.toml", db_path)
 
     daemon_app = create_daemon_app(config, initialize=False)
     try:
@@ -1459,7 +1459,7 @@ def test_snapshot_state_returns_required_keys(app: DaemonApp) -> None:
     snapshot = app.snapshot_state()
 
     assert set(snapshot) == expected
-    assert snapshot["service"] == "jarvisd"
+    assert snapshot["service"] == "dand"
     assert snapshot["ok"] is True
     assert snapshot["started"] is True
     assert snapshot["state"] == "IDLE"
@@ -1549,7 +1549,7 @@ def test_get_health_returns_200_json_and_expected_fields(app: DaemonApp) -> None
 
     assert status == 200
     assert payload["ok"] is True
-    assert payload["service"] == "jarvisd"
+    assert payload["service"] == "dand"
     assert payload["state"] == "IDLE"
     assert payload["started"] is True
     assert payload["schema_version"] == LATEST_SCHEMA_VERSION
@@ -1566,8 +1566,8 @@ def test_get_state_returns_current_state_and_allowed_targets(app: DaemonApp) -> 
 
 
 def test_get_voice_queue_returns_bounded_redacted_status(app: DaemonApp) -> None:
-    from jarvis.store.event_store import create_event_store
-    from jarvis.voice.queue import VoiceQueue
+    from dan.store.event_store import create_event_store
+    from dan.voice.queue import VoiceQueue
 
     app.start()
     queue = VoiceQueue(app.conn, event_store=create_event_store(app.conn))
@@ -2272,7 +2272,7 @@ def test_get_runtime_startup_returns_official_label_and_snapshot(
     home = tmp_path / "home"
     launch_agents = home / "Library" / "LaunchAgents"
     launch_agents.mkdir(parents=True)
-    (launch_agents / "com.ozzy.jarvisd.plist").write_text("placeholder", encoding="utf-8")
+    (launch_agents / "com.dan.dand.plist").write_text("placeholder", encoding="utf-8")
     app.runtime_supervisor = RuntimeSupervisor(
         home=home,
         temp_dir=tmp_path / "temp",
@@ -2286,8 +2286,8 @@ def test_get_runtime_startup_returns_official_label_and_snapshot(
 
     assert status == 200
     assert payload["report_only"] is True
-    assert payload["official_label"] == "com.ozzy.jarvisd"
-    assert payload["startup"]["official_label"] == "com.ozzy.jarvisd"
+    assert payload["official_label"] == "com.dan.dand"
+    assert payload["startup"]["official_label"] == "com.dan.dand"
     assert payload["startup"]["official_plist_installed"] is True
     assert payload["startup"]["official_plist_loaded"] == "not_checked"
     assert event_types(app) == before_events
@@ -2578,8 +2578,8 @@ def test_runtime_settings_structured_warnings_cover_invalid_preview_fixtures(
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = true\nspeak_responses = true\nbroker_enabled = false\ndefault_tts = ''\ndefault_stt = ''\n",
@@ -2624,8 +2624,8 @@ def test_runtime_settings_preview_blocks_tts_voice_id_required_for_supertonic(
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = true\nspeak_responses = true\ndefault_tts = 'supertonic'\ndefault_stt = 'mock'\nsupertonic_voice = ''\nsupertonic_lang = 'pl'\n",
@@ -2650,8 +2650,8 @@ def test_runtime_settings_preview_redacts_secret_shaped_values(
 ) -> None:
     raw_secret = "sk-settings-preview-secret"
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         extra_toml=f'\n[brain.claude_cli]\nenabled = true\ncommand = "{raw_secret}"\nmodel = "claude-cli"\n',
     )
     app = create_daemon_app(config_path)
@@ -2671,9 +2671,9 @@ def test_runtime_settings_mlx_model_env_without_mlx_runtime_is_not_available(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jarvis.api import routes_runtime
+    from dan.api import routes_runtime
 
-    monkeypatch.setenv("JARVIS_MLX_MODEL", "mlx-community/test-model")
+    monkeypatch.setenv("DAN_MLX_MODEL", "mlx-community/test-model")
 
     def fake_executable_probe(path: str | None) -> tuple[str, str | None, bool]:
         if path == "python":
@@ -2682,7 +2682,7 @@ def test_runtime_settings_mlx_model_env_without_mlx_runtime_is_not_available(
 
     monkeypatch.setattr(routes_runtime, "_safe_is_executable", fake_executable_probe)
     monkeypatch.setattr(routes_runtime.importlib.util, "find_spec", lambda name: None)
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
         with running_server(app) as base_url:
@@ -2706,9 +2706,9 @@ def test_runtime_settings_base_mlx_without_mlx_lm_is_not_llm_ready(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jarvis.api import routes_runtime
+    from dan.api import routes_runtime
 
-    monkeypatch.setenv("JARVIS_MLX_MODEL", "mlx-community/test-model")
+    monkeypatch.setenv("DAN_MLX_MODEL", "mlx-community/test-model")
     monkeypatch.setattr(
         routes_runtime,
         "_safe_is_executable",
@@ -2719,7 +2719,7 @@ def test_runtime_settings_base_mlx_without_mlx_lm_is_not_llm_ready(
         "find_spec",
         lambda name: object() if name == "mlx" else None,
     )
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
         with running_server(app) as base_url:
@@ -2743,9 +2743,9 @@ def test_runtime_settings_mlx_runtime_can_be_detected_by_safe_import_spec(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jarvis.api import routes_runtime
+    from dan.api import routes_runtime
 
-    monkeypatch.setenv("JARVIS_MLX_MODEL", "mlx-community/test-model")
+    monkeypatch.setenv("DAN_MLX_MODEL", "mlx-community/test-model")
     monkeypatch.setattr(
         routes_runtime,
         "_safe_is_executable",
@@ -2756,7 +2756,7 @@ def test_runtime_settings_mlx_runtime_can_be_detected_by_safe_import_spec(
         "find_spec",
         lambda name: object() if name in {"mlx", "mlx_lm"} else None,
     )
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     app = create_daemon_app(config_path)
     try:
         with running_server(app) as base_url:
@@ -2778,8 +2778,8 @@ def test_runtime_settings_mlx_runtime_can_be_detected_by_safe_import_spec(
 def test_runtime_readiness_warns_for_voice_config_blockers(tmp_path: Path) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = true\nspeak_responses = true\nbroker_enabled = false\ndefault_tts = ''\ndefault_stt = ''\n",
@@ -2811,7 +2811,7 @@ def test_get_runtime_settings_includes_latest_turn_trace_for_last_text_turn(
         status, input_payload = request_json(
             "POST",
             f"{base_url}/input/text",
-            {"text": "jarvis test latest turn", "source": "text"},
+            {"text": "dan test latest turn", "source": "text"},
         )
         assert status == 200
         status, payload = request_json("GET", f"{base_url}/runtime/settings")
@@ -2841,8 +2841,8 @@ def test_get_runtime_settings_includes_latest_turn_trace_for_last_text_turn(
 def test_ptt_down_acquires_lease_without_cancelling_current_speech(tmp_path: Path) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = true\ndefault_tts = 'mock'\ndefault_stt = 'mock'\n",
@@ -2852,9 +2852,9 @@ def test_ptt_down_acquires_lease_without_cancelling_current_speech(tmp_path: Pat
         status = 0
         runtime_payload: dict[str, Any] = {}
         app.start()
-        from jarvis.store.event_store import create_event_store
-        from jarvis.store.repositories import utc_now_iso
-        from jarvis.voice.queue import VoiceQueue
+        from dan.store.event_store import create_event_store
+        from dan.store.repositories import utc_now_iso
+        from dan.voice.queue import VoiceQueue
 
         now = utc_now_iso()
         turn_id = "turn-ptt-barge-in"
@@ -2934,8 +2934,8 @@ def test_get_runtime_settings_does_not_apply_stale_barge_in_to_later_text_turn(
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = true\ndefault_tts = 'mock'\ndefault_stt = 'mock'\n",
@@ -2958,9 +2958,9 @@ def test_get_runtime_settings_does_not_apply_stale_barge_in_to_later_text_turn(
     monkeypatch.setattr(ClaudeCliAdapter, "generate", forbidden_generate)
     try:
         app.start()
-        from jarvis.store.event_store import create_event_store
-        from jarvis.store.repositories import utc_now_iso
-        from jarvis.voice.queue import VoiceQueue
+        from dan.store.event_store import create_event_store
+        from dan.store.repositories import utc_now_iso
+        from dan.voice.queue import VoiceQueue
 
         now = utc_now_iso()
         interrupted_turn_id = "turn-interrupted-voice"
@@ -3100,8 +3100,8 @@ def test_runtime_settings_warnings_include_tts_unavailable_when_voice_enabled(
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = true\ndefault_tts = 'does_not_exist'\nsupertonic_binary = '/this/path/does/not/exist.bin'\n",
@@ -3123,7 +3123,7 @@ def test_runtime_settings_warnings_include_tts_unavailable_when_voice_enabled(
 def test_runtime_settings_closed_value_sets_are_backed_by_str_enums() -> None:
     from enum import StrEnum
 
-    from jarvis.api.routes_runtime import (
+    from dan.api.routes_runtime import (
         CANONICAL_PTT_MODES,
         KNOWN_PROVIDER_SUPPORT_NO,
         KNOWN_PROVIDER_SUPPORT_UNKNOWN,
@@ -3137,7 +3137,7 @@ def test_runtime_settings_closed_value_sets_are_backed_by_str_enums() -> None:
         SupertonicVoiceId,
         VoicePttMode,
     )
-    from jarvis.brain.claude_cli_contract import (
+    from dan.brain.claude_cli_contract import (
         CLAUDE_CLI_EFFORTS,
         CLAUDE_CLI_INPUT_FORMATS,
         CLAUDE_CLI_OUTPUT_FORMATS,
@@ -3195,7 +3195,7 @@ def test_runtime_settings_supertonic_readiness_uses_static_builtin_voices_withou
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
+    import dan.api.routes_runtime as routes_runtime
 
     called = False
 
@@ -3207,8 +3207,8 @@ def test_runtime_settings_supertonic_readiness_uses_static_builtin_voices_withou
     monkeypatch.setattr(routes_runtime, "_safe_probe_supertonic_voice", fail_if_voice_list_is_probed)
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         (
@@ -3242,8 +3242,8 @@ def test_runtime_settings_warnings_include_stt_unavailable_when_voice_enabled(
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = true\ndefault_stt = 'unknown_stt_engine'\n",
@@ -3265,8 +3265,8 @@ def test_runtime_settings_warnings_include_missing_stt_local_model_for_selected_
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         'enabled = true\ndefault_stt = "mlx_whisper"\nstt_model = "/no/such/path/stt-model.ggml"\n',
@@ -3287,7 +3287,7 @@ def test_runtime_settings_warns_supertonic_voice_requires_manual_diagnostic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
+    import dan.api.routes_runtime as routes_runtime
 
     called = False
 
@@ -3300,8 +3300,8 @@ def test_runtime_settings_warns_supertonic_voice_requires_manual_diagnostic(
 
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         (
@@ -3332,8 +3332,8 @@ def test_runtime_settings_warnings_when_tools_are_shown_but_provider_does_not_su
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = true\n",
@@ -3375,8 +3375,8 @@ def test_runtime_settings_warns_stale_brain_effort_and_fast_settings(
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = true\n",
@@ -3474,7 +3474,7 @@ def test_post_runtime_settings_apply_local_runtime_cannot_enter_brain_graph_or_p
     app: DaemonApp,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
+    import dan.api.routes_runtime as routes_runtime
 
     monkeypatch.setattr(
         routes_runtime,
@@ -3550,14 +3550,14 @@ def test_runtime_settings_claude_model_next_turn_apply_updates_command_preview(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
+    import dan.api.routes_runtime as routes_runtime
 
     monkeypatch.setattr(routes_runtime.shutil, "which", lambda command: "/usr/bin/fake-claude")
     monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("1.0.0", "ok", None))
     monkeypatch.setattr(routes_runtime, "_safe_probe_claude_auth_status", lambda command: ("logged_in", None))
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         brain_default_adapter="claude_cli",
         extra_toml=(
             "\n[brain.claude_cli]\n"
@@ -3602,14 +3602,14 @@ def test_runtime_settings_rejects_unknown_effort_without_pending_applyable_value
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
+    import dan.api.routes_runtime as routes_runtime
 
     monkeypatch.setattr(routes_runtime.shutil, "which", lambda command: "/usr/bin/fake-claude")
     monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("1.0.0", "ok", None))
     monkeypatch.setattr(routes_runtime, "_safe_probe_claude_auth_status", lambda command: ("logged_in", None))
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         brain_default_adapter="claude_cli",
         extra_toml=(
             "\n[brain.claude_cli]\n"
@@ -3644,14 +3644,14 @@ def test_runtime_settings_stale_warm_config_is_forced_to_cold_claude(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
+    import dan.api.routes_runtime as routes_runtime
 
     monkeypatch.setattr(routes_runtime.shutil, "which", lambda command: "/usr/bin/fake-claude")
     monkeypatch.setattr(routes_runtime, "_safe_probe_cli_version", lambda command: ("1.0.0", "ok", None))
     monkeypatch.setattr(routes_runtime, "_safe_probe_claude_auth_status", lambda command: ("logged_in", None))
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         brain_default_adapter="claude_cli_warm",
         extra_toml=(
             "\n[brain.claude_cli_warm]\n"
@@ -3728,8 +3728,8 @@ def test_post_runtime_settings_apply_updates_session_voice_projection(app: Daemo
 def test_post_runtime_settings_apply_blocks_speak_responses_without_tts(tmp_path: Path) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = true\nspeak_responses = false\nbroker_enabled = false\ndefault_tts = ''\ndefault_stt = 'mock'\n",
@@ -3754,8 +3754,8 @@ def test_post_runtime_settings_apply_blocks_supertonic_tts_without_voice_id(
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = false\nspeak_responses = false\nbroker_enabled = false\n"
@@ -3784,8 +3784,8 @@ def test_post_runtime_settings_apply_blocks_default_tts_restart_only(
 ) -> None:
     config_path = rewrite_voice_section(
         write_config(
-            tmp_path / "jarvis.toml",
-            tmp_path / "home" / "jarvis.db",
+            tmp_path / "dan.toml",
+            tmp_path / "home" / "dan.db",
             extra_toml="\n",
         ),
         "enabled = false\nspeak_responses = false\nbroker_enabled = false\n"
@@ -3874,7 +3874,7 @@ def test_runtime_settings_tools_internet_projection_uses_registered_network_tool
     app: DaemonApp,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import jarvis.api.routes_runtime as routes_runtime
+    import dan.api.routes_runtime as routes_runtime
 
     monkeypatch.setattr(routes_runtime, "_safe_probe_network_capability", lambda: ("yes", "curl"))
 
@@ -3995,7 +3995,7 @@ def _install_fake_claude_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
-    auth_output: str = "Logged in as jarvis@example.test",
+    auth_output: str = "Logged in as dan@example.test",
     auth_returncode: int = 0,
     version_output: str = "claude fake 1.2.3",
 ) -> Path:
@@ -4029,8 +4029,8 @@ def test_runtime_settings_claude_cli_missing_command_is_unavailable(
     tmp_path: Path,
 ) -> None:
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         brain_default_adapter="claude_cli",
         extra_toml='\n[brain.claude_cli]\nenabled = true\ncommand = "definitely-missing-claude"\nmodel = "claude-sonnet"\n',
     )
@@ -4062,8 +4062,8 @@ def test_runtime_settings_claude_cli_contract_command_preview_and_probes(
     mcp_config = tmp_path / "claude-mcp.json"
     mcp_config.write_text("{}", encoding="utf-8")
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         brain_default_adapter="claude_cli",
         extra_toml=(
             "\n[brain.claude_cli]\n"
@@ -4106,7 +4106,7 @@ def test_runtime_settings_claude_cli_contract_command_preview_and_probes(
     assert provider["version"] == "claude fake 1.2.3"
     assert provider["selected_model"] == "claude-sonnet-4"
     assert provider["effective_model"] == "claude-sonnet-4"
-    assert provider["model_source"] == "jarvis_explicit"
+    assert provider["model_source"] == "dan_explicit"
     # Model list is now live-resolved from Claude Code (stubbed deterministically
     # in tests) and always unions the adapter's configured model first.
     assert provider["allowed_models"][0] == "claude-configured"
@@ -4117,7 +4117,7 @@ def test_runtime_settings_claude_cli_contract_command_preview_and_probes(
     assert not {"sonnet", "opus", "haiku", "fable"} & set(provider["allowed_models"])
     assert provider["selected_effort"] == "xhigh"
     assert provider["effective_effort"] == "xhigh"
-    assert provider["effort_source"] == "jarvis_explicit"
+    assert provider["effort_source"] == "dan_explicit"
     assert provider["permission_mode"] == "acceptEdits"
     assert provider["tools"] == ["Bash", "Edit", "Read"]
     assert provider["allowed_tools"] == ["file_read", "shell_read"]
@@ -4158,8 +4158,8 @@ def test_runtime_settings_claude_cli_missing_auth_is_redacted_and_blocks_apply(
         auth_returncode=1,
     )
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         brain_default_adapter="claude_cli",
         extra_toml='\n[brain.claude_cli]\nenabled = true\ncommand = "claude"\nmodel = "claude-sonnet"\n',
     )
@@ -4194,8 +4194,8 @@ def test_runtime_settings_claude_cli_unknown_auth_warns_without_blocking_next_tu
         auth_returncode=0,
     )
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         brain_default_adapter="claude_cli",
         extra_toml='\n[brain.claude_cli]\nenabled = true\ncommand = "claude"\nmodel = "claude-sonnet"\n',
     )
@@ -4226,8 +4226,8 @@ def test_runtime_settings_claude_cli_auto_permission_mode_blocks_next_turn_apply
 ) -> None:
     _install_fake_claude_cli(tmp_path, monkeypatch)
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         brain_default_adapter="claude_cli",
         extra_toml=(
             "\n[brain.claude_cli]\n"
@@ -4263,8 +4263,8 @@ def test_runtime_settings_claude_cli_bypass_permission_mode_allows_model_effort_
 ) -> None:
     _install_fake_claude_cli(tmp_path, monkeypatch)
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         brain_default_adapter="claude_cli",
         extra_toml=(
             "\n[brain.claude_cli]\n"
@@ -4315,8 +4315,8 @@ def test_runtime_settings_claude_cli_unknown_effort_does_not_enter_command_previ
 ) -> None:
     _install_fake_claude_cli(tmp_path, monkeypatch)
     config_path = write_config(
-        tmp_path / "jarvis.toml",
-        tmp_path / "home" / "jarvis.db",
+        tmp_path / "dan.toml",
+        tmp_path / "home" / "dan.db",
         brain_default_adapter="claude_cli",
         extra_toml='\n[brain.claude_cli]\nenabled = true\ncommand = "claude"\nmodel = "claude-sonnet"\n',
     )
@@ -4393,7 +4393,7 @@ def test_claude_cli_adapter_argv_uses_selected_model_from_command_contract() -> 
         "flag": "--model",
         "included": True,
         "source": "request_settings",
-        "reason": "Jarvis-selected model is explicit.",
+        "reason": "DAN-selected model is explicit.",
     } in contract.flag_metadata
 
 
@@ -4453,7 +4453,7 @@ def test_cli_runtime_commands_can_query_ephemeral_server(
     assert startup.returncode == 0, startup.stderr
     assert legacy.returncode == 0, legacy.stderr
     assert json.loads(processes.stdout)["conflict_count"] == 1
-    assert json.loads(startup.stdout)["official_label"] == "com.ozzy.jarvisd"
+    assert json.loads(startup.stdout)["official_label"] == "com.dan.dand"
     assert json.loads(legacy.stdout)["legacy_conflict_count"] == 1
 
 
@@ -4465,8 +4465,8 @@ def test_health_cli_exits_nonzero_when_daemon_is_unreachable(config_path: Path) 
 
 
 def test_no_real_home_is_touched_by_temp_config(tmp_path: Path) -> None:
-    db_path = tmp_path / "home" / "jarvis.db"
-    config = write_config(tmp_path / "jarvis.toml", db_path)
+    db_path = tmp_path / "home" / "dan.db"
+    config = write_config(tmp_path / "dan.toml", db_path)
 
     daemon_app = create_daemon_app(config)
     try:
@@ -4481,7 +4481,7 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
-    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
     forbidden = (
         "/Users/n1_ozzy/Documents/dev/dan",
         "/tmp/dan",
@@ -4489,7 +4489,7 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
         "--dangerously-skip-permissions",
     )
     roots = (
-        ROOT / "jarvis",
+        ROOT / "dan",
         ROOT / "config",
         ROOT / "scripts",
         ROOT / "launchd",
@@ -4523,7 +4523,7 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
 
 
 def test_model_effort_support_maps_efforts_per_model() -> None:
-    from jarvis.api.routes_runtime import CLAUDE_CLI_EFFORTS, _model_effort_support
+    from dan.api.routes_runtime import CLAUDE_CLI_EFFORTS, _model_effort_support
 
     provider_efforts = [str(effort) for effort in CLAUDE_CLI_EFFORTS]
     support = _model_effort_support(
@@ -4549,7 +4549,7 @@ def test_model_effort_support_maps_efforts_per_model() -> None:
 
 
 def test_model_effort_support_intersects_with_empty_provider_ladder() -> None:
-    from jarvis.api.routes_runtime import _model_effort_support
+    from dan.api.routes_runtime import _model_effort_support
 
     # A provider that reports no effort ladder (e.g. groq) yields [] for every
     # model, regardless of what the model itself would otherwise accept.

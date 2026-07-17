@@ -1,0 +1,56 @@
+"""DAN tool registry and safe placeholder tools."""
+
+from __future__ import annotations
+
+from dan.tools.permissions import (
+    PermissionClass,
+    PermissionPolicy,
+    RequestSource,
+    ToolDecision,
+    ToolPermissionError,
+    ToolPermissionPolicy,
+    ToolPermissionResult,
+)
+from dan.tools.registry import (
+    ApprovalGate,
+    EchoTool,
+    Tool,
+    ToolExecutionError,
+    ToolRegistry,
+    ToolRegistryError,
+    ToolRequest,
+    ToolResult,
+    ToolRunRecorder,
+    ToolSpec,
+)
+from dan.tools.system_tool import SystemStatusTool
+
+
+def create_default_tool_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+    registry.register(SystemStatusTool())
+    return registry
+
+
+__all__ = [
+    "ApprovalGate",
+    "EchoTool",
+    "PermissionClass",
+    "PermissionPolicy",
+    "RequestSource",
+    "SystemStatusTool",
+    "Tool",
+    "ToolDecision",
+    "ToolExecutionError",
+    "ToolPermissionError",
+    "ToolPermissionPolicy",
+    "ToolPermissionResult",
+    "ToolRegistry",
+    "ToolRegistryError",
+    "ToolRequest",
+    "ToolResult",
+    "ToolRunRecorder",
+    "ToolSpec",
+    "create_default_tool_registry",
+]

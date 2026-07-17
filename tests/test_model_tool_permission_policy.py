@@ -14,18 +14,18 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from jarvis.brain import BrainManager, BrainRequest, BrainResponse, BrainToolCall
-from jarvis.brain.context_builder import ContextBuilder
-from jarvis.daemon.app import DaemonApp, create_daemon_app
-from jarvis.daemon.lifecycle import build_server
-from jarvis.daemon.state_machine import RuntimeState, RuntimeStateMachine
-from jarvis.events.types import EventType
-from jarvis.security.redaction import REDACTION_PLACEHOLDER
-from jarvis.store.db import close_quietly, initialize_database
-from jarvis.store.event_store import create_event_store
-from jarvis.tools import RequestSource, ToolPermissionPolicy
-from jarvis.tools.registry import Tool
-from jarvis.turns.orchestrator import TurnOrchestrator
+from dan.brain import BrainManager, BrainRequest, BrainResponse, BrainToolCall
+from dan.brain.context_builder import ContextBuilder
+from dan.daemon.app import DaemonApp, create_daemon_app
+from dan.daemon.lifecycle import build_server
+from dan.daemon.state_machine import RuntimeState, RuntimeStateMachine
+from dan.events.types import EventType
+from dan.security.redaction import REDACTION_PLACEHOLDER
+from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import create_event_store
+from dan.tools import RequestSource, ToolPermissionPolicy
+from dan.tools.registry import Tool
+from dan.turns.orchestrator import TurnOrchestrator
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import write_config
 
@@ -41,7 +41,7 @@ FORBIDDEN_RUNTIME_STRINGS = (
 
 @pytest.fixture
 def app(tmp_path: Path) -> Iterator[DaemonApp]:
-    config_path = write_config(tmp_path / "jarvis.toml", tmp_path / "home" / "jarvis.db")
+    config_path = write_config(tmp_path / "dan.toml", tmp_path / "home" / "dan.db")
     daemon_app = create_daemon_app(config_path)
     try:
         yield daemon_app
@@ -97,7 +97,7 @@ class RecordingTool(Tool):
 @contextmanager
 def running_server(app: DaemonApp) -> Iterator[str]:
     server = build_server(app, "127.0.0.1", 0)
-    thread = threading.Thread(target=server.serve_forever, name="jarvis-model-tool-policy-http", daemon=True)
+    thread = threading.Thread(target=server.serve_forever, name="dan-model-tool-policy-http", daemon=True)
     thread.start()
     try:
         yield server.base_url
@@ -683,8 +683,8 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 def test_runtime_code_and_scripts_do_not_contain_forbidden_legacy_strings() -> None:
     findings: list[str] = []
-    allowed_contracts = {("jarvis/voice/shared_broker.py", "/tmp/dan")}
-    for root_name in ("jarvis", "scripts"):
+    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
+    for root_name in ("dan", "scripts"):
         for path in (ROOT / root_name).rglob("*"):
             if not path.is_file() or "__pycache__" in path.parts:
                 continue
