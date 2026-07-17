@@ -6,13 +6,13 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-
 INITIAL_SCHEMA_VERSION = 1
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 4
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 INITIAL_SCHEMA_DESCRIPTION = "initial Jarvis v4.1 schema"
 V2_DESCRIPTION = "FIX-09 voice_queue.spoken_at + cancelled_turns tombstone"
 V3_DESCRIPTION = "shared local memory archive with FTS5"
+V4_DESCRIPTION = "database migration lineage and record mappings"
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
@@ -31,6 +31,8 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         _apply_v2_voice_cancellation(conn)
     if current_version < 3:
         _apply_v3_memory_archive(conn)
+    if current_version < 4:
+        _apply_v4_migration_lineage(conn)
     _ensure_memory_os_sidecar_tables(conn)
 
 
@@ -152,6 +154,41 @@ def _apply_v3_memory_archive(conn: sqlite3.Connection) -> None:
             VALUES (?, ?, ?)
             """,
             (3, _utc_now_iso(), V3_DESCRIPTION),
+        )
+
+
+def _apply_v4_migration_lineage(conn: sqlite3.Connection) -> None:
+    """Record every legacy source and its deterministic import result."""
+
+    with conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS migration_sources (
+              id TEXT PRIMARY KEY,
+              source_path_hash TEXT NOT NULL,
+              source_schema TEXT NOT NULL,
+              imported_at TEXT NOT NULL,
+              source_sha256 TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_migration_sources_source_sha256
+            ON migration_sources(source_sha256);
+            CREATE TABLE IF NOT EXISTS migration_record_map (
+              source_id TEXT NOT NULL,
+              source_table TEXT NOT NULL,
+              source_record_id TEXT NOT NULL,
+              target_table TEXT,
+              target_record_id TEXT,
+              outcome TEXT NOT NULL CHECK (outcome IN ('imported', 'merged', 'rejected')),
+              reason TEXT,
+              PRIMARY KEY (source_id, source_table, source_record_id),
+              FOREIGN KEY (source_id) REFERENCES migration_sources(id)
+            );
+            """
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO schema_version (version, applied_at, description)
+               VALUES (?, ?, ?)""",
+            (4, _utc_now_iso(), V4_DESCRIPTION),
         )
 
 

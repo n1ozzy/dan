@@ -18,7 +18,6 @@ from jarvis.store.db import (
 )
 from jarvis.store.migrations import LATEST_SCHEMA_VERSION, apply_migrations
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_SQL = ROOT / "jarvis" / "store" / "schema.sql"
 
@@ -50,6 +49,8 @@ REQUIRED_TABLES = {
     "listening_leases",
     "audio_device_snapshots",
     "runtime_process_observations",
+    "migration_sources",
+    "migration_record_map",
 } | MEMORY_OS_TABLES
 
 REQUIRED_INDEXES = {
@@ -91,6 +92,7 @@ REQUIRED_INDEXES = {
     "idx_memory_evidence_memory_id",
     "idx_memory_evidence_candidate_id",
     "idx_memory_usage_events_turn_id",
+    "idx_migration_sources_source_sha256",
 }
 
 CRITICAL_COLUMNS = {
@@ -307,6 +309,13 @@ CRITICAL_COLUMNS = {
         "reason",
         "created_at",
     },
+    "migration_sources": {
+        "id", "source_path_hash", "source_schema", "imported_at", "source_sha256",
+    },
+    "migration_record_map": {
+        "source_id", "source_table", "source_record_id", "target_table",
+        "target_record_id", "outcome", "reason",
+    },
 }
 
 
@@ -456,8 +465,8 @@ def test_applying_migrations_twice_is_idempotent(tmp_path: Path) -> None:
     close_quietly(conn)
 
 
-def test_memory_archive_is_the_only_v3_core_schema_bump() -> None:
-    assert LATEST_SCHEMA_VERSION == 3
+def test_migration_lineage_is_the_v4_core_schema_bump() -> None:
+    assert LATEST_SCHEMA_VERSION == 4
 
 
 def test_schema_sql_declares_memory_os_v1_tables() -> None:
@@ -482,7 +491,23 @@ def test_sidecar_migration_creates_memory_os_tables_for_preexisting_v2_database(
 
     assert MEMORY_OS_TABLES.issubset(table_names(conn))
     assert get_schema_version(conn) == LATEST_SCHEMA_VERSION
-    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 4").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM schema_version WHERE version = 4").fetchone()[0] == 1
+    close_quietly(conn)
+
+
+def test_v4_migration_creates_lineage_tables_for_preexisting_v3_database(
+    tmp_path: Path,
+) -> None:
+    conn = initialize_database(tmp_path / "jarvis.db")
+    conn.execute("DROP TABLE migration_record_map")
+    conn.execute("DROP TABLE migration_sources")
+    conn.execute("DELETE FROM schema_version WHERE version = 4")
+    conn.commit()
+
+    apply_migrations(conn)
+
+    assert {"migration_sources", "migration_record_map"}.issubset(table_names(conn))
+    assert get_schema_version(conn) == 4
     close_quietly(conn)
 
 
@@ -548,7 +573,10 @@ def test_migration_adds_spoken_at_to_a_preexisting_v1_voice_queue(tmp_path: Path
     conn.execute(
         """
         INSERT INTO voice_queue (id, created_at, updated_at, text, status, metadata_json)
-        VALUES ('keep-me', '2026-07-03T00:00:00Z', '2026-07-03T00:00:00Z', 'stare zdanie', 'done', '{}')
+        VALUES (
+          'keep-me', '2026-07-03T00:00:00Z', '2026-07-03T00:00:00Z',
+          'stare zdanie', 'done', '{}'
+        )
         """
     )
     conn.commit()
