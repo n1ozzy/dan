@@ -30,6 +30,9 @@ from dan.store.event_store import create_event_store
 from dan.tools.registry import Tool, ToolRegistry
 from dan.turns.orchestrator import TurnOrchestrator, TurnOrchestratorError
 from dan.voice.speech import SpeechPipeline
+from dan.voice.queue import VoiceQueue
+from dan.voice.service import VoiceService
+from tests.voice_helpers import render_snapshot
 
 
 class StreamingFakeAdapter:
@@ -191,6 +194,10 @@ def make_orchestrator(
     state_machine = RuntimeStateMachine(
         event_store, event_bus=None, initial_state=RuntimeState.IDLE
     )
+    voice_service = VoiceService(
+        VoiceQueue(conn, event_store=event_store),
+        SimpleNamespace(resolve=lambda _intent: render_snapshot()),
+    )
     return TurnOrchestrator(
         conn=conn,
         event_store=event_store,
@@ -198,7 +205,11 @@ def make_orchestrator(
         state_machine=state_machine,
         brain_manager=BrainManager([adapter], default_adapter=adapter.name),
         context_builder=context_builder or ContextBuilder(conn),
-        speech_pipeline=SpeechPipeline(lambda: connect(db_path), config=voice_config()),
+        speech_pipeline=SpeechPipeline(
+            lambda: connect(db_path),
+            config=voice_config(),
+            voice_service=voice_service,
+        ),
     )
 
 

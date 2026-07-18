@@ -1,144 +1,93 @@
-"""Per-persona compatibility binding remains strict resolver-owned truth."""
+"""Persona routing is resolver-owned and frozen before TTS sees a request."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from dan.voice.models import SnapshotValidationError
-from dan.voice.tts import SupertonicEngine, mastering_filter
-
-from tests.test_voice_tts_supertonic import (  # reuse the fake-CLI harness
-    build_strict_engine,
-    fake_player,
-    fake_supertonic,
-)
+from dan.store.db import close_quietly, initialize_database
+from dan.voice.models import SnapshotValidationError, SpeechIntent
+from dan.voice.queue import VoiceQueue
+from dan.voice.resolver import AssetMetadata, EngineMetadata, VoiceCatalog, VoiceResolver
+from dan.voice.service import VoiceService
+from tests.test_voice_tts_supertonic import build_engine, fake_ffmpeg
 
 
-def build_engine(
-    tmp_path: Path,
-    *,
-    persona_provider=None,
-    **voice_overrides,
-) -> tuple[SupertonicEngine, Path]:
-    binary, args_file = fake_supertonic(tmp_path)
-    player, _played = fake_player(tmp_path)
-    voice = {
-        "default_tts": "supertonic",
-        "supertonic_binary": str(binary),
-        "supertonic_voice": "M1",
-        "supertonic_lang": "pl",
-        "supertonic_steps": 14,
-        "supertonic_speed": 1.35,
-        "playback_binary": str(player),
-        "tts_timeout_seconds": 30,
-    }
-    voice.update(voice_overrides)
-    config = SimpleNamespace(
-        voice=SimpleNamespace(**voice),
-        runtime=SimpleNamespace(runtime_dir=str(tmp_path / "runtime")),
+def resolver(tmp_path: Path) -> VoiceResolver:
+    voice_dir = tmp_path / "voice"
+    voice_dir.mkdir()
+    (voice_dir / "personas.toml").write_text(
+        '[dan]\nengine = "supertonic"\nvoice = "M3"\nmastering = "raw"\n'
+        'speed = 1.25\ndsp = "none"\n\n'
+        '[mentor]\nengine = "supertonic"\nvoice = "M4"\nmastering = "clean"\n'
+        'speed = 1.1\ndsp = "highpass=f=80"\n',
+        encoding="utf-8",
     )
-    persona_voices = voice.get("persona_voices", {}) or {}
-    persona_speeds = voice.get("persona_speeds", {}) or {}
-    persona_mastering = voice.get("persona_mastering", {}) or {}
-    persona_names = set(persona_voices) | set(persona_speeds) | set(persona_mastering)
-    personas = {
-        "dan": {
-            "voice": voice["supertonic_voice"],
-            "speed": voice["supertonic_speed"],
-            "mastering": voice.get("mastering_profile", "") or "raw",
-            "dsp": "none",
+    (voice_dir / "pronunciations.toml").write_text("", encoding="utf-8")
+    model = tmp_path / "engine.asset"
+    model.write_bytes(b"test-engine")
+    return VoiceResolver(
+        VoiceCatalog.from_directory(voice_dir),
+        {"voice": {"output_gain": 1.0}},
+        {
+            "supertonic": EngineMetadata(
+                version="1.3.1",
+                assets={"model": AssetMetadata.from_path(model)},
+            )
         },
-        **{
-            name: {
-                "voice": persona_voices.get(name, voice["supertonic_voice"]),
-                "speed": persona_speeds.get(name, voice["supertonic_speed"]),
-                "mastering": persona_mastering.get(
-                    name, voice.get("mastering_profile", "") or "raw"
-                ),
-                "dsp": "none",
-            }
-            for name in persona_names
-        },
-    }
-    engine = build_strict_engine(
-        tmp_path,
-        config,
-        persona_provider=persona_provider,
-        personas=personas,
     )
-    return engine, args_file
 
 
-def _voice_arg(args_file: Path) -> str:
-    lines = args_file.read_text().splitlines()
-    return lines[lines.index("--voice") + 1]
-
-
-# -- voice binding -----------------------------------------------------------
-
-
-def test_persona_profile_selects_mapped_voice(tmp_path: Path) -> None:
-    engine, args_file = build_engine(
-        tmp_path,
-        persona_voices={"gangus-3": "M4"},
-        persona_provider=lambda: "gangus-3",
+def intent(persona: str) -> SpeechIntent:
+    return SpeechIntent(
+        text="Persona ma zostac zamrozona.",
+        persona=persona,
+        source="pytest",
+        session="persona-test",
+        participant=persona,
+        priority=0,
+        lane="normal",
+        interrupt_policy="finish_current",
+        utterance_index=0,
     )
-    engine.synthesize("cześć ziomek")
-    assert _voice_arg(args_file) == "M4"
 
 
-def test_unmapped_profile_fails_before_render(tmp_path: Path) -> None:
-    engine, args_file = build_engine(
-        tmp_path,
-        persona_voices={"gangus-3": "M4"},
-        persona_provider=lambda: "mentor",  # not in the map
-    )
-    with pytest.raises(SnapshotValidationError, match="unknown voice persona"):
-        engine.synthesize("spokojnie")
-    assert not args_file.exists()
+def test_resolver_freezes_persona_voice_mastering_and_dsp(tmp_path: Path) -> None:
+    snapshot = resolver(tmp_path).resolve(intent("mentor"))
+
+    assert snapshot.voice_or_style == "M4"
+    assert snapshot.speed == 1.1
+    assert snapshot.mastering_profile == "clean"
+    assert snapshot.dsp == "highpass=f=80"
 
 
-def test_no_provider_uses_default_voice(tmp_path: Path) -> None:
-    engine, args_file = build_engine(tmp_path, persona_voices={"gangus-3": "M4"})
-    engine.synthesize("bez persony")
-    assert _voice_arg(args_file) == "M1"
+def test_tts_executes_the_resolved_voice_without_persona_dependency(tmp_path: Path) -> None:
+    snapshot = resolver(tmp_path).resolve(intent("mentor"))
+    ffmpeg, _ = fake_ffmpeg(tmp_path)
+    engine, args_file = build_engine(tmp_path, mastering_binary=str(ffmpeg))
+
+    engine.synthesize("Dokladnie ten snapshot.", snapshot)
+
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert args[args.index("--voice") + 1] == "M4"
+    assert not hasattr(engine, "_persona_provider")
+    assert not hasattr(engine, "_mastering_filter_for")
 
 
-def test_failing_provider_is_fail_safe(tmp_path: Path) -> None:
-    def boom() -> str:
-        raise RuntimeError("settings DB down")
-
-    engine, args_file = build_engine(
-        tmp_path,
-        persona_voices={"gangus-3": "M4"},
-        persona_provider=boom,
-    )
-    engine.synthesize("nie milcz")
-    assert _voice_arg(args_file) == "M1"
+def test_unknown_persona_never_reaches_queue_or_tts(tmp_path: Path) -> None:
+    conn = initialize_database(tmp_path / "voice.db")
+    service = VoiceService(VoiceQueue(conn), resolver(tmp_path))
+    try:
+        with pytest.raises(SnapshotValidationError, match="unknown voice persona"):
+            service.submit(intent("missing"))
+        assert service.queue.list() == []
+    finally:
+        close_quietly(conn)
 
 
-# -- mastering binding -------------------------------------------------------
+def test_tts_constructor_has_no_persona_or_resolver_switch(tmp_path: Path) -> None:
+    engine, _ = build_engine(tmp_path)
 
-
-def test_persona_profile_selects_mapped_mastering(tmp_path: Path) -> None:
-    engine, _args = build_engine(
-        tmp_path,
-        mastering_profile="bastard",
-        persona_mastering={"mentor": "clean"},
-        persona_provider=lambda: "mentor",
-    )
-    assert engine._mastering_filter_for("mentor") == mastering_filter("clean")
-
-
-def test_unmapped_profile_cannot_fall_back_to_global_mastering(tmp_path: Path) -> None:
-    engine, _args = build_engine(
-        tmp_path,
-        mastering_profile="bastard",
-        persona_mastering={"mentor": "clean"},
-        persona_provider=lambda: "gangus-1",  # not in the map
-    )
-    with pytest.raises(SnapshotValidationError, match="unknown voice persona"):
-        engine._mastering_filter_for("gangus-1")
+    assert not hasattr(engine, "_resolver")
+    assert not hasattr(engine, "_voice_for")

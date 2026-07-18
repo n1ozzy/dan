@@ -18,7 +18,11 @@ from types import SimpleNamespace
 import pytest
 
 from dan.store.db import close_quietly, initialize_database
+from dan.store.event_store import create_event_store
+from dan.voice.queue import VoiceQueue
+from dan.voice.service import VoiceService
 from dan.voice.speech import SpeechPipeline
+from tests.voice_helpers import render_snapshot
 
 
 @pytest.fixture
@@ -45,8 +49,32 @@ def voice_config(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
+class StaticResolver:
+    def resolve(self, _intent):
+        return render_snapshot()
+
+
+class PersistingVoiceService:
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = db_path
+
+    def submit(self, intent):
+        conn = connect(self._db_path)
+        try:
+            return VoiceService(
+                VoiceQueue(conn, event_store=create_event_store(conn)),
+                StaticResolver(),
+            ).submit(intent)
+        finally:
+            close_quietly(conn)
+
+
 def pipeline_for(db_path: Path, **overrides) -> SpeechPipeline:
-    return SpeechPipeline(lambda: connect(db_path), config=voice_config(**overrides))
+    return SpeechPipeline(
+        lambda: connect(db_path),
+        config=voice_config(**overrides),
+        voice_service=PersistingVoiceService(db_path),
+    )
 
 
 def queued_rows(db_path: Path) -> list[tuple[str, str]]:
@@ -79,24 +107,6 @@ class FakeFillerTimer:
 
     def disarm(self) -> None:
         self.disarmed += 1
-
-
-class FakeSharedBrokerClient:
-    def __init__(self) -> None:
-        self.requests: list[dict[str, object]] = []
-
-    def enqueue(
-        self,
-        *,
-        text: str,
-        session: str,
-        priority: int = 0,
-        lane: str | None = None,
-    ) -> Path:
-        self.requests.append(
-            {"text": text, "session": session, "priority": priority, "lane": lane}
-        )
-        return Path("/test-only/request.json")
 
 
 # --- live sentence emission ---------------------------------------------------
@@ -136,60 +146,66 @@ def test_finalize_without_any_deltas_chunks_the_canonical_text(db_path: Path) ->
     ]
 
 
-def test_shared_broker_stream_publishes_one_canonical_utterance_at_finalize(
+def test_broker_flag_does_not_change_the_native_snapshot_stream_path(
     db_path: Path,
 ) -> None:
-    client = FakeSharedBrokerClient()
     pipeline = SpeechPipeline(
         lambda: connect(db_path),
         config=voice_config(broker_enabled=True),
-        shared_broker=client,
+        voice_service=PersistingVoiceService(db_path),
     )
     session = pipeline.start_stream(turn_id="turn-abcdef")
 
     session.feed("Pierwsze zdanie odpowiedzi. Drugie zda")
     session.feed("nie odpowiedzi.")
-    assert client.requests == []
-    assert queued_rows(db_path) == []
+    assert [text for text, _ in queued_rows(db_path)] == [
+        "Pierwsze zdanie odpowiedzi."
+    ]
 
     count = session.finalize(
         "Pierwsze zdanie odpowiedzi. Drugie zdanie odpowiedzi.",
         lane="commentary",
     )
 
-    assert count == 1
-    assert client.requests == [
-        {
-            "text": "Pierwsze zdanie odpowiedzi. Drugie zdanie odpowiedzi.",
-            "session": "turn-abcdef",
-            "priority": 0,
-            "lane": "commentary",
-        }
+    assert count == 2
+    assert [text for text, _ in queued_rows(db_path)] == [
+        "Pierwsze zdanie odpowiedzi.",
+        "Drugie zdanie odpowiedzi.",
     ]
-    assert queued_rows(db_path) == []
 
 
-def test_shared_broker_mode_does_not_arm_an_uncancellable_filler(
+def test_native_filler_is_enqueued_as_interruptible_snapshot(
     db_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = FakeSharedBrokerClient()
     pipeline = SpeechPipeline(
         lambda: connect(db_path),
         config=voice_config(broker_enabled=True),
-        shared_broker=client,
+        voice_service=PersistingVoiceService(db_path),
     )
 
-    def forbidden_timer(*_args, **_kwargs):
-        pytest.fail("shared broker mode must not schedule a filler")
+    class ImmediateTimer:
+        def __init__(self, fire, _delay_seconds) -> None:
+            fire()
 
-    monkeypatch.setattr("dan.voice.speech.FillerTimer", forbidden_timer)
+        def disarm(self) -> None:
+            return None
+
+    monkeypatch.setattr("dan.voice.speech.FillerTimer", ImmediateTimer)
 
     timer = pipeline.arm_filler(turn_id="turn-1")
     timer.disarm()
 
-    assert client.requests == []
-    assert queued_rows(db_path) == []
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT text, interrupt_policy, render_snapshot_json FROM voice_queue"
+        ).fetchone()
+    finally:
+        close_quietly(conn)
+    assert row[0] == "A spierdalaj..."
+    assert row[1] == "interruptible"
+    assert '"engine":"mock"' in row[2]
 
 
 def test_tool_call_block_split_across_deltas_is_never_spoken(db_path: Path) -> None:
@@ -265,10 +281,15 @@ def test_disabled_pipeline_yields_a_no_op_session(db_path: Path) -> None:
 
 
 def test_feed_survives_a_broken_queue_and_never_raises(tmp_path: Path) -> None:
-    def broken_factory() -> sqlite3.Connection:
-        raise sqlite3.OperationalError("db is gone")
+    class BrokenService:
+        def submit(self, _intent):
+            raise sqlite3.OperationalError("db is gone")
 
-    pipeline = SpeechPipeline(broken_factory, config=voice_config())
+    pipeline = SpeechPipeline(
+        lambda: connect(tmp_path / "unused.db"),
+        config=voice_config(),
+        voice_service=BrokenService(),
+    )
     session = pipeline.start_stream(turn_id="turn-1")
 
     session.feed("Pierwsze zdanie odpowiedzi. Drugie zdanie odpowiedzi.")

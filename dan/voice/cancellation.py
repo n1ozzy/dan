@@ -7,13 +7,13 @@ One idempotent operation with three legs, always in this order:
    were never truth, so nothing else needs cleanup).
 2. **Queue** — every unfinished VoiceRequest flips to `cancelled` with the
    frozen `voice.speak.cancelled` event (VoiceQueue.cancel_turn).
-3. **Playback** — the engine's current player process is stopped. Queue
+3. **Playback** — the broker that owns the native player is stopped. Queue
    before playback on purpose: when the player dies, its row is already
    `cancelled`, so the broker's failure path is a no-op instead of marking
    a barged-in chunk `failed`.
 
-Only the broker/engine ever touch audio — cancellation never spawns a
-second speaker path (ADR-005).
+Only the broker touches the player — cancellation never creates a second
+speaker path (ADR-005).
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from dan.logging import get_logger
 from dan.store.db import close_quietly
 from dan.store.event_store import create_event_store
 from dan.voice.queue import VoiceQueue
-
 
 _LOGGER = get_logger("voice.cancellation")
 
@@ -88,11 +87,11 @@ class CancellationCoordinator:
         connection_factory: Callable[[], Any],
         *,
         generation_registry: GenerationRegistry,
-        engine: Any,
+        playback_owner: Any,
     ) -> None:
         self._connect = connection_factory
         self._registry = generation_registry
-        self._engine = engine
+        self._playback_owner = playback_owner
 
     def cancel_active_speech(
         self,
@@ -150,7 +149,8 @@ class CancellationCoordinator:
                 (str(row[0]), str(row[1]) if row[1] is not None else None)
                 for row in conn.execute(
                     "SELECT id, turn_id FROM voice_queue "
-                    "WHERE status IN ('queued', 'speaking') AND turn_id IS NOT NULL "
+                    "WHERE status IN ('queued', 'synthesizing', 'speaking') "
+                    "AND turn_id IS NOT NULL "
                     "ORDER BY rowid DESC"
                 ).fetchall()
             ]
@@ -182,13 +182,13 @@ class CancellationCoordinator:
             close_quietly(conn)
 
     def _stop_playback(self) -> bool:
-        stop = getattr(self._engine, "stop_playback", None)
+        stop = getattr(self._playback_owner, "stop_playback", None)
         if not callable(stop):
             return False
         try:
             stop()
         except Exception:  # noqa: BLE001 — a stuck player must not break the cancel
-            _LOGGER.exception("engine stop_playback raised.")
+            _LOGGER.exception("playback owner stop_playback raised.")
             return False
         return True
 

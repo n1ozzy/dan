@@ -12,17 +12,15 @@ import logging
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
 import uuid
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from dan.voice.assets import (
     AssetVerificationError,
@@ -31,9 +29,7 @@ from dan.voice.assets import (
     sha256_file,
     verify_assets,
 )
-from dan.voice.models import SpeechIntent
-from dan.voice.resolver import VoiceResolver
-
+from dan.voice.models import RenderSnapshot
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,75 +62,39 @@ class SynthesizedChunk:
     audio: bytes
 
 
-class MockTTSEngine:
-    """Deterministic engine double: logs synth/play, produces no sound.
+class TTSEngine(Protocol):
+    def synthesize(self, text: str, snapshot: RenderSnapshot) -> SynthesizedChunk: ...
 
-    `play_gate` lets tests block playback to prove the broker prefetches the
-    next chunk while the previous one plays; `explode_on` triggers a
-    synthesis failure for error-path tests. `stop_playback()` mirrors the
-    real engines' barge-in leg 3: it interrupts only the CURRENT playback,
-    which then raises like a killed player process would.
-    """
+
+@dataclass(frozen=True)
+class SynthesisCall:
+    text: str
+    snapshot: RenderSnapshot
+
+
+class MockTTSEngine:
+    """Deterministic snapshot-only synthesis double; it never owns playback."""
 
     name = "mock"
 
     def __init__(
         self,
         *,
-        play_gate: threading.Event | None = None,
         explode_on: str | None = None,
     ) -> None:
         self.log: list[tuple[str, str]] = []
-        self._play_gate = play_gate
+        self.synth_calls: list[SynthesisCall] = []
         self._explode_on = explode_on
         self._lock = threading.Lock()
-        self._current_interrupt: threading.Event | None = None
 
-    def synthesize(self, text: str) -> SynthesizedChunk:
+    def synthesize(self, text: str, snapshot: RenderSnapshot) -> SynthesizedChunk:
+        snapshot.validate_complete()
         with self._lock:
             self.log.append(("synth", text))
+            self.synth_calls.append(SynthesisCall(text=text, snapshot=snapshot))
         if self._explode_on and self._explode_on in text:
             raise TTSEngineError(f"mock synthesis failure for {text!r}")
         return SynthesizedChunk(text=text, audio=text.encode("utf-8"))
-
-    def play(
-        self,
-        chunk: SynthesizedChunk,
-        should_play: Any = None,
-        on_started: Any = None,
-    ) -> None:
-        interrupt = threading.Event()
-        with self._lock:
-            # Same lock stop_playback uses: the should_play re-check and the
-            # commit-to-play are atomic, closing the barge-in TOCTOU (FIX-09).
-            if should_play is not None and not should_play():
-                raise PlaybackCancelled(f"playback skipped for {chunk.text!r}")
-            self._current_interrupt = interrupt
-        # Committed to play (past the should_play gate) — mark spoken now, like
-        # the real engine does right after spawning its player.
-        if on_started is not None:
-            on_started()
-        try:
-            if self._play_gate is not None:
-                deadline = time.monotonic() + 30
-                while not self._play_gate.is_set() and time.monotonic() < deadline:
-                    if interrupt.wait(0.005):
-                        with self._lock:
-                            self.log.append(("play_interrupted", chunk.text))
-                        raise TTSEngineError(
-                            f"mock playback interrupted for {chunk.text!r}"
-                        )
-            with self._lock:
-                self.log.append(("play", chunk.text))
-        finally:
-            with self._lock:
-                self._current_interrupt = None
-
-    def stop_playback(self) -> None:
-        with self._lock:
-            interrupt = self._current_interrupt
-        if interrupt is not None:
-            interrupt.set()
 
 
 # Empirical fact (live inventory, docs/reviews/2026-07-02-voice-tools-inventory.md):
@@ -203,16 +163,7 @@ def mastering_filter(profile: str) -> str:
 
 
 class SupertonicEngine:
-    """First real TTS engine (decree §7.3): shells out to the supertonic CLI.
-
-    One subprocess per chunk keeps the daemon insulated from ONNX crashes
-    (the D4 subprocess precedent) and makes cancellation a plain kill: the
-    barge-in playback leg (G4c) is `stop_playback()`, which kills the
-    current player process. Synthesized audio lives in RAM; the only disk
-    artifacts are transient WAVs in a private runtime workdir, unlinked in
-    finally blocks. Playback happens here and only here — the broker is the
-    sole caller (ADR-005), so this does not add a second speaker path.
-    """
+    """Snapshot-only Supertonic synthesis; this class never owns playback."""
 
     name = "supertonic"
 
@@ -220,26 +171,8 @@ class SupertonicEngine:
         self,
         *,
         config: Any,
-        persona_provider: Any = None,
-        resolver: VoiceResolver | None = None,
     ) -> None:
         voice_cfg = config.voice
-        self._voice_config = voice_cfg
-        if resolver is None:
-            raise TTSEngineError(
-                "SupertonicEngine requires a caller-supplied VoiceResolver"
-            )
-        warnings.warn(
-            "SupertonicEngine is a compatibility caller; use snapshot-only TTS in Task 7",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._resolver = resolver
-        # Persona binding (2026-07-08): resolve the current persona.profile per
-        # chunk so a live persona switch (panel dropdown) changes voice +
-        # mastering on the next spoken chunk, no daemon restart. None -> the
-        # global voice/mastering, exactly as before.
-        self._persona_provider = persona_provider if callable(persona_provider) else None
         self._binary = _resolve_supertonic_binary(str(voice_cfg.supertonic_binary or ""))
         repository_root = Path(__file__).resolve().parents[2]
         manifest_setting = str(
@@ -261,28 +194,12 @@ class SupertonicEngine:
         self._custom_voice_assets: dict[str, VoiceAsset] = {
             asset.name: asset for asset in custom_manifest.assets
         }
-        player = str(voice_cfg.playback_binary or "")
-        if player and "/" not in player:
-            player = shutil.which(player) or player
-        if not (player and Path(player).is_file() and os.access(player, os.X_OK)):
-            raise TTSEngineError(
-                f"Supertonic player {player!r} is not an executable file "
-                "(set voice.playback_binary)."
-            )
-        self._player = player
+        self._custom_voice_assets_by_path: dict[Path, VoiceAsset] = {
+            asset.path.resolve(): asset for asset in custom_manifest.assets
+        }
         self._lang = str(voice_cfg.supertonic_lang or "pl")
         self._steps = max(1, int(voice_cfg.supertonic_steps or 14))
-        self._short_chars = max(
-            0, int(getattr(voice_cfg, "supertonic_short_sentence_chars", 0) or 0)
-        )
-        self._short_speed = float(
-            getattr(voice_cfg, "supertonic_short_sentence_speed", 1.0) or 1.0
-        )
         self._timeout = max(1, int(voice_cfg.tts_timeout_seconds or 120))
-        self._pad_start = max(0.0, float(getattr(voice_cfg, "playback_pad_start_seconds", 0.0) or 0.0))
-        self._pad_end = max(0.0, float(getattr(voice_cfg, "playback_pad_end_seconds", 0.0) or 0.0))
-        self._player_lock = threading.Lock()
-        self._player_proc: subprocess.Popen[str] | None = None
         workdir = Path(os.path.expanduser(str(config.runtime.runtime_dir))) / "voice"
         workdir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(workdir, 0o700)
@@ -293,9 +210,15 @@ class SupertonicEngine:
         # autostart one, else stay None -> CLI-only. The model reloads per CLI
         # chunk (~0.64s); serve loads it once. Fallback to CLI on any failure.
         self._serve_url = str(getattr(voice_cfg, "supertonic_serve_url", "") or "").rstrip("/")
-        self._serve_model = str(getattr(voice_cfg, "supertonic_serve_model", "supertonic-3") or "supertonic-3")
+        self._serve_model = str(
+            getattr(voice_cfg, "supertonic_serve_model", "supertonic-3")
+            or "supertonic-3"
+        )
         self._serve_autostart = bool(getattr(voice_cfg, "supertonic_serve_autostart", False))
-        self._serve_max_chunk = max(1, int(getattr(voice_cfg, "supertonic_serve_max_chunk_length", 400) or 400))
+        self._serve_max_chunk = max(
+            1,
+            int(getattr(voice_cfg, "supertonic_serve_max_chunk_length", 400) or 400),
+        )
         self._serve: str | None = None
         self._serve_proc: subprocess.Popen[str] | None = None
         if self._serve_url:
@@ -362,55 +285,28 @@ class SupertonicEngine:
             raise TTSEngineError("supertonic serve returned no usable audio.")
         return audio
 
-    # -- persona binding -----------------------------------------------------
-
-    def _current_persona(self) -> str:
-        """Currently selected persona.profile, or "" — fail-safe to silence-free.
-
-        The engine must never let a provider error (settings DB hiccup) turn
-        into no audio, so any failure resolves to the global voice/mastering.
-        """
-        if self._persona_provider is None:
-            return ""
-        try:
-            return str(self._persona_provider() or "").strip()
-        except Exception:
-            _LOGGER.debug("persona provider raised; using global voice/mastering.", exc_info=True)
-            return ""
-
-    def _voice_for(self, profile: str) -> str:
-        voice = self._render_snapshot("compatibility", profile).voice_or_style
-        selected_voice, custom_style_path = self._synthesis_voice(voice)
-        return custom_style_path or selected_voice
-
-    def _mastering_filter_for(self, profile: str) -> str:
-        return mastering_filter(self._render_snapshot("compatibility", profile).mastering_profile)
-
-    def _render_snapshot(self, text: str, profile: str):
-        persona = profile or "dan"
-        intent = SpeechIntent(
-            text=text,
-            persona=persona,
-            source="dand",
-            session="tts",
-            participant=persona,
-            priority=0,
-            lane="normal",
-            interrupt_policy="finish_current",
-            utterance_index=0,
+    def _synthesis_voice(
+        self,
+        snapshot: RenderSnapshot,
+    ) -> tuple[str, str | None]:
+        voice_or_style = snapshot.voice_or_style
+        candidate_path = Path(voice_or_style).expanduser()
+        asset = (
+            self._custom_voice_assets_by_path.get(candidate_path.resolve())
+            if candidate_path.is_absolute()
+            else None
         )
-        return self._resolver.resolve(intent)
-
-    def _synthesis_voice(self, voice_or_style: str) -> tuple[str, str | None]:
-        asset = self._custom_voice_assets.get(voice_or_style)
         if asset is not None:
             actual = sha256_file(asset.path)
-            if actual != asset.sha256:
+            snapshot_hash = snapshot.asset_sha256.get(
+                f"engine.{self.name}.voice:{asset.name}"
+            )
+            if actual != asset.sha256 or snapshot_hash != asset.sha256:
                 raise TTSEngineError(
-                    f"SHA-256 mismatch for Supertonic custom style {voice_or_style}: "
-                    f"expected {asset.sha256}, got {actual}"
+                    f"SHA-256 mismatch for Supertonic custom style {asset.name}: "
+                    f"manifest={asset.sha256}, snapshot={snapshot_hash}, actual={actual}"
                 )
-            return voice_or_style, str(asset.path)
+            return asset.name, str(asset.path)
         if voice_or_style in _SUPERTONIC_BUILTIN_VOICES:
             return voice_or_style, None
         raise TTSEngineError(
@@ -477,17 +373,18 @@ class SupertonicEngine:
         finally:
             out.unlink(missing_ok=True)
 
-    def synthesize(self, text: str) -> SynthesizedChunk:
-        profile = self._current_persona()
-        snapshot = self._render_snapshot(str(text or ""), profile)
+    def synthesize(self, text: str, snapshot: RenderSnapshot) -> SynthesizedChunk:
+        snapshot.validate_complete()
+        if snapshot.engine != self.name:
+            raise TTSEngineError(
+                f"snapshot engine {snapshot.engine!r} cannot run on {self.name!r}"
+            )
         spoken = apply_pronunciations(str(text or ""), dict(snapshot.pronunciations))
         clean = spoken.translate(_SUPERTONIC_STRIP).strip()
         if not clean:
             raise TTSEngineError(f"Nothing speakable left after sanitizing {text!r}.")
         speed = snapshot.speed
-        # Resolve the persona once per chunk so a live switch takes effect on the
-        # next chunk (voice + mastering both key off the same profile).
-        voice, custom_style_path = self._synthesis_voice(snapshot.voice_or_style)
+        voice, custom_style_path = self._synthesis_voice(snapshot)
         # Warm serve first (no per-chunk model reload); any failure falls back
         # to the CLI so warm-serve never regresses to silence.
         audio: bytes | None = None
@@ -518,59 +415,6 @@ class SupertonicEngine:
             audio=self._apply_mastering(audio, filter_chain),
         )
 
-    def play(
-        self,
-        chunk: SynthesizedChunk,
-        should_play: Any = None,
-        on_started: Any = None,
-    ) -> None:
-        path = Path(self.workdir) / f"play-{uuid.uuid4().hex}.wav"
-        try:
-            path.touch(mode=0o600)
-            path.write_bytes(chunk.audio)
-            # 44.1 kHz / 16-bit / mono is what supertonic emits; the margin
-            # keeps a stuck player from hanging the broker thread forever.
-            duration = len(chunk.audio) / (44100 * 2) + self._pad_start + self._pad_end
-            command = [self._player, str(path)]
-            if self._pad_start > 0 or self._pad_end > 0:
-                command += ["pad", f"{self._pad_start:g}", f"{self._pad_end:g}"]
-            with self._player_lock:
-                # Re-check under the same lock stop_playback holds, right before
-                # spawning: a barge-in that landed in the check->spawn gap flips
-                # the row to 'cancelled', so this closes the TOCTOU (FIX-09).
-                if should_play is not None and not should_play():
-                    raise PlaybackCancelled(f"playback skipped for {chunk.text!r}")
-                # Own process group: stop_playback() kills the player AND
-                # anything it spawned, so no orphan can hold the pipes open.
-                proc = subprocess.Popen(
-                    command,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    start_new_session=True,
-                )
-                self._player_proc = proc
-            # Player is live — audio is going out. Signal "spoken" now (outside
-            # the player lock so a DB write can't block stop_playback). A
-            # barge-in raising PlaybackCancelled above never reaches here, so
-            # only truly-audible chunks are marked (FIX-09 anti-echo truth).
-            if on_started is not None:
-                on_started()
-            try:
-                _, stderr = proc.communicate(timeout=duration + 30)
-            except subprocess.TimeoutExpired as exc:
-                proc.kill()
-                proc.communicate()
-                raise TTSEngineError("supertonic player timed out.") from exc
-            finally:
-                with self._player_lock:
-                    self._player_proc = None
-            if proc.returncode != 0:
-                raise TTSEngineError(
-                    f"supertonic player exited {proc.returncode}: "
-                    f"{(stderr or '').strip()[:200]}"
-                )
-        finally:
-            path.unlink(missing_ok=True)
-
     def close(self) -> None:
         """Terminate an autostarted warm-serve server (no-op if reused/absent).
 
@@ -593,26 +437,6 @@ class SupertonicEngine:
             pass
         finally:
             self._serve_proc = None
-
-    def stop_playback(self) -> None:
-        """Barge-in leg 3: kill the current player process (and only it)."""
-
-        with self._player_lock:
-            proc = self._player_proc
-        if proc is None or proc.poll() is not None:
-            return
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
 
 def _resolve_supertonic_binary(explicit: str) -> str:
     """Explicit config path, else the venv bin next to python, else PATH.
@@ -650,8 +474,6 @@ def build_tts_engine(
     name: str,
     *,
     config: Any | None = None,
-    persona_provider: Any = None,
-    resolver: VoiceResolver | None = None,
 ) -> Any:
     normalized = str(name or "").strip().lower()
     if normalized in BANNED_ENGINES:
@@ -671,11 +493,7 @@ def build_tts_engine(
                 "TTS engine 'supertonic' needs the daemon config "
                 "(voice.supertonic_* and runtime.runtime_dir)."
             )
-        return SupertonicEngine(
-            config=config,
-            persona_provider=persona_provider,
-            resolver=resolver,
-        )
+        return SupertonicEngine(config=config)
     raise TTSEngineError(f"Unknown TTS engine {name!r}.")
 
 
@@ -686,6 +504,8 @@ __all__ = [
     "PlaybackCancelled",
     "SupertonicEngine",
     "SynthesizedChunk",
+    "SynthesisCall",
+    "TTSEngine",
     "TTSEngineError",
     "build_tts_engine",
 ]

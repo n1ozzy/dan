@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,10 +19,13 @@ import pytest
 from dan.daemon.app import DaemonApp, create_daemon_app
 from dan.store.db import close_quietly, initialize_database
 from dan.voice.broker import VoiceBroker
+from dan.voice.models import RenderSnapshot
+from dan.voice.player import MockAudioPlayer
 from dan.voice.queue import VoiceQueue
 from dan.voice.recorder import MockRecorder
 from dan.voice.tts import MockTTSEngine, SynthesizedChunk
 from tests.test_api_smoke import write_config
+from tests.voice_helpers import enqueue_voice, render_snapshot
 
 
 @pytest.fixture
@@ -167,19 +169,10 @@ def test_daemon_start_wires_lease_sweeper_and_stop_kills_it(app: DaemonApp) -> N
     assert app.voice_lease_sweeper is None
 
 
-def test_shared_broker_mode_never_builds_local_tts_or_voice_broker(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def forbidden_local_tts(*_args, **_kwargs):
-        pytest.fail("shared broker mode attempted to build DAN-local TTS")
-
-    monkeypatch.setattr("dan.voice.tts.build_tts_engine", forbidden_local_tts)
-    from tests.test_shared_voice_broker import _strict_resolver
-
+def test_voice_enabled_daemon_builds_one_native_broker_and_player(tmp_path: Path) -> None:
     daemon_app = create_daemon_app(
         _write_voice_enabled_config(tmp_path),
-        voice_resolver=_strict_resolver(tmp_path),
+        voice_resolver=SimpleNamespace(resolve=lambda _intent: render_snapshot()),
     )
     daemon_app.start()
     recorder = daemon_app.voice_recorder
@@ -187,7 +180,10 @@ def test_shared_broker_mode_never_builds_local_tts_or_voice_broker(
     gateway = daemon_app.voice_gateway
     sweeper = daemon_app.voice_lease_sweeper
     assert isinstance(recorder, MockRecorder)
-    assert daemon_app.voice_broker is None
+    assert daemon_app.voice_service is not None
+    assert daemon_app.voice_engine is not None
+    assert isinstance(daemon_app.voice_player, MockAudioPlayer)
+    assert daemon_app.voice_broker is not None
     assert daemon_app.voice_cancellation is not None
     assert stt is not None
     assert gateway is not None
@@ -200,6 +196,9 @@ def test_shared_broker_mode_never_builds_local_tts_or_voice_broker(
     assert recorder.stopped == 1
     assert sweeper.is_alive() is False
     assert daemon_app.voice_recorder is None
+    assert daemon_app.voice_service is None
+    assert daemon_app.voice_engine is None
+    assert daemon_app.voice_player is None
     assert daemon_app.voice_broker is None
     assert daemon_app.voice_stt is None
     assert daemon_app.voice_gateway is None
@@ -213,19 +212,29 @@ class _RuntimeErrorEngine(MockTTSEngine):
     """Not a TTSEngineError: e.g. sqlite 'database is locked' or a vanished
     binary surfaces as a plain OSError/RuntimeError inside synthesis."""
 
-    def synthesize(self, text: str) -> SynthesizedChunk:
+    def synthesize(
+        self,
+        text: str,
+        snapshot: RenderSnapshot,
+    ) -> SynthesizedChunk:
         if "BOOM" in text:
             raise RuntimeError("database is locked")
-        return super().synthesize(text)
+        return super().synthesize(text, snapshot)
 
 
 def test_broker_thread_survives_non_tts_exception(db_path: Path) -> None:
     factory = _connect_factory(db_path)
     conn = factory()
     queue = VoiceQueue(conn)
-    queue.enqueue(text="BOOM w trakcie syntezy.", turn_id="t1", kind="sentence", seq=0)
+    enqueue_voice(queue, "BOOM w trakcie syntezy.", session="t1")
     engine = _RuntimeErrorEngine()
-    broker = VoiceBroker(factory, config=voice_config(), engine=engine, poll_interval=0.02)
+    broker = VoiceBroker(
+        factory,
+        config=voice_config(),
+        engine=engine,
+        player=MockAudioPlayer(),
+        poll_interval=0.02,
+    )
 
     broker.start()
     try:
@@ -244,7 +253,7 @@ def test_broker_thread_survives_non_tts_exception(db_path: Path) -> None:
         )
 
         # And it still speaks afterwards.
-        queue.enqueue(text="Zdanie po awarii bazy.", turn_id="t2", kind="sentence", seq=0)
+        enqueue_voice(queue, "Zdanie po awarii bazy.", session="t2")
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             row = conn.execute(
@@ -263,16 +272,16 @@ def test_broker_thread_survives_non_tts_exception(db_path: Path) -> None:
 # --- (d) stop() terminates the drain loop and executor -----------------------
 
 
-class _SpyEngine(MockTTSEngine):
+class _SpyPlayer(MockAudioPlayer):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.stop_playback_calls = 0
 
-    def stop_playback(self) -> None:
+    def stop(self) -> None:
         self.stop_playback_calls += 1
-        super().stop_playback()
+        super().stop()
 
-    def play(self, chunk: SynthesizedChunk, should_play=None, on_started=None) -> None:
+    def play(self, chunk: SynthesizedChunk, *, should_play, on_started) -> None:
         time.sleep(0.05)
         super().play(chunk, should_play=should_play, on_started=on_started)
 
@@ -282,13 +291,25 @@ def test_broker_stop_interrupts_drain_loop_and_shuts_executor(db_path: Path) -> 
     conn = factory()
     queue = VoiceQueue(conn)
     for seq in range(100):
-        queue.enqueue(text=f"Zdanie numer {seq} w kolejce.", turn_id="t", kind="sentence", seq=seq)
-    engine = _SpyEngine()
-    broker = VoiceBroker(factory, config=voice_config(), engine=engine, poll_interval=0.02)
+        enqueue_voice(
+            queue,
+            f"Zdanie numer {seq} w kolejce.",
+            session=f"t-{seq}",
+            utterance_index=seq,
+        )
+    engine = MockTTSEngine()
+    player = _SpyPlayer()
+    broker = VoiceBroker(
+        factory,
+        config=voice_config(),
+        engine=engine,
+        player=player,
+        poll_interval=0.02,
+    )
 
     broker.start()
     deadline = time.monotonic() + 5
-    while not any(op == "play" for op, _ in engine.log) and time.monotonic() < deadline:
+    while not any(op == "play" for op, _ in player.log) and time.monotonic() < deadline:
         time.sleep(0.01)
 
     started = time.monotonic()
@@ -297,8 +318,8 @@ def test_broker_stop_interrupts_drain_loop_and_shuts_executor(db_path: Path) -> 
 
     assert elapsed < 4, f"stop() did not interrupt the drain loop (took {elapsed:.1f}s)"
     assert broker._thread is None
-    assert engine.stop_playback_calls >= 1, "stop() must interrupt the current playback"
+    assert player.stop_playback_calls >= 1, "stop() must interrupt the current playback"
     assert broker._executor._shutdown, "stop() must shut the prefetch executor down"
-    played = sum(1 for op, _ in engine.log if op == "play")
+    played = sum(1 for op, _ in player.log if op == "play")
     assert played < 100, "stop() played the whole queue instead of stopping"
     close_quietly(conn)

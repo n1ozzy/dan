@@ -12,16 +12,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
 from dan.store.db import close_quietly, initialize_database
 from dan.voice.cancellation import CancellationCoordinator, GenerationRegistry
 from dan.voice.queue import VoiceQueue
-from dan.voice.tts import MockTTSEngine, TTSEngineError
+from tests.voice_helpers import enqueue_voice
 
 
 @pytest.fixture
@@ -63,16 +62,12 @@ def queue_statuses(db_path: Path) -> list[str]:
         close_quietly(conn)
 
 
-class StoppableEngine(MockTTSEngine):
-    """Engine double that records stop_playback calls."""
-
+class StoppableOwner:
     def __init__(self) -> None:
-        super().__init__()
         self.stops = 0
 
     def stop_playback(self) -> None:
         self.stops += 1
-        super().stop_playback()
 
 
 # --- GenerationRegistry (leg 1 handles) --------------------------------------
@@ -137,10 +132,15 @@ def seed_queue(db_path: Path) -> None:
     conn = connect(db_path)
     try:
         queue = VoiceQueue(conn)
-        queue.enqueue(text="Pierwsze zdanie tury A.", turn_id="turn-a", seq=0)
-        queue.enqueue(text="Drugie zdanie tury A.", turn_id="turn-a", seq=1)
-        queue.enqueue(text="Zdanie zupełnie innej tury B.", turn_id="turn-b", seq=0)
-        queue.claim_next()  # turn-a seq 0 is "speaking"
+        enqueue_voice(queue, "Pierwsze zdanie tury A.", session="turn-a")
+        enqueue_voice(
+            queue,
+            "Drugie zdanie tury A.",
+            session="turn-a",
+            utterance_index=1,
+        )
+        enqueue_voice(queue, "Zdanie zupełnie innej tury B.", session="turn-b")
+        queue.claim_next()
     finally:
         close_quietly(conn)
 
@@ -150,16 +150,16 @@ def test_cancel_active_speech_runs_all_three_legs(db_path: Path) -> None:
     registry = GenerationRegistry()
     kills: list[str] = []
     registry.register("turn-a", lambda: kills.append("generation"))
-    engine = StoppableEngine()
+    owner = StoppableOwner()
     coordinator = CancellationCoordinator(
-        factory_for(db_path), generation_registry=registry, engine=engine
+        factory_for(db_path), generation_registry=registry, playback_owner=owner
     )
 
     result = coordinator.cancel_active_speech(reason="barge_in")
 
     assert kills == ["generation"]                       # leg 1
     assert queue_statuses(db_path) == ["cancelled"] * 3  # leg 2
-    assert engine.stops == 1                             # leg 3
+    assert owner.stops == 1                              # leg 3
     events = cancelled_events(db_path)
     assert len(events) == 3
     assert {event["turn_id"] for event in events} == {"turn-a", "turn-b"}
@@ -172,7 +172,7 @@ def test_cancel_active_speech_is_idempotent(db_path: Path) -> None:
     coordinator = CancellationCoordinator(
         factory_for(db_path),
         generation_registry=GenerationRegistry(),
-        engine=StoppableEngine(),
+        playback_owner=StoppableOwner(),
     )
 
     first = coordinator.cancel_active_speech(reason="barge_in")
@@ -193,14 +193,14 @@ def test_queue_leg_runs_before_playback_leg(db_path: Path) -> None:
 
     observed: list[list[str]] = []
 
-    class OrderProbeEngine(MockTTSEngine):
+    class OrderProbeOwner:
         def stop_playback(self) -> None:
             observed.append(queue_statuses(db_path))
 
     coordinator = CancellationCoordinator(
         factory_for(db_path),
         generation_registry=GenerationRegistry(),
-        engine=OrderProbeEngine(),
+        playback_owner=OrderProbeOwner(),
     )
     coordinator.cancel_active_speech(reason="barge_in")
 
@@ -218,7 +218,9 @@ def test_cancel_active_speech_tombstones_cancelled_and_generating_turns(db_path:
     registry = GenerationRegistry()
     registry.register("turn-generating", lambda: None)  # no queue rows yet
     coordinator = CancellationCoordinator(
-        factory_for(db_path), generation_registry=registry, engine=StoppableEngine()
+        factory_for(db_path),
+        generation_registry=registry,
+        playback_owner=StoppableOwner(),
     )
 
     coordinator.cancel_active_speech(reason="barge_in")
@@ -228,9 +230,14 @@ def test_cancel_active_speech_tombstones_cancelled_and_generating_turns(db_path:
         q = VoiceQueue(conn)
         for cancelled_turn in ("turn-a", "turn-b", "turn-generating"):
             with pytest.raises(VoiceQueueCancelledError):
-                q.enqueue(text="Spóźniona delta.", turn_id=cancelled_turn, seq=9)
+                enqueue_voice(
+                    q,
+                    "Spóźniona delta.",
+                    session=cancelled_turn,
+                    utterance_index=9,
+                )
         # An unrelated live turn is unaffected.
-        assert q.enqueue(text="Żywe zdanie.", turn_id="turn-live", seq=0).status == "queued"
+        assert enqueue_voice(q, "Żywe zdanie.", session="turn-live").status == "queued"
     finally:
         close_quietly(conn)
 
@@ -238,54 +245,16 @@ def test_cancel_active_speech_tombstones_cancelled_and_generating_turns(db_path:
 def test_engine_without_stop_playback_is_tolerated(db_path: Path) -> None:
     seed_queue(db_path)
 
-    class LegacyEngine:
-        name = "legacy"
+    class OwnerWithoutStop:
+        pass
 
     coordinator = CancellationCoordinator(
         factory_for(db_path),
         generation_registry=GenerationRegistry(),
-        engine=LegacyEngine(),
+        playback_owner=OwnerWithoutStop(),
     )
 
     result = coordinator.cancel_active_speech(reason="panel_stop")
 
     assert result["queue_cancelled"] == 3
     assert result["playback_stopped"] is False
-
-
-# --- MockTTSEngine.stop_playback (leg 3 double) --------------------------------
-
-
-def test_mock_engine_stop_playback_interrupts_a_blocked_play() -> None:
-    gate = threading.Event()  # never set: playback would block forever
-    engine = MockTTSEngine(play_gate=gate)
-    chunk = engine.synthesize("Zdanie przerwane w trakcie grania.")
-    errors: list[Exception] = []
-    started = threading.Event()
-
-    def play() -> None:
-        started.set()
-        try:
-            engine.play(chunk)
-        except TTSEngineError as exc:
-            errors.append(exc)
-
-    thread = threading.Thread(target=play, daemon=True)
-    thread.start()
-    assert started.wait(timeout=5)
-
-    engine.stop_playback()
-    thread.join(timeout=5)
-
-    assert not thread.is_alive()
-    assert len(errors) == 1
-
-
-def test_mock_engine_stop_playback_when_idle_is_a_no_op() -> None:
-    engine = MockTTSEngine()
-    engine.stop_playback()  # nothing playing — must not blow up
-
-    chunk = engine.synthesize("Zdanie grane po bezczynnym stopie.")
-    engine.play(chunk)  # and must not poison the NEXT playback
-
-    assert ("play", "Zdanie grane po bezczynnym stopie.") in engine.log

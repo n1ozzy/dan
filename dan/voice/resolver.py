@@ -168,10 +168,17 @@ class VoiceResolver:
         config_revision = hashlib.sha256(
             f"{self._catalog.revision}:{_config_revision(self._installation_config)}".encode()
         ).hexdigest()
+        configured_voice = _required_spec_text(spec, "voice")
+        custom_style = engine.assets.get(f"voice:{configured_voice}")
+        voice_or_style = (
+            str(custom_style.path.resolve())
+            if custom_style is not None
+            else configured_voice
+        )
         snapshot = RenderSnapshot(
             engine=engine_name,
             engine_version=version,
-            voice_or_style=_required_spec_text(spec, "voice"),
+            voice_or_style=voice_or_style,
             speed=_positive_float(spec.get("speed"), "speed"),
             mastering_profile=_required_spec_text(spec, "mastering"),
             dsp=_required_spec_text(spec, "dsp"),

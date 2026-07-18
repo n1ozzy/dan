@@ -180,6 +180,39 @@ def test_resolver_reverifies_every_catalog_asset_before_snapshot(
         VoiceResolver(catalog, installation_config, engines).resolve(speech_intent())
 
 
+def test_resolver_freezes_custom_style_as_verified_absolute_path(
+    tmp_path: Path,
+    installation_config: ConfigStore,
+) -> None:
+    voice_dir = tmp_path / "custom-voice"
+    voice_dir.mkdir()
+    (voice_dir / "personas.toml").write_text(
+        '[dan]\nengine = "supertonic"\nvoice = "M2M1"\n'
+        'mastering = "raw"\nspeed = 1.25\ndsp = "none"\n',
+        encoding="utf-8",
+    )
+    (voice_dir / "pronunciations.toml").write_text("", encoding="utf-8")
+    style = tmp_path / "M2M1.json"
+    style.write_text('{"style": []}\n', encoding="utf-8")
+    resolver = VoiceResolver(
+        VoiceCatalog.from_directory(voice_dir),
+        installation_config,
+        {
+            "supertonic": EngineMetadata(
+                version="1.3.1",
+                assets={"voice:M2M1": AssetMetadata.from_path(style)},
+            )
+        },
+    )
+
+    snapshot = resolver.resolve(speech_intent())
+
+    assert snapshot.voice_or_style == str(style.resolve())
+    assert snapshot.asset_sha256["engine.supertonic.voice:M2M1"] == hashlib.sha256(
+        style.read_bytes()
+    ).hexdigest()
+
+
 def test_catalog_and_snapshot_mappings_are_immutable(
     catalog: VoiceCatalog,
     installation_config: ConfigStore,

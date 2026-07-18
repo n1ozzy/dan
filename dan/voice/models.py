@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -135,14 +136,38 @@ class RenderSnapshot:
         )
 
     def validate_complete(self) -> None:
-        if not self.engine or not self.engine_version or not self.voice_or_style:
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (self.engine, self.engine_version, self.voice_or_style)
+        ):
             raise SnapshotValidationError("engine/version/voice is incomplete")
-        if self.speed <= 0 or self.gain <= 0 or not self.asset_sha256:
+        if (
+            not isinstance(self.speed, (int, float))
+            or not math.isfinite(self.speed)
+            or self.speed <= 0
+            or not isinstance(self.gain, (int, float))
+            or not math.isfinite(self.gain)
+            or self.gain <= 0
+            or not self.asset_sha256
+        ):
             raise SnapshotValidationError("speed/gain/assets are incomplete")
-        if not self.pronunciations_sha256 or not self.config_revision:
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (self.pronunciations_sha256, self.config_revision)
+        ):
             raise SnapshotValidationError("pronunciations/config revision is incomplete")
-        if self.dsp is None or self.mastering_profile is None:
+        if not isinstance(self.dsp, str) or not isinstance(self.mastering_profile, str):
             raise SnapshotValidationError("mastering/DSP is incomplete")
+        if not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in self.pronunciations.items()
+        ):
+            raise SnapshotValidationError("pronunciations are incomplete")
+        if not all(
+            isinstance(key, str) and key and isinstance(value, str) and value
+            for key, value in self.asset_sha256.items()
+        ):
+            raise SnapshotValidationError("asset hashes are incomplete")
 
     def canonical_json(self) -> str:
         payload = {
@@ -160,6 +185,33 @@ class RenderSnapshot:
         }
         return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
+    @classmethod
+    def from_json(cls, payload_json: str) -> RenderSnapshot:
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise SnapshotValidationError("render snapshot is not valid JSON") from exc
+        if not isinstance(payload, Mapping):
+            raise SnapshotValidationError("render snapshot must be an object")
+        try:
+            snapshot = cls(
+                engine=payload["engine"],
+                engine_version=payload["engine_version"],
+                voice_or_style=payload["voice_or_style"],
+                speed=payload["speed"],
+                mastering_profile=payload["mastering_profile"],
+                dsp=payload["dsp"],
+                pronunciations=payload["pronunciations"],
+                pronunciations_sha256=payload["pronunciations_sha256"],
+                gain=payload["gain"],
+                asset_sha256=payload["asset_sha256"],
+                config_revision=payload["config_revision"],
+            )
+        except (KeyError, TypeError) as exc:
+            raise SnapshotValidationError(f"render snapshot is incomplete: {exc}") from exc
+        snapshot.validate_complete()
+        return snapshot
+
 
 def _required_text(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
@@ -169,6 +221,7 @@ def _required_text(value: Any, name: str) -> str:
 
 class VoiceRequestStatus(StrEnum):
     QUEUED = "queued"
+    SYNTHESIZING = "synthesizing"
     SPEAKING = "speaking"
     DONE = "done"
     CANCELLED = "cancelled"
@@ -192,6 +245,37 @@ class VoiceRequest:
     engine: str | None = None
     voice: str | None = None
     created_at: str | None = None
+    source: str | None = None
+    session_id: str | None = None
+    participant: str | None = None
+    persona: str | None = None
+    lane: str = "normal"
+    utterance_index: int = 0
+    render_snapshot: RenderSnapshot | None = None
+    synthesis_started_at: str | None = None
+    synthesis_completed_at: str | None = None
+    playback_started_at: str | None = None
+    playback_completed_at: str | None = None
+    playback_confirmed: bool = False
+
+    @property
+    def intent(self) -> SpeechIntent:
+        if not all(
+            isinstance(value, str) and value
+            for value in (self.persona, self.source, self.session_id, self.participant)
+        ):
+            raise IntentValidationError("legacy voice request has no complete speech intent")
+        return SpeechIntent(
+            text=self.text,
+            persona=str(self.persona),
+            source=str(self.source),
+            session=str(self.session_id),
+            participant=str(self.participant),
+            priority=self.priority,
+            lane=self.lane,
+            interrupt_policy=self.interrupt_policy,
+            utterance_index=self.utterance_index,
+        )
 
 
 @dataclass(frozen=True)

@@ -1,9 +1,4 @@
-"""Persisted VoiceQueue (G3, CONTRACTS §7, ADR-005).
-
-One sentence = one row in voice_queue. Statuses: queued -> speaking ->
-done | cancelled | failed, with the frozen voice.speak.* event family.
-Only the broker claims work; queued items recover after a restart.
-"""
+"""Transactional persisted voice queue with immutable render snapshots."""
 
 from __future__ import annotations
 
@@ -16,12 +11,13 @@ from typing import Any
 
 from dan.events.types import EventType
 from dan.store.repositories import utc_now_iso
-from dan.voice.models import VoiceRequest
+from dan.voice.models import RenderSnapshot, SpeechIntent, VoiceRequest
 
-
-# A tombstone only needs to outlive a cancelled turn's last in-flight delta /
-# filler (seconds); an hour is a generous bound that keeps the table tiny.
 TOMBSTONE_TTL_SECONDS = 3600
+VOICE_QUEUE_POLICY_VERSION = 1
+DEFAULT_GLOBAL_PENDING_LIMIT = 100
+DEFAULT_SESSION_PENDING_LIMIT = 20
+_PENDING_STATUSES = ("queued", "synthesizing", "speaking")
 
 
 class VoiceQueueError(Exception):
@@ -29,10 +25,11 @@ class VoiceQueueError(Exception):
 
 
 class VoiceQueueCancelledError(VoiceQueueError):
-    """Raised by enqueue for a turn a barge-in already tombstoned (FIX-09).
+    """Raised when a cancelled session attempts to enqueue late speech."""
 
-    A subclass of VoiceQueueError, so the best-effort speech paths that already
-    swallow queue errors keep muting cleanly instead of failing a turn."""
+
+class QueueBackpressure(VoiceQueueError):
+    """Raised when versioned admission limits reject a request."""
 
 
 class VoiceQueue:
@@ -42,90 +39,145 @@ class VoiceQueue:
         *,
         event_store: Any | None = None,
         now: Callable[[], str] | None = None,
+        global_pending_limit: int = DEFAULT_GLOBAL_PENDING_LIMIT,
+        session_pending_limit: int = DEFAULT_SESSION_PENDING_LIMIT,
     ) -> None:
+        if global_pending_limit <= 0 or session_pending_limit <= 0:
+            raise ValueError("voice queue pending limits must be positive")
         self._conn = conn
         self._event_store = event_store
         self._now = now or utc_now_iso
+        self._global_pending_limit = int(global_pending_limit)
+        self._session_pending_limit = int(session_pending_limit)
 
-    def enqueue(
-        self,
-        *,
-        text: str,
-        turn_id: str | None,
-        kind: str = "sentence",
-        seq: int = 0,
-        priority: int = 0,
-        voice_id: str | None = None,
-        interrupt_policy: str = "no_interrupt",
-    ) -> VoiceRequest:
-        if not isinstance(text, str) or not text.strip():
-            raise VoiceQueueError("text must be a non-empty string.")
-        if turn_id is not None and self.is_tombstoned(turn_id):
-            # Barge-in already cancelled this turn: an in-flight delta or a late
-            # FillerTimer must not enqueue a fresh 'queued' row that would then
-            # be played after the cancel sweep already ran (FIX-09).
+    @property
+    def connection(self) -> sqlite3.Connection:
+        return self._conn
+
+    def enqueue(self, intent: SpeechIntent, snapshot: RenderSnapshot) -> VoiceRequest:
+        """Persist producer intent and the resolver's complete snapshot atomically."""
+
+        if not isinstance(intent, SpeechIntent):
+            raise VoiceQueueError("enqueue requires a SpeechIntent")
+        if not isinstance(snapshot, RenderSnapshot):
+            raise VoiceQueueError("enqueue requires a RenderSnapshot")
+        snapshot.validate_complete()
+        if self.is_tombstoned(intent.session):
             raise VoiceQueueCancelledError(
-                f"turn {turn_id} was cancelled; refusing a new speech row."
+                f"session {intent.session} was cancelled; refusing new speech"
             )
+
         request_id = uuid.uuid4().hex
         now = self._now()
-        metadata = {"kind": kind, "seq": int(seq)}
-        with self._conn:
+        metadata = {
+            "kind": "filler" if intent.interrupt_policy == "interruptible" else "sentence",
+            "queue_policy_version": VOICE_QUEUE_POLICY_VERSION,
+            "seq": intent.utterance_index,
+        }
+        self._begin_immediate()
+        try:
+            global_count = self._pending_count_in_transaction()
+            if global_count >= self._global_pending_limit:
+                raise QueueBackpressure(
+                    f"global voice queue limit {self._global_pending_limit} reached"
+                )
+            session_count = int(
+                self._conn.execute(
+                    """
+                    SELECT COUNT(*) FROM voice_queue
+                    WHERE session_id = ? AND status IN ('queued', 'synthesizing', 'speaking')
+                    """,
+                    (intent.session,),
+                ).fetchone()[0]
+            )
+            if session_count >= self._session_pending_limit:
+                raise QueueBackpressure(
+                    f"voice queue session {intent.session!r} limit "
+                    f"{self._session_pending_limit} reached"
+                )
             self._conn.execute(
                 """
                 INSERT INTO voice_queue (
-                  id, created_at, updated_at, turn_id, text, priority,
-                  voice_id, interrupt_policy, status, error, metadata_json
+                  id, created_at, updated_at, turn_id, text, priority, voice_id,
+                  interrupt_policy, status, error, metadata_json, spoken_at,
+                  source, session_id, participant, persona, lane, utterance_index,
+                  render_snapshot_json, synthesis_started_at, synthesis_completed_at,
+                  playback_started_at, playback_completed_at, playback_confirmed
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?)
+                VALUES (
+                  ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, NULL,
+                  ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 0
+                )
                 """,
                 (
                     request_id,
                     now,
                     now,
-                    turn_id,
-                    text.strip(),
-                    int(priority),
-                    voice_id,
-                    interrupt_policy,
+                    intent.session,
+                    intent.text,
+                    intent.priority,
+                    snapshot.voice_or_style,
+                    intent.interrupt_policy,
                     json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                    intent.source,
+                    intent.session,
+                    intent.participant,
+                    intent.persona,
+                    intent.lane,
+                    intent.utterance_index,
+                    snapshot.canonical_json(),
                 ),
             )
+        except Exception:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+
         self._append_event(
             EventType.VOICE_SPEAK_QUEUED,
-            {"request_id": request_id, "turn_id": turn_id, "kind": kind, "seq": int(seq)},
+            {
+                "request_id": request_id,
+                "session_id": intent.session,
+                "source": intent.source,
+                "persona": intent.persona,
+                "lane": intent.lane,
+                "utterance_index": intent.utterance_index,
+                "render_snapshot": json.loads(snapshot.canonical_json()),
+            },
         )
         return self._by_id(request_id)
 
     def claim_next(self) -> VoiceRequest | None:
-        """Move the next queued request to speaking (broker-only path)."""
+        """Claim one playable row for synthesis; no claim may jump to speaking."""
 
         order_clause = """
-            SELECT id FROM voice_queue AS vq
+            SELECT id FROM voice_queue
             WHERE status = 'queued'
-            ORDER BY priority DESC,
-                     -- Group by turn (turns ordered by their first row), so
-                     -- seq — which is per-turn — never interleaves two turns
-                     -- (FIX-09). `IS` groups the NULL-turn rows together.
-                     (SELECT MIN(vq2.rowid) FROM voice_queue AS vq2
-                      WHERE vq2.turn_id IS vq.turn_id) ASC,
-                     CAST(json_extract(vq.metadata_json, '$.seq') AS INTEGER) ASC,
-                     vq.rowid ASC
+              AND source != 'legacy-migration'
+              AND render_snapshot_json != 'legacy-unresolved'
+            ORDER BY CASE lane
+                       WHEN 'live' THEN 0
+                       WHEN 'normal' THEN 1
+                       ELSE 2
+                     END ASC,
+                     priority DESC,
+                     rowid ASC
             LIMIT 1
         """
+        now = self._now()
         try:
             row = self._conn.execute(
                 f"""
                 WITH candidate AS ({order_clause})
                 UPDATE voice_queue
-                SET status = 'speaking', updated_at = ?
+                SET status = 'synthesizing', synthesis_started_at = ?, updated_at = ?
                 WHERE id = (SELECT id FROM candidate)
                 RETURNING id
                 """,
-                (self._now(),),
+                (now, now),
             ).fetchone()
         except sqlite3.OperationalError as exc:
-            # Fallback for older SQLite versions without RETURNING support.
             if "RETURNING" not in str(exc):
                 raise
             row = self._conn.execute(order_clause).fetchone()
@@ -134,39 +186,139 @@ class VoiceQueue:
             request_id = str(row[0])
             with self._conn:
                 updated = self._conn.execute(
-                    "UPDATE voice_queue SET status = 'speaking', updated_at = ? "
-                    "WHERE id = ? AND status = 'queued'",
-                    (self._now(), request_id),
+                    """
+                    UPDATE voice_queue
+                    SET status = 'synthesizing', synthesis_started_at = ?, updated_at = ?
+                    WHERE id = ? AND status = 'queued'
+                    """,
+                    (now, now, request_id),
                 ).rowcount
             if updated != 1:
                 return None
-            self._append_event(EventType.VOICE_SPEAK_STARTED, {"request_id": request_id})
-            return self._by_id(request_id)
+            row = (request_id,)
         if row is None:
             return None
         request_id = str(row[0])
-        self._append_event(EventType.VOICE_SPEAK_STARTED, {"request_id": request_id})
+        self._append_event("voice.speak.synthesis.started", {"request_id": request_id})
         return self._by_id(request_id)
 
-    def mark_spoken(self, request_id: str) -> None:
-        """Stamp the moment a row actually reaches the speaker (broker pre-play).
-
-        Only a still-'speaking' row is stamped, and only once. spoken_at — not
-        the final status — is what the anti-echo corpus reads, so a 'queued' row
-        flipped to 'cancelled' by barge-in (never played) stays out of it."""
-
+    def mark_synthesis_complete(self, request_id: str) -> None:
         with self._conn:
-            self._conn.execute(
-                "UPDATE voice_queue SET spoken_at = ? "
-                "WHERE id = ? AND status = 'speaking' AND spoken_at IS NULL",
-                (self._now(), request_id),
+            updated = self._conn.execute(
+                """
+                UPDATE voice_queue SET synthesis_completed_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'synthesizing' AND synthesis_completed_at IS NULL
+                """,
+                (self._now(), self._now(), request_id),
+            ).rowcount
+        if updated == 1:
+            self._append_event("voice.speak.synthesis.completed", {"request_id": request_id})
+
+    def mark_playback_started(self, request_id: str) -> None:
+        now = self._now()
+        with self._conn:
+            updated = self._conn.execute(
+                """
+                UPDATE voice_queue
+                SET status = 'speaking', spoken_at = ?, playback_started_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'synthesizing'
+                  AND synthesis_completed_at IS NOT NULL
+                """,
+                (now, now, now, request_id),
+            ).rowcount
+        if updated != 1:
+            raise VoiceQueueError(
+                f"request {request_id!r} cannot start playback before synthesis completes"
             )
+        self._append_event(EventType.VOICE_SPEAK_STARTED, {"request_id": request_id})
+
+    def mark_spoken(self, request_id: str) -> None:
+        """Compatibility alias for the native playback-start transition."""
+
+        self.mark_playback_started(request_id)
 
     def mark_done(self, request_id: str) -> None:
-        self._finish(request_id, "done", EventType.VOICE_SPEAK_FINISHED, None)
+        now = self._now()
+        with self._conn:
+            updated = self._conn.execute(
+                """
+                UPDATE voice_queue
+                SET status = 'done', playback_completed_at = ?, playback_confirmed = 1,
+                    updated_at = ?
+                WHERE id = ? AND status = 'speaking'
+                """,
+                (now, now, request_id),
+            ).rowcount
+        if updated == 1:
+            self._append_event(EventType.VOICE_SPEAK_FINISHED, {"request_id": request_id})
 
     def mark_failed(self, request_id: str, *, error: str) -> None:
-        self._finish(request_id, "failed", EventType.VOICE_SPEAK_FAILED, error)
+        now = self._now()
+        with self._conn:
+            updated = self._conn.execute(
+                """
+                UPDATE voice_queue
+                SET status = 'failed', error = ?, playback_completed_at = CASE
+                      WHEN status = 'speaking' THEN ? ELSE playback_completed_at END,
+                    playback_confirmed = 0, updated_at = ?
+                WHERE id = ? AND status IN ('queued', 'synthesizing', 'speaking')
+                """,
+                (error, now, now, request_id),
+            ).rowcount
+        if updated == 1:
+            self._append_event(
+                EventType.VOICE_SPEAK_FAILED,
+                {"request_id": request_id, "error": error},
+            )
+
+    def cancel_session(
+        self,
+        session_id: str,
+        *,
+        reason: str | None = None,
+        interruption_source: str | None = None,
+    ) -> list[str]:
+        rows = self._conn.execute(
+            """
+            SELECT id FROM voice_queue
+            WHERE session_id = ? AND status IN ('queued', 'synthesizing', 'speaking')
+            ORDER BY rowid DESC
+            """,
+            (session_id,),
+        ).fetchall()
+        request_ids = [str(row[0]) for row in rows]
+        if not request_ids:
+            return []
+        now = self._now()
+        self._begin_immediate()
+        try:
+            self._conn.execute(
+                """
+                UPDATE voice_queue
+                SET status = 'cancelled', playback_completed_at = CASE
+                      WHEN status = 'speaking' THEN ? ELSE playback_completed_at END,
+                    playback_confirmed = 0, updated_at = ?
+                WHERE session_id = ? AND status IN ('queued', 'synthesizing', 'speaking')
+                """,
+                (now, now, session_id),
+            )
+        except Exception:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+        for request_id in request_ids:
+            self._append_event(
+                EventType.VOICE_SPEAK_CANCELLED,
+                {
+                    "request_id": request_id,
+                    "session_id": session_id,
+                    "turn_id": session_id,
+                    "reason": reason,
+                    "interruption_source": interruption_source,
+                },
+            )
+        return request_ids
 
     def cancel_turn(
         self,
@@ -176,36 +328,14 @@ class VoiceQueue:
         interruption_source: str | None = None,
         cancelled_request_ids: list[str] | None = None,
     ) -> int:
-        """Cancel every unfinished request of one turn (barge-in leg 2)."""
-
-        rows = self._conn.execute(
-            """
-            SELECT id
-            FROM voice_queue
-            WHERE turn_id = ? AND status IN ('queued', 'speaking')
-            ORDER BY rowid DESC
-            """,
-            (turn_id,),
-        ).fetchall()
-        now = self._now()
-        for (request_id,) in rows:
-            with self._conn:
-                self._conn.execute(
-                    "UPDATE voice_queue SET status = 'cancelled', updated_at = ? WHERE id = ?",
-                    (now, request_id),
-                )
-            self._append_event(
-                EventType.VOICE_SPEAK_CANCELLED,
-                {
-                    "request_id": str(request_id),
-                    "turn_id": turn_id,
-                    "reason": reason,
-                    "interruption_source": interruption_source,
-                },
-            )
-            if cancelled_request_ids is not None:
-                cancelled_request_ids.append(str(request_id))
-        return len(rows)
+        request_ids = self.cancel_session(
+            turn_id,
+            reason=reason,
+            interruption_source=interruption_source,
+        )
+        if cancelled_request_ids is not None:
+            cancelled_request_ids.extend(request_ids)
+        return len(request_ids)
 
     def cancel_request(
         self,
@@ -214,10 +344,11 @@ class VoiceQueue:
         reason: str | None = None,
         interruption_source: str | None = None,
     ) -> bool:
-        """Cancel exactly one unfinished request without touching its turn."""
-
         row = self._conn.execute(
-            "SELECT turn_id FROM voice_queue WHERE id = ? AND status IN ('queued', 'speaking')",
+            """
+            SELECT session_id FROM voice_queue
+            WHERE id = ? AND status IN ('queued', 'synthesizing', 'speaking')
+            """,
             (request_id,),
         ).fetchone()
         if row is None:
@@ -225,28 +356,28 @@ class VoiceQueue:
         now = self._now()
         with self._conn:
             updated = self._conn.execute(
-                "UPDATE voice_queue SET status = 'cancelled', updated_at = ? WHERE id = ?",
-                (now, request_id),
+                """
+                UPDATE voice_queue
+                SET status = 'cancelled', playback_completed_at = CASE
+                      WHEN status = 'speaking' THEN ? ELSE playback_completed_at END,
+                    playback_confirmed = 0, updated_at = ?
+                WHERE id = ? AND status IN ('queued', 'synthesizing', 'speaking')
+                """,
+                (now, now, request_id),
             ).rowcount
-        if updated != 1:
-            return False
-        self._append_event(
-            EventType.VOICE_SPEAK_CANCELLED,
-            {
-                "request_id": request_id,
-                "turn_id": str(row[0]) if row[0] else None,
-                "reason": reason,
-                "interruption_source": interruption_source,
-            },
-        )
-        return True
+        if updated == 1:
+            self._append_event(
+                EventType.VOICE_SPEAK_CANCELLED,
+                {
+                    "request_id": request_id,
+                    "session_id": str(row[0]),
+                    "reason": reason,
+                    "interruption_source": interruption_source,
+                },
+            )
+        return updated == 1
 
     def tombstone_turns(self, turn_ids: Iterable[str]) -> int:
-        """Mark turns as cancelled so enqueue refuses new rows for them.
-
-        Idempotent (INSERT OR IGNORE) and self-bounding: each call also prunes
-        tombstones older than the TTL, so the table never grows without limit."""
-
         ids = [str(turn_id) for turn_id in turn_ids if turn_id]
         if not ids:
             return 0
@@ -264,58 +395,84 @@ class VoiceQueue:
 
     def is_tombstoned(self, turn_id: str) -> bool:
         row = self._conn.execute(
-            "SELECT 1 FROM cancelled_turns WHERE turn_id = ? LIMIT 1", (turn_id,)
+            "SELECT 1 FROM cancelled_turns WHERE turn_id = ? LIMIT 1",
+            (turn_id,),
         ).fetchone()
         return row is not None
 
     def recover_orphans(self) -> int:
-        """Requeue speaking rows orphaned by a restart (queued items recover)."""
-
+        now = self._now()
         with self._conn:
-            return self._conn.execute(
-                "UPDATE voice_queue SET status = 'queued', updated_at = ? "
-                "WHERE status = 'speaking'",
-                (self._now(),),
+            synthesizing = self._conn.execute(
+                """
+                UPDATE voice_queue
+                SET status = 'queued', synthesis_started_at = NULL,
+                    synthesis_completed_at = NULL, updated_at = ?
+                WHERE status = 'synthesizing'
+                """,
+                (now,),
             ).rowcount
+            speaking = self._conn.execute(
+                """
+                UPDATE voice_queue
+                SET status = 'failed', error = 'playback interrupted by broker restart',
+                    playback_completed_at = ?, playback_confirmed = 0, updated_at = ?
+                WHERE status = 'speaking'
+                """,
+                (now, now),
+            ).rowcount
+        return synthesizing + speaking
 
     def pending_count(self) -> int:
+        return self._pending_count_in_transaction()
+
+    def list(self) -> list[VoiceRequest]:
+        ids = [
+            str(row[0])
+            for row in self._conn.execute(
+                "SELECT id FROM voice_queue ORDER BY rowid ASC"
+            ).fetchall()
+        ]
+        return [self._by_id(request_id) for request_id in ids]
+
+    def get(self, request_id: str) -> VoiceRequest:
+        return self._by_id(request_id)
+
+    def _pending_count_in_transaction(self) -> int:
         return int(
             self._conn.execute(
-                "SELECT COUNT(*) FROM voice_queue WHERE status IN ('queued', 'speaking')"
+                """
+                SELECT COUNT(*) FROM voice_queue
+                WHERE status IN ('queued', 'synthesizing', 'speaking')
+                """
             ).fetchone()[0]
         )
 
-    # -- internals ---------------------------------------------------------
-
-    def _finish(
-        self,
-        request_id: str,
-        status: str,
-        event_type: EventType,
-        error: str | None,
-    ) -> None:
-        with self._conn:
-            updated = self._conn.execute(
-                "UPDATE voice_queue SET status = ?, error = ?, updated_at = ? "
-                "WHERE id = ? AND status = 'speaking'",
-                (status, error, self._now(), request_id),
-            ).rowcount
-        if updated == 1:
-            payload: dict[str, Any] = {"request_id": request_id}
-            if error:
-                payload["error"] = error
-            self._append_event(event_type, payload)
+    def _begin_immediate(self) -> None:
+        if self._conn.in_transaction:
+            raise VoiceQueueError("voice queue operation requires a clean transaction boundary")
+        self._conn.execute("BEGIN IMMEDIATE")
 
     def _by_id(self, request_id: str) -> VoiceRequest:
         row = self._conn.execute(
             """
-            SELECT id, text, priority, status, interrupt_policy, turn_id, voice_id, created_at
+            SELECT id, text, priority, status, interrupt_policy, turn_id, voice_id,
+                   created_at, source, session_id, participant, persona, lane,
+                   utterance_index, render_snapshot_json, synthesis_started_at,
+                   synthesis_completed_at, playback_started_at, playback_completed_at,
+                   playback_confirmed
             FROM voice_queue WHERE id = ?
             """,
             (request_id,),
         ).fetchone()
         if row is None:
             raise VoiceQueueError(f"Unknown voice request {request_id!r}.")
+        snapshot_json = str(row[14])
+        snapshot = (
+            None
+            if snapshot_json == "legacy-unresolved"
+            else RenderSnapshot.from_json(snapshot_json)
+        )
         return VoiceRequest(
             id=str(row[0]),
             text=str(row[1]),
@@ -323,19 +480,29 @@ class VoiceQueue:
             status=str(row[3]),
             interrupt_policy=str(row[4]),
             turn_id=str(row[5]) if row[5] else None,
+            engine=snapshot.engine if snapshot is not None else None,
             voice=str(row[6]) if row[6] else None,
             created_at=str(row[7]),
+            source=str(row[8]),
+            session_id=str(row[9]),
+            participant=str(row[10]),
+            persona=str(row[11]),
+            lane=str(row[12]),
+            utterance_index=int(row[13]),
+            render_snapshot=snapshot,
+            synthesis_started_at=str(row[15]) if row[15] else None,
+            synthesis_completed_at=str(row[16]) if row[16] else None,
+            playback_started_at=str(row[17]) if row[17] else None,
+            playback_completed_at=str(row[18]) if row[18] else None,
+            playback_confirmed=bool(row[19]),
         )
 
-    def _append_event(self, event_type: EventType, payload: dict[str, Any]) -> None:
+    def _append_event(self, event_type: str, payload: dict[str, Any]) -> None:
         if self._event_store is not None:
             self._event_store.append(event_type, "voice", payload)
 
 
 def _tombstone_cutoff(now_iso: str) -> str:
-    """The oldest cancelled_at to keep; best effort — an unparseable clock skips
-    pruning (returns "") rather than risk wiping still-needed tombstones."""
-
     try:
         moment = datetime.fromisoformat(now_iso)
     except ValueError:
@@ -346,4 +513,12 @@ def _tombstone_cutoff(now_iso: str) -> str:
     return cutoff.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-__all__ = ["VoiceQueue", "VoiceQueueCancelledError", "VoiceQueueError"]
+__all__ = [
+    "DEFAULT_GLOBAL_PENDING_LIMIT",
+    "DEFAULT_SESSION_PENDING_LIMIT",
+    "QueueBackpressure",
+    "VOICE_QUEUE_POLICY_VERSION",
+    "VoiceQueue",
+    "VoiceQueueCancelledError",
+    "VoiceQueueError",
+]

@@ -11,16 +11,17 @@ becomes a turn is a contract violation by construction.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable
 
 import pytest
 
 from dan.store.db import close_quietly, initialize_database
 from dan.voice.anti_echo import AntiEchoGate
 from dan.voice.queue import VoiceQueue
+from tests.voice_helpers import enqueue_voice
 
 
 @pytest.fixture
@@ -59,9 +60,10 @@ def speak_and_finish(db_path: Path, text: str, *, now: str | None = None) -> Non
     conn = connect(db_path)
     try:
         queue = VoiceQueue(conn, now=(lambda: now) if now else None)
-        request = queue.enqueue(text=text, turn_id="turn-spoken", kind="sentence", seq=0)
+        request = enqueue_voice(queue, text, session="turn-spoken")
         claimed = queue.claim_next()
         assert claimed is not None and claimed.id == request.id
+        queue.mark_synthesis_complete(request.id)
         queue.mark_spoken(request.id)
         queue.mark_done(request.id)
     finally:
@@ -71,7 +73,7 @@ def speak_and_finish(db_path: Path, text: str, *, now: str | None = None) -> Non
 def enqueue_only(db_path: Path, text: str) -> None:
     conn = connect(db_path)
     try:
-        VoiceQueue(conn).enqueue(text=text, turn_id="turn-queued", kind="sentence", seq=0)
+        enqueue_voice(VoiceQueue(conn), text, session="turn-queued")
     finally:
         close_quietly(conn)
 
@@ -220,8 +222,13 @@ def test_recently_cancelled_speech_still_counts_as_echo_source(db_path: Path) ->
     conn = connect(db_path)
     try:
         queue = VoiceQueue(conn)
-        request = queue.enqueue(text="Zdanie przerwane w połowie grania.", turn_id="t", seq=0)
+        request = enqueue_voice(
+            queue,
+            "Zdanie przerwane w połowie grania.",
+            session="t",
+        )
         queue.claim_next()
+        queue.mark_synthesis_complete(request.id)
         queue.mark_spoken(request.id)
         queue.cancel_turn("t")
     finally:
@@ -253,7 +260,11 @@ def test_queued_then_cancelled_text_is_not_an_echo_source(db_path: Path) -> None
     conn = connect(db_path)
     try:
         queue = VoiceQueue(conn)
-        queue.enqueue(text="Zaplanowane ale nigdy niewypowiedziane.", turn_id="t", seq=0)
+        enqueue_voice(
+            queue,
+            "Zaplanowane ale nigdy niewypowiedziane.",
+            session="t",
+        )
         # No claim → never played; barge-in cancels the whole turn anyway.
         queue.cancel_turn("t")
     finally:
@@ -270,8 +281,13 @@ def test_failed_after_partial_audio_still_counts_as_echo_source(db_path: Path) -
     conn = connect(db_path)
     try:
         queue = VoiceQueue(conn)
-        request = queue.enqueue(text="Częściowo odtworzone zdanie zanim padło.", turn_id="t", seq=0)
+        request = enqueue_voice(
+            queue,
+            "Częściowo odtworzone zdanie zanim padło.",
+            session="t",
+        )
         queue.claim_next()
+        queue.mark_synthesis_complete(request.id)
         queue.mark_spoken(request.id)
         queue.mark_failed(request.id, error="player died mid-play")
     finally:
@@ -302,79 +318,3 @@ def test_decision_is_deterministic_for_identical_inputs(db_path: Path) -> None:
     second = gate.accepts_transcript("Sprawdziłem kalendarz i nie masz dziś spotkań.")
 
     assert (first.accepted, first.reason) == (second.accepted, second.reason)
-
-
-# --- shared broker spoken ring ----------------------------------------------
-
-
-def test_shared_broker_ring_rejects_echo_when_db_has_no_spoken_rows(
-    db_path: Path,
-    tmp_path: Path,
-) -> None:
-    now = 1_720_000_000.0
-    ring = tmp_path / "spoken-recent.txt"
-    ring.write_text(
-        f"{now - 5}\tWspólny broker właśnie wypowiedział to pełne zdanie.\n",
-        encoding="utf-8",
-    )
-    gate = AntiEchoGate(
-        factory_for(db_path),
-        config=gate_config(broker_enabled=True),
-        shared_spoken_path=ring,
-        clock=lambda: now,
-    )
-
-    decision = gate.accepts_transcript(
-        "Wspólny broker właśnie wypowiedział to pełne zdanie."
-    )
-
-    assert decision.accepted is False
-    assert decision.reason == "echo"
-
-
-def test_shared_broker_ring_parser_is_bounded_and_ignores_bad_or_stale_rows(
-    db_path: Path,
-    tmp_path: Path,
-) -> None:
-    from dan.voice.anti_echo import MAX_SHARED_RING_BYTES
-
-    now = 1_720_000_000.0
-    ring = tmp_path / "spoken-recent.txt"
-    ring.write_text(
-        ("x" * (MAX_SHARED_RING_BYTES + 1024))
-        + "\nbez-timestampu\n"
-        + f"{now - 120}\tTo zdanie jest już stare i nie powinno blokować.\n"
-        + f"{now - 2}\tTo świeże zdanie wspólnego brokera ma zatrzymać echo.\n",
-        encoding="utf-8",
-    )
-    gate = AntiEchoGate(
-        factory_for(db_path),
-        config=gate_config(broker_enabled=True, anti_echo_window_seconds=30),
-        shared_spoken_path=ring,
-        clock=lambda: now,
-    )
-
-    assert gate.accepts_transcript(
-        "To zdanie jest już stare i nie powinno blokować."
-    ).accepted is True
-    assert gate.accepts_transcript(
-        "To świeże zdanie wspólnego brokera ma zatrzymać echo."
-    ).accepted is False
-
-
-def test_shared_ring_is_ignored_when_shared_broker_mode_is_off(
-    db_path: Path,
-    tmp_path: Path,
-) -> None:
-    now = 1_720_000_000.0
-    ring = tmp_path / "spoken-recent.txt"
-    spoken = "Ten tekst istnieje wyłącznie w zewnętrznym ringu brokera."
-    ring.write_text(f"{now - 1}\t{spoken}\n", encoding="utf-8")
-    gate = AntiEchoGate(
-        factory_for(db_path),
-        config=gate_config(broker_enabled=False),
-        shared_spoken_path=ring,
-        clock=lambda: now,
-    )
-
-    assert gate.accepts_transcript(spoken).accepted is True

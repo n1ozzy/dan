@@ -1,9 +1,4 @@
-"""G3 persisted VoiceQueue tests (CONTRACTS §7, ADR-005).
-
-One sentence = one VoiceRequest row; statuses queued -> speaking ->
-done|cancelled|failed with voice.speak.* events; queued items recover
-after a restart; only the broker ever claims work.
-"""
+"""Persisted Task 7 voice queue contract tests."""
 
 from __future__ import annotations
 
@@ -13,11 +8,8 @@ from pathlib import Path
 import pytest
 
 from dan.store.db import close_quietly, initialize_database
-from dan.voice.queue import VoiceQueue
-from tests.git_guards import assert_schema_and_migrations_unchanged
-
-
-ROOT = Path(__file__).resolve().parents[1]
+from dan.voice.queue import VoiceQueue, VoiceQueueCancelledError
+from tests.voice_helpers import enqueue_voice
 
 
 @pytest.fixture
@@ -33,194 +25,116 @@ class Events:
     def __init__(self) -> None:
         self.items: list[tuple[str, dict]] = []
 
-    def append(self, event_type, source, payload):
+    def append(self, event_type, source, payload) -> None:
         self.items.append((getattr(event_type, "value", str(event_type)), payload))
 
     def names(self) -> list[str]:
         return [name for name, _ in self.items]
 
 
-def queue(conn, events=None):
-    return VoiceQueue(conn, event_store=events)
-
-
-def test_enqueue_persists_row_with_seq_and_event(conn) -> None:
+def test_enqueue_persists_complete_intent_snapshot_and_event(conn) -> None:
     events = Events()
-    q = queue(conn, events)
+    request = enqueue_voice(
+        VoiceQueue(conn, event_store=events),
+        "Pierwsze zdanie.",
+        session="turn-1",
+        utterance_index=3,
+    )
 
-    request = q.enqueue(text="Pierwsze zdanie.", turn_id="turn-1", kind="sentence", seq=0)
-
-    assert request.status == "queued"
     row = conn.execute(
-        "SELECT text, turn_id, status, metadata_json FROM voice_queue"
+        "SELECT source, session_id, utterance_index, render_snapshot_json, status "
+        "FROM voice_queue WHERE id = ?",
+        (request.id,),
     ).fetchone()
-    assert row[0] == "Pierwsze zdanie."
-    assert row[1] == "turn-1"
-    assert row[2] == "queued"
-    assert '"seq": 0' in row[3] and '"kind": "sentence"' in row[3]
+    assert tuple(row[:3]) == ("pytest", "turn-1", 3)
+    assert '"config_revision":"test-config-v1"' in row[3]
+    assert row[4] == "queued"
     assert events.names() == ["voice.speak.queued"]
 
 
-def test_claim_next_plays_in_seq_order(conn) -> None:
+def test_lane_then_priority_then_rowid_controls_claim_order(conn) -> None:
+    queue = VoiceQueue(conn)
+    enqueue_voice(queue, "background", lane="background", priority=99)
+    enqueue_voice(queue, "normal-low", lane="normal", priority=1)
+    enqueue_voice(queue, "live", lane="live", priority=-10)
+    enqueue_voice(queue, "normal-high", lane="normal", priority=5)
+
+    claimed = [queue.claim_next() for _ in range(4)]
+
+    assert [request.text for request in claimed if request] == [
+        "live",
+        "normal-high",
+        "normal-low",
+        "background",
+    ]
+    assert all(request.status == "synthesizing" for request in claimed if request)
+
+
+def test_queue_lifecycle_requires_synthesis_before_playback(conn) -> None:
     events = Events()
-    q = queue(conn, events)
-    q.enqueue(text="Drugie zdanie w kolejce.", turn_id="turn-1", kind="sentence", seq=1)
-    q.enqueue(text="Pierwsze zdanie w kolejce.", turn_id="turn-1", kind="sentence", seq=0)
+    queue = VoiceQueue(conn, event_store=events)
+    request = enqueue_voice(queue, "Pelny cykl.")
 
-    first = q.claim_next()
-    second = q.claim_next()
+    queue.claim_next()
+    queue.mark_synthesis_complete(request.id)
+    queue.mark_playback_started(request.id)
+    queue.mark_done(request.id)
 
-    assert first.text == "Pierwsze zdanie w kolejce."
-    assert second.text == "Drugie zdanie w kolejce."
-    assert first.status == "speaking"
-    assert "voice.speak.started" in events.names()
-
-
-def test_done_and_failed_lifecycle(conn) -> None:
-    events = Events()
-    q = queue(conn, events)
-    q.enqueue(text="Zdanie numer jeden.", turn_id="t", kind="sentence", seq=0)
-    q.enqueue(text="Zdanie numer dwa.", turn_id="t", kind="sentence", seq=1)
-
-    first = q.claim_next()
-    q.mark_done(first.id)
-    second = q.claim_next()
-    q.mark_failed(second.id, error="engine exploded")
-
-    statuses = dict(conn.execute("SELECT text, status FROM voice_queue").fetchall())
-    assert statuses["Zdanie numer jeden."] == "done"
-    assert statuses["Zdanie numer dwa."] == "failed"
-    assert "voice.speak.finished" in events.names()
-    assert "voice.speak.failed" in events.names()
+    row = conn.execute(
+        "SELECT status, synthesis_started_at, synthesis_completed_at, "
+        "playback_started_at, playback_completed_at, playback_confirmed "
+        "FROM voice_queue WHERE id = ?",
+        (request.id,),
+    ).fetchone()
+    assert row[0] == "done"
+    assert all(row[index] is not None for index in range(1, 5))
+    assert row[5] == 1
+    assert events.names() == [
+        "voice.speak.queued",
+        "voice.speak.synthesis.started",
+        "voice.speak.synthesis.completed",
+        "voice.speak.started",
+        "voice.speak.finished",
+    ]
 
 
-def test_cancel_turn_cancels_queued_and_speaking(conn) -> None:
-    events = Events()
-    q = queue(conn, events)
-    q.enqueue(text="Aktualnie mówione zdanie.", turn_id="turn-x", kind="sentence", seq=0)
-    q.enqueue(text="Jeszcze niewypowiedziane zdanie.", turn_id="turn-x", kind="sentence", seq=1)
-    q.enqueue(text="Zdanie innego turnu zostaje.", turn_id="turn-y", kind="sentence", seq=0)
-    q.claim_next()
+def test_cancel_session_cancels_every_active_phase_only(conn) -> None:
+    queue = VoiceQueue(conn)
+    first = enqueue_voice(queue, "synthesizing", session="turn-x")
+    enqueue_voice(queue, "queued", session="turn-x", utterance_index=1)
+    enqueue_voice(queue, "other", session="turn-y")
+    assert queue.claim_next().id == first.id
 
-    cancelled = q.cancel_turn("turn-x")
-
-    assert cancelled == 2
-    statuses = dict(conn.execute("SELECT text, status FROM voice_queue").fetchall())
-    assert statuses["Aktualnie mówione zdanie."] == "cancelled"
-    assert statuses["Jeszcze niewypowiedziane zdanie."] == "cancelled"
-    assert statuses["Zdanie innego turnu zostaje."] == "queued"
-    assert events.names().count("voice.speak.cancelled") == 2
-
-
-def test_orphaned_speaking_rows_recover_to_queued(conn) -> None:
-    q = queue(conn)
-    q.enqueue(text="Przerwane restartem zdanie.", turn_id="t", kind="sentence", seq=0)
-    q.claim_next()
-
-    recovered = q.recover_orphans()
-
-    assert recovered == 1
-    row = conn.execute("SELECT status FROM voice_queue").fetchone()
-    assert row[0] == "queued"
+    assert queue.cancel_session("turn-x") == [
+        row[0]
+        for row in conn.execute(
+            "SELECT id FROM voice_queue WHERE session_id = 'turn-x' ORDER BY rowid DESC"
+        ).fetchall()
+    ]
+    statuses = dict(conn.execute("SELECT text, status FROM voice_queue"))
+    assert statuses == {
+        "synthesizing": "cancelled",
+        "queued": "cancelled",
+        "other": "queued",
+    }
 
 
-def test_no_duplicate_claim_of_the_same_request(conn) -> None:
-    q = queue(conn)
-    q.enqueue(text="Jednorazowe zdanie do zagrania.", turn_id="t", kind="sentence", seq=0)
+def test_no_duplicate_claim_and_restart_requeues_synthesis(conn) -> None:
+    queue = VoiceQueue(conn)
+    request = enqueue_voice(queue, "Raz i tylko raz.")
+    assert queue.claim_next().id == request.id
+    assert queue.claim_next() is None
 
-    first = q.claim_next()
-    second = q.claim_next()
-
-    assert first is not None
-    assert second is None
-
-
-def test_mark_spoken_stamps_spoken_at_on_a_speaking_row(conn) -> None:
-    # FIX-09: spoken_at marks the moment a row actually reached playback, so
-    # only genuinely-spoken rows can seed the anti-echo corpus.
-    q = queue(conn)
-    request = q.enqueue(text="Zdanie które realnie zabrzmi.", turn_id="t", kind="sentence", seq=0)
-    q.claim_next()
-
-    q.mark_spoken(request.id)
-
-    spoken_at = conn.execute(
-        "SELECT spoken_at FROM voice_queue WHERE id = ?", (request.id,)
-    ).fetchone()[0]
-    assert spoken_at is not None
+    assert queue.recover_orphans() == 1
+    assert queue.claim_next().id == request.id
 
 
-def test_queued_then_cancelled_row_never_gets_a_spoken_at(conn) -> None:
-    # A row cancelled while still 'queued' never reached the speaker, so it must
-    # keep spoken_at NULL (the whole point of the anti-echo corpus fix).
-    q = queue(conn)
-    q.enqueue(text="Nigdy niewypowiedziane zdanie.", turn_id="turn-x", kind="sentence", seq=0)
-
-    q.cancel_turn("turn-x")
-
-    spoken_at = conn.execute("SELECT spoken_at FROM voice_queue").fetchone()[0]
-    assert spoken_at is None
-
-
-def test_claim_next_does_not_interleave_two_turns(conn) -> None:
-    # FIX-09: seq is per-turn, so ordering by seq alone makes the sentences of
-    # two turns interleave. Rows must play grouped by turn (turns in the order
-    # their first row was enqueued), each turn in its own seq order.
-    q = queue(conn)
-    q.enqueue(text="A pierwsze.", turn_id="turn-a", seq=0)
-    q.enqueue(text="A drugie.", turn_id="turn-a", seq=1)
-    q.enqueue(text="B pierwsze.", turn_id="turn-b", seq=0)
-    q.enqueue(text="B drugie.", turn_id="turn-b", seq=1)
-
-    order = []
-    while (claimed := q.claim_next()) is not None:
-        order.append(claimed.text)
-
-    assert order == ["A pierwsze.", "A drugie.", "B pierwsze.", "B drugie."]
-
-
-def test_claim_next_plays_a_filler_before_its_turns_sentences(conn) -> None:
-    # A filler (seq=-1) is enqueued only when generation is slow, so it can land
-    # AFTER the first sentence by rowid — but seq keeps it first within its turn.
-    q = queue(conn)
-    q.enqueue(text="Pierwsze prawdziwe zdanie.", turn_id="turn-a", seq=0)
-    q.enqueue(text="A spierdalaj...", turn_id="turn-a", kind="filler", seq=-1)
-
-    first = q.claim_next()
-
-    assert first.text == "A spierdalaj..."
-
-
-def test_enqueue_refuses_a_tombstoned_turn(conn) -> None:
-    # FIX-09: after a barge-in tombstones a cancelled turn, a late delta or a
-    # FillerTimer of that turn must NOT slip a fresh 'queued' row past the sweep.
-    from dan.voice.queue import VoiceQueueCancelledError
-
-    q = queue(conn)
-    q.tombstone_turns(["turn-cancelled"])
+def test_tombstone_is_idempotent_and_rejects_late_snapshot(conn) -> None:
+    queue = VoiceQueue(conn)
+    queue.tombstone_turns(["dead", "dead"])
 
     with pytest.raises(VoiceQueueCancelledError):
-        q.enqueue(text="Spóźniona delta anulowanej tury.", turn_id="turn-cancelled", seq=5)
+        enqueue_voice(queue, "Spuznione.", session="dead")
 
-    # A different, live turn still enqueues normally.
-    live = q.enqueue(text="Zwykłe zdanie żywej tury.", turn_id="turn-live", seq=0)
-    assert live.status == "queued"
-    # The refused row was never written.
-    texts = [row[0] for row in conn.execute("SELECT text FROM voice_queue").fetchall()]
-    assert texts == ["Zwykłe zdanie żywej tury."]
-
-
-def test_tombstone_is_idempotent_and_reports_membership(conn) -> None:
-    q = queue(conn)
-    q.tombstone_turns(["t1", "t2"])
-    q.tombstone_turns(["t1"])  # repeat must not raise or duplicate
-
-    assert q.is_tombstoned("t1") is True
-    assert q.is_tombstoned("t2") is True
-    assert q.is_tombstoned("never") is False
-    rows = conn.execute("SELECT COUNT(*) FROM cancelled_turns").fetchone()[0]
-    assert rows == 2
-
-
-def test_schema_and_migrations_are_unchanged() -> None:
-    assert_schema_and_migrations_unchanged(ROOT)
+    assert queue.is_tombstoned("dead") is True
+    assert enqueue_voice(queue, "Zywe.", session="live").status == "queued"

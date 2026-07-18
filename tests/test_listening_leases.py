@@ -17,6 +17,7 @@ from dan.store.db import close_quietly, initialize_database
 from dan.voice.listening import ListeningLeaseManager, ListeningLeaseError
 from dan.voice.recorder import MockRecorder, RecorderBackendError, build_recorder
 from tests.git_guards import assert_schema_and_migrations_unchanged
+from tests.voice_helpers import enqueue_voice
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -373,11 +374,12 @@ def test_ptt_down_acquires_hold_lease_without_cancelling_active_speech(tmp_path:
     daemon_app = _daemon(tmp_path, voice_enabled=True)
     try:
         assert daemon_app.conn is not None
+        daemon_app.voice_broker.stop()
         queue = VoiceQueue(daemon_app.conn)
-        request = queue.enqueue(
-            text="Nie powinno doczekać się VAD ani STT.",
-            turn_id="turn-before-ptt",
-            seq=0,
+        request = enqueue_voice(
+            queue,
+            "Nie powinno doczekać się VAD ani STT.",
+            session="turn-before-ptt",
         )
 
         with running_server(daemon_app) as base_url:
@@ -421,11 +423,12 @@ def test_ptt_unknown_source_is_bad_request(tmp_path: Path) -> None:
     daemon_app = _daemon(tmp_path, voice_enabled=True)
     try:
         assert daemon_app.conn is not None
+        daemon_app.voice_broker.stop()
         queue = VoiceQueue(daemon_app.conn)
-        request = queue.enqueue(
-            text="Nie wolno anulować przy błędnym źródle PTT.",
-            turn_id="turn-bad-ptt-source",
-            seq=0,
+        request = enqueue_voice(
+            queue,
+            "Nie wolno anulować przy błędnym źródle PTT.",
+            session="turn-bad-ptt-source",
         )
 
         with running_server(daemon_app) as base_url:

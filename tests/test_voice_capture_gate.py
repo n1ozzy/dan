@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 from dan.voice.stt import MockSTTEngine
 from dan.voice.vad import CaptureGate, analyze_capture, pcm_from_wav
+from tests.voice_helpers import enqueue_voice
 
 
 SAMPLE_RATE = 16000
@@ -193,11 +194,12 @@ def test_too_short_capture_skips_stt_turn_and_barge_in(tmp_path) -> None:
         assert app.conn is not None
         assert app.voice_stt is not None
         assert isinstance(app.voice_stt._engine, MockSTTEngine)
+        app.voice_broker.stop()
         queue = VoiceQueue(app.conn)
-        pending = queue.enqueue(
-            text="To ma zostać, bo za krótki capture nie jest barge-in.",
-            turn_id="turn-pending",
-            seq=0,
+        pending = enqueue_voice(
+            queue,
+            "To ma zostać, bo za krótki capture nie jest barge-in.",
+            session="turn-pending",
         )
 
         app.voice_stt.accept_capture(as_wav(pcm_tone(0.6)))

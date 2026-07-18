@@ -285,20 +285,80 @@ CREATE TABLE IF NOT EXISTS voice_queue (
   text TEXT NOT NULL,
   priority INTEGER NOT NULL DEFAULT 0,
   voice_id TEXT,
-  interrupt_policy TEXT NOT NULL DEFAULT 'no_interrupt',
-  status TEXT NOT NULL,
+  interrupt_policy TEXT NOT NULL DEFAULT 'finish_current',
+  status TEXT NOT NULL CHECK (
+    status IN ('queued', 'synthesizing', 'speaking', 'done', 'cancelled', 'failed')
+  ),
   error TEXT,
   metadata_json TEXT NOT NULL DEFAULT '{}',
-  -- Set the moment a row actually reaches playback (broker pre-play stamp).
-  -- Only rows with a non-NULL spoken_at may seed the anti-echo corpus: a
-  -- 'queued' row flipped to 'cancelled' by barge-in never made a sound (FIX-09).
-  spoken_at TEXT
+  spoken_at TEXT,
+  source TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  participant TEXT NOT NULL,
+  persona TEXT NOT NULL,
+  lane TEXT NOT NULL CHECK (lane IN ('live', 'normal', 'background')),
+  utterance_index INTEGER NOT NULL CHECK (utterance_index >= 0),
+  render_snapshot_json TEXT NOT NULL,
+  synthesis_started_at TEXT,
+  synthesis_completed_at TEXT,
+  playback_started_at TEXT,
+  playback_completed_at TEXT,
+  playback_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (playback_confirmed IN (0, 1))
 );
 
 CREATE INDEX IF NOT EXISTS idx_voice_queue_status ON voice_queue(status);
 CREATE INDEX IF NOT EXISTS idx_voice_queue_priority ON voice_queue(priority);
 CREATE INDEX IF NOT EXISTS idx_voice_queue_turn_id ON voice_queue(turn_id);
 CREATE INDEX IF NOT EXISTS idx_voice_queue_spoken_at ON voice_queue(spoken_at);
+CREATE INDEX IF NOT EXISTS idx_voice_queue_session_id ON voice_queue(session_id);
+CREATE INDEX IF NOT EXISTS idx_voice_queue_lane_status ON voice_queue(lane, status);
+
+CREATE TRIGGER IF NOT EXISTS voice_queue_snapshot_complete
+BEFORE INSERT ON voice_queue
+WHEN CASE
+  WHEN json_valid(NEW.render_snapshot_json) = 0 THEN 1
+  ELSE
+    COALESCE(json_extract(NEW.render_snapshot_json, '$.engine'), '') = '' OR
+    COALESCE(json_extract(NEW.render_snapshot_json, '$.engine_version'), '') = '' OR
+    COALESCE(json_extract(NEW.render_snapshot_json, '$.voice_or_style'), '') = '' OR
+    COALESCE(json_extract(NEW.render_snapshot_json, '$.speed'), 0) <= 0 OR
+    json_type(NEW.render_snapshot_json, '$.mastering_profile') IS NULL OR
+    json_type(NEW.render_snapshot_json, '$.dsp') IS NULL OR
+    json_type(NEW.render_snapshot_json, '$.pronunciations') != 'object' OR
+    COALESCE(json_extract(NEW.render_snapshot_json, '$.pronunciations_sha256'), '') = '' OR
+    COALESCE(json_extract(NEW.render_snapshot_json, '$.gain'), 0) <= 0 OR
+    json_type(NEW.render_snapshot_json, '$.asset_sha256') != 'object' OR
+    json_extract(NEW.render_snapshot_json, '$.asset_sha256') = '{}' OR
+    COALESCE(json_extract(NEW.render_snapshot_json, '$.config_revision'), '') = ''
+END
+BEGIN
+  SELECT RAISE(ABORT, 'voice snapshot incomplete');
+END;
+
+CREATE TRIGGER IF NOT EXISTS voice_queue_legacy_marker_reserved
+BEFORE INSERT ON voice_queue
+WHEN NEW.render_snapshot_json = 'legacy-unresolved'
+BEGIN
+  SELECT RAISE(ABORT, 'legacy-unresolved snapshot is migration-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS voice_queue_snapshot_immutable
+BEFORE UPDATE OF render_snapshot_json ON voice_queue
+WHEN OLD.render_snapshot_json IS NOT NEW.render_snapshot_json
+BEGIN
+  SELECT RAISE(ABORT, 'immutable render snapshot');
+END;
+
+CREATE TRIGGER IF NOT EXISTS voice_queue_status_transition
+BEFORE UPDATE OF status ON voice_queue
+WHEN OLD.status IS NOT NEW.status AND NOT (
+  (OLD.status = 'queued' AND NEW.status IN ('synthesizing', 'cancelled', 'failed')) OR
+  (OLD.status = 'synthesizing' AND NEW.status IN ('queued', 'speaking', 'cancelled', 'failed')) OR
+  (OLD.status = 'speaking' AND NEW.status IN ('done', 'cancelled', 'failed'))
+)
+BEGIN
+  SELECT RAISE(ABORT, 'invalid voice queue transition');
+END;
 
 -- Tombstone of turns cancelled by barge-in: VoiceQueue.enqueue refuses new
 -- rows for these turn_ids, so an in-flight delta or a late FillerTimer of a

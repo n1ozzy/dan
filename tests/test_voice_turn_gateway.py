@@ -24,6 +24,7 @@ from dan.store.db import close_quietly
 from dan.voice.anti_echo import EchoDecision
 from dan.voice.gateway import VoiceTurnGateway
 from dan.voice.queue import VoiceQueue
+from tests.voice_helpers import enqueue_voice
 
 
 class BusyError(Exception):
@@ -245,6 +246,8 @@ def test_stopped_gateway_drops_transcripts_quietly() -> None:
 
 
 def voice_daemon_app(tmp_path: Path, *, speak_responses: bool = False):
+    from dan.brain import BrainManager
+    from dan.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
     from dan.daemon.app import create_daemon_app
     from tests.test_api_smoke import config_text
 
@@ -256,7 +259,15 @@ def voice_daemon_app(tmp_path: Path, *, speak_responses: bool = False):
     if speak_responses:
         text = text.replace("speak_responses = false", "speak_responses = true")
     config_path.write_text(text, encoding="utf-8")
-    return create_daemon_app(config_path)
+    app = create_daemon_app(config_path)
+    production_manager = app.brain_manager
+    app.brain_manager = BrainManager(
+        [HermeticBrainAdapter(default_model="test-model")],
+        default_adapter="test",
+    )
+    if production_manager is not None:
+        production_manager.close()
+    return app
 
 
 def voiced_wav() -> bytes:
@@ -302,18 +313,20 @@ def test_daemon_echo_never_turns_or_cancels_active_speech(tmp_path: Path) -> Non
     app = voice_daemon_app(tmp_path)
     app.start()
     try:
+        app.voice_broker.stop()
         # What the mock STT will "hear" is exactly what DAN just spoke.
         transcript = MockSTTEngine.DEFAULT_TRANSCRIPT
         conn = app.conn
         queue = VoiceQueue(conn)
-        request = queue.enqueue(text=transcript, turn_id="turn-tts", seq=0)
+        request = enqueue_voice(queue, transcript, session="turn-tts")
         queue.claim_next()
+        queue.mark_synthesis_complete(request.id)
         queue.mark_spoken(request.id)  # the broker stamps spoken_at at playback (FIX-09)
         queue.mark_done(request.id)
-        pending = queue.enqueue(
-            text="To ma zostać, bo echo nie jest barge-in.",
-            turn_id="turn-pending",
-            seq=0,
+        pending = enqueue_voice(
+            queue,
+            "To ma zostać, bo echo nie jest barge-in.",
+            session="turn-pending",
         )
 
         app.voice_stt.accept_capture(voiced_wav())
@@ -339,9 +352,10 @@ def test_daemon_barge_in_cancels_pending_speech_before_the_new_turn(tmp_path: Pa
     app = voice_daemon_app(tmp_path)
     app.start()
     try:
+        app.voice_broker.stop()
         conn = app.conn
         queue = VoiceQueue(conn)
-        queue.enqueue(text="Stare zdanie czekające na głos.", turn_id="turn-old", seq=0)
+        enqueue_voice(queue, "Stare zdanie czekające na głos.", session="turn-old")
 
         app.voice_stt.accept_capture(voiced_wav())
         assert app.voice_stt.flush(timeout=15)

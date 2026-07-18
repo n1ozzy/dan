@@ -42,6 +42,7 @@ from dan.runtime.supervisor import RuntimeSupervisor
 from dan.store.db import close_quietly
 from dan.store.migrations import LATEST_SCHEMA_VERSION
 from dan.tools.registry import Tool, ToolRunRecorder
+from tests.voice_helpers import enqueue_voice
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1576,11 +1577,10 @@ def test_get_voice_queue_returns_bounded_redacted_status(app: DaemonApp) -> None
 
     app.start()
     queue = VoiceQueue(app.conn, event_store=create_event_store(app.conn))
-    request = queue.enqueue(
-        text="Playback status for sk-live-secret-token-that-must-not-leak",
-        turn_id="turn-voice-status",
-        kind="sentence",
-        seq=0,
+    request = enqueue_voice(
+        queue,
+        "Playback status for sk-live-secret-token-that-must-not-leak",
+        session="turn-voice-status",
     )
     queue.claim_next()
     queue.mark_failed(request.id, error="playback failed: mock stopped")
@@ -2897,12 +2897,14 @@ def test_ptt_down_acquires_lease_without_cancelling_current_speech(tmp_path: Pat
                 "{}",
             ),
         )
+        app.conn.commit()
 
         queue = VoiceQueue(app.conn, event_store=create_event_store(app.conn))
-        queued = queue.enqueue(
-            text="To zdanie zostanie przerwane przez PTT.",
-            turn_id=turn_id,
-            seq=0,
+        app.voice_broker.stop()
+        queued = enqueue_voice(
+            queue,
+            "To zdanie zostanie przerwane przez PTT.",
+            session=turn_id,
         )
 
         with running_server(app) as base_url:
@@ -3003,12 +3005,14 @@ def test_get_runtime_settings_does_not_apply_stale_barge_in_to_later_text_turn(
                 "{}",
             ),
         )
+        app.conn.commit()
 
         queue = VoiceQueue(app.conn, event_store=create_event_store(app.conn))
-        queued = queue.enqueue(
-            text="Stara mowa do anulowania.",
-            turn_id=interrupted_turn_id,
-            seq=0,
+        app.voice_broker.stop()
+        queued = enqueue_voice(
+            queue,
+            "Stara mowa do anulowania.",
+            session=interrupted_turn_id,
         )
 
         with running_server(app) as base_url:

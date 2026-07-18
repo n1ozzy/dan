@@ -7,16 +7,30 @@ from types import SimpleNamespace
 import pytest
 
 from dan.voice.assets import load_asset_manifest, load_voice_catalog
+from dan.voice.models import SpeechIntent
 from dan.voice.pipelines.chatterbox_v3 import (
     ChatterboxV3ZanetaPipeline,
     PipelineCapabilityError,
     load_pipeline_manifest,
 )
-from dan.voice.resolver import AssetMetadata, EngineMetadata, VoiceResolver
+from dan.voice.service import build_voice_resolver
 from dan.voice.tts import build_tts_engine
 
-
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def speech_intent(persona: str) -> SpeechIntent:
+    return SpeechIntent(
+        text=f"route {persona}",
+        persona=persona,
+        source="route-matrix",
+        session=f"route-{persona}",
+        participant=persona,
+        priority=0,
+        lane="normal",
+        interrupt_policy="finish_current",
+        utterance_index=0,
+    )
 
 
 def _decision_rows(path: Path) -> list[dict[str, str]]:
@@ -26,10 +40,24 @@ def _decision_rows(path: Path) -> list[dict[str, str]]:
             continue
         cells = [cell.strip().strip("`") for cell in line.strip("|").split("|")]
         if len(cells) == 8:
-            rows.append(dict(zip(
-                ("key", "sources", "reader", "old", "route", "asset", "evidence", "decision"),
-                cells,
-            )))
+            rows.append(
+                dict(
+                    zip(
+                        (
+                            "key",
+                            "sources",
+                            "reader",
+                            "old",
+                            "route",
+                            "asset",
+                            "evidence",
+                            "decision",
+                        ),
+                        cells,
+                        strict=True,
+                    )
+                )
+            )
     return rows
 
 
@@ -49,25 +77,12 @@ def test_every_catalog_route_executes_through_real_runtime_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     catalog = load_voice_catalog(ROOT / "config" / "voice")
-    engine_asset = tmp_path / "supertonic-model"
-    engine_asset.write_bytes(b"pinned-supertonic")
-    resolver = VoiceResolver(
-        catalog.voice_catalog,
-        {"voice": {"output_gain": 1.0}},
-        {
-            "supertonic": EngineMetadata(
-                version="724fb5abbf5502583fb520898d45929e62f02c0b",
-                assets={"model": AssetMetadata.from_path(engine_asset)},
-            )
-        },
-    )
-    current_persona = {"name": "dan"}
     config = SimpleNamespace(
         voice=SimpleNamespace(
+            output_gain=1.0,
             supertonic_binary="/usr/bin/true",
             supertonic_lang="pl",
             supertonic_steps=14,
-            playback_binary="/usr/bin/true",
             tts_timeout_seconds=30,
             mastering_binary="/usr/bin/true",
             supertonic_custom_styles_manifest=str(
@@ -76,6 +91,7 @@ def test_every_catalog_route_executes_through_real_runtime_boundary(
         ),
         runtime=SimpleNamespace(runtime_dir=str(tmp_path / "runtime")),
     )
+    resolver = build_voice_resolver(config, repo_root=ROOT)
     external_calls: list[list[str]] = []
 
     def external_edge(argv: list[str], **kwargs: object):
@@ -89,12 +105,7 @@ def test_every_catalog_route_executes_through_real_runtime_boundary(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr("dan.voice.tts.subprocess.run", external_edge)
-    engine = build_tts_engine(
-        "supertonic",
-        config=config,
-        persona_provider=lambda: current_persona["name"],
-        resolver=resolver,
-    )
+    engine = build_tts_engine("supertonic", config=config)
     custom_styles = {
         asset.name
         for asset in load_asset_manifest(
@@ -105,10 +116,10 @@ def test_every_catalog_route_executes_through_real_runtime_boundary(
 
     for name, spec in catalog.personas.items():
         assert spec["engine"] == "supertonic"
-        current_persona["name"] = name
         external_calls.clear()
+        snapshot = resolver.resolve(speech_intent(name))
 
-        chunk = engine.synthesize(f"route {name}")
+        chunk = engine.synthesize(f"route {name}", snapshot)
 
         synthesis = next(command for command in external_calls if command[1] == "tts")
         assert synthesis[synthesis.index("--voice") + 1] == spec["voice"]
@@ -145,24 +156,12 @@ def test_zaneta_local_only_chatterbox_fails_closed_then_live_route_executes(
             environ={},
         )
 
-    engine_asset = tmp_path / "supertonic-model"
-    engine_asset.write_bytes(b"pinned-supertonic")
-    resolver = VoiceResolver(
-        catalog.voice_catalog,
-        {"voice": {"output_gain": 1.0}},
-        {
-            "supertonic": EngineMetadata(
-                version="724fb5abbf5502583fb520898d45929e62f02c0b",
-                assets={"model": AssetMetadata.from_path(engine_asset)},
-            )
-        },
-    )
     config = SimpleNamespace(
         voice=SimpleNamespace(
+            output_gain=1.0,
             supertonic_binary="/usr/bin/true",
             supertonic_lang="pl",
             supertonic_steps=14,
-            playback_binary="/usr/bin/true",
             tts_timeout_seconds=30,
             mastering_binary="/usr/bin/true",
             supertonic_custom_styles_manifest=str(
@@ -171,6 +170,7 @@ def test_zaneta_local_only_chatterbox_fails_closed_then_live_route_executes(
         ),
         runtime=SimpleNamespace(runtime_dir=str(tmp_path / "runtime")),
     )
+    resolver = build_voice_resolver(config, repo_root=ROOT)
     commands: list[list[str]] = []
 
     def external_edge(argv: list[str], **kwargs: object):
@@ -184,14 +184,9 @@ def test_zaneta_local_only_chatterbox_fails_closed_then_live_route_executes(
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr("dan.voice.tts.subprocess.run", external_edge)
-    engine = build_tts_engine(
-        "supertonic",
-        config=config,
-        persona_provider=lambda: "zaneta",
-        resolver=resolver,
-    )
+    engine = build_tts_engine("supertonic", config=config)
 
-    engine.synthesize("Jawny live fallback")
+    engine.synthesize("Jawny live fallback", resolver.resolve(speech_intent("zaneta")))
 
     synthesis = next(command for command in commands if command[1] == "tts")
     assert synthesis[synthesis.index("--voice") + 1] == zaneta["voice"] == "F2"

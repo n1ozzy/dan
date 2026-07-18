@@ -7,12 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 INITIAL_SCHEMA_VERSION = 1
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 INITIAL_SCHEMA_DESCRIPTION = "initial DAN v4.1 schema"
 V2_DESCRIPTION = "FIX-09 voice_queue.spoken_at + cancelled_turns tombstone"
 V3_DESCRIPTION = "shared local memory archive with FTS5"
 V4_DESCRIPTION = "database migration lineage and record mappings"
+V5_DESCRIPTION = "complete immutable voice render snapshots and native playback lifecycle"
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
@@ -33,6 +34,8 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         _apply_v3_memory_archive(conn)
     if current_version < 4:
         _apply_v4_migration_lineage(conn)
+    if current_version < 5:
+        _apply_v5_voice_snapshots(conn)
     _ensure_memory_os_sidecar_tables(conn)
 
 
@@ -190,6 +193,155 @@ def _apply_v4_migration_lineage(conn: sqlite3.Connection) -> None:
                VALUES (?, ?, ?)""",
             (4, _utc_now_iso(), V4_DESCRIPTION),
         )
+
+
+def _apply_v5_voice_snapshots(conn: sqlite3.Connection) -> None:
+    """Persist complete snapshots and quarantine pre-snapshot queue rows."""
+
+    with conn:
+        if not _column_exists(conn, "voice_queue", "render_snapshot_json"):
+            for index in (
+                "idx_voice_queue_status",
+                "idx_voice_queue_priority",
+                "idx_voice_queue_turn_id",
+                "idx_voice_queue_spoken_at",
+            ):
+                conn.execute(f"DROP INDEX IF EXISTS {index}")
+            conn.execute("ALTER TABLE voice_queue RENAME TO voice_queue_v4")
+            _create_v5_voice_queue(conn)
+            conn.execute(
+                """
+                INSERT INTO voice_queue (
+                  id, created_at, updated_at, turn_id, text, priority, voice_id,
+                  interrupt_policy, status, error, metadata_json, spoken_at,
+                  source, session_id, participant, persona, lane, utterance_index,
+                  render_snapshot_json, synthesis_started_at, synthesis_completed_at,
+                  playback_started_at, playback_completed_at, playback_confirmed
+                )
+                SELECT
+                  id, created_at, updated_at, turn_id, text, priority, voice_id,
+                  CASE
+                    WHEN interrupt_policy = 'interruptible' THEN 'interruptible'
+                    ELSE 'finish_current'
+                  END,
+                  CASE
+                    WHEN status IN ('queued', 'speaking', 'done', 'cancelled', 'failed')
+                    THEN status ELSE 'failed'
+                  END,
+                  error, metadata_json, spoken_at,
+                  'legacy-migration', COALESCE(NULLIF(turn_id, ''), 'legacy-' || id),
+                  'legacy-unresolved', 'legacy-unresolved', 'normal',
+                  MAX(0, COALESCE(CAST(json_extract(metadata_json, '$.seq') AS INTEGER), 0)),
+                  'legacy-unresolved', NULL, NULL, spoken_at, NULL, 0
+                FROM voice_queue_v4
+                """
+            )
+            conn.execute("DROP TABLE voice_queue_v4")
+        _create_v5_voice_queue_artifacts(conn)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schema_version (version, applied_at, description)
+            VALUES (?, ?, ?)
+            """,
+            (5, _utc_now_iso(), V5_DESCRIPTION),
+        )
+
+
+def _create_v5_voice_queue(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE voice_queue (
+          id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          turn_id TEXT,
+          text TEXT NOT NULL,
+          priority INTEGER NOT NULL DEFAULT 0,
+          voice_id TEXT,
+          interrupt_policy TEXT NOT NULL DEFAULT 'finish_current',
+          status TEXT NOT NULL CHECK (
+            status IN ('queued', 'synthesizing', 'speaking', 'done', 'cancelled', 'failed')
+          ),
+          error TEXT,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          spoken_at TEXT,
+          source TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          participant TEXT NOT NULL,
+          persona TEXT NOT NULL,
+          lane TEXT NOT NULL CHECK (lane IN ('live', 'normal', 'background')),
+          utterance_index INTEGER NOT NULL CHECK (utterance_index >= 0),
+          render_snapshot_json TEXT NOT NULL,
+          synthesis_started_at TEXT,
+          synthesis_completed_at TEXT,
+          playback_started_at TEXT,
+          playback_completed_at TEXT,
+          playback_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (playback_confirmed IN (0, 1))
+        )
+        """
+    )
+
+
+def _create_v5_voice_queue_artifacts(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_voice_queue_status ON voice_queue(status);
+        CREATE INDEX IF NOT EXISTS idx_voice_queue_priority ON voice_queue(priority);
+        CREATE INDEX IF NOT EXISTS idx_voice_queue_turn_id ON voice_queue(turn_id);
+        CREATE INDEX IF NOT EXISTS idx_voice_queue_spoken_at ON voice_queue(spoken_at);
+        CREATE INDEX IF NOT EXISTS idx_voice_queue_session_id ON voice_queue(session_id);
+        CREATE INDEX IF NOT EXISTS idx_voice_queue_lane_status ON voice_queue(lane, status);
+
+        CREATE TRIGGER IF NOT EXISTS voice_queue_snapshot_complete
+        BEFORE INSERT ON voice_queue
+        WHEN CASE
+          WHEN json_valid(NEW.render_snapshot_json) = 0 THEN 1
+          ELSE
+            COALESCE(json_extract(NEW.render_snapshot_json, '$.engine'), '') = '' OR
+            COALESCE(json_extract(NEW.render_snapshot_json, '$.engine_version'), '') = '' OR
+            COALESCE(json_extract(NEW.render_snapshot_json, '$.voice_or_style'), '') = '' OR
+            COALESCE(json_extract(NEW.render_snapshot_json, '$.speed'), 0) <= 0 OR
+            json_type(NEW.render_snapshot_json, '$.mastering_profile') IS NULL OR
+            json_type(NEW.render_snapshot_json, '$.dsp') IS NULL OR
+            json_type(NEW.render_snapshot_json, '$.pronunciations') != 'object' OR
+            COALESCE(json_extract(NEW.render_snapshot_json, '$.pronunciations_sha256'), '') = '' OR
+            COALESCE(json_extract(NEW.render_snapshot_json, '$.gain'), 0) <= 0 OR
+            json_type(NEW.render_snapshot_json, '$.asset_sha256') != 'object' OR
+            json_extract(NEW.render_snapshot_json, '$.asset_sha256') = '{}' OR
+            COALESCE(json_extract(NEW.render_snapshot_json, '$.config_revision'), '') = ''
+        END
+        BEGIN
+          SELECT RAISE(ABORT, 'voice snapshot incomplete');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS voice_queue_legacy_marker_reserved
+        BEFORE INSERT ON voice_queue
+        WHEN NEW.render_snapshot_json = 'legacy-unresolved'
+        BEGIN
+          SELECT RAISE(ABORT, 'legacy-unresolved snapshot is migration-only');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS voice_queue_snapshot_immutable
+        BEFORE UPDATE OF render_snapshot_json ON voice_queue
+        WHEN OLD.render_snapshot_json IS NOT NEW.render_snapshot_json
+        BEGIN
+          SELECT RAISE(ABORT, 'immutable render snapshot');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS voice_queue_status_transition
+        BEFORE UPDATE OF status ON voice_queue
+        WHEN OLD.status IS NOT NEW.status AND NOT (
+          (OLD.status = 'queued' AND NEW.status IN ('synthesizing', 'cancelled', 'failed')) OR
+          (OLD.status = 'synthesizing' AND NEW.status IN (
+            'queued', 'speaking', 'cancelled', 'failed'
+          )) OR
+          (OLD.status = 'speaking' AND NEW.status IN ('done', 'cancelled', 'failed'))
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'invalid voice queue transition');
+        END;
+        """
+    )
 
 
 def _ensure_memory_os_sidecar_tables(conn: sqlite3.Connection) -> None:

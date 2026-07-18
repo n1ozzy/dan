@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from dan.brain.base import BrainResponse
-from dan.brain.context_builder import ContextBuilder, PERSONA_PROFILE_SETTING_KEY
+from dan.brain.context_builder import ContextBuilder
 from dan.brain.manager import BrainManager, BrainManagerError
 from dan.config import DANConfig, compiled_memory_operator_env_controls, load_config
 from dan.config_registry import ConfigStore, validate_setting_updates
@@ -155,9 +155,11 @@ class DaemonApp:
     memory_archive: MemoryArchive | None = None
     worker_broker: WorkerBroker | None = None
     voice_resolver: Any = None
+    voice_service: Any = None
+    voice_engine: Any = None
+    voice_player: Any = None
     voice_recorder: Any = None
     voice_broker: Any = None
-    voice_publisher: Any = None
     voice_stt: Any = None
     voice_gateway: Any = None
     voice_cancellation: Any = None
@@ -196,13 +198,14 @@ class DaemonApp:
             state_machine = self._require_state_machine()
 
             on_capture = None
-            tts_engine = None
             voice_stt = None
             voice_gateway = None
             voice_cancellation = None
             voice_recorder = None
             voice_broker = None
-            voice_publisher = None
+            voice_service = None
+            voice_engine = None
+            voice_player = None
             voice_lease_sweeper = None
 
             # Build every dependency first; if startup fails, tear down any
@@ -224,8 +227,12 @@ class DaemonApp:
                 # construction.
                 if self.config.voice.enabled:
                     from dan.voice.anti_echo import AntiEchoGate
+                    from dan.voice.broker import VoiceBroker
                     from dan.voice.cancellation import CancellationCoordinator
                     from dan.voice.gateway import VoiceTurnGateway
+                    from dan.voice.player import CoreAudioPlayer, MockAudioPlayer
+                    from dan.voice.queue import VoiceQueue
+                    from dan.voice.service import VoiceService, build_voice_resolver
                     from dan.voice.stt import build_stt_engine
                     from dan.voice.transcription import TranscriptionPipeline
                     from dan.voice.tts import build_tts_engine
@@ -234,36 +241,26 @@ class DaemonApp:
                         TurnOrchestratorBusyError,
                     )
 
-                    # Engine construction validates the name: a banned or unknown
-                    # TTS engine kills the daemon at startup (decree §7.3), and so
-                    # does a real engine whose binary/player cannot be found.
-                    # persona_provider reads the SAME persona.profile setting the
-                    # panel writes and context_builder reads, so a live persona
-                    # switch changes voice + mastering with no restart. Fail-safe:
-                    # any read error resolves to the global voice/mastering.
-                    def _current_persona_profile() -> str:
-                        try:
-                            return str(self.get_settings().get(PERSONA_PROFILE_SETTING_KEY, "") or "")
-                        except Exception:  # never let a DB hiccup silence DAN
-                            return ""
-
-                    # broker_enabled now means the already-running shared DAN
-                    # broker owns synthesis, mastering and playback. DAN only
-                    # publishes its final speech request; constructing a local
-                    # engine here would recreate the second audio owner.
-                    if self.config.voice.broker_enabled:
-                        from dan.voice.shared_broker import SharedBrokerClient
-
-                        voice_publisher = SharedBrokerClient(
-                            self.config.voice, resolver=self.voice_resolver
-                        )
-                    else:
-                        tts_engine = build_tts_engine(
-                            self.config.voice.default_tts,
-                            config=self.config,
-                            persona_provider=_current_persona_profile,
-                            resolver=self.voice_resolver,
-                        )
+                    voice_engine = build_tts_engine(
+                        self.config.voice.default_tts,
+                        config=self.config,
+                    )
+                    voice_player = (
+                        MockAudioPlayer()
+                        if self.config.voice.default_tts == "mock"
+                        else CoreAudioPlayer()
+                    )
+                    if self.voice_resolver is None:
+                        self.voice_resolver = build_voice_resolver(self.config)
+                    voice_service = VoiceService(
+                        VoiceQueue(self._require_conn(), event_store=event_store),
+                        self.voice_resolver,
+                    )
+                    voice_broker = VoiceBroker(
+                        self._connect_existing,
+                        engine=voice_engine,
+                        player=voice_player,
+                    )
 
                     # The registry itself is daemon-lifetime (streaming adapters hold
                     # a reference from create_daemon_app); voice only wires the
@@ -271,7 +268,7 @@ class DaemonApp:
                     voice_cancellation = CancellationCoordinator(
                         self._connect_existing,
                         generation_registry=self.voice_generation_registry,
-                        engine=tts_engine,
+                        playback_owner=voice_broker,
                     )
                     voice_gateway = VoiceTurnGateway(
                         anti_echo=AntiEchoGate(self._connect_existing, config=self.config.voice),
@@ -291,10 +288,6 @@ class DaemonApp:
                         on_transcript=voice_gateway.handle_transcript,
                     )
                     on_capture = voice_stt.accept_capture
-
-                    # Deliberately no shared-broker stop/flush handle here. Its
-                    # contract has no per-request cancellation, and a global
-                    # FLUSH would cancel unrelated DAN/DANusia sessions.
 
                 # One stateful recorder for the whole daemon: leases decide when it
                 # runs, so per-request lease managers must share it. Building it
@@ -323,10 +316,14 @@ class DaemonApp:
                 self.voice_gateway = voice_gateway
                 self.voice_cancellation = voice_cancellation
                 self.voice_recorder = voice_recorder
+                self.voice_service = voice_service
+                self.voice_engine = voice_engine
+                self.voice_player = voice_player
                 self.voice_broker = voice_broker
-                self.voice_publisher = voice_publisher
                 self.voice_lease_sweeper = voice_lease_sweeper
 
+                if voice_broker is not None:
+                    voice_broker.start()
                 if voice_lease_sweeper is not None:
                     voice_lease_sweeper.start()
 
@@ -364,8 +361,10 @@ class DaemonApp:
                 self.voice_gateway = None
                 self.voice_cancellation = None
                 self.voice_recorder = None
+                self.voice_service = None
+                self.voice_engine = None
+                self.voice_player = None
                 self.voice_broker = None
-                self.voice_publisher = None
                 self.voice_lease_sweeper = None
                 self.started = False
                 raise
@@ -390,9 +389,16 @@ class DaemonApp:
                 except Exception:
                     get_logger(__name__).exception("Voice broker stop failed.")
             self.voice_broker = None
-            # Shared publisher owns no process and has no FLUSH/cancel/stop
-            # contract. Dropping our reference is the entire shutdown action.
-            self.voice_publisher = None
+            if self.voice_engine is not None:
+                close_engine = getattr(self.voice_engine, "close", None)
+                if callable(close_engine):
+                    try:
+                        close_engine()
+                    except Exception:
+                        get_logger(__name__).exception("Voice TTS engine close failed.")
+            self.voice_engine = None
+            self.voice_player = None
+            self.voice_service = None
 
             # Recorder before STT (FIX-04a): stop() must never leave an
             # orphaned sox recording after an in-process restart (hot mic), and
@@ -1424,7 +1430,7 @@ class DaemonApp:
             speech_pipeline = SpeechPipeline(
                 self._connect_existing,
                 config=self.config.voice,
-                shared_broker=self.voice_publisher,
+                voice_service=self.voice_service,
             )
         return _MemorySaveAwareTurnOrchestrator(
             conn=self._require_conn(),
