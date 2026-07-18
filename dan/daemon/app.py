@@ -126,6 +126,10 @@ class DaemonAppBusyError(DaemonAppError):
     """Raised when a serialized app operation is already running."""
 
 
+class DaemonLifecycleError(DaemonAppError):
+    """Raised when daemon owner shutdown cannot be proven complete."""
+
+
 def _build_generation_registry() -> Any:
     from dan.voice.cancellation import GenerationRegistry
 
@@ -197,14 +201,24 @@ class DaemonApp:
     worker_threads: list[threading.Thread] = field(default_factory=list)
     _worker_threads_lock: Any = field(default_factory=threading.Lock)
     _lifecycle_lock: Any = field(default_factory=threading.Lock)
+    _voice_owner_blocked: bool = False
+    _last_child_containment: Any = None
 
     def start(self) -> None:
         """Start app-level state without running the long-lived HTTP loop."""
 
+        if self._voice_owner_blocked:
+            raise DaemonLifecycleError(
+                "previous shutdown did not release the voice owner"
+            )
         if self.started:
             return
 
         with self._lifecycle_lock:
+            if self._voice_owner_blocked:
+                raise DaemonLifecycleError(
+                    "previous shutdown did not release the voice owner"
+                )
             if self.started:
                 return
             if self.brain_manager is not None:
@@ -357,9 +371,10 @@ class DaemonApp:
                 event_store.append(EventType.DAEMON_STARTED, "daemon", {"service": "dand"})
                 state_machine.transition(RuntimeState.IDLE, reason="daemon started")
                 self.started = True
-            except Exception:
+            except Exception as startup_error:
                 self._stop_hotkey_monitor()
-                self._stop_supervised_children()
+                containment = self._stop_supervised_children()
+                owner_error: BaseException | None = None
                 if voice_lease_sweeper is not None:
                     try:
                         voice_lease_sweeper.stop()
@@ -367,9 +382,9 @@ class DaemonApp:
                         get_logger(__name__).exception("Voice lease sweeper startup stop failed.")
                 if voice_broker is not None:
                     try:
-                        voice_broker.stop()
-                    except Exception:
-                        get_logger(__name__).exception("Voice broker startup stop failed.")
+                        self._quiesce_voice_broker(voice_broker)
+                    except Exception as exc:
+                        owner_error = exc
                 if voice_recorder is not None:
                     try:
                         voice_recorder.stop()
@@ -388,35 +403,110 @@ class DaemonApp:
 
                 self.voice_stt = None
                 self.voice_gateway = None
-                self.voice_cancellation = None
                 self.voice_recorder = None
+                self.voice_lease_sweeper = None
+                self.started = False
+                containment_incomplete = containment is None or not bool(
+                    getattr(containment, "complete", False)
+                )
+                if owner_error is not None or containment_incomplete:
+                    self._voice_owner_blocked = True
+                    # Retain every voice-owner reference for a later stop()
+                    # retry. Dropping a stopped broker or engine here would
+                    # also drop the only evidence tying a surviving child
+                    # process group/listener to this daemon instance.
+                    self.voice_cancellation = voice_cancellation
+                    self.voice_service = voice_service
+                    self.voice_engine = voice_engine
+                    self.voice_player = voice_player
+                    self.voice_broker = voice_broker
+                    if owner_error is not None:
+                        raise owner_error from startup_error
+                    details = "; ".join(
+                        getattr(containment, "errors", ())
+                    )
+                    raise DaemonLifecycleError(
+                        "startup cleanup containment was incomplete"
+                        + (f": {details}" if details else "")
+                    ) from startup_error
+                self.voice_cancellation = None
                 self.voice_service = None
                 self.voice_engine = None
                 self.voice_player = None
                 self.voice_broker = None
-                self.voice_lease_sweeper = None
-                self.started = False
                 raise
 
     def stop(self, reason: str | None = None, *, emit_event: bool = True) -> None:
         with self._lifecycle_lock:
             event_store = self._require_event_store()
             state_machine = self._require_state_machine()
+            intake_errors: list[BaseException] = []
 
             # Sweeper first: it pokes the recorder via _sync_recorder and must
             # not race the shutdown below.
             if self.voice_lease_sweeper is not None:
                 try:
                     self.voice_lease_sweeper.stop()
-                except Exception:
+                except Exception as exc:
+                    intake_errors.append(exc)
                     get_logger(__name__).exception("Voice lease sweeper stop failed.")
-            self.voice_lease_sweeper = None
+                else:
+                    self.voice_lease_sweeper = None
+
+            # Recorder before STT (FIX-04a): stop() must never leave an
+            # orphaned sox recording after an in-process restart (hot mic), and
+            # stopping it first lets the final capture reach the STT pipeline
+            # below.
+            if self.voice_recorder is not None:
+                try:
+                    self.voice_recorder.stop()
+                except Exception as exc:
+                    intake_errors.append(exc)
+                    get_logger(__name__).exception("Voice recorder stop failed during shutdown.")
+                else:
+                    self.voice_recorder = None
+
+            # STT first (no new transcripts), then the gateway — its stop()
+            # WAITS for the in-flight voice turn, which writes through the
+            # shared daemon connection; the daemon.stopped event below must
+            # never race it on that connection.
+            if self.voice_stt is not None:
+                try:
+                    self.voice_stt.stop()
+                except Exception as exc:
+                    intake_errors.append(exc)
+                    get_logger(__name__).exception("STT stop failed during shutdown.")
+                else:
+                    self.voice_stt = None
+
+            if self.voice_gateway is not None:
+                try:
+                    self.voice_gateway.stop()
+                except Exception as exc:
+                    intake_errors.append(exc)
+                    get_logger(__name__).exception("Voice gateway stop failed during shutdown.")
+                else:
+                    self.voice_gateway = None
+
+            # The gateway waits for its in-flight turn, and that turn may
+            # enqueue one final speech request. Cancel active/queued speech
+            # only AFTER every producer was drained, while the broker/player
+            # still exist to stop any current native buffer.
+            if self.voice_cancellation is not None:
+                try:
+                    self.voice_cancellation.cancel_active_speech(
+                        reason=reason or "daemon shutdown",
+                        source="daemon_shutdown",
+                    )
+                except Exception as exc:
+                    intake_errors.append(exc)
+                    get_logger(__name__).exception(
+                        "Voice shutdown cancellation failed."
+                    )
 
             if self.voice_broker is not None:
-                try:
-                    self.voice_broker.stop()
-                except Exception:
-                    get_logger(__name__).exception("Voice broker stop failed.")
+                broker = self.voice_broker
+                self._quiesce_voice_broker(broker)
             self.voice_broker = None
             if self.voice_engine is not None:
                 close_engine = getattr(self.voice_engine, "close", None)
@@ -429,34 +519,12 @@ class DaemonApp:
             self.voice_player = None
             self.voice_service = None
 
-            # Recorder before STT (FIX-04a): stop() must never leave an
-            # orphaned sox recording after an in-process restart (hot mic), and
-            # stopping it first lets the final capture reach the STT pipeline
-            # below.
-            if self.voice_recorder is not None:
-                try:
-                    self.voice_recorder.stop()
-                except Exception:
-                    get_logger(__name__).exception("Voice recorder stop failed during shutdown.")
-            self.voice_recorder = None
-
-            # STT first (no new transcripts), then the gateway — its stop()
-            # WAITS for the in-flight voice turn, which writes through the
-            # shared daemon connection; the daemon.stopped event below must
-            # never race it on that connection.
-            if self.voice_stt is not None:
-                try:
-                    self.voice_stt.stop()
-                except Exception:
-                    get_logger(__name__).exception("STT stop failed during shutdown.")
-            self.voice_stt = None
-
-            if self.voice_gateway is not None:
-                try:
-                    self.voice_gateway.stop()
-                except Exception:
-                    get_logger(__name__).exception("Voice gateway stop failed during shutdown.")
-            self.voice_gateway = None
+            if intake_errors:
+                self._voice_owner_blocked = True
+                self._stop_supervised_children()
+                raise DaemonLifecycleError(
+                    "voice intake shutdown failed closed before ownership release"
+                ) from intake_errors[0]
 
             # The generation registry stays: it is daemon-lifetime and shared
             # with the brain adapters built in create_daemon_app.
@@ -465,7 +533,12 @@ class DaemonApp:
             # Reverse of start(): intake and playback are already closed above;
             # now the supervised children (whole process groups), then the
             # hotkey monitor releases the machine-wide owner lock.
-            self._stop_supervised_children()
+            containment = self._stop_supervised_children()
+            if containment is None or not bool(getattr(containment, "complete", False)):
+                self._voice_owner_blocked = True
+                raise DaemonLifecycleError(
+                    "supervised child containment did not release every owner"
+                )
             self._stop_hotkey_monitor()
 
             # The Claude adapter owns one long-lived stream-json subprocess.
@@ -493,6 +566,7 @@ class DaemonApp:
 
             was_started = self.started
             self.started = False
+            self._voice_owner_blocked = False
 
             if emit_event and was_started:
                 event_store.append(
@@ -1508,15 +1582,69 @@ class DaemonApp:
             )
         )
         self.child_supervisor.ensure_running("supertonic")
+        start_watchdog = getattr(self.child_supervisor, "start_watchdog", None)
+        if callable(start_watchdog):
+            start_watchdog()
         return True
 
-    def _stop_supervised_children(self) -> None:
+    def _stop_supervised_children(self) -> Any:
+        from dan.daemon.supervisor import ChildContainmentResult
+
         if self.child_supervisor is None:
-            return
+            result = ChildContainmentResult(True, True, True, True, (), ())
+            self._last_child_containment = result
+            return result
         try:
-            self.child_supervisor.stop_all()
-        except Exception:
+            result = self.child_supervisor.stop_all()
+        except Exception as exc:
             get_logger(__name__).exception("Supervised child shutdown failed.")
+            try:
+                remaining = tuple(self.child_supervisor.child_pids())
+            except Exception:
+                remaining = ()
+            result = ChildContainmentResult(
+                watchdog_joined=False,
+                children_reaped=False,
+                process_groups_released=False,
+                listeners_released=False,
+                remaining_pids=remaining,
+                errors=(str(exc),),
+            )
+        self._last_child_containment = result
+        return result
+
+    def _quiesce_voice_broker(self, broker: Any) -> None:
+        from dan.voice.broker import VoiceBrokerShutdownTimeout
+
+        try:
+            broker.stop()
+        except VoiceBrokerShutdownTimeout as first_error:
+            self._voice_owner_blocked = True
+            containment = self._stop_supervised_children()
+            try:
+                broker.stop()
+            except VoiceBrokerShutdownTimeout:
+                raise
+            except Exception as retry_error:
+                raise DaemonLifecycleError(
+                    "voice owner shutdown failed after emergency containment"
+                ) from retry_error
+            if containment is None or not bool(
+                getattr(containment, "complete", False)
+            ):
+                raise DaemonLifecycleError(
+                    "voice owner quiesced but supervised containment failed"
+                ) from first_error
+            self._voice_owner_blocked = False
+        except Exception as exc:
+            self._voice_owner_blocked = True
+            self._stop_supervised_children()
+            raise DaemonLifecycleError(
+                "voice owner shutdown failed before quiescence"
+            ) from exc
+
+    def emergency_contain_supervised_children(self) -> Any:
+        return self._stop_supervised_children()
 
     def child_pids(self) -> list[int]:
         if self.child_supervisor is None:
@@ -1549,11 +1677,9 @@ class DaemonApp:
             close_quietly(conn)
 
     def close(self) -> None:
-        try:
-            if self.started:
-                self.stop(reason="close")
-        finally:
-            close_quietly(self.conn)
+        if self.started or self.voice_broker is not None or self._voice_owner_blocked:
+            self.stop(reason="close")
+        close_quietly(self.conn)
         self.conn = None
         self.event_store = None
         self.state_machine = None

@@ -7,11 +7,15 @@ port is probed, no signal reaches a live pid.
 from __future__ import annotations
 
 import signal
+import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from dan.daemon.supervisor import (
+    ChildHandle,
     ChildSpec,
     ChildSupervisor,
     ChildSupervisorError,
@@ -31,11 +35,13 @@ class FakeProcess:
     def __init__(self, pid: int) -> None:
         self.pid = pid
         self.returncode: int | None = None
+        self.wait_calls = 0
 
     def poll(self) -> int | None:
         return self.returncode
 
     def wait(self, timeout: float | None = None) -> int | None:
+        self.wait_calls += 1
         return self.returncode
 
 
@@ -77,13 +83,25 @@ def build_supervisor(
     def probe(url: str) -> bool:
         if foreign_owner:
             return True
-        return healthy_when_spawned and factory.starts > 0
+        return healthy_when_spawned and any(
+            process.returncode is None for process in factory.processes
+        )
 
     supervisor = ChildSupervisor(
         [SUPERTONIC_SPEC],
         process_factory=factory,
         health_probe=probe,
         killpg=killpg,
+        process_group_alive=lambda pgid: any(
+            process.pid == pgid and process.returncode is None
+            for process in factory.processes
+        ),
+        listener_released_probe=lambda _url: (
+            not foreign_owner
+            and not any(
+                process.returncode is None for process in factory.processes
+            )
+        ),
         sleep=lambda seconds: None,
     )
     return supervisor, factory, killpg
@@ -116,7 +134,312 @@ def test_stop_terminates_the_whole_process_group() -> None:
     supervisor.stop("supertonic")
 
     assert killpg.calls[0] == (child.pid, signal.SIGTERM)
+    assert factory.processes[0].wait_calls >= 1
     assert supervisor.child_pids() == []
+
+
+def test_stop_all_proves_watchdog_join_reap_and_listener_release() -> None:
+    supervisor, factory, killpg = build_supervisor()
+    child = supervisor.ensure_running("supertonic")
+    supervisor.start_watchdog()
+
+    result = supervisor.stop_all(timeout=0.1)
+
+    assert result.complete is True
+    assert result.watchdog_joined is True
+    assert result.children_reaped is True
+    assert result.listeners_released is True
+    assert result.remaining_pids == ()
+    assert killpg.calls[0] == (child.pid, signal.SIGTERM)
+    assert factory.processes[0].wait_calls >= 1
+    assert supervisor.watchdog_alive is False
+
+
+def test_watchdog_restarts_dead_child_without_ensure_running() -> None:
+    supervisor, factory, _killpg = build_supervisor()
+    supervisor._watchdog_poll_interval = 0.01
+    first = supervisor.ensure_running("supertonic")
+    supervisor.start_watchdog()
+    first.process.returncode = 1
+
+    deadline = time.monotonic() + 2
+    while factory.starts < 2 and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    try:
+        assert factory.starts == 2
+        status = supervisor.status("supertonic")
+        assert status.restart_count == 1
+        assert status.state == "running"
+    finally:
+        supervisor.stop_all(timeout=0.1)
+
+
+def test_stop_watchdog_joins_before_child_killpg() -> None:
+    factory = FakeProcessFactory()
+    order: list[str] = []
+    supervisor = None
+
+    def killpg(pgid: int, signum: int) -> None:
+        assert supervisor is not None
+        assert supervisor.watchdog_alive is False
+        order.append("children.killpg")
+        factory.processes[0].returncode = -signum
+
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=factory,
+        health_probe=lambda _url: any(
+            process.returncode is None for process in factory.processes
+        ),
+        killpg=killpg,
+        process_group_alive=lambda pgid: any(
+            process.pid == pgid and process.returncode is None
+            for process in factory.processes
+        ),
+        listener_released_probe=lambda _url: not any(
+            process.returncode is None for process in factory.processes
+        ),
+        sleep=lambda _seconds: None,
+    )
+    supervisor.ensure_running("supertonic")
+    supervisor.start_watchdog()
+
+    result = supervisor.stop_all(timeout=0.1)
+
+    assert result.watchdog_joined is True
+    assert order == ["children.killpg"]
+
+
+def test_stop_all_returns_incomplete_when_watchdog_holds_lifecycle_lock() -> None:
+    dead_parent = FakeProcess(pid=4666)
+    dead_parent.returncode = 1
+    replacement = FakeProcess(pid=4667)
+    probe_entered = threading.Event()
+    release_probe = threading.Event()
+
+    def blocking_health_probe(_url: str) -> bool:
+        probe_entered.set()
+        release_probe.wait(timeout=2)
+        return False
+
+    def killpg(pgid: int, signum: int) -> None:
+        if pgid == replacement.pid:
+            replacement.returncode = -signum
+
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=lambda _spec: replacement,
+        health_probe=blocking_health_probe,
+        killpg=killpg,
+        process_group_alive=lambda pgid: (
+            pgid == replacement.pid and replacement.returncode is None
+        ),
+        listener_released_probe=lambda _url: True,
+        sleep=lambda _seconds: None,
+        watchdog_poll_interval=0.01,
+    )
+    supervisor._children["supertonic"] = ChildHandle(
+        spec=SUPERTONIC_SPEC,
+        process=dead_parent,
+    )
+    supervisor.start_watchdog()
+    assert probe_entered.wait(timeout=1)
+    results = []
+    finished = threading.Event()
+
+    def stop_all() -> None:
+        results.append(supervisor.stop_all(timeout=0.05))
+        finished.set()
+
+    stopper = threading.Thread(target=stop_all)
+    stopper.start()
+    returned_within_bound = finished.wait(timeout=0.2)
+    release_probe.set()
+    stopper.join(timeout=1)
+    supervisor.stop_all(timeout=0.1)
+
+    assert returned_within_bound is True
+    assert results[0].complete is False
+    assert results[0].watchdog_joined is False
+
+
+class StubbornProcess(FakeProcess):
+    def wait(self, timeout: float | None = None) -> int | None:
+        self.wait_calls += 1
+        raise subprocess.TimeoutExpired("stubborn", timeout)
+
+
+def test_dead_but_unreaped_child_is_retained_and_never_respawned() -> None:
+    unreaped = StubbornProcess(pid=4777)
+    unreaped.returncode = 1
+
+    def forbidden_spawn(_spec: ChildSpec):
+        raise AssertionError("must not spawn beside an unreaped child")
+
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=forbidden_spawn,
+        health_probe=lambda _url: False,
+        killpg=lambda _pgid, _signum: None,
+        process_group_alive=lambda _pgid: False,
+        listener_released_probe=lambda _url: True,
+        sleep=lambda _seconds: None,
+    )
+    handle = ChildHandle(spec=SUPERTONIC_SPEC, process=unreaped)
+    supervisor._children["supertonic"] = handle
+
+    with pytest.raises(ChildSupervisorError, match="reap"):
+        supervisor.ensure_running("supertonic")
+
+    assert supervisor._children["supertonic"] is handle
+    assert supervisor.status("supertonic").degraded is True
+
+
+def test_startup_death_retains_handle_when_reap_cannot_be_proven() -> None:
+    unreaped = StubbornProcess(pid=4888)
+    unreaped.returncode = 1
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=lambda _spec: unreaped,
+        health_probe=lambda _url: False,
+        killpg=lambda _pgid, _signum: None,
+        process_group_alive=lambda _pgid: False,
+        listener_released_probe=lambda _url: True,
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(ChildSupervisorError):
+        supervisor.ensure_running("supertonic")
+
+    assert supervisor._children["supertonic"].process is unreaped
+
+
+def test_deliberate_stop_never_respawns_from_watchdog() -> None:
+    supervisor, factory, _killpg = build_supervisor()
+    supervisor._watchdog_poll_interval = 0.01
+    supervisor.ensure_running("supertonic")
+    supervisor.start_watchdog()
+
+    supervisor.stop("supertonic", timeout=0.1)
+    time.sleep(0.04)
+
+    try:
+        assert factory.starts == 1
+        assert supervisor.status("supertonic").restart_count == 0
+    finally:
+        supervisor.stop_all(timeout=0.1)
+
+
+def test_failed_child_reap_or_live_listener_blocks_complete_containment() -> None:
+    stubborn = StubbornProcess(pid=4999)
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=lambda _spec: stubborn,
+        health_probe=lambda _url: True,
+        killpg=lambda _pgid, _signum: None,
+        process_group_alive=lambda _pgid: True,
+        listener_released_probe=lambda _url: False,
+        sleep=lambda _seconds: None,
+    )
+    supervisor._children["supertonic"] = ChildHandle(
+        spec=SUPERTONIC_SPEC,
+        process=stubborn,
+    )
+
+    result = supervisor.stop_all(timeout=0.01)
+
+    assert result.complete is False
+    assert result.children_reaped is False
+    assert result.listeners_released is False
+    assert result.remaining_pids == (stubborn.pid,)
+
+
+def test_degraded_status_still_reports_retained_live_process() -> None:
+    live_process = FakeProcess(pid=5050)
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=lambda _spec: live_process,
+        health_probe=lambda _url: False,
+        killpg=lambda _pgid, _signum: None,
+        process_group_alive=lambda _pgid: True,
+        listener_released_probe=lambda _url: False,
+        sleep=lambda _seconds: None,
+    )
+    supervisor._children["supertonic"] = ChildHandle(
+        spec=SUPERTONIC_SPEC,
+        process=live_process,
+    )
+    supervisor._degraded.add("supertonic")
+
+    status = supervisor.status("supertonic")
+
+    assert status.degraded is True
+    assert status.pid == live_process.pid
+    assert status.to_dict()["alive"] is True
+
+
+def test_parent_exit_after_term_does_not_prove_process_group_is_gone() -> None:
+    parent = FakeProcess(pid=5111)
+    descendant_alive = True
+    signals: list[int] = []
+
+    def killpg(_pgid: int, signum: int) -> None:
+        nonlocal descendant_alive
+        signals.append(signum)
+        if signum == signal.SIGTERM:
+            parent.returncode = -signal.SIGTERM
+        if signum == signal.SIGKILL:
+            descendant_alive = False
+
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=lambda _spec: parent,
+        health_probe=lambda _url: False,
+        killpg=killpg,
+        process_group_alive=lambda _pgid: descendant_alive,
+        listener_released_probe=lambda _url: True,
+        sleep=lambda _seconds: None,
+    )
+    supervisor._children["supertonic"] = ChildHandle(
+        spec=SUPERTONIC_SPEC,
+        process=parent,
+    )
+
+    result = supervisor.stop_all(timeout=0.01)
+
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+    assert parent.wait_calls >= 1
+    assert result.process_groups_released is True
+    assert result.complete is True
+
+
+def test_unhealthy_http_does_not_prove_still_bound_listener_was_released() -> None:
+    parent = FakeProcess(pid=5222)
+
+    def killpg(_pgid: int, signum: int) -> None:
+        parent.returncode = -signum
+
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=lambda _spec: parent,
+        # A bound server returning HTTP 503 is unhealthy, but still owns the port.
+        health_probe=lambda _url: False,
+        killpg=killpg,
+        process_group_alive=lambda _pgid: False,
+        listener_released_probe=lambda _url: False,
+        sleep=lambda _seconds: None,
+    )
+    supervisor._children["supertonic"] = ChildHandle(
+        spec=SUPERTONIC_SPEC,
+        process=parent,
+    )
+
+    result = supervisor.stop_all(timeout=0.01)
+
+    assert result.complete is False
+    assert result.listeners_released is False
+    assert result.remaining_pids == (parent.pid,)
 
 
 def test_child_that_never_gets_healthy_is_a_loud_error() -> None:
@@ -178,6 +501,72 @@ def test_restart_coordinator_drains_then_exits_with_restart_code(tmp_path: Path)
         assert app.hotkey_monitor is None
     finally:
         app.close()
+
+
+class FailingDrainApp:
+    def __init__(self, supervisor: ChildSupervisor) -> None:
+        self.child_supervisor = supervisor
+        self.stop_calls = 0
+
+    def stop(self, reason: str | None = None) -> None:
+        self.stop_calls += 1
+        raise RuntimeError("drain failed")
+
+
+def test_failed_drain_contains_children_before_exit_86() -> None:
+    from dan.daemon.restart import RESTART_EXIT_CODE, RestartCoordinator
+
+    supervisor, factory, killpg = build_supervisor()
+    child = supervisor.ensure_running("supertonic")
+    supervisor.start_watchdog()
+    app = FailingDrainApp(supervisor)
+    exits: list[int] = []
+    coordinator = RestartCoordinator(
+        app,
+        exit_fn=exits.append,
+        sleep=lambda _seconds: None,
+    )
+
+    coordinator.request_restart(reason="failed drain", synchronous=True)
+
+    assert app.stop_calls == 1
+    assert killpg.calls[0] == (child.pid, signal.SIGTERM)
+    assert factory.processes[0].wait_calls >= 1
+    assert supervisor.watchdog_alive is False
+    assert supervisor.child_pids() == []
+    assert exits == [RESTART_EXIT_CODE]
+
+
+def test_failed_containment_blocks_exit_86() -> None:
+    from dan.daemon.restart import RestartCoordinator
+
+    stubborn = StubbornProcess(pid=5888)
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=lambda _spec: stubborn,
+        health_probe=lambda _url: True,
+        killpg=lambda _pgid, _signum: None,
+        process_group_alive=lambda _pgid: True,
+        listener_released_probe=lambda _url: False,
+        sleep=lambda _seconds: None,
+    )
+    supervisor._children["supertonic"] = ChildHandle(
+        spec=SUPERTONIC_SPEC,
+        process=stubborn,
+    )
+    app = FailingDrainApp(supervisor)
+    exits: list[int] = []
+    coordinator = RestartCoordinator(
+        app,
+        exit_fn=exits.append,
+        sleep=lambda _seconds: None,
+    )
+
+    coordinator.request_restart(reason="failed containment", synchronous=True)
+
+    assert exits == []
+    assert supervisor.child_pids() == [stubborn.pid]
+    assert coordinator.restarting is False
 
 
 def test_daemon_shutdown_reaps_player_engine_and_hotkey(tmp_path: Path) -> None:

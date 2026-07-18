@@ -3,12 +3,19 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+import wave
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 
 from dan.store.db import close_quietly, initialize_database
-from dan.voice.broker import VoiceBroker
+from dan.voice.broker import (
+    VoiceBroker,
+    VoiceBrokerError,
+    VoiceBrokerOwnershipError,
+    VoiceBrokerShutdownTimeout,
+)
 from dan.voice.models import RenderSnapshot, SpeechIntent
 from dan.voice.player import MockAudioPlayer
 from dan.voice.queue import VoiceQueue
@@ -20,6 +27,17 @@ from dan.voice.tts import (
     TTSEngineError,
     build_tts_engine,
 )
+
+
+def _wav_audio(duration_seconds: float = 0.1) -> bytes:
+    output = BytesIO()
+    sample_rate = 1_000
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(b"\x00\x00" * round(duration_seconds * sample_rate))
+    return output.getvalue()
 
 
 def snapshot(voice: str = "M3") -> RenderSnapshot:
@@ -252,6 +270,78 @@ def test_watcher_never_stops_playback_after_a_normal_done(db_path: Path) -> None
     close_quietly(conn)
 
 
+def test_stop_tracks_blocked_watcher_and_stale_probe_has_no_side_effects(
+    db_path: Path,
+) -> None:
+    resolver = MutableResolver()
+    conn = connect(db_path)
+    request = VoiceService(VoiceQueue(conn), resolver).submit(
+        intent("watcher", interrupt_policy="interruptible")
+    )
+    player = _CountingStopPlayer()
+    broker = VoiceBroker(
+        lambda: connect(db_path),
+        engine=MockTTSEngine(),
+        player=player,
+    )
+    probe_entered = threading.Event()
+    release_probe = threading.Event()
+    cancel_calls: list[str] = []
+
+    class QueueRecorder:
+        def cancel_superseded_request(self, request_id: str, *, reason: str) -> None:
+            cancel_calls.append(request_id)
+
+    def blocking_superseded_probe(_request) -> bool:
+        probe_entered.set()
+        release_probe.wait(timeout=2)
+        return True
+
+    original_status = broker._status
+    original_superseded_probe = broker._same_session_noninterruptible_waiting
+    original_with_queue = broker._with_queue
+    broker._status = lambda _request: "speaking"
+    broker._same_session_noninterruptible_waiting = blocking_superseded_probe
+    broker._with_queue = lambda action: action(QueueRecorder())
+    watcher = broker._start_interrupt_watcher(request)
+    assert watcher is not None
+    assert probe_entered.wait(timeout=1)
+
+    try:
+        with pytest.raises(VoiceBrokerShutdownTimeout):
+            broker.stop(join_timeout=0.025)
+        with pytest.raises(VoiceBrokerOwnershipError):
+            broker.start()
+
+        release_probe.set()
+        watcher[1].join(timeout=1)
+
+        assert cancel_calls == []
+        assert player.stop_calls == 1
+        assert not watcher[1].is_alive()
+
+        broker.stop(join_timeout=1)
+        broker._status = original_status
+        broker._same_session_noninterruptible_waiting = original_superseded_probe
+        broker._with_queue = original_with_queue
+        broker.start()
+        broker.stop(join_timeout=1)
+        assert not any(
+            thread.name.startswith("dan-voice-interrupt-")
+            for thread in threading.enumerate()
+        )
+    finally:
+        release_probe.set()
+        broker._status = original_status
+        broker._same_session_noninterruptible_waiting = original_superseded_probe
+        broker._with_queue = original_with_queue
+        try:
+            broker.stop(join_timeout=1)
+        except VoiceBrokerError:
+            pass
+        close_quietly(conn)
+
+
 class _WedgedPlayer:
     """Player stuck in native playback that ignores stop(): worst-case join."""
 
@@ -268,6 +358,140 @@ class _WedgedPlayer:
         pass
 
 
+class _FailingStopPlayer(MockAudioPlayer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_stop = True
+
+    def stop(self) -> None:
+        if self.fail_stop:
+            raise RuntimeError("native owner is still live")
+        super().stop()
+
+
+def test_failed_native_player_stop_retains_ownership_and_blocks_start(
+    db_path: Path,
+) -> None:
+    player = _FailingStopPlayer()
+    broker = VoiceBroker(
+        lambda: connect(db_path),
+        engine=MockTTSEngine(),
+        player=player,
+    )
+
+    try:
+        with pytest.raises(VoiceBrokerError, match="player owner"):
+            broker.stop()
+        with pytest.raises(VoiceBrokerOwnershipError):
+            broker.start()
+    finally:
+        player.fail_stop = False
+        broker.stop()
+
+
+class _BlockedPrefetchEngine(MockTTSEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.prefetch_started = threading.Event()
+        self.release_prefetch = threading.Event()
+        self._active = 0
+        self.max_concurrent_synthesis = 0
+        self._active_lock = threading.Lock()
+
+    def synthesize(self, text, render_snapshot):
+        with self._active_lock:
+            self._active += 1
+            self.max_concurrent_synthesis = max(
+                self.max_concurrent_synthesis,
+                self._active,
+            )
+        try:
+            if text == "prefetch":
+                self.prefetch_started.set()
+                self.release_prefetch.wait(timeout=10)
+            return super().synthesize(text, render_snapshot)
+        finally:
+            with self._active_lock:
+                self._active -= 1
+
+
+def test_stop_with_live_prefetch_preserves_owner_and_refuses_second_executor(
+    db_path: Path,
+) -> None:
+    resolver = MutableResolver()
+    conn = connect(db_path)
+    service = VoiceService(VoiceQueue(conn), resolver)
+    service.submit(intent("current", utterance_index=0))
+    service.submit(intent("prefetch", utterance_index=1))
+    play_gate = threading.Event()
+    engine = _BlockedPrefetchEngine()
+    broker = VoiceBroker(
+        lambda: connect(db_path),
+        engine=engine,
+        player=MockAudioPlayer(play_gate=play_gate),
+    )
+    broker.start()
+    assert engine.prefetch_started.wait(timeout=2)
+    first_executor = broker._executor
+
+    try:
+        with pytest.raises(Exception) as shutdown_error:
+            broker.stop(join_timeout=0.025)
+        assert shutdown_error.type.__name__ == "VoiceBrokerShutdownTimeout"
+        assert broker._executor is first_executor
+
+        with pytest.raises(Exception) as ownership_error:
+            broker.start()
+        assert ownership_error.type.__name__ == "VoiceBrokerOwnershipError"
+        assert broker._executor is first_executor
+        assert engine.max_concurrent_synthesis == 1
+    finally:
+        engine.release_prefetch.set()
+        play_gate.set()
+        try:
+            broker.stop(join_timeout=2)
+        except Exception:
+            pass
+        close_quietly(conn)
+
+
+class _BlockedCurrentEngine(MockTTSEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def synthesize(self, text, render_snapshot):
+        self.started.set()
+        self.release.wait(timeout=10)
+        return super().synthesize(text, render_snapshot)
+
+
+def test_stop_waits_for_direct_synthesis_before_releasing_executor(db_path: Path) -> None:
+    resolver = MutableResolver()
+    conn = connect(db_path)
+    VoiceService(VoiceQueue(conn), resolver).submit(intent("blocked-current"))
+    engine = _BlockedCurrentEngine()
+    broker = VoiceBroker(
+        lambda: connect(db_path),
+        engine=engine,
+        player=MockAudioPlayer(),
+    )
+    broker.start()
+    assert engine.started.wait(timeout=2)
+    first_executor = broker._executor
+
+    try:
+        with pytest.raises(Exception) as shutdown_error:
+            broker.stop(join_timeout=0.025)
+        assert shutdown_error.type.__name__ == "VoiceBrokerShutdownTimeout"
+        assert broker._executor is first_executor
+    finally:
+        engine.release.set()
+        broker.stop(join_timeout=2)
+        close_quietly(conn)
+
+
 def test_stop_timeout_keeps_thread_ownership_and_start_refuses_second_broker(
     db_path: Path,
 ) -> None:
@@ -280,18 +504,22 @@ def test_stop_timeout_keeps_thread_ownership_and_start_refuses_second_broker(
     broker.start()
     assert player.started.wait(timeout=2)
 
-    broker.stop(join_timeout=0.2)
+    with pytest.raises(Exception) as shutdown_error:
+        broker.stop(join_timeout=0.2)
+    assert shutdown_error.type.__name__ == "VoiceBrokerShutdownTimeout"
 
     first = broker._thread
     assert first is not None and first.is_alive(), (
         "stop() must keep the reference to a still-running broker thread"
     )
-    broker.start()
+    with pytest.raises(Exception) as ownership_error:
+        broker.start()
+    assert ownership_error.type.__name__ == "VoiceBrokerOwnershipError"
     assert broker._thread is first
     assert sum(1 for t in threading.enumerate() if t.name == "dan-voice-broker") == 1
 
     player.release.set()
-    first.join(timeout=3)
+    broker.stop(join_timeout=3)
     assert not first.is_alive()
     close_quietly(conn)
 
@@ -309,6 +537,72 @@ def test_synthesis_finished_after_stop_never_starts_playback(db_path: Path) -> N
     assert broker.drain_all() == 0
 
     assert player.log == []
+    close_quietly(conn)
+
+
+class _PostStopSchedulingPlayer(MockAudioPlayer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stop_called = threading.Event()
+        self.plays_after_stop = 0
+
+    def play(self, chunk, *, should_play, on_started) -> None:
+        if self.stop_called.is_set():
+            self.plays_after_stop += 1
+        super().play(chunk, should_play=should_play, on_started=on_started)
+
+    def stop(self) -> None:
+        self.stop_called.set()
+        super().stop()
+
+
+def test_stop_is_a_barrier_against_playback_admission(db_path: Path) -> None:
+    conn = connect(db_path)
+    request = VoiceService(VoiceQueue(conn), MutableResolver()).submit(
+        intent("Stop must close playback admission.")
+    )
+    player = _PostStopSchedulingPlayer()
+    broker = VoiceBroker(
+        lambda: connect(db_path),
+        engine=MockTTSEngine(),
+        player=player,
+    )
+    admission_entered = threading.Event()
+    release_admission = threading.Event()
+    original_start_watcher = broker._start_interrupt_watcher
+
+    def blocked_start_watcher(current_request):
+        admission_entered.set()
+        release_admission.wait(timeout=2)
+        return original_start_watcher(current_request)
+
+    broker._start_interrupt_watcher = blocked_start_watcher
+    broker.start()
+    assert admission_entered.wait(timeout=1)
+
+    stop_errors: list[BaseException] = []
+
+    def stop_broker() -> None:
+        try:
+            broker.stop(join_timeout=2)
+        except BaseException as exc:
+            stop_errors.append(exc)
+
+    stopper = threading.Thread(target=stop_broker)
+    stopper.start()
+    assert player.stop_called.wait(timeout=1)
+    release_admission.set()
+    stopper.join(timeout=2)
+
+    row = conn.execute(
+        "SELECT status, playback_confirmed FROM voice_queue WHERE id = ?",
+        (request.id,),
+    ).fetchone()
+    assert not stopper.is_alive()
+    assert stop_errors == []
+    assert player.plays_after_stop == 0
+    assert player.log == []
+    assert row != ("done", 1)
     close_quietly(conn)
 
 
@@ -369,7 +663,10 @@ def test_real_broker_with_real_coreaudio_player_confirms_playback(db_path: Path)
     broker = VoiceBroker(
         lambda: connect(db_path),
         engine=MockTTSEngine(),
-        player=CoreAudioPlayer(backend=backend),
+        player=CoreAudioPlayer(
+            backend=backend,
+            deadline_for_audio=lambda _audio: 0.025,
+        ),
     )
 
     assert broker.drain_all() == 1
@@ -413,7 +710,10 @@ def test_failed_schedule_never_reports_playback_started(db_path: Path) -> None:
     broker = VoiceBroker(
         lambda: connect(db_path),
         engine=MockTTSEngine(),
-        player=CoreAudioPlayer(backend=_ExplodingBackend()),
+        player=CoreAudioPlayer(
+            backend=_ExplodingBackend(),
+            deadline_for_audio=lambda _audio: 0.025,
+        ),
     )
 
     assert broker.drain_all() == 0
@@ -454,4 +754,69 @@ def test_pre_schedule_cancel_leaves_no_hanging_synthesizing_row(db_path: Path) -
         (request.id,),
     ).fetchone()
     assert row == ("cancelled", None)
+    close_quietly(conn)
+
+
+class _WavEngine(MockTTSEngine):
+    def synthesize(self, text, render_snapshot):
+        chunk = super().synthesize(text, render_snapshot)
+        return type(chunk)(text=chunk.text, audio=_wav_audio())
+
+
+class _RecoveringRouteLossBackend(_FakeCoreAudioBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.play_calls = 0
+        self.stop_calls = 0
+        self.recover_calls = 0
+
+    def play(self, buffer: bytes, completion) -> None:
+        from dan.voice.player import NativePlaybackRouteLost
+
+        self.play_calls += 1
+        if self.play_calls == 1:
+            raise NativePlaybackRouteLost("output route lost")
+        super().play(buffer, completion)
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+    def recover(self) -> None:
+        self.recover_calls += 1
+
+
+def test_route_loss_row_error_is_persisted_without_stalling_broker(db_path: Path) -> None:
+    resolver = MutableResolver()
+    conn = connect(db_path)
+    service = VoiceService(VoiceQueue(conn), resolver)
+    first = service.submit(intent("route-lost", utterance_index=0))
+    second = service.submit(intent("next", utterance_index=1))
+    backend = _RecoveringRouteLossBackend()
+
+    from dan.voice.player import CoreAudioPlayer
+
+    broker = VoiceBroker(
+        lambda: connect(db_path),
+        engine=_WavEngine(),
+        player=CoreAudioPlayer(backend=backend),
+    )
+
+    assert broker.drain_all() == 1
+
+    rows = dict(
+        conn.execute(
+            "SELECT id, status FROM voice_queue WHERE id IN (?, ?)",
+            (first.id, second.id),
+        )
+    )
+    errors = dict(
+        conn.execute(
+            "SELECT id, error FROM voice_queue WHERE id IN (?, ?)",
+            (first.id, second.id),
+        )
+    )
+    assert rows == {first.id: "failed", second.id: "done"}
+    assert "output route lost" in errors[first.id]
+    assert errors[second.id] is None
+    assert backend.recover_calls == 1
     close_quietly(conn)

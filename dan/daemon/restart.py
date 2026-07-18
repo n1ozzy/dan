@@ -99,10 +99,46 @@ class RestartCoordinator:
             # voice turn, stops broker/player/recorder/STT, reaps supervised
             # children and releases the hotkey owner lock.
             self._app.stop(reason=reason)
-        except Exception:  # noqa: BLE001 - a failed drain must not block restart
-            logger.exception("Restart drain failed; exiting anyway.")
+        except Exception:  # noqa: BLE001 - containment decides whether exit is safe
+            logger.exception("Restart drain failed; proving emergency containment.")
+            containment = self._emergency_containment()
+            if containment is None or not containment.complete:
+                errors = getattr(containment, "errors", ("containment unavailable",))
+                logger.critical(
+                    "Restart exit blocked because owner containment is incomplete: %s",
+                    "; ".join(errors),
+                )
+                with self._lock:
+                    self._restarting = False
+                return
         logger.info("Exiting with restart code %s (%s).", RESTART_EXIT_CODE, reason)
         self._exit(RESTART_EXIT_CODE)
 
+    def _emergency_containment(self):
+        from dan.daemon.supervisor import ChildContainmentResult
+
+        contain = getattr(
+            self._app,
+            "emergency_contain_supervised_children",
+            None,
+        )
+        try:
+            if callable(contain):
+                result = contain()
+            else:
+                supervisor = getattr(self._app, "child_supervisor", None)
+                if supervisor is None:
+                    return None
+                result = supervisor.stop_all()
+        except Exception:
+            logger.exception("Emergency supervised-child containment failed.")
+            return None
+        if not isinstance(result, ChildContainmentResult):
+            logger.error(
+                "Emergency containment returned no typed ownership proof: %r",
+                result,
+            )
+            return None
+        return result
 
 __all__ = ["DEFAULT_RESPONSE_FLUSH_SECONDS", "RESTART_EXIT_CODE", "RestartCoordinator"]

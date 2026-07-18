@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
+import wave
+from io import BytesIO
 
 import pytest
 
@@ -49,8 +51,15 @@ class FakeCoreAudioBackend:
 
 
 def chunks() -> list[SynthesizedChunk]:
+    output = BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(1_000)
+        wav.writeframes(b"\x00\x00" * 100)
+    audio = output.getvalue()
     return [
-        SynthesizedChunk(text=f"chunk-{index}", audio=b"RIFF" + bytes([index]) * 128)
+        SynthesizedChunk(text=f"chunk-{index}", audio=audio)
         for index in range(3)
     ]
 
@@ -67,6 +76,21 @@ def test_multiple_chunks_reuse_one_coreaudio_engine() -> None:
     assert player.max_parallel_buffers == 1
     assert backend.max_active_buffers == 1
     assert player.measured_inter_chunk_gap_ms < 80
+
+
+def test_idle_stop_releases_native_owner_and_next_play_restarts_it() -> None:
+    backend = FakeCoreAudioBackend()
+    player = CoreAudioPlayer(backend=backend)
+
+    player.play(chunks()[0], should_play=lambda: True, on_started=lambda: None)
+    player.stop()
+
+    assert backend.stop_calls == 1
+    assert player._started is False
+
+    player.play(chunks()[1], should_play=lambda: True, on_started=lambda: None)
+
+    assert backend.started == 2
 
 
 def test_should_play_gate_prevents_any_native_schedule() -> None:

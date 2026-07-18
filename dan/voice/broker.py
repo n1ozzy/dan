@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
@@ -19,6 +20,18 @@ DEFAULT_POLL_INTERVAL_SECONDS = 0.05
 INTERRUPT_WATCH_INTERVAL_SECONDS = 0.01
 
 
+class VoiceBrokerError(RuntimeError):
+    """Base error for broker lifecycle ownership failures."""
+
+
+class VoiceBrokerOwnershipError(VoiceBrokerError):
+    """Raised when startup would create a second synthesis or playback owner."""
+
+
+class VoiceBrokerShutdownTimeout(VoiceBrokerError):
+    """Raised when broker or synthesis ownership cannot be quiesced in time."""
+
+
 class VoiceBroker:
     def __init__(
         self,
@@ -28,6 +41,7 @@ class VoiceBroker:
         player: Any,
         config: Any | None = None,
         poll_interval: float = DEFAULT_POLL_INTERVAL_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if not callable(getattr(engine, "synthesize", None)):
             raise TypeError("VoiceBroker requires a snapshot-only TTS engine")
@@ -39,40 +53,109 @@ class VoiceBroker:
         self._engine = engine
         self._player = player
         self._poll_interval = poll_interval
+        self._monotonic = monotonic
         self._stop = threading.Event()
         self._paused = threading.Event()
         self._thread: threading.Thread | None = None
         self._drain_lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dan-tts")
+        self._lifecycle_lock = threading.Lock()
+        self._ownership_condition = threading.Condition()
+        self._active_syntheses = 0
+        self._synthesis_futures: set[Future[SynthesizedChunk]] = set()
+        self._interrupt_watchers: dict[threading.Thread, threading.Event] = {}
+        self._ownership_blocked = False
+        self._executor: ThreadPoolExecutor | None = self._new_executor()
+        self._executor_stopped = False
+
+    @staticmethod
+    def _new_executor() -> ThreadPoolExecutor:
+        return ThreadPoolExecutor(max_workers=1, thread_name_prefix="dan-tts")
 
     def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        if getattr(self._executor, "_shutdown", False):
-            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dan-tts")
-        self._thread = threading.Thread(
-            target=self._run,
-            name="dan-voice-broker",
-            daemon=True,
-        )
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._ownership_blocked:
+                raise VoiceBrokerOwnershipError(
+                    "previous broker shutdown did not prove synthesis quiescence"
+                )
+            if self._thread is not None and self._thread.is_alive():
+                return
+            with self._ownership_condition:
+                if (
+                    self._active_syntheses
+                    or self._synthesis_futures
+                    or self._interrupt_watchers
+                ):
+                    self._ownership_blocked = True
+                    raise VoiceBrokerOwnershipError(
+                        "synthesis or interrupt watcher owner is still live; "
+                        "refusing a second broker"
+                    )
+                if self._executor is None or self._executor_stopped:
+                    self._executor = self._new_executor()
+                    self._executor_stopped = False
+            self._stop.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="dan-voice-broker",
+                daemon=True,
+            )
+            self._thread.start()
 
     def stop(self, *, join_timeout: float = 5.0) -> None:
-        self._stop.set()
-        self.stop_playback()
-        if self._thread is not None:
-            self._thread.join(timeout=join_timeout)
-            if self._thread.is_alive():
-                # Keep the reference: start() refuses while the thread lives,
-                # so a wedged broker never gets a second owner racing it.
-                _LOGGER.warning(
-                    "Voice broker thread did not stop within timeout; "
-                    "keeping ownership to prevent a second broker."
+        timeout = max(0.0, float(join_timeout))
+        deadline = self._monotonic() + timeout
+        with self._lifecycle_lock:
+            self._stop.set()
+            with self._ownership_condition:
+                for future in tuple(self._synthesis_futures):
+                    future.cancel()
+                for watcher_stop in tuple(self._interrupt_watchers.values()):
+                    watcher_stop.set()
+            try:
+                self.stop_playback()
+            except Exception as exc:
+                self._ownership_blocked = True
+                raise VoiceBrokerError(
+                    "native player owner failed to stop"
+                ) from exc
+            thread = self._thread
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=max(0.0, deadline - self._monotonic()))
+
+            with self._ownership_condition:
+                while (
+                    self._active_syntheses
+                    or self._synthesis_futures
+                    or self._interrupt_watchers
+                ):
+                    remaining = deadline - self._monotonic()
+                    if remaining <= 0:
+                        break
+                    self._ownership_condition.wait(timeout=remaining)
+                thread_alive = self._thread is not None and self._thread.is_alive()
+                quiescent = (
+                    not thread_alive
+                    and self._active_syntheses == 0
+                    and not self._synthesis_futures
+                    and not self._interrupt_watchers
                 )
-            else:
+                if not quiescent:
+                    self._ownership_blocked = True
+                    _LOGGER.warning(
+                        "Voice broker shutdown timed out; retaining broker, "
+                        "executor, synthesis, and watcher ownership."
+                    )
+                    raise VoiceBrokerShutdownTimeout(
+                        "voice broker did not reach synthesis quiescence within "
+                        f"{timeout:g} seconds"
+                    )
+
+                executor = self._executor
                 self._thread = None
-        self._executor.shutdown(wait=False, cancel_futures=True)
+                self._ownership_blocked = False
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
+            self._executor_stopped = True
 
     def pause(self) -> None:
         """Stop claiming new queue rows; the active chunk plays to its end."""
@@ -87,25 +170,26 @@ class VoiceBroker:
         return self._paused.is_set()
 
     def stop_playback(self) -> None:
-        try:
-            self._player.stop()
-        except Exception:
-            _LOGGER.exception("native player stop failed")
+        self._player.stop()
 
     def _run(self) -> None:
-        self._with_queue(lambda queue: queue.recover_orphans())
-        backoff = self._poll_interval
-        while not self._stop.is_set():
-            try:
-                played = self.drain_all(recover=False)
-            except Exception:
-                _LOGGER.exception("Voice broker drain failed; retrying after backoff.")
-                self._stop.wait(backoff)
-                backoff = min(backoff * 2, 5.0)
-                continue
+        try:
+            self._with_queue(lambda queue: queue.recover_orphans())
             backoff = self._poll_interval
-            if played == 0:
-                self._stop.wait(self._poll_interval)
+            while not self._stop.is_set():
+                try:
+                    played = self.drain_all(recover=False)
+                except Exception:
+                    _LOGGER.exception("Voice broker drain failed; retrying after backoff.")
+                    self._stop.wait(backoff)
+                    backoff = min(backoff * 2, 5.0)
+                    continue
+                backoff = self._poll_interval
+                if played == 0:
+                    self._stop.wait(self._poll_interval)
+        finally:
+            with self._ownership_condition:
+                self._ownership_condition.notify_all()
 
     def drain_all(self, *, recover: bool = True) -> int:
         with self._drain_lock:
@@ -115,10 +199,14 @@ class VoiceBroker:
 
     def _drain_claimed(self) -> int:
         played = 0
+        if self._stop.is_set():
+            return played
         current = self._claim()
         prefetched: Future[SynthesizedChunk] | None = None
         while current is not None:
             try:
+                if self._stop.is_set():
+                    return played
                 try:
                     chunk = (
                         prefetched.result()
@@ -137,9 +225,11 @@ class VoiceBroker:
                     prefetched = None
                     continue
 
+                if self._stop.is_set():
+                    return played
                 next_request = self._claim()
                 prefetched = (
-                    self._executor.submit(self._synthesize, next_request)
+                    self._submit_synthesis(next_request)
                     if next_request is not None
                     else None
                 )
@@ -150,6 +240,8 @@ class VoiceBroker:
 
                 watcher = self._start_interrupt_watcher(current)
                 try:
+                    if self._stop.is_set():
+                        return played
                     playback_request = current
                     self._player.play(
                         chunk,
@@ -157,8 +249,8 @@ class VoiceBroker:
                         # (row already 'speaking'), so it must stay true for
                         # the whole active playback cycle and turn false only
                         # after barge-in/cancel ('cancelled'/'failed').
-                        should_play=lambda request=playback_request: self._is_playable(
-                            request
+                        should_play=lambda request=playback_request: (
+                            not self._stop.is_set() and self._is_playable(request)
                         ),
                         on_started=lambda request=playback_request: (
                             self._mark_playback_started(request)
@@ -195,10 +287,37 @@ class VoiceBroker:
         return played
 
     def _synthesize(self, request: VoiceRequest) -> SynthesizedChunk:
-        snapshot = request.render_snapshot
-        if snapshot is None:
-            raise RuntimeError("legacy-unresolved voice request is not playable")
-        return self._engine.synthesize(request.text, snapshot)
+        with self._ownership_condition:
+            self._active_syntheses += 1
+        try:
+            snapshot = request.render_snapshot
+            if snapshot is None:
+                raise RuntimeError("legacy-unresolved voice request is not playable")
+            return self._engine.synthesize(request.text, snapshot)
+        finally:
+            with self._ownership_condition:
+                self._active_syntheses = max(0, self._active_syntheses - 1)
+                self._ownership_condition.notify_all()
+
+    def _submit_synthesis(
+        self,
+        request: VoiceRequest,
+    ) -> Future[SynthesizedChunk] | None:
+        with self._ownership_condition:
+            if self._stop.is_set():
+                return None
+            executor = self._executor
+            if executor is None:
+                raise VoiceBrokerOwnershipError("synthesis executor is not available")
+            future = executor.submit(self._synthesize, request)
+            self._synthesis_futures.add(future)
+            future.add_done_callback(self._synthesis_finished)
+            return future
+
+    def _synthesis_finished(self, future: Future[SynthesizedChunk]) -> None:
+        with self._ownership_condition:
+            self._synthesis_futures.discard(future)
+            self._ownership_condition.notify_all()
 
     def _claim(self) -> VoiceRequest | None:
         # A paused broker never claims; already-claimed work finishes normally.
@@ -251,13 +370,33 @@ class VoiceBroker:
         # must reach the live player, not just future claims.
         stop = threading.Event()
         thread = threading.Thread(
-            target=self._watch_playing_request,
+            target=self._interrupt_watcher_entry,
             args=(request, stop),
             name=f"dan-voice-interrupt-{request.id[:8]}",
             daemon=True,
         )
-        thread.start()
+        with self._ownership_condition:
+            self._interrupt_watchers[thread] = stop
+        try:
+            thread.start()
+        except Exception:
+            with self._ownership_condition:
+                self._interrupt_watchers.pop(thread, None)
+                self._ownership_condition.notify_all()
+            raise
         return stop, thread
+
+    def _interrupt_watcher_entry(
+        self,
+        request: VoiceRequest,
+        stop: threading.Event,
+    ) -> None:
+        try:
+            self._watch_playing_request(request, stop)
+        finally:
+            with self._ownership_condition:
+                self._interrupt_watchers.pop(threading.current_thread(), None)
+                self._ownership_condition.notify_all()
 
     def _stop_interrupt_watcher(
         self,
@@ -279,14 +418,28 @@ class VoiceBroker:
         )
         while not stop.is_set() and not self._stop.is_set():
             status = self._status(request)
+            if stop.is_set() or self._stop.is_set():
+                return
             if status not in {"queued", "synthesizing", "speaking"}:
                 # Terminal row: only an external cancel/failure interrupts the
                 # player; a normal 'done' must never stop the NEXT request.
-                if status in {"cancelled", "failed"} and not stop.is_set():
+                if status in {"cancelled", "failed"}:
                     self.stop_playback()
                 return
-            if interruptible and self._same_session_noninterruptible_waiting(request):
-                self._with_queue(lambda queue: queue.cancel_request(request.id))
+            superseded = False
+            if interruptible:
+                superseded = self._same_session_noninterruptible_waiting(request)
+                if stop.is_set() or self._stop.is_set():
+                    return
+            if superseded:
+                self._with_queue(
+                    lambda queue: queue.cancel_superseded_request(
+                        request.id,
+                        reason="superseded by non-interruptible speech",
+                    )
+                )
+                if stop.is_set() or self._stop.is_set():
+                    return
                 self.stop_playback()
                 return
             stop.wait(INTERRUPT_WATCH_INTERVAL_SECONDS)
@@ -316,4 +469,9 @@ class VoiceBroker:
             close_quietly(conn)
 
 
-__all__ = ["VoiceBroker"]
+__all__ = [
+    "VoiceBroker",
+    "VoiceBrokerError",
+    "VoiceBrokerOwnershipError",
+    "VoiceBrokerShutdownTimeout",
+]
