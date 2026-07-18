@@ -101,6 +101,7 @@ from dan.daemon.app import (
     DaemonAppNotFoundError,
     DaemonAppNotStartedError,
 )
+from dan.daemon.intake import IntakeClosedError
 from dan.logging import get_logger
 from dan.panel.menubar_app import resolve_panel_asset
 from dan.security.transport import API_TOKEN_HEADER, verify_api_token
@@ -749,6 +750,18 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
     except ListeningLeaseError as exc:
         # Unknown listening source/mode is bad client input, not a fault (FIX-17).
         _write_json(handler, 400, {"error": str(exc), "status": 400})
+    except IntakeClosedError as exc:
+        _write_json(
+            handler,
+            503,
+            {
+                "error": str(exc),
+                "code": "intake_closed",
+                "status": 503,
+                "operation_id": exc.operation_id,
+                "reason": exc.reason,
+            },
+        )
     except DaemonAppNotStartedError as exc:
         _write_json(handler, 503, {"error": str(exc), "status": 503})
     except DaemonAppBusyError as exc:

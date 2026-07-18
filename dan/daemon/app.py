@@ -90,6 +90,7 @@ from dan.tools.ui_tool import (
     UiTypeTool,
 )
 from dan.daemon.state_machine import RuntimeState, RuntimeStateMachine
+from dan.daemon.intake import IntakeGate
 from dan.turns.orchestrator import TextTurnResult, TurnOrchestrator
 from dan.turns.models import Turn
 from dan.turns.repository import ConversationRepository, TurnRepository
@@ -104,6 +105,7 @@ from dan.workers import (
 # The persisted brain choice lives in the daemon-owned settings table, not in
 # process memory: dand owns truth, so a restart restores the last switch.
 BRAIN_ADAPTER_SETTING_KEY = "brain.current_adapter"
+INTAKE_DRAIN_TIMEOUT_SECONDS = 30.0
 
 
 class DaemonAppError(Exception):
@@ -168,6 +170,7 @@ class DaemonApp:
     voice_gateway: Any = None
     voice_cancellation: Any = None
     voice_lease_sweeper: Any = None
+    intake_gate: IntakeGate | None = None
     # Daemon-owned global PTT hotkey (Task 9): the ONE event tap on the
     # machine lives here, guarded by a file lock in the runtime dir. The
     # factory is injectable so tests drive a fake tap; None means "build the
@@ -294,6 +297,7 @@ class DaemonApp:
                     voice_service = VoiceService(
                         VoiceQueue(self._require_conn(), event_store=event_store),
                         self.voice_resolver,
+                        intake_gate=self._require_intake_gate(),
                     )
                     voice_broker = VoiceBroker(
                         self._connect_existing,
@@ -370,6 +374,14 @@ class DaemonApp:
 
                 event_store.append(EventType.DAEMON_STARTED, "daemon", {"service": "dand"})
                 state_machine.transition(RuntimeState.IDLE, reason="daemon started")
+                if self.intake_gate is not None:
+                    intake = self.intake_gate.snapshot()
+                    if intake.state == "closed" and intake.reopen_policy == "daemon":
+                        if intake.operation_id is None:
+                            raise DaemonLifecycleError(
+                                "closed intake gate has no operation id"
+                            )
+                        self.intake_gate.reopen(operation_id=intake.operation_id)
                 self.started = True
             except Exception as startup_error:
                 self._stop_hotkey_monitor()
@@ -438,6 +450,8 @@ class DaemonApp:
 
     def stop(self, reason: str | None = None, *, emit_event: bool = True) -> None:
         with self._lifecycle_lock:
+            self.close_intake(reason=reason or "daemon shutdown")
+            self._require_intake_gate().wait_for_drain(INTAKE_DRAIN_TIMEOUT_SECONDS)
             event_store = self._require_event_store()
             state_machine = self._require_state_machine()
             intake_errors: list[BaseException] = []
@@ -576,6 +590,26 @@ class DaemonApp:
                 )
             if state_machine.state is not RuntimeState.STOPPING:
                 state_machine.transition(RuntimeState.STOPPING, reason=reason or "daemon stopped")
+
+    def close_intake(
+        self,
+        *,
+        reason: str,
+        operation_id: str | None = None,
+    ) -> str:
+        gate = self._require_intake_gate()
+        current = gate.snapshot()
+        if current.state == "closed":
+            if operation_id is not None and current.operation_id != operation_id:
+                raise DaemonLifecycleError(
+                    "intake is already closed by a different operation"
+                )
+            if current.operation_id is None:
+                raise DaemonLifecycleError("closed intake gate has no operation id")
+            return current.operation_id
+        resolved_operation_id = operation_id or str(uuid.uuid4())
+        gate.close(operation_id=resolved_operation_id, reason=reason)
+        return resolved_operation_id
 
     def snapshot_state(self) -> dict[str, Any]:
         state = self.state_machine.state.value if self.state_machine is not None else RuntimeState.BOOTING.value
@@ -1342,19 +1376,20 @@ class DaemonApp:
         if not self.started:
             raise DaemonAppNotStartedError("Daemon app is not started.")
 
-        if not self.text_turn_lock.acquire(blocking=False):
-            raise DaemonAppBusyError("Another text turn is already running.")
+        with self._require_intake_gate().admit(f"text:{source}"):
+            if not self.text_turn_lock.acquire(blocking=False):
+                raise DaemonAppBusyError("Another text turn is already running.")
 
-        try:
-            orchestrator = self._create_turn_orchestrator()
-            return orchestrator.handle_text(
-                text=text,
-                conversation_id=self._resolve_dan_conversation_id(),
-                metadata=metadata,
-                source=source,
-            )
-        finally:
-            self.text_turn_lock.release()
+            try:
+                orchestrator = self._create_turn_orchestrator()
+                return orchestrator.handle_text(
+                    text=text,
+                    conversation_id=self._resolve_dan_conversation_id(),
+                    metadata=metadata,
+                    source=source,
+                )
+            finally:
+                self.text_turn_lock.release()
 
     def _approval_decision_is_allow(
         self, approval: Mapping[str, Any], policy: ToolPermissionPolicy
@@ -1703,6 +1738,11 @@ class DaemonApp:
         if self.event_store is None:
             raise DaemonAppError("Daemon app is not initialized with an event store.")
         return self.event_store
+
+    def _require_intake_gate(self) -> IntakeGate:
+        if self.intake_gate is None:
+            raise DaemonAppError("Daemon app is not initialized with an intake gate.")
+        return self.intake_gate
 
     def _require_state_machine(self) -> RuntimeStateMachine:
         if self.state_machine is None:
@@ -2188,6 +2228,7 @@ def create_daemon_app_from_config(
     close_quietly(initialized_conn)
     conn = _connect_daemon_db(paths.db_path)
     event_store = create_event_store(conn)
+    intake_gate = IntakeGate(conn)
     state_machine = RuntimeStateMachine(event_store, event_bus=event_bus)
     # One registry instance is shared between the streaming brain adapters
     # (which register subprocess kill handles per turn, G4d) and the voice
@@ -2268,6 +2309,7 @@ def create_daemon_app_from_config(
         paths=paths,
         conn=conn,
         event_store=event_store,
+        intake_gate=intake_gate,
         event_bus=event_bus,
         state_machine=state_machine,
         runtime_supervisor=runtime_supervisor,

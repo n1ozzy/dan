@@ -21,10 +21,11 @@ import json
 import os
 import shutil
 import sqlite3
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
 from dan.install import InstallPlan
 from dan.migration.journal import CutoverPhase, Journal, JournalEntry, utc_stamp
@@ -118,17 +119,35 @@ class CutoverManifest:
 
 
 # ------------------------------------------------------------------ engine
-def _refuse_launchctl(*arguments: str) -> None:
-    raise CutoverBlocked(
-        "no launchctl executor injected — real bootout/bootstrap is Task 14 "
-        f"(refused: {' '.join(arguments)})"
-    )
+class CutoverHostAdapter(Protocol):
+    @property
+    def intake_database(self) -> Path: ...
 
+    def validate(
+        self,
+        manifest: CutoverManifest,
+        home: Path,
+        *,
+        operation_id: str,
+    ) -> None: ...
 
-def _refuse_runtime_start(new_root: Path) -> dict:
-    raise CutoverBlocked(
-        f"no runtime starter injected — real cold start from {new_root} is Task 14"
-    )
+    def close_intake(
+        self,
+        *,
+        operation_id: str,
+        reason: str,
+        before_close: Callable[[Path, dict[str, object]], None],
+    ) -> None: ...
+
+    def wait_for_intake_drain(self) -> None: ...
+
+    def stop_launch_agent(self, agent: LaunchAgent) -> None: ...
+
+    def bootstrap_launch_agent(self, *, label: str, plist: Path) -> None: ...
+
+    def start_runtime(self, new_root: Path) -> dict: ...
+
+    def reopen_intake(self, *, database: Path, operation_id: str) -> None: ...
 
 
 def _sha256_file(path: Path) -> str:
@@ -142,6 +161,7 @@ def _sha256_file(path: Path) -> str:
 @dataclass
 class CutoverReport:
     journal: Path
+    operation_id: str
     phases: list[str] = field(default_factory=list)
     report_path: Path | None = None
 
@@ -155,18 +175,17 @@ class CutoverEngine:
         manifest: CutoverManifest,
         home: Path,
         probe,
-        launchctl: Callable[..., None] | None = None,
-        runtime_starter: Callable[[Path], dict] | None = None,
+        host_adapter: CutoverHostAdapter | None = None,
         resume_journal: Path | None = None,
         now: datetime | None = None,
     ) -> None:
         self.manifest = manifest
         self.home = Path(home)
         self.probe = probe
-        self._launchctl = launchctl or _refuse_launchctl
-        self._runtime_starter = runtime_starter or _refuse_runtime_start
+        self._host_adapter = host_adapter
         self._resume_journal = Path(resume_journal) if resume_journal else None
         self._now = now
+        self._operation_id: str | None = None
 
     # ------------------------------------------------------------ queries
     def _connect(self, database: Path) -> sqlite3.Connection:
@@ -351,10 +370,22 @@ class CutoverEngine:
         if failures:
             raise CutoverBlocked("; ".join(failures))
 
+        if self._host_adapter is None:
+            raise CutoverBlocked("a validated production host adapter is required")
         if self._resume_journal is not None:
             journal = Journal.open(self._resume_journal)
+            self._operation_id = self._journal_operation_id(journal) or str(uuid.uuid4())
         else:
+            self._operation_id = str(uuid.uuid4())
+            journal = None
+        self._host_adapter.validate(
+            self.manifest,
+            self.home,
+            operation_id=self._require_operation_id(),
+        )
+        if journal is None:
             journal = Journal.create(self.home / ".dan" / "migration", now=self._now)
+        self._record_operation_id(journal)
         committed = set(journal.committed_phases())
 
         phase_handlers: list[tuple[CutoverPhase, Callable[[Journal], None]]] = [
@@ -373,7 +404,10 @@ class CutoverEngine:
             (CutoverPhase.COLD_STARTED, self._phase_cold_started),
             (CutoverPhase.VERIFIED, self._phase_verified),
         ]
-        report = CutoverReport(journal=journal.directory)
+        report = CutoverReport(
+            journal=journal.directory,
+            operation_id=self._require_operation_id(),
+        )
         for phase, handler in phase_handlers:
             if phase in committed:
                 report.phases.append(phase.value)
@@ -385,6 +419,37 @@ class CutoverEngine:
                 raise CutoverInterrupted(f"interrupted after {phase.value}")
         report.report_path = journal.directory / "report.json"
         return report
+
+    def _require_operation_id(self) -> str:
+        if self._operation_id is None:
+            raise CutoverBlocked("cutover operation id is unavailable")
+        return self._operation_id
+
+    def _journal_operation_id(self, journal: Journal) -> str | None:
+        operation_ids = {
+            str(entry.destination)
+            for entry in journal.entries()
+            if entry.operation in {"cutover-operation", "close-intake"}
+            and entry.destination
+        }
+        if len(operation_ids) > 1:
+            raise CutoverBlocked("resume journal contains conflicting operation ids")
+        return next(iter(operation_ids), None)
+
+    def _record_operation_id(self, journal: Journal) -> None:
+        if any(entry.operation == "cutover-operation" for entry in journal.entries()):
+            return
+        journal.append(
+            JournalEntry(
+                phase=CutoverPhase.INVENTORIED,
+                operation="cutover-operation",
+                source=str(self.manifest.path),
+                destination=self._require_operation_id(),
+                before_sha256=self.manifest.sha256,
+                after_sha256=self.manifest.sha256,
+                rollback_operation="none",
+            )
+        )
 
     # ------------------------------------------------------------- phases
     def _note(self, journal: Journal, phase: CutoverPhase, text: str) -> None:
@@ -451,28 +516,57 @@ class CutoverEngine:
         self._note(journal, CutoverPhase.INVENTORIED, "inventory recorded")
 
     def _phase_intake_closed(self, journal: Journal) -> None:
-        journal.append(
-            JournalEntry(
-                phase=CutoverPhase.INTAKE_CLOSED,
-                operation="close-intake",
-                source=str(self.manifest.request_files_dir),
-                destination=None,
-                before_sha256=None,
-                after_sha256=None,
-                rollback_operation="reopen-intake",
+        operation_id = self._require_operation_id()
+        assert self._host_adapter is not None
+        database = self._host_adapter.intake_database
+
+        def record_prior_state(path: Path, state: dict[str, object]) -> None:
+            report_path = journal.directory / "intake-before.json"
+            if report_path.exists():
+                recorded = json.loads(report_path.read_text(encoding="utf-8"))
+                if (
+                    recorded.get("database") != str(path)
+                    or recorded.get("cutover_operation_id") != operation_id
+                ):
+                    raise CutoverBlocked("intake-before report conflicts with this cutover")
+            else:
+                if state.get("state") == "closed":
+                    raise CutoverBlocked(
+                        "cannot resume intake close without its prior-state report"
+                    )
+                journal.write_report(
+                    "intake-before.json",
+                    {
+                        "database": str(path),
+                        "cutover_operation_id": operation_id,
+                        "prior_state": state,
+                    },
+                )
+            already_recorded = any(
+                entry.operation == "close-intake"
+                and entry.source == str(path)
+                and entry.destination == operation_id
+                for entry in journal.entries()
             )
+            if not already_recorded:
+                journal.append(
+                    JournalEntry(
+                        phase=CutoverPhase.INTAKE_CLOSED,
+                        operation="close-intake",
+                        source=str(path),
+                        destination=operation_id,
+                        before_sha256=None,
+                        after_sha256=None,
+                        rollback_operation="restore-intake:intake-before.json",
+                    )
+                )
+
+        self._host_adapter.close_intake(
+            operation_id=operation_id,
+            reason="release cutover",
+            before_close=record_prior_state,
         )
-        journal.append(
-            JournalEntry(
-                phase=CutoverPhase.INTAKE_CLOSED,
-                operation="close-intake",
-                source=str(self.home / ".dan"),
-                destination=None,
-                before_sha256=None,
-                after_sha256=None,
-                rollback_operation="reopen-intake",
-            )
-        )
+        self._host_adapter.wait_for_intake_drain()
 
     def _phase_queue_quiescent(self, journal: Journal, *, cancel_in_flight: bool) -> None:
         for database in self.manifest.databases:
@@ -564,7 +658,8 @@ class CutoverEngine:
                     rollback_operation="bootstrap",
                 )
             )
-            self._launchctl("bootout", agent.label)
+            assert self._host_adapter is not None
+            self._host_adapter.stop_launch_agent(agent)
             if agent.plist.is_file():
                 self._journal_move(
                     journal,
@@ -632,7 +727,32 @@ class CutoverEngine:
                 );
                 CREATE TABLE runtime_state (key TEXT PRIMARY KEY, value TEXT);
                 INSERT INTO runtime_state (key, value) VALUES ('speaking', NULL);
+                CREATE TABLE intake_gate (
+                  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                  state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+                  operation_id TEXT,
+                  reason TEXT,
+                  closed_at TEXT,
+                  reopened_at TEXT,
+                  reopen_policy TEXT NOT NULL DEFAULT 'daemon'
+                    CHECK (reopen_policy IN ('daemon', 'external'))
+                );
+                CREATE TABLE intake_leases (
+                  token TEXT PRIMARY KEY,
+                  channel TEXT NOT NULL,
+                  owner_pid INTEGER NOT NULL,
+                  acquired_at TEXT NOT NULL
+                );
                 """
+            )
+            target.execute(
+                """
+                INSERT INTO intake_gate (
+                  singleton, state, operation_id, reason, closed_at, reopened_at,
+                  reopen_policy
+                ) VALUES (1, 'closed', ?, 'release cutover', ?, NULL, 'external')
+                """,
+                (self._require_operation_id(), utc_stamp(self._now)),
             )
             for database in self.manifest.databases:
                 copy = journal.directory / "db-backups" / database.name
@@ -746,7 +866,11 @@ class CutoverEngine:
                 rollback_operation="bootout",
             )
         )
-        self._launchctl("bootstrap", DAND_LABEL)
+        assert self._host_adapter is not None
+        self._host_adapter.bootstrap_launch_agent(
+            label=DAND_LABEL,
+            plist=self.home / DAND_PLIST_RELPATH,
+        )
 
     def _phase_cold_started(self, journal: Journal) -> None:
         journal.append(
@@ -760,7 +884,8 @@ class CutoverEngine:
                 rollback_operation="stop-runtime",
             )
         )
-        health = self._runtime_starter(self.manifest.new_root)
+        assert self._host_adapter is not None
+        health = self._host_adapter.start_runtime(self.manifest.new_root)
         journal.write_report("cold-start.json", {"health": health})
 
     def _phase_verified(self, journal: Journal) -> None:
@@ -799,10 +924,27 @@ class CutoverEngine:
                 problems.append(f"donor missing after cutover: {donor}")
         if problems:
             raise CutoverBlocked("; ".join(problems))
+        assert self._host_adapter is not None
+        journal.append(
+            JournalEntry(
+                phase=CutoverPhase.VERIFIED,
+                operation="reopen-intake",
+                source=str(target),
+                destination=self._require_operation_id(),
+                before_sha256=None,
+                after_sha256=None,
+                rollback_operation="close-intake",
+            )
+        )
+        self._host_adapter.reopen_intake(
+            database=target,
+            operation_id=self._require_operation_id(),
+        )
         journal.write_report(
             "report.json",
             {
                 "verified": True,
+                "operation_id": self._require_operation_id(),
                 "dan_db": str(target),
                 "counts": counts,
                 "new_root": str(self.manifest.new_root),
@@ -847,6 +989,7 @@ __all__ = [
     "CutoverBlocked",
     "CutoverEngine",
     "CutoverInterrupted",
+    "CutoverHostAdapter",
     "CutoverManifest",
     "CutoverReport",
     "FileDecision",

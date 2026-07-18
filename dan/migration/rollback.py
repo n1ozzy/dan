@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from dan.daemon.intake import IntakeGate, IntakeGateError
 from dan.install import InstallEntry, InstallPlan, InstallReport
 from dan.migration.cutover import (
     ACTIVE_STATUSES,
@@ -183,8 +184,89 @@ def _undo(
     report: RollbackReport,
 ) -> None:
     operation = entry.rollback_operation
-    if operation in {"none", "never-replay", "reopen-intake", "stop-runtime"}:
+    if operation in {"none", "never-replay", "stop-runtime"}:
         # never-replay is deliberate: cancellations are permanent.
+        return
+    if operation in {"close-intake", "reopen-intake"}:
+        database = Path(entry.source or "")
+        operation_id = entry.destination or ""
+        if not database.is_file():
+            raise RollbackBlocked(f"intake database missing: {database}")
+        connection = sqlite3.connect(database)
+        try:
+            gate = IntakeGate(connection)
+            if operation == "close-intake":
+                gate.close(
+                    operation_id=operation_id,
+                    reason="rollback",
+                    reopen_policy="external",
+                )
+            else:
+                gate.reopen(operation_id=operation_id)
+        except IntakeGateError as exc:
+            raise RollbackBlocked(str(exc)) from exc
+        finally:
+            connection.close()
+        report.undone.append(f"{operation} {database}")
+        return
+    if operation.startswith("restore-intake:"):
+        report_name = operation.split(":", 1)[1]
+        payload = json.loads(
+            (journal.directory / report_name).read_text(encoding="utf-8")
+        )
+        database = Path(payload["database"])
+        if (
+            str(database) != entry.source
+            or payload.get("cutover_operation_id") != entry.destination
+        ):
+            raise RollbackBlocked("intake-before report does not match journal entry")
+        prior = payload["prior_state"]
+        prior_row = (
+            prior["state"],
+            prior["operation_id"],
+            prior["reason"],
+            prior["reopen_policy"],
+            prior["closed_at"],
+            prior["reopened_at"],
+        )
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            current_row = connection.execute(
+                """
+                SELECT state, operation_id, reason, reopen_policy,
+                       closed_at, reopened_at
+                FROM intake_gate WHERE singleton = 1
+                """
+            ).fetchone()
+            if current_row == prior_row:
+                connection.rollback()
+                report.undone.append(f"intake gate already restored {database}")
+                return
+            if current_row is None or not (
+                current_row[0] == "closed" and current_row[1] == entry.destination
+            ):
+                owner = current_row[1] if current_row is not None else None
+                raise RollbackBlocked(
+                    "refusing to overwrite intake gate owned by "
+                    f"operation_id={owner or 'unknown'}"
+                )
+            connection.execute(
+                """
+                UPDATE intake_gate
+                SET state = ?, operation_id = ?, reason = ?, reopen_policy = ?,
+                    closed_at = ?, reopened_at = ?
+                WHERE singleton = 1
+                """,
+                prior_row,
+            )
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        report.undone.append(f"restored intake gate state {database}")
         return
     if operation == "move-back":
         destination = Path(entry.destination or "")

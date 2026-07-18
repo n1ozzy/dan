@@ -126,6 +126,29 @@ def test_speak_returns_201_queued_and_commits_full_row(voice_app: DaemonApp) -> 
     assert "voice.speak.queued" in voice_event_types(voice_app)
 
 
+def test_closed_intake_rejects_speak_before_queue_or_event_write(
+    voice_app: DaemonApp,
+) -> None:
+    operation_id = voice_app.close_intake(
+        operation_id="cutover-voice-1",
+        reason="release cutover",
+    )
+
+    with running_server(voice_app) as base_url:
+        status, body = request_json(
+            "POST",
+            f"{base_url}/voice/speak",
+            speak_payload(),
+        )
+
+    assert status == 503
+    assert body["code"] == "intake_closed"
+    assert body["operation_id"] == operation_id
+    assert body["reason"] == "release cutover"
+    assert queue_rows(voice_app) == []
+    assert voice_event_types(voice_app) == []
+
+
 def test_speak_response_redacts_text_by_default(voice_app: DaemonApp) -> None:
     with running_server(voice_app) as base_url:
         status, body = request_json("POST", f"{base_url}/voice/speak", speak_payload())

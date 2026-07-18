@@ -95,6 +95,26 @@ def _create_legacy_database(path: Path) -> None:
             );
             CREATE TABLE runtime_state (key TEXT PRIMARY KEY, value TEXT);
             INSERT INTO runtime_state (key, value) VALUES ('speaking', NULL);
+            CREATE TABLE intake_gate (
+              singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+              state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+              operation_id TEXT,
+              reason TEXT,
+              closed_at TEXT,
+              reopened_at TEXT,
+              reopen_policy TEXT NOT NULL DEFAULT 'daemon'
+                CHECK (reopen_policy IN ('daemon', 'external'))
+            );
+            INSERT INTO intake_gate (
+              singleton, state, operation_id, reason, closed_at, reopened_at,
+              reopen_policy
+            ) VALUES (1, 'open', NULL, NULL, NULL, NULL, 'daemon');
+            CREATE TABLE intake_leases (
+              token TEXT PRIMARY KEY,
+              channel TEXT NOT NULL,
+              owner_pid INTEGER NOT NULL,
+              acquired_at TEXT NOT NULL
+            );
             INSERT INTO requests (id, status, play_count, text)
               VALUES ('req-done-1', 'done', 1, 'finished utterance');
             """
@@ -161,6 +181,91 @@ class FakeRuntime:
         self.stopped += 1
 
 
+class FakeHostAdapter:
+    def __init__(
+        self,
+        database: Path,
+        launchctl: FakeLaunchctl,
+        runtime: FakeRuntime,
+    ) -> None:
+        self.database = Path(database)
+        self.launchctl = launchctl
+        self.runtime = runtime
+        self.validations = 0
+
+    @property
+    def intake_database(self) -> Path:
+        return self.database
+
+    def validate(self, manifest, home: Path, *, operation_id: str) -> None:
+        del manifest, home, operation_id
+        self.validations += 1
+
+    def close_intake(
+        self,
+        *,
+        operation_id: str,
+        reason: str,
+        before_close,
+    ) -> None:
+        from dan.daemon.intake import IntakeGate
+
+        connection = sqlite3.connect(self.database)
+        try:
+            def record_state(state) -> None:
+                closed_at, reopened_at = connection.execute(
+                    "SELECT closed_at, reopened_at FROM intake_gate WHERE singleton = 1"
+                ).fetchone()
+                before_close(
+                    self.database,
+                    {
+                        "state": state.state,
+                        "operation_id": state.operation_id,
+                        "reason": state.reason,
+                        "reopen_policy": state.reopen_policy,
+                        "closed_at": closed_at,
+                        "reopened_at": reopened_at,
+                    },
+                )
+
+            IntakeGate(connection).close(
+                operation_id=operation_id,
+                reason=reason,
+                reopen_policy="external",
+                before_close=record_state,
+            )
+        finally:
+            connection.close()
+
+    def wait_for_intake_drain(self) -> None:
+        from dan.daemon.intake import IntakeGate
+
+        connection = sqlite3.connect(self.database)
+        try:
+            IntakeGate(connection).wait_for_drain(timeout_seconds=0)
+        finally:
+            connection.close()
+
+    def stop_launch_agent(self, agent) -> None:
+        self.launchctl("bootout", agent.label)
+
+    def bootstrap_launch_agent(self, *, label: str, plist: Path) -> None:
+        del plist
+        self.launchctl("bootstrap", label)
+
+    def start_runtime(self, new_root: Path) -> dict[str, str]:
+        return self.runtime.start(new_root)
+
+    def reopen_intake(self, *, database: Path, operation_id: str) -> None:
+        from dan.daemon.intake import IntakeGate
+
+        connection = sqlite3.connect(database)
+        try:
+            IntakeGate(connection).reopen(operation_id=operation_id)
+        finally:
+            connection.close()
+
+
 # ---------------------------------------------------------------- harnesses
 class CutoverHarness:
     """Precondition-level harness backing the `cutover` pytest fixture."""
@@ -176,6 +281,11 @@ class CutoverHarness:
         self.probe = FakeProbe()
         self.launchctl = FakeLaunchctl()
         self.runtime = FakeRuntime()
+        self.host_adapter = FakeHostAdapter(
+            self.home / ".jarvis" / "jarvis.db",
+            self.launchctl,
+            self.runtime,
+        )
 
     # -- fixture mutators used by the plan's test bodies -------------------
     def fixture_queue(self, state: str) -> None:
@@ -202,8 +312,7 @@ class CutoverHarness:
             manifest=self.manifest,
             home=self.home,
             probe=self.probe,
-            launchctl=self.launchctl,
-            runtime_starter=self.runtime.start,
+            host_adapter=self.host_adapter,
         )
 
     def prepare(self) -> None:
@@ -215,11 +324,28 @@ class CutoverFixture(CutoverHarness):
 
     def __init__(self, root: Path) -> None:
         super().__init__(root)
-        self.before_hash = self.tree_hash()
+        self.before_non_intake_hash = tree_hash(
+            self.home,
+            exclude=(*TREE_HASH_EXCLUDE, ".jarvis/jarvis.db"),
+        )
+        self.before_intake_dump = self.intake_database_dump()
 
     # -- observations ------------------------------------------------------
     def tree_hash(self) -> str:
         return tree_hash(self.home, exclude=TREE_HASH_EXCLUDE)
+
+    def tree_hash_without_intake_database(self) -> str:
+        return tree_hash(
+            self.home,
+            exclude=(*TREE_HASH_EXCLUDE, ".jarvis/jarvis.db"),
+        )
+
+    def intake_database_dump(self) -> str:
+        connection = sqlite3.connect(self._legacy_db())
+        try:
+            return "\n".join(connection.iterdump())
+        finally:
+            connection.close()
 
     def _legacy_db(self) -> Path:
         restored = self.home / ".jarvis" / "jarvis.db"
@@ -303,8 +429,7 @@ class CutoverFixture(CutoverHarness):
             manifest=self.manifest,
             home=self.home,
             probe=self.probe,
-            launchctl=self.launchctl,
-            runtime_starter=self.runtime.start,
+            host_adapter=self.host_adapter,
             resume_journal=journal_dir,
         )
         return engine.apply(

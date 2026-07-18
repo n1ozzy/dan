@@ -142,7 +142,7 @@ def post_voice_speak(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
         source=DEFAULT_SPEAK_SOURCE,
         session=DEFAULT_SPEAK_SESSION,
     )
-    request = service.submit(intent)
+    request = service.submit_external(intent)
     return {
         "status": request.status,
         "request_id": request.id,

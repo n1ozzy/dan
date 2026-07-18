@@ -7,13 +7,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 INITIAL_SCHEMA_VERSION = 1
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 INITIAL_SCHEMA_DESCRIPTION = "initial DAN v4.1 schema"
 V2_DESCRIPTION = "FIX-09 voice_queue.spoken_at + cancelled_turns tombstone"
 V3_DESCRIPTION = "shared local memory archive with FTS5"
 V4_DESCRIPTION = "database migration lineage and record mappings"
 V5_DESCRIPTION = "complete immutable voice render snapshots and native playback lifecycle"
+V6_DESCRIPTION = "durable intake gate and admission leases"
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
@@ -36,6 +37,10 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         _apply_v4_migration_lineage(conn)
     if current_version < 5:
         _apply_v5_voice_snapshots(conn)
+    if current_version < 6:
+        _apply_v6_intake_gate(conn)
+    else:
+        _ensure_v6_intake_reopen_policy(conn)
     _ensure_memory_os_sidecar_tables(conn)
 
 
@@ -342,6 +347,49 @@ def _create_v5_voice_queue_artifacts(conn: sqlite3.Connection) -> None:
         END;
         """
     )
+
+
+def _apply_v6_intake_gate(conn: sqlite3.Connection) -> None:
+    with conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS intake_gate (
+              singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+              state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+              operation_id TEXT,
+              reason TEXT,
+              reopen_policy TEXT NOT NULL DEFAULT 'daemon'
+                CHECK (reopen_policy IN ('daemon', 'external')),
+              closed_at TEXT,
+              reopened_at TEXT
+            );
+            INSERT OR IGNORE INTO intake_gate (
+              singleton, state, operation_id, reason, reopen_policy, closed_at, reopened_at
+            ) VALUES (1, 'open', NULL, NULL, 'daemon', NULL, NULL);
+            CREATE TABLE IF NOT EXISTS intake_leases (
+              token TEXT PRIMARY KEY,
+              channel TEXT NOT NULL,
+              owner_pid INTEGER NOT NULL,
+              acquired_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schema_version (version, applied_at, description)
+            VALUES (?, ?, ?)
+            """,
+            (6, _utc_now_iso(), V6_DESCRIPTION),
+        )
+
+
+def _ensure_v6_intake_reopen_policy(conn: sqlite3.Connection) -> None:
+    if not _column_exists(conn, "intake_gate", "reopen_policy"):
+        with conn:
+            conn.execute(
+                "ALTER TABLE intake_gate ADD COLUMN reopen_policy TEXT NOT NULL "
+                "DEFAULT 'daemon' CHECK (reopen_policy IN ('daemon', 'external'))"
+            )
 
 
 def _ensure_memory_os_sidecar_tables(conn: sqlite3.Connection) -> None:

@@ -51,6 +51,8 @@ class RestartCoordinator:
         self._flush_seconds = flush_seconds
         self._lock = threading.Lock()
         self._restarting = False
+        self._operation_id: str | None = None
+        self._reason: str | None = None
 
     @property
     def restarting(self) -> bool:
@@ -70,13 +72,22 @@ class RestartCoordinator:
 
         with self._lock:
             already = self._restarting
-            self._restarting = True
+            if already:
+                operation_id = self._operation_id
+                response_reason = self._reason
+            else:
+                operation_id = self._app.close_intake(reason=reason)
+                self._operation_id = operation_id
+                self._reason = reason
+                self._restarting = True
+                response_reason = reason
         response = {
             "ok": True,
             "restarting": True,
             "already_restarting": already,
             "exit_code": RESTART_EXIT_CODE,
-            "reason": reason,
+            "operation_id": operation_id,
+            "reason": response_reason,
         }
         if already:
             return response
@@ -108,9 +119,14 @@ class RestartCoordinator:
                     "Restart exit blocked because owner containment is incomplete: %s",
                     "; ".join(errors),
                 )
-                with self._lock:
-                    self._restarting = False
-                return
+            else:
+                logger.critical(
+                    "Restart exit blocked because daemon drain failed despite "
+                    "complete child containment."
+                )
+            with self._lock:
+                self._restarting = False
+            return
         logger.info("Exiting with restart code %s (%s).", RESTART_EXIT_CODE, reason)
         self._exit(RESTART_EXIT_CODE)
 

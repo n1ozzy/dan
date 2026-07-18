@@ -465,11 +465,19 @@ def test_applying_migrations_twice_is_idempotent(tmp_path: Path) -> None:
     close_quietly(conn)
 
 
-def test_voice_snapshots_are_the_v5_core_schema_bump() -> None:
-    # Task 7 (DAN Foundation Release 1) bumped the core schema to v5: the
-    # voice_queue rebuild with mandatory render snapshots. Bump this pin only
-    # together with a reviewed migration.
-    assert LATEST_SCHEMA_VERSION == 5
+def test_durable_intake_gate_is_the_v6_core_schema_bump(tmp_path: Path) -> None:
+    assert LATEST_SCHEMA_VERSION == 6
+
+    conn = initialize_database(tmp_path / "dan.db")
+    try:
+        tables = table_names(conn)
+        assert {"intake_gate", "intake_leases"}.issubset(tables)
+        assert conn.execute(
+            "SELECT state, operation_id, reopen_policy "
+            "FROM intake_gate WHERE singleton = 1"
+        ).fetchone() == ("open", None, "daemon")
+    finally:
+        close_quietly(conn)
 
 
 def test_schema_sql_declares_memory_os_v1_tables() -> None:

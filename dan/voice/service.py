@@ -12,13 +12,23 @@ from dan.voice.resolver import AssetMetadata, EngineMetadata, VoiceResolver
 
 
 class VoiceService:
-    def __init__(self, queue: VoiceQueue, resolver: Any) -> None:
+    def __init__(self, queue: VoiceQueue, resolver: Any, *, intake_gate: Any = None) -> None:
         if resolver is None or not callable(getattr(resolver, "resolve", None)):
             raise TypeError("VoiceService requires one resolver dependency")
         self.queue = queue
         self._resolver = resolver
+        self._intake_gate = intake_gate
 
     def submit(self, intent: SpeechIntent) -> VoiceRequest:
+        return self._submit(intent)
+
+    def submit_external(self, intent: SpeechIntent) -> VoiceRequest:
+        if self._intake_gate is None:
+            return self._submit(intent)
+        with self._intake_gate.admit("voice_speak"):
+            return self._submit(intent)
+
+    def _submit(self, intent: SpeechIntent) -> VoiceRequest:
         snapshot = self._resolver.resolve(intent)
         snapshot.validate_complete()
         return self.queue.enqueue(intent, snapshot)

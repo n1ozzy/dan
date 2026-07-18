@@ -1,12 +1,96 @@
-"""Rollback restores paths, plists, databases and adapters byte-for-byte."""
+"""Rollback restores non-database bytes and complete logical database state."""
 
 from __future__ import annotations
 
+import sqlite3
 
-def test_rollback_restores_paths_plists_databases_and_adapters(cutover_fixture) -> None:
+import pytest
+
+
+def test_rollback_restores_non_intake_files_byte_for_byte(cutover_fixture) -> None:
     report = cutover_fixture.apply()
     cutover_fixture.rollback(report.journal)
-    assert cutover_fixture.tree_hash() == cutover_fixture.before_hash
+    assert (
+        cutover_fixture.before_non_intake_hash
+        == cutover_fixture.tree_hash_without_intake_database()
+    )
+
+
+def test_rollback_restores_legacy_intake_state_from_before_cutover(
+    cutover_fixture,
+) -> None:
+    report = cutover_fixture.apply()
+    cutover_fixture.rollback(report.journal)
+
+    connection = sqlite3.connect(cutover_fixture.home / ".jarvis" / "jarvis.db")
+    try:
+        row = connection.execute(
+            """
+            SELECT state, operation_id, reason, reopen_policy, closed_at, reopened_at
+            FROM intake_gate WHERE singleton = 1
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert row == ("open", None, None, "daemon", None, None)
+    assert cutover_fixture.intake_database_dump() == cutover_fixture.before_intake_dump
+
+
+def test_restore_intake_refuses_foreign_operation_without_mutating_gate(
+    cutover_fixture,
+) -> None:
+    from dan.migration.journal import Journal
+    from dan.migration.rollback import RollbackBlocked, RollbackReport, _undo
+
+    cutover = cutover_fixture.apply()
+    journal = Journal.open(cutover.journal)
+    entry = next(
+        candidate
+        for candidate in journal.entries()
+        if candidate.rollback_operation.startswith("restore-intake:")
+    )
+    database = cutover_fixture.home / ".jarvis" / "jarvis.db"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            """
+            UPDATE intake_gate
+            SET state = 'closed', operation_id = 'foreign-operation',
+                reason = 'new owner', reopen_policy = 'external'
+            WHERE singleton = 1
+            """
+        )
+        connection.commit()
+        before = connection.execute(
+            """
+            SELECT state, operation_id, reason, reopen_policy, closed_at, reopened_at
+            FROM intake_gate WHERE singleton = 1
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+
+    with pytest.raises(RollbackBlocked, match="foreign-operation"):
+        _undo(
+            entry,
+            journal=journal,
+            home=cutover_fixture.home,
+            launchctl=cutover_fixture.launchctl,
+            report=RollbackReport(journal=journal.directory),
+        )
+
+    connection = sqlite3.connect(database)
+    try:
+        after = connection.execute(
+            """
+            SELECT state, operation_id, reason, reopen_policy, closed_at, reopened_at
+            FROM intake_gate WHERE singleton = 1
+            """
+        ).fetchone()
+    finally:
+        connection.close()
+    assert after == before
 
 
 def test_apply_moves_trees_and_installs_new_root(cutover_fixture) -> None:

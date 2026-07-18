@@ -4,6 +4,28 @@ CREATE TABLE IF NOT EXISTS schema_version (
   description TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS intake_gate (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+  operation_id TEXT,
+  reason TEXT,
+  reopen_policy TEXT NOT NULL DEFAULT 'daemon'
+    CHECK (reopen_policy IN ('daemon', 'external')),
+  closed_at TEXT,
+  reopened_at TEXT
+);
+
+INSERT OR IGNORE INTO intake_gate (
+  singleton, state, operation_id, reason, reopen_policy, closed_at, reopened_at
+) VALUES (1, 'open', NULL, NULL, 'daemon', NULL, NULL);
+
+CREATE TABLE IF NOT EXISTS intake_leases (
+  token TEXT PRIMARY KEY,
+  channel TEXT NOT NULL,
+  owner_pid INTEGER NOT NULL,
+  acquired_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at TEXT NOT NULL,

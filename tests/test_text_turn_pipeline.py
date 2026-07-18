@@ -419,6 +419,46 @@ def test_not_started_app_returns_503_and_creates_no_turn(app: DaemonApp) -> None
     assert table_count(app.conn, "turns") == 0
 
 
+def test_closed_intake_returns_503_with_operation_id_and_creates_no_turn(
+    app: DaemonApp,
+) -> None:
+    app.start()
+    operation_id = app.close_intake(
+        operation_id="restart-text-1",
+        reason="runtime restart",
+    )
+
+    with running_server(app) as base_url:
+        status, payload = request_json(
+            "POST",
+            f"{base_url}/input/text",
+            {"text": "Do not admit this"},
+        )
+
+    assert status == 503
+    assert payload["code"] == "intake_closed"
+    assert payload["operation_id"] == operation_id
+    assert payload["reason"] == "runtime restart"
+    assert app.conn is not None
+    assert table_count(app.conn, "turns") == 0
+
+
+def test_start_preserves_externally_managed_closed_intake(app: DaemonApp) -> None:
+    assert app.intake_gate is not None
+    app.intake_gate.close(
+        operation_id="cutover-start-1",
+        reason="release cutover",
+        reopen_policy="external",
+    )
+
+    app.start()
+
+    snapshot = app.intake_gate.snapshot()
+    assert snapshot.state == "closed"
+    assert snapshot.operation_id == "cutover-start-1"
+    assert snapshot.reopen_policy == "external"
+
+
 def test_held_text_turn_lock_returns_409_and_creates_no_turn(app: DaemonApp) -> None:
     app.start()
     assert app.text_turn_lock.acquire(blocking=False)

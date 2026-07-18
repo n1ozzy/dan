@@ -583,14 +583,83 @@ class FailingDrainApp:
     def __init__(self, supervisor: ChildSupervisor) -> None:
         self.child_supervisor = supervisor
         self.stop_calls = 0
+        self.lifecycle_calls: list[str] = []
+
+    def close_intake(self, *, reason: str) -> str:
+        self.lifecycle_calls.append(f"close:{reason}")
+        return "restart-operation"
 
     def stop(self, reason: str | None = None) -> None:
         self.stop_calls += 1
+        self.lifecycle_calls.append(f"stop:{reason}")
         raise RuntimeError("drain failed")
 
 
-def test_failed_drain_contains_children_before_exit_86() -> None:
-    from dan.daemon.restart import RESTART_EXIT_CODE, RestartCoordinator
+class BlockingCloseRestartApp:
+    def __init__(self) -> None:
+        self.close_entered = threading.Event()
+        self.release_close = threading.Event()
+        self.close_calls = 0
+        self.stop_calls = 0
+
+    def close_intake(self, *, reason: str) -> str:
+        self.close_calls += 1
+        self.close_entered.set()
+        assert self.release_close.wait(timeout=2)
+        return "restart-operation"
+
+    def stop(self, reason: str | None = None) -> None:
+        self.stop_calls += 1
+
+
+def test_duplicate_restart_waits_for_close_and_reuses_operation_id() -> None:
+    from dan.daemon.restart import RestartCoordinator
+
+    app = BlockingCloseRestartApp()
+    coordinator = RestartCoordinator(
+        app,
+        exit_fn=lambda _code: None,
+        sleep=lambda _seconds: None,
+    )
+    responses: list[dict[str, object]] = []
+    first = threading.Thread(
+        target=lambda: responses.append(
+            coordinator.request_restart(reason="first", synchronous=True)
+        )
+    )
+    second = threading.Thread(
+        target=lambda: responses.append(
+            coordinator.request_restart(reason="second", synchronous=True)
+        )
+    )
+
+    first.start()
+    assert app.close_entered.wait(timeout=2)
+    second.start()
+    second.join(timeout=0.05)
+    duplicate_waited = second.is_alive()
+
+    app.release_close.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert duplicate_waited, "duplicate must wait until durable close is proven"
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert app.close_calls == 1
+    assert app.stop_calls == 1
+    assert {response["operation_id"] for response in responses} == {
+        "restart-operation"
+    }
+    assert sorted(response["already_restarting"] for response in responses) == [
+        False,
+        True,
+    ]
+    assert {response["reason"] for response in responses} == {"first"}
+
+
+def test_failed_drain_contains_children_and_blocks_exit_86() -> None:
+    from dan.daemon.restart import RestartCoordinator
 
     supervisor, factory, killpg = build_supervisor()
     child = supervisor.ensure_running("supertonic")
@@ -606,11 +675,13 @@ def test_failed_drain_contains_children_before_exit_86() -> None:
     coordinator.request_restart(reason="failed drain", synchronous=True)
 
     assert app.stop_calls == 1
+    assert app.lifecycle_calls == ["close:failed drain", "stop:failed drain"]
     assert killpg.calls[0] == (child.pid, signal.SIGTERM)
     assert factory.processes[0].wait_calls >= 1
     assert supervisor.watchdog_alive is False
     assert supervisor.child_pids() == []
-    assert exits == [RESTART_EXIT_CODE]
+    assert exits == []
+    assert coordinator.restarting is False
 
 
 def test_failed_containment_blocks_exit_86() -> None:

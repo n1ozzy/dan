@@ -23,6 +23,7 @@ from dan.migration.cutover import (
     CutoverManifest,
 )
 from dan.migration.journal import PHASE_COMMITTED, Journal
+from dan.migration.host_adapter import SystemCutoverHostAdapter
 from dan.migration.runtime_probe import FakeProbe, SystemProbe
 
 
@@ -48,6 +49,9 @@ def _engine(arguments: argparse.Namespace) -> CutoverEngine:
         manifest=manifest,
         home=manifest.home,
         probe=probe,
+        host_adapter=(
+            None if fixture_root is not None else SystemCutoverHostAdapter()
+        ),
         resume_journal=Path(arguments.journal) if getattr(arguments, "journal", None) else None,
     )
 
