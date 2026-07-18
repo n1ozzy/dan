@@ -2,7 +2,7 @@
 
 Źródło prawdy dla agentów: **AGENTS.md** — przeczytaj najpierw i stosuj.
 Tożsamość DANa/Jarvisa pochodzi wyłącznie z
-`/Users/n1_ozzy/Documents/dev/dan/config/persona/DAN.md`, nie z pamięci Claude.
+`config/persona/DAN.md` (kanon w tym repo), nie z pamięci Claude.
 
 - Python, pyproject: `dan-runtime` v4.2.0a0, entry `dand` (`dan.cli:daemon_main`); produkcyjny daemon launchd: `com.dan.dand` → `~/.dan/bin/dand`.
 - Testy: `pytest` (testpaths=`tests`, ~438 plików). Testy MUSZĄ mockować warstwę TTS (AGENTS.md) — nigdy nie spawnować prawdziwego afplay/supertonica w testach.

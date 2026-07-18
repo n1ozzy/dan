@@ -6,7 +6,7 @@ Branch contract:
 - Do not add approval guards, disabled-by-policy UI, mock/dev product modes, or new provider mazes.
 - Brain: cold Claude CLI only; no warm/session reuse and no provider chain.
 - Conversation: one continuous Jarvis conversation for text and voice.
-- Persona: `/Users/n1_ozzy/Documents/dev/dan/config/persona/DAN.md` is the only
+- Persona: `config/persona/DAN.md` (repo canon, `dan/persona.py` default) is the only
   authority for both DAN and Jarvis. Load it fresh and fail loudly if invalid.
   Do not copy it, soften it, classify it, shorten it, or rewrite model output.
 - Model-originated tools execute directly and return their real result; no approval

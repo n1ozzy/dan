@@ -179,7 +179,7 @@ destructive_tools_enabled = true
 voice_auto_approve_tools = true
 auto_approve_mode = "all"
 approved_roots = [
-  "/Users/n1_ozzy/Documents/dev",
+  "~/Documents/dev",
   "~/.dan",
 ]
 

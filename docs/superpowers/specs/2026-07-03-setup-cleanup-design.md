@@ -30,7 +30,7 @@ Cel: agent ma NA PEWNO wiedzieć, co partner (Codex/Claude/inny) napisał — ni
 
 **a) Transkrypty z logów jako pierwsze źródło prawdy.** Dla agentów CLI okno to tylko podgląd — pełna treść leży na dysku (Claude Code: `~/.claude/projects/<projekt>/*.jsonl`; Codex CLI: katalog sesji `~/.codex/`; per-agent ścieżka konfigurowalna w `agents.conf`). Watch/odczyt najpierw czyta transkrypt (tail od ostatniej znanej pozycji), OCR ekranu służy do potwierdzenia "gdzie jest UI" i do agentów bez logów. Koniec z regresem "przeczytał pół okna i udaje".
 
-**b) Doczytywanie całości scrollem (gdy logów brak).** Import działających wzorców z wos-bota (`/Users/n1_ozzy/Desktop/dana rzeczy /wos-bot-runs-codex/codexBOT.py`, `HermesBOT.py` — Ozzy potwierdza: działają):
+**b) Doczytywanie całości scrollem (gdy logów brak).** Import działających wzorców z wos-bota (`$HOME/Desktop/dana rzeczy /wos-bot-runs-codex/codexBOT.py`, `HermesBOT.py` — Ozzy potwierdza: działają):
 - `screencap_when_stable` — czytaj dopiero, gdy ekran przestał się zmieniać;
 - `perceptual_hash` — wykrywanie zmiany ekranu i KOŃCA scrolla (hash bez zmian = koniec treści);
 - kalibrowany scroll (`_measure_actual_scroll_px` + adaptacyjny krok) — bez gubienia/dublowania linii;

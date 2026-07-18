@@ -7,7 +7,7 @@ Status: specyfikacja do zatwierdzenia przed planem wykonawczym
 
 Powstaje jeden produkt o nazwie **DAN**. Nie jest to nowy projekt obok obecnych
 `dan`, `jarvis` i `DANv2`. Bazą techniczną jest aktualne repozytorium
-`/Users/n1_ozzy/Documents/dev/jarvis`, które zostanie przemianowane i przejmie
+`$HOME/Documents/dev/jarvis`, które zostanie przemianowane i przejmie
 wyłącznie sprawdzone elementy z pozostałych projektów.
 
 Efekt dla Ozzy'ego:
@@ -46,7 +46,7 @@ Nazwa `Jarvis` znika z aktywnego produktu. Docelowe nazwy:
 | daemon | `dand` |
 | launchd | `com.dan.dand` |
 | prywatny runtime | `~/.dan/` |
-| repo po cutoverze | `/Users/n1_ozzy/Documents/dev/DAN` |
+| repo po cutoverze | `$HOME/Documents/dev/DAN` |
 
 `Jarvis` może pozostać tylko w historii Git i dokumentach opisujących migrację.
 Nie może występować w aktywnym kodzie, konfiguracji, procesach, panelu, skillach
@@ -74,7 +74,7 @@ Poniższe fakty zostały sprawdzone 2026-07-16, a nie przepisane ze starego plan
 - `/tmp/dan-voice/req/` jest pusty, feeder czeka na końcu playlisty;
 - działa `jarvisd` PID `48068` na `127.0.0.1:41741`;
 - `jarvisd` został ręcznie uruchomiony przez `screen` z katalogu i środowiska
-  `/Users/n1_ozzy/Documents/dev/menubar-controller`, mimo że ładuje kod z repo
+  `$HOME/Documents/dev/menubar-controller`, mimo że ładuje kod z repo
   `jarvis`;
 - agent `com.ozzy.jarvisd` jest załadowany, lecz nie działa. Ostatni start przegrał
   kolizję portu z ręcznie uruchomionym daemonem;
@@ -88,16 +88,16 @@ jeden broker ani że barge-in przerwie już opublikowany dźwięk.
 
 ### 3.2 Rozjazd konfiguracji
 
-Aktywny `/Users/n1_ozzy/.jarvis/jarvis.toml` ustawia głos `M3`, profil
+Aktywny `$HOME/.jarvis/jarvis.toml` ustawia głos `M3`, profil
 `bastard` i prędkość runtime `1.35`. Aktualne
-`/Users/n1_ozzy/.config/voice/personas.toml` ustawia:
+`$HOME/.config/voice/personas.toml` ustawia:
 
 - `dan = M3/raw/1.28`;
 - `jarvis = M3/clean/1.35`;
 - `danusia = F4/clean/1.28`.
 
 Istnieje czwarte źródło: ignorowany przez Git
-`/Users/n1_ozzy/Documents/dev/dan/state/overrides.json`, zapisywany między innymi
+`$HOME/Documents/dev/dan/state/overrides.json`, zapisywany między innymi
 przez stary panel. Obecnie zawiera dla Jarvisa `jarvis_supertonic_voice = M2` i
 `jarvis_speed = 1.4`. Resolver `dan_core/say.py` naprawdę wybiera jednak
 `M2/clean/1.35`: osobny override głosu wygrywa z `personas.toml`, natomiast
@@ -198,7 +198,7 @@ Kontrolny, celowo ograniczony zestaw testów w repo bazowym dał
 `141 passed, 1 failed`. Nie jest to baseline całego produktu: pełna kolekcja
 zawiera `2176` testów. Jedyny błąd w zestawie kontrolnym ujawnił świadomą, ale
 zakazaną zależność runtime: `jarvis/brain/context_builder.py` wskazuje
-bezpośrednio `/Users/n1_ozzy/Documents/dev/dan/config/persona/DAN.md`.
+bezpośrednio `$HOME/Documents/dev/dan/config/persona/DAN.md`.
 Przed Wydaniem 1 trzeba bez audio i poza aktywną kolejką sklasyfikować pełny
 zestaw testów, a następnie zapisać raport przejść, błędów, skipów i testów
 niebezpiecznych dla żywego runtime.
@@ -605,7 +605,7 @@ Pierwszy szczegółowy plan po akceptacji tej specyfikacji obejmuje tylko Wydani
 
 ## 10. Cutover i rollback
 
-Prace zaczynają się w `/Users/n1_ozzy/Documents/dev/jarvis` na wybranej po
+Prace zaczynają się w `$HOME/Documents/dev/jarvis` na wybranej po
 audycie refów gałęzi integracyjnej. Nie zaczynają się z katalogu domowego. Stary
 aktywny runtime jest zatrzymany przed edycją plików, z których obecnie korzysta.
 

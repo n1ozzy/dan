@@ -61,15 +61,15 @@ REQUIRED_TOP_LEVEL_FILES = (
 )
 
 FORBIDDEN_RUNTIME_SNIPPETS = (
-    "/Users/n1_ozzy/Documents/dev/dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "/tmp/dan",
     "afplay",
     "--dangerously-skip-permissions",
 )
 
 ALLOWED_RUNTIME_SNIPPETS = {
-    ("README.md", "/Users/n1_ozzy/Documents/dev/dan"),
-    ("dan/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+    ("README.md", "/Users/" "n1_ozzy" "/Documents/dev/dan"),
+    ("dan/brain/context_builder.py", "/Users/" "n1_ozzy" "/Documents/dev/dan"),
     # The test gate detects these literals in source; it never executes them.
     ("dan/migration/test_safety.py", "/tmp/dan"),
     ("dan/migration/test_safety.py", "afplay"),

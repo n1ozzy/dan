@@ -765,13 +765,13 @@ def test_db_init_cli_initializes_temp_config_database(tmp_path: Path) -> None:
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
     allowed_contracts = {
-        ("dan/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("dan/brain/context_builder.py", "/Users/" "n1_ozzy" "/Documents/dev/dan"),
         ("dan/voice/shared_broker.py", "/tmp/dan"),
         ("dan/migration/test_safety.py", "/tmp/dan"),
         ("dan/migration/test_safety.py", "afplay"),
     }
     forbidden = (
-        "/Users/n1_ozzy/Documents/dev/dan",
+        "/Users/" "n1_ozzy" "/Documents/dev/dan",
         "/tmp/dan",
         "afplay",
         "--dangerously-skip-permissions",

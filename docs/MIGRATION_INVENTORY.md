@@ -7,7 +7,7 @@
 > `/tmp`, audio) live in [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md).
 >
 > **Reference repo (read-only, never modified):**
-> `/Users/n1_ozzy/Documents/dev/dan`
+> `$HOME/Documents/dev/dan`
 >
 > Decisions are one of: **KEEP** (idea is sound, reimplement clean — no file
 > copied), **REWRITE** (responsibility needed, implementation replaced),
@@ -64,7 +64,7 @@
 
 Line numbers below are **verified** against the read-only repo during 00B.
 
-### 3.1 Hardcoded `/Users/n1_ozzy/Documents/dev/dan`
+### 3.1 Hardcoded `$HOME/Documents/dev/dan`
 
 Confirmed in (non-exhaustive, source tree only — venv excluded):
 `tools/jarvis/voice_broker.py:32`, `tools/jarvis/auto_jarvis.py:24,27,121`,
@@ -147,7 +147,7 @@ reported, never adopted or killed ([ADR-007](DECISIONS.md#adr-007),
 
 Hard list — none of these is imported/copied into `jarvis/`:
 
-1. **Any file containing a hardcoded `/Users/n1_ozzy/Documents/dev/dan`.**
+1. **Any file containing a hardcoded `$HOME/Documents/dev/dan`.**
 2. **Runtime code:** `voice_broker.py`, `listen_ozzy.py`, `auto_jarvis.py`,
    `dan_panel.py`, `panel/dan_panel_web.py`, `xtts_server.py`,
    `dan_core/say.py`, `dan_core/voice.py`.

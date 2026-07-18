@@ -1,0 +1,309 @@
+#!/usr/bin/env python3
+"""Deterministic voice acceptance harness (Task 13).
+
+Submits ONE bounded phrase per approved persona through `dan speak`, waits
+for the terminal queue state and writes a local JSON report with the intent,
+the resolved render snapshot, timings and playback events.
+
+Safety contract:
+- default is --mock: a throwaway daemon in a temp directory with the mock
+  TTS engine; no real audio device is ever touched;
+- the queue is never bulk-filled: max pending is 1 (the next persona is
+  submitted only after the previous request reached a terminal state);
+- --live-audio requires the explicit flag AND an interactive confirmation.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import io
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+TERMINAL_STATUSES = {"done", "cancelled", "failed"}
+WAIT_SECONDS = 30.0
+# One bounded phrase per persona; Polish characters on purpose.
+PHRASES = {
+    "dan": "Test akceptacyjny: zażółć gęślą jaźń, mówi DAN.",
+    "danusia": "Test akceptacyjny: źdźbło i łąka, mówi Danusia.",
+}
+DEFAULT_PHRASE = "Test akceptacyjny persony: pchnąć w tę łódź jeża."
+
+
+def _run_cli(arguments: list[str]) -> tuple[int, str]:
+    from dan import cli as dan_cli
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        code = dan_cli.main(arguments)
+    return code, buffer.getvalue()
+
+
+def _queue_row(db_path: Path, request_id: str) -> dict[str, object] | None:
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            "SELECT * FROM voice_queue WHERE id = ?", (request_id,)
+        ).fetchone()
+    finally:
+        connection.close()
+    return dict(row) if row is not None else None
+
+
+def _voice_events(db_path: Path, request_id: str) -> list[dict[str, object]]:
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute(
+            "SELECT id, type, correlation_id, payload_json, created_at FROM events"
+            " WHERE type LIKE 'voice.%' ORDER BY id ASC"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        connection.close()
+    events = []
+    for row in rows:
+        payload = row["payload_json"]
+        correlated = row["correlation_id"] == request_id or (
+            isinstance(payload, str) and request_id in payload
+        )
+        if request_id and not correlated:
+            continue
+        events.append(
+            {
+                "id": row["id"],
+                "type": row["type"],
+                "payload": payload,
+                "created_at": row["created_at"],
+            }
+        )
+    return events
+
+
+def _accept_one(
+    config_path: Path,
+    db_path: Path,
+    base_url: str,
+    persona: str,
+) -> dict[str, object]:
+    phrase = PHRASES.get(persona, DEFAULT_PHRASE)
+    submitted_at = time.time()
+    code, output = _run_cli(
+        [
+            "--config",
+            str(config_path),
+            "speak",
+            "--json",
+            "--as",
+            persona,
+            "--session",
+            "voice-acceptance",
+            "--source",
+            "acceptance-harness",
+            "--url",
+            base_url,
+            phrase,
+        ]
+    )
+    result: dict[str, object] = {
+        "persona": persona,
+        "intent": {
+            "text": phrase,
+            "persona": persona,
+            "session": "voice-acceptance",
+            "source": "acceptance-harness",
+        },
+        "speak_exit_code": code,
+        "speak_response": None,
+        "status": "submit-failed",
+        "snapshot": None,
+        "timings": {"submitted_at": submitted_at},
+        "playback_events": [],
+    }
+    if code != 0:
+        result["error"] = output.strip()
+        return result
+    response = json.loads(output)
+    result["speak_response"] = response
+    request_id = str(
+        response.get("id") or response.get("request_id") or response.get("request", "")
+    )
+    deadline = time.monotonic() + WAIT_SECONDS
+    row: dict[str, object] | None = None
+    while time.monotonic() < deadline:
+        row = _queue_row(db_path, request_id)
+        if row is not None and row.get("status") in TERMINAL_STATUSES:
+            break
+        time.sleep(0.1)
+    terminal_at = time.time()
+    if row is None:
+        result["status"] = "missing-row"
+        return result
+    result["status"] = row.get("status")
+    snapshot_raw = row.get("render_snapshot_json")
+    if isinstance(snapshot_raw, str):
+        try:
+            result["snapshot"] = json.loads(snapshot_raw)
+        except ValueError:
+            result["snapshot"] = snapshot_raw
+    else:
+        result["snapshot"] = snapshot_raw
+    result["timings"] = {
+        "submitted_at": submitted_at,
+        "terminal_at": terminal_at,
+        "wall_seconds": round(terminal_at - submitted_at, 3),
+        "created_at": row.get("created_at"),
+        "synthesis_started_at": row.get("synthesis_started_at"),
+        "synthesis_completed_at": row.get("synthesis_completed_at"),
+        "playback_started_at": row.get("playback_started_at"),
+        "playback_completed_at": row.get("playback_completed_at"),
+        "playback_confirmed": row.get("playback_confirmed"),
+    }
+    result["error"] = row.get("error")
+    result["playback_events"] = _voice_events(db_path, request_id)
+    return result
+
+
+def run_mock(personas: list[str], report_path: Path) -> int:
+    os.environ.setdefault("DAN_TEST_MODE", "1")
+    os.environ.setdefault("DAN_DISABLE_AUDIO", "1")
+    os.environ.setdefault("DAN_DISABLE_MIC", "1")
+
+    from tests.test_api_smoke import (  # noqa: E402
+        rewrite_voice_section,
+        running_server,
+        write_config,
+    )
+    from tests.test_voice_api_contract import VOICE_TOML  # noqa: E402
+    from tests.voice_helpers import render_snapshot  # noqa: E402
+    from dan.daemon.app import create_daemon_app  # noqa: E402
+
+    results: list[dict[str, object]] = []
+    with tempfile.TemporaryDirectory(prefix="dan-voice-acceptance-") as tmp:
+        tmp_path = Path(tmp)
+        db_path = tmp_path / "home" / "dan.db"
+        config_path = write_config(tmp_path / "dan.toml", db_path)
+        rewrite_voice_section(config_path, VOICE_TOML)
+        app = create_daemon_app(config_path)
+
+        class _Resolver:
+            def resolve(self, intent):  # noqa: ANN001, ANN202
+                return render_snapshot()
+
+        app.voice_resolver = _Resolver()
+        app.start()
+        try:
+            with running_server(app) as base_url:
+                for persona in personas:
+                    # Max pending 1: strictly sequential, wait for terminal
+                    # state before the next persona speaks.
+                    results.append(
+                        _accept_one(config_path, db_path, base_url, persona)
+                    )
+        finally:
+            app.close()
+
+    report = {
+        "mode": "mock",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "personas": personas,
+        "max_pending": 1,
+        "results": results,
+        "ok": all(item.get("status") == "done" for item in results),
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    print(f"report: {report_path}")
+    for item in results:
+        print(f"  {item['persona']}: {item['status']}")
+    return 0 if report["ok"] else 1
+
+
+def run_live(personas: list[str], report_path: Path) -> int:
+    print("LIVE AUDIO acceptance: this will actually speak on this machine.")
+    answer = input("Type 'yes' to continue: ").strip().lower()
+    if answer != "yes":
+        print("Aborted.")
+        return 2
+    from dan.config import load_config  # noqa: E402
+
+    config = load_config(None)
+    base_url = f"http://{config.daemon.host}:{config.daemon.port}"
+    db_path = Path(config.database.path)
+    config_path = Path(config.source_path)
+    results = []
+    for persona in personas:
+        results.append(_accept_one(config_path, db_path, base_url, persona))
+    report = {
+        "mode": "live-audio",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "personas": personas,
+        "max_pending": 1,
+        "results": results,
+        "ok": all(item.get("status") == "done" for item in results),
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    print(f"report: {report_path}")
+    return 0 if report["ok"] else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="dan-voice-acceptance", description=__doc__)
+    parser.add_argument(
+        "--personas",
+        default="dan,danusia",
+        help="Comma-separated approved personas (default: dan,danusia)",
+    )
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        default=True,
+        help="Hermetic mock daemon (DEFAULT; no real audio)",
+    )
+    parser.add_argument(
+        "--live-audio",
+        action="store_true",
+        help="Speak on the real daemon; requires interactive confirmation",
+    )
+    parser.add_argument(
+        "--report",
+        help="JSON report path (default: temp file, path is printed)",
+    )
+    args = parser.parse_args(argv)
+
+    personas = [p.strip() for p in args.personas.split(",") if p.strip()]
+    if not personas:
+        parser.error("no personas given")
+    if args.report:
+        report_path = Path(args.report)
+    else:
+        fd, name = tempfile.mkstemp(prefix="dan-voice-acceptance-", suffix=".json")
+        os.close(fd)
+        report_path = Path(name)
+
+    if args.live_audio:
+        return run_live(personas, report_path)
+    return run_mock(personas, report_path)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

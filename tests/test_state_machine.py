@@ -440,7 +440,7 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
     allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
     forbidden = (
-        "/Users/n1_ozzy/Documents/dev/dan",
+        "/Users/" "n1_ozzy" "/Documents/dev/dan",
         "/tmp/dan",
         "afplay",
         "--dangerously-skip-permissions",

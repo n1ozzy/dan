@@ -5,7 +5,7 @@
 `DONE_WITH_CONCERNS`
 
 Task 4 is implemented in the isolated worktree
-`/Users/n1_ozzy/Documents/dev/DAN-task2-wt` on branch
+`$HOME/Documents/dev/DAN-task2-wt` on branch
 `agent/dan-release1-integration`, starting from base `503a343`.
 
 The internal runtime was renamed from Jarvis to DAN, the final package and
@@ -20,7 +20,7 @@ still contains deliberately narrow legacy names.
 
 ## Scope and ownership
 
-- Worktree: `/Users/n1_ozzy/Documents/dev/DAN-task2-wt`
+- Worktree: `$HOME/Documents/dev/DAN-task2-wt`
 - Branch: `agent/dan-release1-integration`
 - Base HEAD: `503a343`
 - Task ownership: Task 4 only
@@ -52,7 +52,7 @@ Additional immutable evidence snapshots:
 
 All Python test commands used:
 
-`/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python`
+`$HOME/Documents/dev/jarvis/.venv/bin/python`
 
 ### RED 1 - final-name contracts
 
@@ -116,7 +116,7 @@ provenance, then the focused regression set passed: `3 passed`.
 Command:
 
 ```text
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python scripts/dan-test-baseline --compare /Users/n1_ozzy/.dan/migration/test-baseline.json
+$HOME/Documents/dev/jarvis/.venv/bin/python scripts/dan-test-baseline --compare $HOME/.dan/migration/test-baseline.json
 ```
 
 Result: exit `0`.

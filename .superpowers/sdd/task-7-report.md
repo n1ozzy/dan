@@ -97,7 +97,7 @@ pytest -q tests/test_voice_snapshot_queue.py tests/test_voice_service.py \
   tests/test_shared_voice_runtime_truth.py
 # 83 passed in 1.14s
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_chatterbox_v3_pipeline.py tests/test_voice_assets.py \
   tests/test_voice_route_matrix.py tests/test_voice_catalog.py \
   tests/test_voice_tts_supertonic.py tests/test_config.py \

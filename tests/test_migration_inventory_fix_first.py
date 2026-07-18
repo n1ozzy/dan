@@ -308,12 +308,12 @@ def git_runner(
 
 def test_claude_project_memory_uses_real_slug_for_underscored_username() -> None:
     roots = InventoryRoots(
-        home=Path("/Users/n1_ozzy"),
-        repo_root=Path("/Users/n1_ozzy/Documents/dev/jarvis"),
+        home=Path("/Users/" "n1_ozzy"),
+        repo_root=Path("/Users/" "n1_ozzy" "/Documents/dev/jarvis"),
     )
 
     assert Path(
-        "/Users/n1_ozzy/.claude/projects/"
+        "/Users/" "n1_ozzy" "/.claude/projects/"
         "-Users-n1-ozzy-Documents-dev-jarvis/memory"
     ) in roots.claude_project_memory_roots()
 

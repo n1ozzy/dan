@@ -5,7 +5,7 @@ Classification: current.
 ## Owner runtime override — 2026-07-13
 
 - One shared DAN/Jarvis canon:
-  `/Users/n1_ozzy/Documents/dev/dan/config/persona/DAN.md`, loaded fail-loud.
+  `$HOME/Documents/dev/dan/config/persona/DAN.md`, loaded fail-loud.
 - One persistent `claude_cli` stream-json process; durable resume/checkpoint
   state is an execution cache, not memory. Provider chains remain disabled.
 - Model-originated tools execute directly and finish the turn; no approval row

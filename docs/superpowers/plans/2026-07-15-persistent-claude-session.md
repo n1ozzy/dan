@@ -12,7 +12,7 @@
 
 - Exactly one production adapter name: `claude_cli`.
 - No real Claude, TTS, audio, broker, cloud cache, approval, worker, commit, or push activity.
-- Fresh canonical `/Users/n1_ozzy/Documents/dev/dan/config/persona/DAN.md` is the real system prompt at initial bootstrap and every recovery.
+- Fresh canonical `$HOME/Documents/dev/dan/config/persona/DAN.md` is the real system prompt at initial bootstrap and every recovery.
 - Subsequent healthy-session messages contain only the new input or tool-result continuation.
 - Context actions occur at exact inclusive thresholds 70, 80, and 90 percent and re-arm only below 70 percent.
 

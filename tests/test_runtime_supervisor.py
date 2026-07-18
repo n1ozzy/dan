@@ -207,7 +207,7 @@ def test_runtime_supervisor_has_no_cleanup_kill_or_unload_behavior() -> None:
 def test_runtime_code_does_not_contain_forbidden_legacy_strings() -> None:
     root = Path(__file__).resolve().parents[1]
     forbidden = (
-        "/Users/n1_ozzy/Documents/dev/dan",
+        "/Users/" "n1_ozzy" "/Documents/dev/dan",
         "/tmp/dan",
         "afplay",
         "--dangerously-skip-permissions",

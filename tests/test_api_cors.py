@@ -21,7 +21,7 @@ ALLOWED_ORIGINS = (
 )
 ALLOWED_METHODS = ("GET", "POST", "PATCH", "DELETE", "OPTIONS")
 FORBIDDEN_RUNTIME_SNIPPETS = (
-    "/Users/n1_ozzy/Documents/dev/dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "/tmp/dan",
     "afplay",
     "--dangerously-skip-permissions",

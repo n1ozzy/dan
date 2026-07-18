@@ -42,7 +42,7 @@ missing-behavior boundary, not an unrelated assertion or environment failure.
 Focused command after minimal implementation and after refactor:
 
 ```text
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/pytest -q \
   tests/test_voice_assets.py tests/test_voice_catalog.py \
   tests/test_chatterbox_v3_pipeline.py tests/test_voice_route_matrix.py
 ```
@@ -55,7 +55,7 @@ under an empty HOME. The same required cold-HOME test was rerun with the reposit
 venv so dependencies remained available while HOME stayed empty:
 
 ```text
-HOME="$(mktemp -d)" /Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/pytest -q \
+HOME="$(mktemp -d)" $HOME/Documents/dev/jarvis/.venv/bin/pytest -q \
   tests/test_voice_assets.py tests/test_voice_catalog.py \
   tests/test_chatterbox_v3_pipeline.py tests/test_voice_route_matrix.py
 ```
@@ -100,7 +100,7 @@ Result: `113 passed, 41 expected deprecation warnings in 3.74s`.
 Repository isolated non-live regression:
 
 ```text
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python \
+$HOME/Documents/dev/jarvis/.venv/bin/python \
   scripts/dan-test-baseline --compare ~/.dan/migration/test-baseline.json
 ```
 
@@ -167,14 +167,14 @@ The review findings were reproduced before production edits with focused tests:
 RED commands:
 
 ```text
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_voice_assets.py::test_verifier_rejects_extra_unmanifested_json
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_voice_tts_supertonic.py::test_m1_raport_profile_executes_supported_mastering_command \
   tests/test_voice_tts_supertonic.py::test_custom_style_synthesis_uses_manifest_verified_repo_path
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_chatterbox_v3_pipeline.py::test_versioned_manifest_pins_sources_parameters_and_local_inputs \
   tests/test_chatterbox_v3_pipeline.py::test_manifest_fails_closed_on_unsupported_contract_values \
   tests/test_chatterbox_v3_pipeline.py::test_pinned_runtime_rejects_wrong_package_and_model_bytes \
@@ -214,7 +214,7 @@ GREEN commands and output summaries:
 
 ```text
 # Focused review-fix and config coverage
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_voice_assets.py tests/test_voice_catalog.py tests/test_voice_route_matrix.py \
   tests/test_chatterbox_v3_pipeline.py tests/test_voice_tts_supertonic.py \
   tests/test_config.py tests/test_config_registry.py tests/test_voice_resolver.py \
@@ -222,21 +222,21 @@ GREEN commands and output summaries:
 # 139 passed, 32 expected deprecation warnings
 
 # Cold HOME focused suite
-HOME="$(mktemp -d)" /Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+HOME="$(mktemp -d)" $HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_voice_assets.py tests/test_voice_catalog.py tests/test_voice_route_matrix.py \
   tests/test_chatterbox_v3_pipeline.py tests/test_voice_tts_supertonic.py
 # 61 passed, 26 expected deprecation warnings
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m dan.voice.assets verify \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m dan.voice.assets verify \
   config/voice/custom_styles/manifest.json
 # verified 20 voice assets
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m compileall -q dan tests
+$HOME/Documents/dev/jarvis/.venv/bin/python -m compileall -q dan tests
 git diff --check
 # both exit 0
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python scripts/dan-test-baseline \
-  --compare /Users/n1_ozzy/.dan/migration/test-baseline.json
+$HOME/Documents/dev/jarvis/.venv/bin/python scripts/dan-test-baseline \
+  --compare $HOME/.dan/migration/test-baseline.json
 # exit 0; 2464 collected/isolated, 0 live_manual, 270 known failures,
 # 0 new failure IDs, duration 366.426s
 ```
@@ -295,23 +295,23 @@ All second-wave review findings were reproduced before their production edits.
 RED commands:
 
 ```text
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_chatterbox_v3_pipeline.py \
   -k 'non_finite or hard_floor or invalid_runtime_threshold'
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_chatterbox_v3_pipeline.py \
   -k 'publication_replaces or keyboard_interrupt or base_exception'
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_chatterbox_v3_pipeline.py \
   -k 'versioned_manifest or snapshot_lock or forged_snapshot or mismatched_snapshot or hostile_import'
 
 GIT_INDEX_FILE=<alternate-index-with-review-fixture/VOICE.WAV> \
-  /Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  $HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_voice_assets.py::test_repository_versions_no_reference_or_generated_wav
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_voice_route_matrix.py
 ```
 
@@ -349,7 +349,7 @@ GIT_INDEX_FILE=<alternate-index-with-review-fixture/VOICE.WAV> \
 
 ```text
 # Covering suites plus affected config/resolver tests
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_chatterbox_v3_pipeline.py tests/test_voice_assets.py \
   tests/test_voice_route_matrix.py tests/test_voice_catalog.py \
   tests/test_voice_tts_supertonic.py tests/test_config.py \
@@ -359,20 +359,20 @@ GIT_INDEX_FILE=<alternate-index-with-review-fixture/VOICE.WAV> \
 
 # Cold HOME covering suite
 HOME="$(mktemp -d)" \
-  /Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  $HOME/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
   tests/test_chatterbox_v3_pipeline.py tests/test_voice_assets.py \
   tests/test_voice_route_matrix.py tests/test_voice_catalog.py \
   tests/test_voice_tts_supertonic.py
 # 89 passed, 28 expected deprecation warnings
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m compileall -q dan tests
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m dan.voice.assets verify \
+$HOME/Documents/dev/jarvis/.venv/bin/python -m compileall -q dan tests
+$HOME/Documents/dev/jarvis/.venv/bin/python -m dan.voice.assets verify \
   config/voice/custom_styles/manifest.json
 git diff --check
 # all exit 0; asset verifier printed "verified 20 voice assets"
 
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python scripts/dan-test-baseline \
-  --compare /Users/n1_ozzy/.dan/migration/test-baseline.json
+$HOME/Documents/dev/jarvis/.venv/bin/python scripts/dan-test-baseline \
+  --compare $HOME/.dan/migration/test-baseline.json
 # exit 0; 2492 collected/isolated, 0 live_manual, 270 unchanged known failures,
 # 0 new failure IDs, 0 removed failure IDs, duration 366.392s
 ```

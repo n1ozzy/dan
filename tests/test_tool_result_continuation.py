@@ -24,7 +24,7 @@ from tests.test_model_tool_permission_policy import table_count
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_RUNTIME_STRINGS = (
-    "/Users/n1_ozzy/Documents/dev/" "dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "/tmp/" "dan",
     "af" "play",
     "--dangerously-" "skip-permissions",
@@ -904,7 +904,7 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 def test_runtime_code_and_scripts_do_not_contain_forbidden_legacy_strings() -> None:
     allowed_contracts = {
-        ("dan/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("dan/brain/context_builder.py", "/Users/" "n1_ozzy" "/Documents/dev/dan"),
         ("dan/voice/shared_broker.py", "/tmp/dan"),
     }
     findings: list[str] = []

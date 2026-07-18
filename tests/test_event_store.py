@@ -331,7 +331,7 @@ def test_event_models_roundtrip_payload_json() -> None:
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
     allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
     forbidden = (
-        "/Users/n1_ozzy/Documents/dev/dan",
+        "/Users/" "n1_ozzy" "/Documents/dev/dan",
         "/tmp/dan",
         "afplay",
         "--dangerously-skip-permissions",

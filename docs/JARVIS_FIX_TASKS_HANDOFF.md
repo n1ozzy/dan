@@ -38,7 +38,7 @@ Weryfikacja wykonana przed commitem:
 ## Prompt dla nastepnej sesji
 
 ```text
-Pracujesz w /Users/n1_ozzy/Documents/dev/jarvis.
+Pracujesz w $HOME/Documents/dev/jarvis.
 
 Najpierw przeczytaj docs/JARVIS_FIX_TASKS_HANDOFF.md i sprawdz git status.
 

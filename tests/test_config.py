@@ -627,7 +627,7 @@ def test_secret_redaction_redacts_api_key_like_values() -> None:
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
     forbidden = (
-        "/Users/n1_ozzy/Documents/dev/dan",
+        "/Users/" "n1_ozzy" "/Documents/dev/dan",
         "/tmp/dan",
         "afplay",
         "--dangerously-skip-permissions",

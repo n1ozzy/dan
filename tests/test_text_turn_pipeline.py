@@ -975,7 +975,7 @@ def test_get_input_text_returns_json_405_or_501(app: DaemonApp) -> None:
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
     forbidden = (
-        "/Users/n1_ozzy/Documents/dev/dan",
+        "/Users/" "n1_ozzy" "/Documents/dev/dan",
         "/tmp/dan",
         "afplay",
         "--dangerously-skip-permissions",

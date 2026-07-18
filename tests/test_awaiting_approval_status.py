@@ -22,7 +22,7 @@ from tests.test_model_tool_permission_policy import (
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_RUNTIME_STRINGS = (
-    "/Users/n1_ozzy/Documents/dev/" "dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "/tmp/" "dan",
     "af" "play",
     "--dangerously-" "skip-permissions",

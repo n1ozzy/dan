@@ -58,7 +58,7 @@ FORBIDDEN_APP_SNIPPETS = (
 )
 
 FORBIDDEN_RUNTIME_SNIPPETS = (
-    "/Users/n1_ozzy/Documents/dev/dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "/tmp/dan",
     "afplay",
     "--dangerously-skip-permissions",

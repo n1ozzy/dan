@@ -1,7 +1,7 @@
 # JARVIS-GLaDOS Voice Runtime Audit
 
 **Mode:** Read-only audit. No implementation, no commit.  
-**Repo:** `/Users/n1_ozzy/Documents/dev/jarvis`  
+**Repo:** `$HOME/Documents/dev/jarvis`
 **Branch:** `spike/jarvis-local-runtime-check`  
 **Date:** Thu 2026-07-09 22:40 GMT+2  
 

@@ -32,7 +32,7 @@ from tests.test_api_smoke import write_config
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_RUNTIME_STRINGS = (
-    "/Users/n1_ozzy/Documents/dev/" "dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "/tmp/" "dan",
     "af" "play",
     "--dangerously-" "skip-permissions",

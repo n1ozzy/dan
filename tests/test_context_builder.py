@@ -1168,7 +1168,7 @@ def test_explicit_settings_do_not_override_owner_persona_file(
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
     forbidden = (
-        "/Users/n1_ozzy/Documents/dev/dan",
+        "/Users/" "n1_ozzy" "/Documents/dev/dan",
         "/tmp/dan",
         "afplay",
         "--dangerously-skip-permissions",

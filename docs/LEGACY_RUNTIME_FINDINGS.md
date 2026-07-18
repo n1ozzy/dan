@@ -4,7 +4,7 @@
 > reconstructed **read-only** from
 > `jarvis-diagnostic-20260630-194208.tar.gz` (snapshot **2026-06-30 19:42 CEST**,
 > macOS 26.5.1 / Darwin 25.5.0 arm64, user uid 501) plus a read-only inspection
-> of `/Users/n1_ozzy/Documents/dev/dan`.
+> of `$HOME/Documents/dev/dan`.
 >
 > **Nothing was started, loaded, killed, or installed.** The archive was
 > extracted only to a temporary scratch location; the source archive and the old

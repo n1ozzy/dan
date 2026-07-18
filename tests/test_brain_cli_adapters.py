@@ -41,7 +41,7 @@ from tests.git_guards import assert_schema_and_migrations_unchanged
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_RUNTIME_SNIPPETS = (
-    "/Users/n1_ozzy/Documents/dev/dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "/tmp/dan",
     "afplay",
     "--dangerously-skip-permissions",
@@ -1419,7 +1419,7 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 def test_runtime_files_avoid_forbidden_legacy_strings() -> None:
     offenders: list[tuple[str, str]] = []
     allowed_contracts = {
-        ("dan/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("dan/brain/context_builder.py", "/Users/" "n1_ozzy" "/Documents/dev/dan"),
         ("dan/voice/shared_broker.py", "/tmp/dan"),
     }
     for path in (ROOT / "dan").rglob("*.py"):

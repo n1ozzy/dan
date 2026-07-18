@@ -31,7 +31,7 @@ FORBIDDEN_SCRIPT_SNIPPETS = (
     "launchctl",
     "pkill",
     "/tmp/dan",
-    "/Users/n1_ozzy/Documents/dev/dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "afplay",
     "--dangerously-skip-permissions",
 )
@@ -106,7 +106,7 @@ REQUIRED_CONTINUATION_SMOKE_SNIPPETS = (
 )
 
 FORBIDDEN_RUNTIME_SNIPPETS = (
-    "/Users/n1_ozzy/Documents/dev/dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "/tmp/dan",
     "afplay",
     "--dangerously-skip-permissions",
@@ -645,8 +645,8 @@ def test_schema_and_migrations_are_unchanged() -> None:
 def test_runtime_files_avoid_forbidden_legacy_strings() -> None:
     scanned_roots = ("dan", "config", "scripts", "launchd", "README.md", "pyproject.toml")
     allowed_contracts = {
-        ("README.md", "/Users/n1_ozzy/Documents/dev/dan"),
-        ("dan/brain/context_builder.py", "/Users/n1_ozzy/Documents/dev/dan"),
+        ("README.md", "/Users/" "n1_ozzy" "/Documents/dev/dan"),
+        ("dan/brain/context_builder.py", "/Users/" "n1_ozzy" "/Documents/dev/dan"),
         ("dan/voice/shared_broker.py", "/tmp/dan"),
     }
     text_suffixes = {".py", ".sql", ".toml", ".md", ".sh", ".example", ".html", ".js", ".css", ""}

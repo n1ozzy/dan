@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""Release privacy audit CLI (Task 13). Read-only.
+
+Scans the current worktree (tracked + untracked non-ignored files) for
+secrets, owner-specific absolute paths and private runtime data files;
+with --all-git-refs also scans every blob reachable from any ref for
+secret patterns (historical non-secret migration traces are allowed).
+With --home it additionally reports executable legacy references in
+active agent roots of that home (informational unless --strict-home).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from dan.release_audit import (  # noqa: E402
+    Finding,
+    audit_git_history,
+    audit_worktree,
+    scan_active_roots,
+)
+
+
+def _rows(findings: list[Finding]) -> list[dict[str, object]]:
+    return [
+        {"path": f.path, "line": f.line, "kind": f.kind, "detail": f.detail}
+        for f in findings
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="dan-release-audit", description=__doc__)
+    parser.add_argument("--repo", default=".", help="Repository root (default: .)")
+    parser.add_argument(
+        "--all-git-refs",
+        action="store_true",
+        help="Also scan every blob reachable from any git ref for secrets",
+    )
+    parser.add_argument(
+        "--home",
+        help="Additionally scan active agent roots under this home (read-only)",
+    )
+    parser.add_argument(
+        "--strict-home",
+        action="store_true",
+        help="Let --home findings fail the exit code too",
+    )
+    parser.add_argument("--json", dest="json_output", action="store_true")
+    args = parser.parse_args(argv)
+
+    repo_root = Path(args.repo).resolve()
+    worktree = audit_worktree(repo_root)
+    history_secrets: list[Finding] = []
+    if args.all_git_refs:
+        history_secrets = audit_git_history(repo_root)
+    home_findings: list[Finding] = []
+    if args.home:
+        home = Path(args.home)
+        home_findings = scan_active_roots(
+            home, exclude=(home / ".claude" / "archive",)
+        )
+
+    failed = not worktree.is_clean() or bool(history_secrets)
+    if args.strict_home and home_findings:
+        failed = True
+
+    report = {
+        "repo": str(repo_root),
+        "worktree": {
+            "private_paths": _rows(worktree.private_paths),
+            "absolute_owner_paths": _rows(worktree.absolute_owner_paths),
+            "secrets": _rows(worktree.secrets),
+        },
+        "history_secrets": _rows(history_secrets),
+        "history_scanned": bool(args.all_git_refs),
+        "active_roots": _rows(home_findings),
+        "active_roots_scanned": bool(args.home),
+        "ok": not failed,
+    }
+
+    if args.json_output:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print(f"repo: {repo_root}")
+        for name, rows in (
+            ("worktree private paths", worktree.private_paths),
+            ("worktree owner-absolute paths", worktree.absolute_owner_paths),
+            ("worktree secrets", worktree.secrets),
+            ("history secrets", history_secrets),
+            ("active-root legacy references", home_findings),
+        ):
+            print(f"{name}: {len(rows)}")
+            for f in rows[:50]:
+                print(f"  {f.path}:{f.line} [{f.kind}] {f.detail}")
+            if len(rows) > 50:
+                print(f"  ... and {len(rows) - 50} more")
+        if not args.all_git_refs:
+            print("history: NOT scanned (pass --all-git-refs)")
+        if not args.home:
+            print("active roots: NOT scanned (pass --home)")
+        print("RESULT:", "CLEAN" if not failed else "FINDINGS")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -6,7 +6,7 @@ Base commit: `632c66a1e19ad08d3db5c46007ae56314421a3ce`
 
 ## Scope and ownership
 
-- Worktree: `/Users/n1_ozzy/Documents/dev/DAN-task3-wt`
+- Worktree: `$HOME/Documents/dev/DAN-task3-wt`
 - Branch: `agent/dan-task3`
 - Only Task 3 implementation, tests, and this report were changed.
 - No other worktree was touched and Task 4 was not started.

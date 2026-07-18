@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs" / "VOICE_STREAMING.md"
 
 FORBIDDEN_SNIPPETS = (
-    "/Users/n1_ozzy/Documents/dev/dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "/tmp/dan",
     "afplay",
     "--dangerously-skip-permissions",

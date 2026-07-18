@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Źródłem wymagań jest [specyfikacja konsolidacji](../specs/2026-07-16-dan-product-consolidation-design.md). Plan obejmuje wyłącznie **Wydanie 1 — Fundament DAN**. Radio, scheduler audycji, telefony i wizualizer pozostają w Wydaniu 2/3.
-- Startuj z `/Users/n1_ozzy/Documents/dev/jarvis`, nigdy z katalogu domowego. Przed zmianami użyj `superpowers:using-git-worktrees` i utwórz izolowany worktree z zaakceptowanej gałęzi integracyjnej.
+- Startuj z `$HOME/Documents/dev/jarvis`, nigdy z katalogu domowego. Przed zmianami użyj `superpowers:using-git-worktrees` i utwórz izolowany worktree z zaakceptowanej gałęzi integracyjnej.
 - Kod rozwijaj w worktree. Zatrzymanie starego runtime'u jest obowiązkowe dopiero przed kopiowaniem baz, zmianą aktywnych adapterów/plistów/symlinków i finalnym cutoverem. Nie edytuj pliku używanego przez żywy proces.
 - Nie używaj `git add -A`, `git stash`, `git reset --hard`, ślepego `rm`, kopiowania żywego WAL/SHM ani globalnego replace po `$HOME`. Stage'uj wyłącznie pliki bieżącego zadania.
 - Nie dotykaj `~/.claude/archive/`. Nie commituj `~/.dan/`, baz, pamięci, historii, transkryptów, prywatnych próbek, tokenów, sekretów, `owner.toml`, absolutnych ścieżek użytkownika ani raportów z prywatną treścią.
@@ -76,12 +76,12 @@
 - [ ] **Step 1: Create the implementation worktree**
 
 ```bash
-cd /Users/n1_ozzy/Documents/dev/jarvis
+cd $HOME/Documents/dev/jarvis
 git status --short --branch
 git rev-parse HEAD
-git worktree add /Users/n1_ozzy/Documents/dev/DAN-release1-wt \
+git worktree add $HOME/Documents/dev/DAN-release1-wt \
   -b feat/dan-foundation-release1 spike/jarvis-local-runtime-check
-cd /Users/n1_ozzy/Documents/dev/DAN-release1-wt
+cd $HOME/Documents/dev/DAN-release1-wt
 git merge-base --is-ancestor f60c42c HEAD
 ```
 
@@ -1087,7 +1087,7 @@ git commit -m "feat: make dand own hotkey and engine lifecycle"
 - Create: `dan/api/routes_sessions.py`
 - Create: `tests/test_panel_operator_api.py`, `tests/test_panel_no_runtime_ownership.py`
 - Modify: `tests/test_panel_assets.py`, `tests/test_panel_menubar.py`, `tests/test_panel_daemon_assets.py`
-- Read-only donor: `/Users/n1_ozzy/Documents/dev/menubar-controller/menubar_controller.py`
+- Read-only donor: `$HOME/Documents/dev/menubar-controller/menubar_controller.py`
 
 - [ ] **Step 1: Write failing thin-client tests**
 
@@ -1435,8 +1435,8 @@ The same backup manifest preserves `~/.jarvis/jarvis.toml`, `bin/jarvisd`, `mode
 
 On macOS case-insensitive filesystem:
 
-1. set `STAMP=$(date -u +%Y%m%dT%H%M%SZ)` and move old `/Users/n1_ozzy/Documents/dev/dan` to `/Users/n1_ozzy/Documents/DAN-migration-backups/$STAMP/dev-dan`;
-2. move final accepted `/Users/n1_ozzy/Documents/dev/jarvis` to `/Users/n1_ozzy/Documents/dev/DAN`;
+1. set `STAMP=$(date -u +%Y%m%dT%H%M%SZ)` and move old `$HOME/Documents/dev/dan` to `$HOME/Documents/DAN-migration-backups/$STAMP/dev-dan`;
+2. move final accepted `$HOME/Documents/dev/jarvis` to `$HOME/Documents/dev/DAN`;
 3. run installer from calculated new root;
 4. keep `DANv2` and `menubar-controller` as untouched donors until the observation gate;
 5. never delete a donor in cutover.
@@ -1486,7 +1486,7 @@ git commit -m "feat: add journaled DAN cutover and rollback"
 - Create: `docs/PRZENOSZENIE.md`
 - Create: `docs/ODZYSKIWANIE.md`
 - Create: `docs/adr/001-dand-single-owner.md`
-- Modify: active specs/plans/migration docs containing `/Users/n1_ozzy`
+- Modify: active specs/plans/migration docs containing `$HOME`
 - Create: `dan/release_audit.py`
 - Create: `scripts/dan-release-audit`
 - Create: `scripts/dan-voice-acceptance`
@@ -1622,7 +1622,7 @@ git commit -m "docs: add DAN operator and transfer guide"
 > czytaj jako `DAN-task2-wt`/`agent/dan-release1-integration`.
 
 ```bash
-cd /Users/n1_ozzy/Documents/dev/DAN-task2-wt
+cd $HOME/Documents/dev/DAN-task2-wt
 git status --short --branch
 python scripts/dan-test-baseline --compare ~/.dan/migration/test-baseline.json
 pytest -q -m 'not live_manual'
@@ -1672,11 +1672,11 @@ Required evidence:
 Before touching the original path, stop any runtime consuming it. Then:
 
 ```bash
-cd /Users/n1_ozzy/Documents/dev/jarvis
+cd $HOME/Documents/dev/jarvis
 git status --short --branch
 git merge --ff-only agent/dan-release1-integration
 git rev-parse HEAD
-git worktree remove /Users/n1_ozzy/Documents/dev/DAN-task2-wt
+git worktree remove $HOME/Documents/dev/DAN-task2-wt
 ```
 
 If the original tree has unrelated dirty changes, stop and preserve them explicitly; never stash or overwrite. The commit SHA must equal the fully verified feature head.
@@ -1684,7 +1684,7 @@ If the original tree has unrelated dirty changes, stop and preserve them explici
 - [ ] **Step 5: Run real preflight without mutation**
 
 ```bash
-cd /Users/n1_ozzy/Documents/dev/jarvis
+cd $HOME/Documents/dev/jarvis
 python scripts/dan-inventory --check ~/.dan/migration/release1-source-manifest.json
 python scripts/dan-cutover preflight \
   --manifest ~/.dan/migration/release1-source-manifest.json
@@ -1707,10 +1707,10 @@ The tool closes intake, drains/cancels queue, stops old agents/processes, proves
 
 - [ ] **Step 7: Prove the new runtime from the final path**
 
-Open a fresh shell/session in `/Users/n1_ozzy/Documents/dev/DAN` and run:
+Open a fresh shell/session in `$HOME/Documents/dev/DAN` and run:
 
 ```bash
-cd /Users/n1_ozzy/Documents/dev/DAN
+cd $HOME/Documents/dev/DAN
 dan doctor --json
 dan config explain voice.output_gain --json
 printf 'Zażółć gęślą jaźń.' | dan speak --json \
@@ -1739,7 +1739,7 @@ Prove old runtime can start, DBs pass integrity/counts, `speaking=null`, and the
 Write local `release1-acceptance.json` containing commit SHA, manifest SHA, DB backup SHAs/counts, test report SHA, voice report SHA, cold-start results, first rollback journal and final cutover journal. Do not put private report content in Git.
 
 ```bash
-cd /Users/n1_ozzy/Documents/dev/DAN
+cd $HOME/Documents/dev/DAN
 git status --short --branch
 git tag -a dan-v1-foundation-candidate -m "DAN Foundation Release 1 cutover candidate"
 ```
@@ -1774,7 +1774,7 @@ Both cycles require one daemon, one supervised engine, working panel/PTT/CLI/hos
 - [ ] **Step 3: Re-run final active-reference and data checks on day seven**
 
 ```bash
-cd /Users/n1_ozzy/Documents/dev/DAN
+cd $HOME/Documents/dev/DAN
 python scripts/dan-release-audit --repo . --all-git-refs --active-home
 dan doctor --json
 sqlite3 ~/.dan/dan.db 'PRAGMA integrity_check;'
@@ -1787,7 +1787,7 @@ sqlite3 ~/.dan/dan.db 'PRAGMA integrity_check;'
 - [ ] **Step 5: Mark the release only after sign-off**
 
 ```bash
-cd /Users/n1_ozzy/Documents/dev/DAN
+cd $HOME/Documents/dev/DAN
 git tag -a dan-v1-foundation -m "DAN Foundation Release 1 accepted"
 ```
 
@@ -1797,7 +1797,7 @@ At this point — and only at this point — Ozzy may delete `DANv2`, `menubar-c
 
 ## Final Definition of Done
 
-- One product/repo path: `/Users/n1_ozzy/Documents/dev/DAN`.
+- One product/repo path: `$HOME/Documents/dev/DAN`.
 - One `dand`, one product launchd label, one DB, one config registry, one resolver, one queue, one player and one global PTT owner.
 - Every producer uses `dan speak --json --as PERSONA --session SESSION --source HOST --stdin` or the equivalent local API; no executable old feeder/broker/request-file path remains.
 - Every queued request contains a complete immutable `RenderSnapshot`; playback proves what actually played.

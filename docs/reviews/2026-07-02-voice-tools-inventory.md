@@ -138,13 +138,13 @@ zależności od DAN-a. Czysta instalacja w repo jarvis (`.venv`, Python 3.14.6
 
 ```bash
 # TTS pierwszego silnika (G3): ~10 MB pip; model już w ~/.cache/supertonic3
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/pip install supertonic==1.3.1
+$HOME/Documents/dev/jarvis/.venv/bin/pip install supertonic==1.3.1
 
 # STT (G4): model już w HF cache (mlx-community/whisper-large-v3-turbo)
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/pip install mlx-whisper==0.4.3
+$HOME/Documents/dev/jarvis/.venv/bin/pip install mlx-whisper==0.4.3
 
 # Voice-clone (G5): model już w HF cache (litmudoc/...-MLX-v2-fp16)
-/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/pip install mlx-audio==0.4.4
+$HOME/Documents/dev/jarvis/.venv/bin/pip install mlx-audio==0.4.4
 ```
 
 Zero dodatkowych pobrań modeli (cache per-user). sox już jest z brew — nic

@@ -30,7 +30,7 @@ LEGACY_LABELS = (
     "com.dan.xtts-server",
 )
 FORBIDDEN_SNIPPETS = (
-    "/Users/n1_ozzy/Documents/dev/dan",
+    "/Users/" "n1_ozzy" "/Documents/dev/dan",
     "/tmp/dan",
     "afplay",
     "--dangerously-skip-permissions",

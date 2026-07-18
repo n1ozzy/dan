@@ -15,14 +15,14 @@
 - **`~/.claude` NIE jest repo gitowym** — odwracalność przez backup tar.gz, nie commity. Commity gitowe dotyczą wyłącznie repo jarvis (launch.json, .gitignore, spec/plan).
 - **NIE odpalać pełnego pytest/smoke'ów jarvisa** — ten plan nie dotyka kodu Jarvisa.
 - **Żadnych multi-agent fan-outów**; dozwolony JEDEN subagent `claude-code-guide` w Task 8 (diagnoza PTT).
-- **Ścieżka z danymi wos-bota zawiera spację:** `/Users/n1_ozzy/Desktop/dana rzeczy /wos-bot-runs-codex/` — zawsze cytować.
+- **Ścieżka z danymi wos-bota zawiera spację:** `$HOME/Desktop/dana rzeczy /wos-bot-runs-codex/` — zawsze cytować.
 - **Zakaz klikania w composer/input** partnera przy czytaniu; scroll przywracamy na dół po odczycie (key code 119 End).
 
 **Fakty zebrane (nie sprawdzaj ponownie):**
 - Skrypty `coxed-claude-hermes/scripts/*` = w 100% identyczne ze `screen-control/scripts/*` (5/5 plików `diff -q` czysto).
 - Unikalne w `agent-screen-chat`: `peek_agent.sh` + nagłówek-komentarz i TRAP-notka w `agents.conf`; `send_agent.sh` RÓŻNI SIĘ od kanonu (do porównania w Task 2).
 - `~/.codex/sessions/` istnieje (struktura per rok, pliki `*.jsonl`); `~/.claude/projects/<slug>/*.jsonl` = transkrypty Claude.
-- `wos_ocr`: `/Users/n1_ozzy/Desktop/dana rzeczy /wos-bot-runs-codex/bin/wos_ocr` (Mach-O 64-bit arm64, działa: czyta PNG ze stdin `-`, `--lang pl-PL,en-US`, zwraca JSON `[{text,confidence,x,y,w,h,cx,cy}]`, origin top-left).
+- `wos_ocr`: `$HOME/Desktop/dana rzeczy /wos-bot-runs-codex/bin/wos_ocr` (Mach-O 64-bit arm64, działa: czyta PNG ze stdin `-`, `--lang pl-PL,en-US`, zwraca JSON `[{text,confidence,x,y,w,h,cx,cy}]`, origin top-left).
 - `~/.claude/settings.json` ma DUBLET: `voice: {enabled: true, mode: "hold"}` ORAZ `voiceEnabled: true`; brak `~/.claude/keybindings.json`.
 - Aktualny HEAD repo jarvis: `b1236e4` (spec zacommitowany).
 
@@ -31,9 +31,9 @@
 ### Task 1: Drobnica repo jarvis — launch.json port + tts_diag_out
 
 **Files:**
-- Modify: `/Users/n1_ozzy/Documents/dev/jarvis/.claude/launch.json`
-- Delete: `/Users/n1_ozzy/Documents/dev/jarvis/tts_diag_out/` (pusty katalog)
-- Maybe modify: `/Users/n1_ozzy/Documents/dev/jarvis/.gitignore`
+- Modify: `$HOME/Documents/dev/jarvis/.claude/launch.json`
+- Delete: `$HOME/Documents/dev/jarvis/tts_diag_out/` (pusty katalog)
+- Maybe modify: `$HOME/Documents/dev/jarvis/.gitignore`
 
 **Interfaces:**
 - Consumes: nic.
@@ -59,23 +59,23 @@ W `.claude/launch.json` podmień obie wartości `41800` → `41801`:
 
 - [ ] **Step 2: Sprawdź, czy kod tworzy tts_diag_out**
 
-Run: `grep -rn "tts_diag_out" /Users/n1_ozzy/Documents/dev/jarvis/jarvis /Users/n1_ozzy/Documents/dev/jarvis/tests /Users/n1_ozzy/Documents/dev/jarvis/scripts /Users/n1_ozzy/Documents/dev/jarvis/docs 2>/dev/null`
+Run: `grep -rn "tts_diag_out" $HOME/Documents/dev/jarvis/jarvis $HOME/Documents/dev/jarvis/tests $HOME/Documents/dev/jarvis/scripts $HOME/Documents/dev/jarvis/docs 2>/dev/null`
 Expected: brak trafień → tylko `rmdir`. Jeśli SĄ trafienia → dodatkowo dopisz linię `tts_diag_out/` na końcu `.gitignore`.
 
 - [ ] **Step 3: Usuń katalog**
 
-Run: `rmdir /Users/n1_ozzy/Documents/dev/jarvis/tts_diag_out && ls /Users/n1_ozzy/Documents/dev/jarvis | grep -c tts_diag_out`
+Run: `rmdir $HOME/Documents/dev/jarvis/tts_diag_out && ls $HOME/Documents/dev/jarvis | grep -c tts_diag_out`
 Expected: `0` (katalog zniknął; `rmdir` bezpieczny — działa tylko na pustym).
 
 - [ ] **Step 4: Weryfikacja portu przy żywym daemonie**
 
-Run: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:41800/health 2>/dev/null; echo; python3 -m http.server 41801 --directory /Users/n1_ozzy/Documents/dev/jarvis/jarvis/panel/assets & SPID=$!; sleep 1; curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:41801/; kill $SPID`
+Run: `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:41800/health 2>/dev/null; echo; python3 -m http.server 41801 --directory $HOME/Documents/dev/jarvis/jarvis/panel/assets & SPID=$!; sleep 1; curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:41801/; kill $SPID`
 Expected: druga linia `200` (serwer statyczny wstaje na 41801 niezależnie od daemona).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-cd /Users/n1_ozzy/Documents/dev/jarvis && git add .claude/launch.json .gitignore 2>/dev/null; git add -u && git commit -m "chore: cockpit-static na 41801 (kolizja z portem API jarvisd) + kasacja tts_diag_out"
+cd $HOME/Documents/dev/jarvis && git add .claude/launch.json .gitignore 2>/dev/null; git add -u && git commit -m "chore: cockpit-static na 41801 (kolizja z portem API jarvisd) + kasacja tts_diag_out"
 ```
 
 ---
@@ -184,7 +184,7 @@ Expected: zostają `claude-loud-thinking` (celowo, zarchiwizowany `.disabled`) i
 
 - [ ] **Step 1: Skopiuj binarkę**
 
-Run: `mkdir -p ~/.claude/skills/screen-control/bin && cp "/Users/n1_ozzy/Desktop/dana rzeczy /wos-bot-runs-codex/bin/wos_ocr" ~/.claude/skills/screen-control/bin/wos_ocr && chmod +x ~/.claude/skills/screen-control/bin/wos_ocr && file ~/.claude/skills/screen-control/bin/wos_ocr`
+Run: `mkdir -p ~/.claude/skills/screen-control/bin && cp "$HOME/Desktop/dana rzeczy /wos-bot-runs-codex/bin/wos_ocr" ~/.claude/skills/screen-control/bin/wos_ocr && chmod +x ~/.claude/skills/screen-control/bin/wos_ocr && file ~/.claude/skills/screen-control/bin/wos_ocr`
 Expected: `Mach-O 64-bit executable arm64`.
 
 - [ ] **Step 2: Smoke binarki na zrzucie ekranu**
@@ -685,9 +685,9 @@ ls ~/.claude/skills/                                                   # 1 skill
 ~/.claude/skills/screen-control/scripts/discover-agents.sh; echo $?    # exit 0
 ~/.claude/skills/screen-control/scripts/read-agent.sh claude-cli --full | head -3   # transcript działa
 ~/.claude/skills/screen-control/scripts/ocr-window.py --png /tmp/screen-control-ocr-test.png | head -3  # OCR działa
-grep -c 41801 /Users/n1_ozzy/Documents/dev/jarvis/.claude/launch.json  # 2
-ls /Users/n1_ozzy/Documents/dev/jarvis | grep -c tts_diag_out          # 0
-python3 -c "import json;d=json.load(open('/Users/n1_ozzy/.claude/settings.json'));print('voiceEnabled' in d, 'voice' in d)"  # zgodnie z Task 8
+grep -c 41801 $HOME/Documents/dev/jarvis/.claude/launch.json  # 2
+ls $HOME/Documents/dev/jarvis | grep -c tts_diag_out          # 0
+python3 -c "import json;d=json.load(open('$HOME/.claude/settings.json'));print('voiceEnabled' in d, 'voice' in d)"  # zgodnie z Task 8
 ```
 Test "całości" (spec 2a): otwórz okno Terminala z długim outputem (`seq 1 200` w nowym tabie), potem `read-agent.sh hermes --full` na tym oknie (tymczasowo zmień title_match) ALBO prościej: `ocr-window.py --app "Terminal" --stitch | wc -l` → wynik zawiera >1 ekran linii (początek I koniec).
 
@@ -703,7 +703,7 @@ Backup starych skilli: ~/.claude/backups/skills-consolidation-2026-07-03.tar.gz.
 ```
 
 ```bash
-cd /Users/n1_ozzy/Documents/dev/jarvis && git add docs/superpowers/specs/2026-07-03-setup-cleanup-design.md && git commit -m "docs: status wykonania sprzątania setupu (screen-control skonsolidowany)"
+cd $HOME/Documents/dev/jarvis && git add docs/superpowers/specs/2026-07-03-setup-cleanup-design.md && git commit -m "docs: status wykonania sprzątania setupu (screen-control skonsolidowany)"
 ```
 
 - [ ] **Step 3: Raport końcowy dla Ozzy'ego**
