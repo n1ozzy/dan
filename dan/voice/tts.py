@@ -436,6 +436,13 @@ class SupertonicEngine:
         # Warm serve first (no per-chunk model reload); any failure falls back
         # to the CLI so warm-serve never regresses to silence.
         audio: bytes | None = None
+        if (
+            custom_style_path is None
+            and self._serve is None
+            and self._serve_url
+            and not self._serve_autostart
+        ):
+            self._ensure_serve()
         if self._serve and custom_style_path is None:
             try:
                 audio = self._synth_serve(clean, speed, voice)

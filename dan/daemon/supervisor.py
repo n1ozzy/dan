@@ -187,6 +187,9 @@ def _default_listener_released(url: str) -> bool:
     for family, socktype, protocol, _canonname, sockaddr in addresses:
         probe = socket.socket(family, socktype, protocol)
         try:
+            # macOS keeps the server-side tuple in TIME_WAIT after health probes;
+            # reuse distinguishes that kernel residue from an active listener.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(sockaddr)
         except OSError:
             return False
@@ -212,6 +215,7 @@ class ChildSupervisor:
     ) -> None:
         self._specs: dict[str, ChildSpec] = {spec.name: spec for spec in specs}
         self._children: dict[str, ChildHandle] = {}
+        self._unresolved_listeners: set[str] = set()
         self._process_factory = process_factory or _default_process_factory
         self._health_probe = health_probe or _default_health_probe
         self._killpg = killpg or _default_killpg
@@ -319,11 +323,35 @@ class ChildSupervisor:
         with self._lock:
             child = self._children.get(name)
             if child is None:
+                if name in self._unresolved_listeners:
+                    spec = self._specs.get(name)
+                    if spec is None:
+                        raise UnknownChildError(f"no ChildSpec registered for {name!r}")
+                    listener_released = self._listener_released(spec)
+                    if listener_released:
+                        self._unresolved_listeners.discard(name)
+                    errors = (
+                        ()
+                        if listener_released
+                        else (f"{name} listener still answers at {spec.health_url}",)
+                    )
+                    return ChildContainmentResult(
+                        True,
+                        True,
+                        True,
+                        listener_released,
+                        (),
+                        errors,
+                    )
                 return ChildContainmentResult(True, True, True, True, (), ())
             process_result = self._terminate_process_group(child, timeout)
             listener_released = self._listener_released(child.spec)
-            if process_result.complete and listener_released:
-                self._children.pop(name, None)
+            self._retire_released_process(
+                name,
+                child,
+                process_result=process_result,
+                listener_released=listener_released,
+            )
             remaining = (child.pid,) if name in self._children else ()
             errors = self._containment_errors(
                 child,
@@ -364,6 +392,7 @@ class ChildSupervisor:
         listeners_released = True
         errors: list[str] = []
         with self._lock:
+            pending_listeners = tuple(self._unresolved_listeners)
             for name, child in tuple(self._children.items()):
                 process_result = self._terminate_process_group(child, timeout)
                 listener_released = self._listener_released(child.spec)
@@ -385,8 +414,22 @@ class ChildSupervisor:
                         listener_released=listener_released,
                     )
                 )
-                if process_result.complete and listener_released:
-                    self._children.pop(name, None)
+                self._retire_released_process(
+                    name,
+                    child,
+                    process_result=process_result,
+                    listener_released=listener_released,
+                )
+            for name in pending_listeners:
+                spec = self._specs.get(name)
+                listener_released = spec is not None and self._listener_released(spec)
+                listeners_released = listeners_released and listener_released
+                if listener_released:
+                    self._unresolved_listeners.discard(name)
+                elif spec is not None:
+                    errors.append(
+                        f"{name} listener still answers at {spec.health_url}"
+                    )
             remaining_pids = tuple(
                 sorted(child.pid for child in self._children.values())
             )
@@ -439,11 +482,31 @@ class ChildSupervisor:
                 child_name: self._status_locked(child_name).to_dict()
                 for child_name in self._specs
                 if child_name in self._children
+                or child_name in self._unresolved_listeners
                 or child_name in self._degraded
                 or self._restart_counts.get(child_name, 0)
             }
 
     # -- internals --------------------------------------------------------
+
+    def _retire_released_process(
+        self,
+        name: str,
+        child: ChildHandle,
+        *,
+        process_result: _ProcessContainmentResult,
+        listener_released: bool,
+    ) -> None:
+        if not process_result.complete:
+            return
+        # A released process group must never remain addressable by numeric PID;
+        # the kernel may reuse it before a listener-only containment retry.
+        if self._children.get(name) is child:
+            self._children.pop(name, None)
+        if child.spec.health_url and not listener_released:
+            self._unresolved_listeners.add(name)
+        else:
+            self._unresolved_listeners.discard(name)
 
     def _watchdog_run(self) -> None:
         while not self._watchdog_waiter(
@@ -482,6 +545,16 @@ class ChildSupervisor:
         parent_reaped = self._reap_process(child, timeout=0.0)
         process_group_released = self._process_group_released(child.pid)
         listener_released = self._listener_released(spec)
+        process_result = _ProcessContainmentResult(
+            parent_reaped=parent_reaped,
+            process_group_released=process_group_released,
+        )
+        self._retire_released_process(
+            spec.name,
+            child,
+            process_result=process_result,
+            listener_released=listener_released,
+        )
         if (
             not parent_reaped
             or not process_group_released
@@ -497,7 +570,6 @@ class ChildSupervisor:
             self._last_errors[spec.name] = error
             self._degraded.add(spec.name)
             raise ChildSupervisorError(error)
-        self._children.pop(spec.name, None)
         restart_count = self._restart_counts.get(spec.name, 0)
         if restart_count >= spec.restart_limit:
             self._degraded.add(spec.name)
@@ -516,15 +588,16 @@ class ChildSupervisor:
         return self._spawn_and_probe_locked(spec)
 
     def _reject_foreign_owner_locked(self, spec: ChildSpec) -> None:
-        if spec.health_url and (
-            self._health_probe(spec.health_url)
-            or not self._listener_released(spec)
-        ):
+        if not spec.health_url:
+            self._unresolved_listeners.discard(spec.name)
+            return
+        if self._health_probe(spec.health_url) or not self._listener_released(spec):
             raise ForeignPortOwnerError(
                 f"{spec.name}: {spec.health_url} already answers but the server is "
                 "not a dand child; refusing to adopt or kill it. Stop the "
                 "foreign process (or change the configured port) first."
             )
+        self._unresolved_listeners.discard(spec.name)
 
     def _spawn_and_probe_locked(self, spec: ChildSpec) -> ChildHandle:
         process = self._process_factory(spec)
@@ -544,13 +617,17 @@ class ChildSupervisor:
                 parent_reaped = self._reap_process(child, timeout=0.0)
                 process_group_released = self._process_group_released(child.pid)
                 listener_released = self._listener_released(spec)
-                if (
-                    parent_reaped
-                    and process_group_released
-                    and listener_released
-                ):
-                    self._children.pop(spec.name, None)
-                else:
+                process_result = _ProcessContainmentResult(
+                    parent_reaped=parent_reaped,
+                    process_group_released=process_group_released,
+                )
+                self._retire_released_process(
+                    spec.name,
+                    child,
+                    process_result=process_result,
+                    listener_released=listener_released,
+                )
+                if not process_result.complete or not listener_released:
                     details = self._containment_errors(
                         child,
                         parent_reaped=parent_reaped,
@@ -572,9 +649,13 @@ class ChildSupervisor:
         # Never healthy: reap the spawn instead of leaking a half-up child.
         process_result = self._terminate_process_group(child, timeout=5.0)
         listener_released = self._listener_released(spec)
-        if process_result.complete and listener_released:
-            self._children.pop(spec.name, None)
-        else:
+        self._retire_released_process(
+            spec.name,
+            child,
+            process_result=process_result,
+            listener_released=listener_released,
+        )
+        if not process_result.complete or not listener_released:
             details = self._containment_errors(
                 child,
                 parent_reaped=process_result.parent_reaped,
@@ -735,7 +816,7 @@ class ChildSupervisor:
     def _status_locked(self, name: str) -> ChildStatus:
         spec = self._specs[name]
         child = self._children.get(name)
-        degraded = name in self._degraded
+        degraded = name in self._degraded or name in self._unresolved_listeners
         alive = child is not None and child.alive()
         state: Literal["stopped", "starting", "running", "degraded"]
         if degraded:

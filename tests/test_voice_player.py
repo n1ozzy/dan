@@ -76,19 +76,20 @@ class RecoveringFakeBackend:
             raise self.recover_error
 
 
-def test_wav_deadline_is_duration_derived_clamped_and_never_300_seconds() -> None:
+def test_wav_deadline_clamps_slack_but_remains_longer_than_media() -> None:
     deadlines = [
         player_module.playback_deadline_seconds(wav_bytes(0.25)),
         player_module.playback_deadline_seconds(wav_bytes(10.0)),
         player_module.playback_deadline_seconds(wav_bytes(120.0)),
     ]
 
-    assert deadlines == [3.0, 22.0, 60.0]
+    assert deadlines == [3.0, 22.0, 122.0]
+    assert deadlines[-1] > 120.0
     assert 300.0 not in deadlines
 
 
-@pytest.mark.parametrize("deadline", [0.0, -1.0, math.inf, math.nan, 60.01])
-def test_injected_audio_deadline_must_be_finite_positive_and_bounded(deadline: float) -> None:
+@pytest.mark.parametrize("deadline", [0.0, -1.0, math.inf, math.nan])
+def test_injected_audio_deadline_must_be_finite_and_positive(deadline: float) -> None:
     backend = RecoveringFakeBackend()
     player = player_module.CoreAudioPlayer(
         backend=backend,
@@ -99,6 +100,23 @@ def test_injected_audio_deadline_must_be_finite_positive_and_bounded(deadline: f
         player.play(wav_chunk(), should_play=lambda: True, on_started=lambda: None)
 
     assert backend.start_calls == 0
+
+
+def test_player_accepts_valid_deadline_longer_than_soft_cap() -> None:
+    backend = RecoveringFakeBackend()
+    backend.auto_complete = True
+    player = player_module.CoreAudioPlayer(
+        backend=backend,
+        deadline_for_audio=lambda _audio: 122.0,
+    )
+
+    player.play(
+        wav_chunk(duration_seconds=120.0),
+        should_play=lambda: True,
+        on_started=lambda: None,
+    )
+
+    assert backend.completed_plays == 1
 
 
 def test_native_timeout_uses_injected_audio_deadline_and_fully_resets() -> None:

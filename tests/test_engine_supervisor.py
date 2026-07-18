@@ -1,12 +1,13 @@
 """ChildSupervisor: dand is the only owner of `supertonic serve` (Task 9).
 
-Everything runs against injected fakes: no real process is ever spawned, no
-port is probed, no signal reaches a live pid.
+Process and signal interactions use injected fakes. Loopback sockets exercise
+listener ownership without spawning a real child or signalling a live pid.
 """
 
 from __future__ import annotations
 
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -20,6 +21,7 @@ from dan.daemon.supervisor import (
     ChildSupervisor,
     ChildSupervisorError,
     ForeignPortOwnerError,
+    _default_listener_released,
 )
 
 SUPERTONIC_SPEC = ChildSpec(
@@ -29,6 +31,38 @@ SUPERTONIC_SPEC = ChildSpec(
     restart_limit=3,
     backoff_seconds=(0.0, 0.0, 0.0),
 )
+
+
+def test_listener_release_probe_ignores_time_wait_after_server_close() -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    client = socket.create_connection(("127.0.0.1", port))
+    accepted, _address = listener.accept()
+    accepted.shutdown(socket.SHUT_WR)
+    accepted.close()
+    client.recv(1)
+    client.close()
+    listener.close()
+
+    assert _default_listener_released(f"http://127.0.0.1:{port}/health") is True
+
+
+def test_listener_release_probe_rejects_live_listener() -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        assert (
+            _default_listener_released(f"http://127.0.0.1:{port}/health")
+            is False
+        )
+    finally:
+        listener.close()
 
 
 class FakeProcess:
@@ -438,8 +472,50 @@ def test_unhealthy_http_does_not_prove_still_bound_listener_was_released() -> No
     result = supervisor.stop_all(timeout=0.01)
 
     assert result.complete is False
+    assert result.children_reaped is True
+    assert result.process_groups_released is True
     assert result.listeners_released is False
-    assert result.remaining_pids == (parent.pid,)
+    assert result.remaining_pids == ()
+
+
+def test_released_process_group_is_never_signalled_again_for_listener_only_retry() -> None:
+    parent = FakeProcess(pid=5333)
+    signals: list[tuple[int, int]] = []
+    listener_released = False
+
+    def killpg(pgid: int, signum: int) -> None:
+        signals.append((pgid, signum))
+        parent.returncode = -signum
+
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=lambda _spec: parent,
+        health_probe=lambda _url: False,
+        killpg=killpg,
+        process_group_alive=lambda _pgid: False,
+        listener_released_probe=lambda _url: listener_released,
+        sleep=lambda _seconds: None,
+    )
+    supervisor._children["supertonic"] = ChildHandle(
+        spec=SUPERTONIC_SPEC,
+        process=parent,
+    )
+
+    first = supervisor.stop_all(timeout=0.01)
+    unresolved_status = supervisor.status("supertonic")
+    listener_released = True
+    second = supervisor.stop_all(timeout=0.01)
+
+    assert first.complete is False
+    assert first.children_reaped is True
+    assert first.process_groups_released is True
+    assert first.listeners_released is False
+    assert first.remaining_pids == ()
+    assert unresolved_status.degraded is True
+    assert unresolved_status.pid is None
+    assert unresolved_status.alive is False
+    assert second.complete is True
+    assert signals == [(parent.pid, signal.SIGTERM)]
 
 
 def test_child_that_never_gets_healthy_is_a_loud_error() -> None:

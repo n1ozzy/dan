@@ -53,7 +53,7 @@ class NativeAudioBackend(Protocol):
 PLAYBACK_TIMEOUT_MULTIPLIER = 2.0
 PLAYBACK_TIMEOUT_GRACE_SECONDS = 2.0
 PLAYBACK_TIMEOUT_MIN_SECONDS = 3.0
-PLAYBACK_TIMEOUT_MAX_SECONDS = 60.0
+PLAYBACK_TIMEOUT_SOFT_MAX_SECONDS = 60.0
 
 
 def wav_duration_seconds(audio: bytes) -> float:
@@ -73,12 +73,15 @@ def wav_duration_seconds(audio: bytes) -> float:
 
 def playback_deadline_seconds(audio: bytes) -> float:
     duration = wav_duration_seconds(audio)
-    return min(
-        PLAYBACK_TIMEOUT_MAX_SECONDS,
-        max(
-            PLAYBACK_TIMEOUT_MIN_SECONDS,
-            duration * PLAYBACK_TIMEOUT_MULTIPLIER
-            + PLAYBACK_TIMEOUT_GRACE_SECONDS,
+    return max(
+        duration + PLAYBACK_TIMEOUT_GRACE_SECONDS,
+        min(
+            PLAYBACK_TIMEOUT_SOFT_MAX_SECONDS,
+            max(
+                PLAYBACK_TIMEOUT_MIN_SECONDS,
+                duration * PLAYBACK_TIMEOUT_MULTIPLIER
+                + PLAYBACK_TIMEOUT_GRACE_SECONDS,
+            ),
         ),
     )
 
@@ -133,11 +136,9 @@ class CoreAudioPlayer:
         if (
             not math.isfinite(deadline)
             or deadline <= 0
-            or deadline > PLAYBACK_TIMEOUT_MAX_SECONDS
         ):
             raise CoreAudioPlayerError(
-                "playback deadline must be finite, positive, and at most "
-                f"{PLAYBACK_TIMEOUT_MAX_SECONDS:g} seconds"
+                "playback deadline must be finite and positive"
             )
 
         with self._play_lock:

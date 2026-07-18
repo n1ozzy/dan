@@ -249,6 +249,60 @@ def test_warm_serve_failure_falls_back_to_cli_for_same_snapshot(
     assert args[args.index("--speed") + 1] == "1.09"
 
 
+def test_reused_serve_is_re_adopted_after_supervised_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary, _args_file = fake_supertonic(tmp_path)
+    calls: list[str] = []
+
+    class Response:
+        status = 200
+
+        def __init__(self, audio: bytes = b"") -> None:
+            self._audio = audio
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return self._audio
+
+    def urlopen(request, timeout):
+        kind = "health" if isinstance(request, str) else "tts"
+        calls.append(kind)
+        if calls == ["health"]:
+            return Response()
+        if calls == ["health", "tts"]:
+            raise OSError("supervised serve died")
+        if calls == ["health", "tts", "health"]:
+            raise OSError("replacement not healthy yet")
+        if kind == "health":
+            return Response()
+        return Response(b"r" * 2000)
+
+    monkeypatch.setattr("dan.voice.tts.urllib.request.urlopen", urlopen)
+    engine = build_tts_engine(
+        "supertonic",
+        config=config(
+            tmp_path,
+            binary,
+            supertonic_serve_url="http://127.0.0.1:9999",
+        ),
+        serve_autostart=False,
+    )
+
+    first = engine.synthesize("Pierwsza proba.", snapshot())
+    second = engine.synthesize("Po restarcie.", snapshot())
+
+    assert first.audio == b"\x00" * 2000
+    assert second.audio == b"r" * 2000
+    assert calls == ["health", "tts", "health", "health", "tts"]
+
+
 def test_matching_engine_version_with_model_revision_passes(tmp_path: Path) -> None:
     # Resolver stamps "1.3.1+<model_revision>"; only the semver before "+"
     # must match the real binary.
