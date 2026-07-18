@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "kind": "dan-cutover-fixture-manifest",
+  "home": "home",
+  "producers": {
+    "old-feeder": {
+      "decision": "disabled",
+      "reason": "feeder loop replaced by dand voice queue; dead path stays dead"
+    },
+    "legacy-broker": {
+      "decision": "migrated",
+      "reason": "speech continues through dan speak; broker process retired"
+    },
+    "jarvisd-runtime": {
+      "decision": "migrated",
+      "reason": "runtime behavior continues through dand"
+    },
+    "menubar-agent": {
+      "decision": "rejected",
+      "reason": "external host stays external; never product-owned"
+    }
+  },
+  "databases": [
+    {
+      "path": "home/.jarvis/jarvis.db",
+      "role": "legacy-voice"
+    }
+  ],
+  "paths": {
+    "old_dan": "home/Documents/dev/dan",
+    "old_jarvis": "home/Documents/dev/jarvis",
+    "new_root": "home/Documents/dev/DAN",
+    "backup_root": "home/Documents/DAN-migration-backups",
+    "donors": [
+      "home/Documents/dev/DANv2",
+      "home/Documents/dev/menubar-controller"
+    ]
+  },
+  "launch_agents": [
+    {
+      "label": "com.jarvis.jarvisd",
+      "plist": "home/Library/LaunchAgents/com.jarvis.jarvisd.plist"
+    },
+    {
+      "label": "com.dan.voicebroker",
+      "plist": "home/Library/LaunchAgents/com.dan.voicebroker.plist"
+    }
+  ],
+  "request_files_dir": "home/.jarvis/requests",
+  "legacy_process_names": [
+    "jarvisd",
+    "voice_broker.py"
+  ],
+  "files": [
+    {
+      "path": "home/.jarvis/jarvis.toml",
+      "decision": "import",
+      "reason": "runtime configuration informs dan config; preserved verbatim in backup"
+    },
+    {
+      "path": "home/.jarvis/bin/jarvisd",
+      "decision": "retain",
+      "reason": "historical binary retained as backup evidence; never re-launched"
+    },
+    {
+      "path": "home/.jarvis/model_cache.json",
+      "decision": "retain",
+      "reason": "engine cache retained; dan rebuilds its own cache cold"
+    },
+    {
+      "path": "home/.jarvis/backups",
+      "decision": "retain",
+      "reason": "prior backup metadata retained as historical record"
+    },
+    {
+      "path": "home/.dan/preexisting-note.txt",
+      "decision": "retain",
+      "reason": "existing ~/.dan non-DB file kept in place; not dropped for lacking an lsof handle"
+    }
+  ]
+}

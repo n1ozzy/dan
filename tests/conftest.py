@@ -36,6 +36,22 @@ def stub_claude_model_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def cutover(tmp_path):
+    """Synthetic cutover precondition harness (fixture tree in tmp_path)."""
+    from tests.cutover_helpers import CutoverHarness
+
+    return CutoverHarness(tmp_path)
+
+
+@pytest.fixture
+def cutover_fixture(tmp_path):
+    """Synthetic full cutover/rollback harness (fixture tree in tmp_path)."""
+    from tests.cutover_helpers import CutoverFixture
+
+    return CutoverFixture(tmp_path)
+
+
+@pytest.fixture
 def mock_codex_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mock codex CLI as available."""
     import dan.api.routes_runtime as routes_runtime
