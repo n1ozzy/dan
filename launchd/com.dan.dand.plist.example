@@ -14,8 +14,10 @@
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <!-- KeepAlive MUST stay true: RestartCoordinator exits 86 and relies on
+       launchd resurrecting the daemon (Task 9 restart contract). -->
   <key>KeepAlive</key>
-  <false/>
+  <true/>
   <key>StandardOutPath</key>
   <string>__HOME__/.dan/logs/dand.out.log</string>
   <key>StandardErrorPath</key>

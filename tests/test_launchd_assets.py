@@ -55,6 +55,17 @@ def test_plist_example_uses_only_the_official_label() -> None:
         assert legacy not in text
 
 
+def test_plist_example_keeps_the_daemon_alive_for_restart_contract() -> None:
+    # RestartCoordinator exits 86 and relies on launchd resurrection (Task 9);
+    # KeepAlive=false would turn every coordinated restart into a dead daemon.
+    text = read(PLIST_EXAMPLE)
+
+    keepalive_index = text.index("<key>KeepAlive</key>")
+    assert "<true/>" in text[keepalive_index : keepalive_index + 120]
+    runatload_index = text.index("<key>RunAtLoad</key>")
+    assert "<true/>" in text[runatload_index : runatload_index + 60]
+
+
 def test_plist_example_logs_and_wrapper_live_outside_documents() -> None:
     # ADR-014: launchd cannot read scripts under ~/Documents (TCC trap).
     text = read(PLIST_EXAMPLE)

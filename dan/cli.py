@@ -92,6 +92,11 @@ def build_parser() -> argparse.ArgumentParser:
     voice_hook.add_argument("--url", help="Base URL for a running dand")
     voice_hook.add_argument("--timeout", type=_positive_timeout, default=5.0)
 
+    persona_parser = subcommands.add_parser("persona")
+    persona_commands = persona_parser.add_subparsers(dest="persona_command", required=True)
+    persona_context = persona_commands.add_parser("context")
+    persona_context.add_argument("--canon", help="Path to the persona canon (default: repo canon)")
+
     paths_parser = subcommands.add_parser("paths")
     paths_commands = paths_parser.add_subparsers(dest="paths_command", required=True)
     paths_commands.add_parser("show")
@@ -269,6 +274,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "voice" and args.voice_command == "hook":
         return _handle_voice_hook(args, config)
+
+    if args.command == "persona" and args.persona_command == "context":
+        return _handle_persona_context(args, paths)
 
     if args.command == "paths" and args.paths_command == "show":
         _print_json(paths.to_dict())
@@ -538,6 +546,23 @@ def _handle_voice_hook(args: argparse.Namespace, config: DANConfig) -> int:
             {"error": "daemon_unreachable", "message": str(exc)}, json_output, 3
         )
     _emit_payload(response, json_output)
+    return 0
+
+
+def _handle_persona_context(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    """Render the one canonical persona for host adapters. Fail-closed."""
+
+    from dan.persona import DEFAULT_CANON_PATH, PersonaError, render_persona
+
+    canon_path = args.canon or DEFAULT_CANON_PATH
+    try:
+        rendered = render_persona(canon_path, paths.owner_path)
+    except PersonaError as exc:
+        # Missing/invalid canon must be a VISIBLE error, never an improvised
+        # persona remembered by a host model.
+        print(f"PersonaError: {exc}", file=sys.stderr)
+        return 2
+    print(rendered)
     return 0
 
 

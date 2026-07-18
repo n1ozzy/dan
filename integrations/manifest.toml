@@ -1,0 +1,1589 @@
+# DAN Release 1 host integration decision manifest (Task 11).
+#
+# One row per producer frozen from the private Task 1 inventory
+# (~/.dan/migration/release1-source-manifest.json, producers surface,
+# plus the plan's explicit minimum rows). Producer ids are pinned in
+# integrations/inventory-producers.json; tests/test_adapter_contracts.py
+# proves 1:1 coverage and that no row is a pending decision.
+#
+# status: migrated  - behavior continues through the product (destination says where)
+#         disabled  - a tested decision to stop; dead paths stay dead
+#         rejected  - explicitly not product-owned (external hosts stay external)
+
+schema_version = 1
+inventory_snapshot = "integrations/inventory-producers.json"
+
+[notes]
+dobranocka_dan_prefix = "Persona routing is ONLY explicit --as; a textual 'DAN:' prefix in dobranocka lines is spoken content unless the ONE documented importer (feeder rezyseria tag 'persona;...|text') already routed it. No implicit second router exists in any adapter. Regression: tests/test_adapter_contracts.py::test_dobranocka_dan_prefix_stays_spoken_content."
+per_request_engine = "Traced to a real reader: the old broker consumed req['engine'] (voice_broker.py _prep_request -> _choose_engine) and dan_core/say.py filled it from DAN_BROKER_ENGINE, so the field was CONSUMED, not a no-op. The product intentionally drops per-request engine: engine choice is owned by the VoiceResolver snapshot. No lying compatibility export is provided."
+legacy_processes = "Live legacy processes (old broker, jarvisd :41800) are observed only; stopping/disabling them is journaled cutover work in Task 12/14, not Task 11."
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/dan-persona/SKILL.md"
+host = "shared"
+old_format = "instruction-text"
+behavior = "persona loaded fresh from config/persona/DAN.md via dan persona context; fail-closed on missing canon"
+destination = "integrations/claude/skills/dan-persona/SKILL.md -> ~/.claude/skills/dan-persona/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "canonical persona adapter; no persona text copied into hosts"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/danusia-live/SKILL.md"
+host = "shared"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/danusia-live/SKILL.md -> ~/.agents/skills/danusia-live/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/danusia-live/ctl.sh"
+host = "shared"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/danusia-live/dialog.sh"
+host = "shared"
+old_format = "legacy-broker-process,legacy-engine-environment"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/danusia-live/speak.sh"
+host = "shared"
+old_format = "legacy-broker-process,legacy-engine-environment"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/dobranocka/SKILL.md"
+host = "shared"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process,legacy-playlist-feeder,legacy-playlist-lines"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/dobranocka/SKILL.md -> ~/.agents/skills/dobranocka/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/dobranocka/feeder.sh"
+host = "shared"
+old_format = "legacy-dan-voice-runtime,legacy-playlist-feeder,legacy-playlist-lines"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/dobranocka/feeder.sh.bak-2026-07-10"
+host = "shared"
+old_format = "legacy-dan-voice-runtime,legacy-playlist-lines"
+behavior = "none - quarantined/backup copy with no live consumers"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "Task 1 decision: archive, do not copy without named runtime evidence"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/dobranocka/feeder.sh.bak-2026-07-11"
+host = "shared"
+old_format = "legacy-dan-voice-runtime,legacy-playlist-lines"
+behavior = "none - quarantined/backup copy with no live consumers"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "Task 1 decision: archive, do not copy without named runtime evidence"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/gadanie/SKILL.md"
+host = "shared"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/gadanie/SKILL.md -> ~/.agents/skills/gadanie/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/gadanie/ctl.sh"
+host = "shared"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/gadanie/dialog.sh"
+host = "shared"
+old_format = "legacy-broker-process,legacy-engine-environment"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/gadanie/speak.sh"
+host = "shared"
+old_format = "legacy-dan-voice-runtime,legacy-engine-environment"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/gpt-say/SKILL.md"
+host = "shared"
+old_format = "legacy-gpt-say-wrapper"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/gpt-say/SKILL.md -> ~/.agents/skills/gpt-say/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.agents/skills/maintaining-dan-persona/SKILL.md"
+host = "shared"
+old_format = "instruction-text"
+behavior = "persona maintenance references the single canon config/persona/DAN.md"
+destination = "integrations/claude/skills/dan-persona/SKILL.md -> ~/.claude/skills/dan-persona/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "maintenance instruction folded into canonical persona adapter docs"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/CLAUDE.md"
+host = "claude"
+old_format = "global-instruction-text"
+behavior = "global instructions edited ONLY inside the named DAN managed block"
+destination = "managed block in the same file"
+status = "migrated"
+test = "tests/test_installer_atomicity.py::test_installer_never_touches_claude_archive"
+reason = "installer touches only its named managed block; rest of the file is owner text"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/bin/voice-standup.sh"
+host = "claude"
+old_format = "launchd-calendar-shell"
+behavior = "22:00 standup timing imported once from com.ozzy.voice-standup.plist; silence when no material; submits via VoiceService"
+destination = "dan/jobs/standup.py (inside dand)"
+status = "migrated"
+test = "tests/test_jobs_scheduler.py::test_standup_schedule_runs_inside_dand"
+reason = "scheduling moves into dand; old plist disabled at cutover (Task 12/14)"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/hooks/config-guard.sh"
+host = "claude"
+old_format = "hook-shell"
+behavior = "none - guard was unhooked by Ozzy (autonomy boundaries 2026-07-13)"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "hooks/guards only on explicit spoken request; stays unhooked"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/hooks/orphan-reaper.sh"
+host = "claude"
+old_format = "hook-shell"
+behavior = "none - reaper was unhooked by Ozzy (autonomy boundaries 2026-07-13)"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "hooks/guards only on explicit spoken request; stays unhooked"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/hooks/tts-loud-thinking.sh"
+host = "claude"
+old_format = "message-display-json-stdin"
+behavior = "speaks ONLY [[GLOS]]-marked segments; silence without marker; always exit 0"
+destination = "integrations/claude/hooks/tts-message-display.sh -> ~/.claude/hooks/tts-message-display.sh"
+status = "migrated"
+test = "tests/test_hook_fail_open.py::test_hook_is_fail_open_when_dand_is_down"
+reason = "fail-open hook <1s calls dan speak; never starts legacy audio"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/MEMORY.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process,legacy-playlist-feeder"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/audycja-wylacznosc-syntezy.md"
+host = "claude"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/broker-3-silniki-panel.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/broker-fonetyka-pl.md"
+host = "claude"
+old_format = "legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/chatterbox-wpiety.md"
+host = "claude"
+old_format = "legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/claude-jako-mozg-dana.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-broker-glosu.md"
+host = "claude"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-claude-md-glowny-dok.md"
+host = "claude"
+old_format = "legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-glos-python-flock.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-glos-xtts-kazuhiko.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-grabie-sesji.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-i-danusia-glosy.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-persona-legenda.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-rejestr-bledow.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-setup-od-zera.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-supertonic-serve-todo.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-voice-pipeline.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dan-wielki-refaktor-plan.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/dobranocka-sesja-2026-07-10-stan.md"
+host = "claude"
+old_format = "legacy-broker-process,legacy-engine-environment,legacy-playlist-lines"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/glos-czysty-bez-profili.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime,legacy-engine-environment"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/glos-dan-speak-nie-dan-voice.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/glos-job-tmp-nie-scratchpad.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/glos-raport-porcje-i-weryfikuj.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/glosnosc-systemowa-nie-ruszac.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/hook-mysli-na-glos.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/jarvis-glosowy-zrobiony.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/kabaret-dan-danusia-hardkor.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/klikanie-i-panel-jarvis.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/nie-wieszaj-sie-po-compact.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/panel-centrum-dowodzenia.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/panel-glosnosc-mojego-glosu.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/persona-glos-bez-whitelisty.md"
+host = "claude"
+old_format = "legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/pociski-uklada-dan-nie-bielik.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/podzial-kazuhiko-ziomek.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/prozodia-research-i-trim.md"
+host = "claude"
+old_format = "legacy-broker-process,legacy-playlist-feeder"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/standup-feeder-i-rezyseria.md"
+host = "claude"
+old_format = "legacy-playlist-feeder"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/tts-readouts-preference.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/wdrozenie-audytu-i-przenosiny-jarvis.md"
+host = "claude"
+old_format = "legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-dan/memory/werdykty-na-goraco-2026-07-10.md"
+host = "claude"
+old_format = "legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-jarvis/memory/MEMORY.md"
+host = "claude"
+old_format = "legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-jarvis/memory/jarvis-shared-voice-source.md"
+host = "claude"
+old_format = "legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-jarvis/memory/menubar-controller-widget.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-jarvis/memory/standup-dynamiczne-postacie.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/projects/-Users-n1-ozzy-Documents-dev-jarvis/memory/trio-live-architektura.md"
+host = "claude"
+old_format = "legacy-broker-process"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/_quarantine-gadanie-2026-07-14/ctl.sh"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "none - quarantined/backup copy with no live consumers"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "Task 1 decision: archive, do not copy without named runtime evidence"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/_quarantine-gadanie-2026-07-14/dialog.sh"
+host = "claude"
+old_format = "legacy-broker-process,legacy-engine-environment"
+behavior = "none - quarantined/backup copy with no live consumers"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "Task 1 decision: archive, do not copy without named runtime evidence"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/_quarantine-gadanie-2026-07-14/speak.sh"
+host = "claude"
+old_format = "legacy-broker-process,legacy-engine-environment"
+behavior = "none - quarantined/backup copy with no live consumers"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "Task 1 decision: archive, do not copy without named runtime evidence"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/dan-persona/SKILL.md"
+host = "claude"
+old_format = "instruction-text"
+behavior = "persona loaded fresh from config/persona/DAN.md via dan persona context; fail-closed on missing canon"
+destination = "integrations/claude/skills/dan-persona/SKILL.md -> ~/.claude/skills/dan-persona/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "canonical persona adapter; no persona text copied into hosts"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/danusia-live/SKILL.md"
+host = "claude"
+old_format = "instruction-text"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/danusia-live/SKILL.md -> ~/.agents/skills/danusia-live/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/dobranocka/SKILL.md"
+host = "claude"
+old_format = "instruction-text"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/dobranocka/SKILL.md -> ~/.agents/skills/dobranocka/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/dobranocka/feeder.sh"
+host = "claude"
+old_format = "legacy-dan-voice-runtime,legacy-playlist-lines"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/gadanie/SKILL.md"
+host = "claude"
+old_format = "instruction-text"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/gadanie/SKILL.md -> ~/.agents/skills/gadanie/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/gpt-say/SKILL.md"
+host = "claude"
+old_format = "legacy-gpt-say-wrapper"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/gpt-say/SKILL.md -> ~/.agents/skills/gpt-say/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/maintaining-dan-persona/SKILL.md"
+host = "claude"
+old_format = "instruction-text"
+behavior = "persona maintenance references the single canon config/persona/DAN.md"
+destination = "integrations/claude/skills/dan-persona/SKILL.md -> ~/.claude/skills/dan-persona/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "maintenance instruction folded into canonical persona adapter docs"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/screen-control/SKILL.md"
+host = "claude"
+old_format = "instruction-text"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/screen-control/SKILL.md -> ~/.agents/skills/screen-control/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/trio-live/SKILL.md"
+host = "claude"
+old_format = "instruction-text"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/trio-live/SKILL.md -> ~/.agents/skills/trio-live/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/voice-doctor/SKILL.md"
+host = "claude"
+old_format = "instruction-text"
+behavior = "diagnosis of the legacy audio loop; replaced by dan doctor --json truth-only report"
+destination = "dan doctor --json"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "diagnoses the retiring stack; dan doctor is the product diagnostic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.claude/skills/voice-doctor/doctor.sh"
+host = "claude"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/.codex/memories/MEMORY.md"
+host = "codex"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime,legacy-broker-process,legacy-playlist-feeder,legacy-playlist-lines,legacy-gpt-say-wrapper"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.codex/memories/skills/live-dan-radio-spoken-text/SKILL.md"
+host = "codex"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime"
+behavior = "historical record only; adds no tone/content/approval rules to the product"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "memory/transcript is evidence of the past, never runtime authority"
+
+[[producer]]
+id = "/Users/n1_ozzy/.codex/rules/default.rules"
+host = "codex"
+old_format = "codex-rules-text"
+behavior = "codex keeps its rules; DAN speech routed through the codex dan-persona adapter"
+destination = "integrations/codex/skills/dan-persona/SKILL.md -> ~/.codex/skills/dan-persona/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "rules stay host-owned; only the speech path is product-owned"
+
+[[producer]]
+id = "/Users/n1_ozzy/.codex/skills/agent-screen-chat/SKILL.md"
+host = "codex"
+old_format = "legacy-dan-voice-runtime"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/screen-control/SKILL.md -> ~/.agents/skills/screen-control/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.codex/skills/screen-agent-ops/SKILL.md"
+host = "codex"
+old_format = "legacy-dan-voice-runtime"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/screen-control/SKILL.md -> ~/.agents/skills/screen-control/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/.jarvis/bin/jarvisd"
+host = "jarvis"
+old_format = "installed-daemon-binary"
+behavior = "daemon duties replaced by ~/.dan/bin/dand under com.dan.dand"
+destination = "~/.dan/bin/dand"
+status = "disabled"
+test = "tests/test_launchd_single_owner.py::test_install_has_one_product_launchd_label"
+reason = "retired at cutover; ~/.jarvis state backed up per Task 12, never deleted here"
+
+[[producer]]
+id = "/Users/n1_ozzy/.openclaw/skill-workshop/proposals/danv2-enhanced-20260712-fd3e83d813"
+host = "openclaw"
+old_format = "skill-workshop-proposal"
+behavior = "none - proposal was rejected/disabled in the workshop and stays off"
+destination = "none"
+status = "rejected"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "disabled danv2-enhanced proposal must never be revived implicitly"
+
+[[producer]]
+id = "/Users/n1_ozzy/AGENTS.md"
+host = "shared"
+old_format = "global-instruction-text"
+behavior = "global instructions edited ONLY inside the named DAN managed block"
+destination = "managed block in the same file"
+status = "migrated"
+test = "tests/test_installer_atomicity.py::test_installer_never_touches_claude_archive"
+reason = "installer touches only its named managed block; rest of the file is owner text"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/DAN-release1-wt/AGENTS.md"
+host = "repo"
+old_format = "repo-instruction-text"
+behavior = "release worktree instructions continue in this repository's AGENTS.md/CLAUDE.md"
+destination = "AGENTS.md / CLAUDE.md (this repo)"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "the release line is this repo; instructions live here"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/DAN-release1-wt/CLAUDE.md"
+host = "repo"
+old_format = "repo-instruction-text"
+behavior = "release worktree instructions continue in this repository's AGENTS.md/CLAUDE.md"
+destination = "AGENTS.md / CLAUDE.md (this repo)"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "the release line is this repo; instructions live here"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/DAN-release1-wt/dan/migration/inventory.py"
+host = "repo"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime,legacy-broker-process,legacy-playlist-feeder,legacy-engine-environment,legacy-playlist-lines,jarvis-http-voice-intent,legacy-gpt-say-wrapper,dan-cli-speech-intent"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/DAN-release1-wt/dan/runtime/supervisor.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/DAN-release1-wt/dan/voice/shared_broker.py"
+host = "repo"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/DAN-release1-wt/jarvis/runtime/supervisor.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/DAN-release1-wt/jarvis/voice/shared_broker.py"
+host = "repo"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/DANv2/AGENTS.md"
+host = "repo"
+old_format = "repo-instruction-text"
+behavior = "donor repo instruction; authority superseded by this repository"
+destination = "AGENTS.md / CLAUDE.md (this repo)"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "donor repos are read-only sources until the deletion gate (Task 15)"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/DANv2/voice/pipeline.py"
+host = "repo"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.agents/skills/screen-control/SKILL.md"
+host = "shared"
+old_format = "legacy-dan-voice-runtime"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/screen-control/SKILL.md -> ~/.agents/skills/screen-control/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.agents/skills/voice-report/dan-report.sh"
+host = "shared"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.agents/skills/voice-report/dan-speak.sh"
+host = "shared"
+old_format = "legacy-broker-process"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.agents/skills/voice-report/dan_voice.py"
+host = "shared"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.agents/skills/voice-report/voice_turn.sh"
+host = "shared"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.claude/settings.local.json"
+host = "claude"
+old_format = "legacy-playlist-feeder"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.claude/skills/screen-control/SKILL.md"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/screen-control/SKILL.md -> ~/.agents/skills/screen-control/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.claude/skills/voice-report/dan-report.sh"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.claude/skills/voice-report/dan-speak.sh"
+host = "claude"
+old_format = "legacy-broker-process"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.claude/skills/voice-report/dan_voice.py"
+host = "claude"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/.claude/skills/voice-report/voice_turn.sh"
+host = "claude"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "voice report speech submits through dan speak; report text stays host-side"
+destination = "integrations/shared/skills/voice-report/SKILL.md -> ~/.agents/skills/voice-report/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "active runtime producer replaced by thin adapter"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/AGENTS.md"
+host = "repo"
+old_format = "repo-instruction-text"
+behavior = "donor repo instruction; authority superseded by this repository"
+destination = "AGENTS.md / CLAUDE.md (this repo)"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "donor repos are read-only sources until the deletion gate (Task 15)"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/_quarantine-continuity-fix-2026-07-08/screen-control.orig/SKILL.md"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "none - quarantined/backup copy with no live consumers"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "Task 1 decision: archive, do not copy without named runtime evidence"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/_sesja-glosy-2026-07-11/scratchpad/gen_battery3.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/_sesja-glosy-2026-07-11/scratchpad/gen_battery4.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/_sesja-glosy-2026-07-11/scratchpad/gen_cb_ekspresje.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/_sesja-glosy-2026-07-11/scratchpad/gen_clones3.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/_sesja-glosy-2026-07-11/scratchpad/gen_kanon.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/_sesja-glosy-2026-07-11/scratchpad/gen_techniki2.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/audycja/radio-dan/SKILL.md"
+host = "openclaw"
+old_format = "playlist-feeder-instruction"
+behavior = "radio/dobranocka feeding is NOT the Release 1 job scheduler; content flows via dobranocka adapter when used"
+destination = "integrations/shared/skills/dobranocka/SKILL.md -> ~/.agents/skills/dobranocka/SKILL.md"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_dobranocka_dan_prefix_stays_spoken_content"
+reason = "Radio scheduler explicitly out of scope for Release 1 (plan Task 11 step 7)"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/audycja/radio-dan/feeder.sh"
+host = "repo"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process,legacy-playlist-feeder,legacy-playlist-lines"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/dan_core/__main__.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/dan_core/say.py"
+host = "repo"
+old_format = "legacy-request-json(text,engine,session,voice,speed,priority)"
+behavior = "per-request engine WAS consumed by voice_broker.py (_prep_request: req.get('engine') -> _choose_engine); in the product, engine choice is owned solely by the VoiceResolver - there is NO per-request engine field and NO compatibility export"
+destination = "dan speak / VoiceService.submit"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "traced field-by-field; DAN_BROKER_ENGINE honored by the old broker, so it is documented as consumed, not a no-op; the new contract intentionally drops it"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/dan_core/tui_screens.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/scripts/persona-doctor.sh"
+host = "repo"
+old_format = "legacy-playlist-feeder"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/skills/trio-live/SKILL.md"
+host = "repo"
+old_format = "legacy-broker-process,legacy-gpt-say-wrapper"
+behavior = "host skill invocation preserved; speech goes through dan speak --as/--session/--source"
+destination = "integrations/shared/skills/trio-live/SKILL.md -> ~/.agents/skills/trio-live/SKILL.md"
+status = "migrated"
+test = "tests/test_adapter_contracts.py::test_machine_adapter_uses_exact_speak_contract"
+reason = "thin adapter replaces host-local engine/persona logic"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/skills/trio-live/local/say_gpt.sh"
+host = "repo"
+old_format = "legacy-gpt-say-wrapper"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/skills/trio-live/local/viewer.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime,legacy-gpt-say-wrapper"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/skills/trio-live/scripts/trio.sh"
+host = "repo"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process,legacy-gpt-say-wrapper"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/dobranocka_prepare.py"
+host = "repo"
+old_format = "legacy-playlist-lines"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/dobranocka_render.py"
+host = "repo"
+old_format = "legacy-playlist-lines"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/fix_playlist_quality.py"
+host = "repo"
+old_format = "legacy-playlist-lines"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/auto_jarvis.py"
+host = "repo"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/com.dan.voice-broker.plist"
+host = "repo"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/dan_panel.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/dj_visualizer.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/djdan_pro/djdan_server.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime,legacy-playlist-lines"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/listen_ozzy.py"
+host = "repo"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "startup/listening owned by dand ChildSupervisor and capture policy"
+destination = "dan/daemon/supervisor.py"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "supervision and mic capture are daemon duties now; donor stays until cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/openclaw_m3_tts.py"
+host = "openclaw"
+old_format = "legacy-broker-process"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/panel/dan_panel_web.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/persona_agent.py"
+host = "repo"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/segment_take.py"
+host = "repo"
+old_format = "legacy-broker-process"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/start-voice-broker.sh"
+host = "repo"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime,legacy-broker-process,legacy-engine-environment"
+behavior = "startup/listening owned by dand ChildSupervisor and capture policy"
+destination = "dan/daemon/supervisor.py"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "supervision and mic capture are daemon duties now; donor stays until cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/voice_broker.py"
+host = "repo"
+old_format = "legacy-broker-process(request JSON on :7788 queue)"
+behavior = "playback/queue/mastering owned by dand broker + VoiceQueue; old broker keeps running until cutover"
+destination = "dan/voice/broker.py inside dand"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "single-owner audio moves into dand; live process untouched until Task 12/14"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/voice_lab/app.js"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/jarvis/xtts_server.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/dan/tools/loud-thinking/tts-loud-thinking.sh"
+host = "claude"
+old_format = "message-display-json-stdin"
+behavior = "speaks ONLY [[GLOS]]-marked segments; silence without marker; always exit 0"
+destination = "integrations/claude/hooks/tts-message-display.sh -> ~/.claude/hooks/tts-message-display.sh"
+status = "migrated"
+test = "tests/test_hook_fail_open.py::test_hook_is_fail_open_when_dand_is_down"
+reason = "fail-open hook <1s calls dan speak; never starts legacy audio"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/jarvis/AGENTS.md"
+host = "repo"
+old_format = "repo-instruction-text"
+behavior = "donor repo instruction; authority superseded by this repository"
+destination = "AGENTS.md / CLAUDE.md (this repo)"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "donor repos are read-only sources until the deletion gate (Task 15)"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/jarvis/CLAUDE.md"
+host = "repo"
+old_format = "repo-instruction-text"
+behavior = "donor repo instruction; authority superseded by this repository"
+destination = "AGENTS.md / CLAUDE.md (this repo)"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "donor repos are read-only sources until the deletion gate (Task 15)"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/jarvis/jarvis/runtime/supervisor.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/jarvis/jarvis/voice/shared_broker.py"
+host = "repo"
+old_format = "legacy-dan-voice-json,legacy-dan-voice-runtime"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Documents/dev/menubar-controller/menubar_controller.py"
+host = "repo"
+old_format = "legacy-dan-voice-runtime,legacy-broker-process"
+behavior = "no proven live consumer; equivalent capability lives in the dand runtime"
+destination = "none"
+status = "disabled"
+test = "tests/test_adapter_contracts.py::test_manifest_rows_are_complete_decisions"
+reason = "unproven reference; nothing may depend on it after cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Library/LaunchAgents/ai.openclaw.gateway.plist"
+host = "launchd"
+old_format = "launchd-plist"
+behavior = "external host job stays loaded, untouched and NOT relabeled as DAN"
+destination = "none (external)"
+status = "rejected"
+test = "tests/test_launchd_single_owner.py::test_install_has_one_product_launchd_label"
+reason = "not DAN-owned; product installs exactly one label com.dan.dand"
+
+[[producer]]
+id = "/Users/n1_ozzy/Library/LaunchAgents/com.dan.voice-broker.plist"
+host = "launchd"
+old_format = "launchd-plist"
+behavior = "supervision replaced by com.dan.dand (KeepAlive=true); old job disabled during journaled cutover Task 12/14"
+destination = "launchd/com.dan.dand.plist.example -> ~/Library/LaunchAgents/com.dan.dand.plist"
+status = "disabled"
+test = "tests/test_launchd_single_owner.py::test_install_has_one_product_launchd_label"
+reason = "one product daemon owns engines, standup and hotkey; legacy job retired at cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Library/LaunchAgents/com.ozzy.higiena.plist"
+host = "launchd"
+old_format = "launchd-plist"
+behavior = "external host job stays loaded, untouched and NOT relabeled as DAN"
+destination = "none (external)"
+status = "rejected"
+test = "tests/test_launchd_single_owner.py::test_install_has_one_product_launchd_label"
+reason = "not DAN-owned; product installs exactly one label com.dan.dand"
+
+[[producer]]
+id = "/Users/n1_ozzy/Library/LaunchAgents/com.ozzy.jarvisd.plist"
+host = "launchd"
+old_format = "launchd-plist"
+behavior = "supervision replaced by com.dan.dand (KeepAlive=true); old job disabled during journaled cutover Task 12/14"
+destination = "launchd/com.dan.dand.plist.example -> ~/Library/LaunchAgents/com.dan.dand.plist"
+status = "disabled"
+test = "tests/test_launchd_single_owner.py::test_install_has_one_product_launchd_label"
+reason = "one product daemon owns engines, standup and hotkey; legacy job retired at cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Library/LaunchAgents/com.ozzy.menubar-controller.plist"
+host = "launchd"
+old_format = "launchd-plist"
+behavior = "supervision replaced by com.dan.dand (KeepAlive=true); old job disabled during journaled cutover Task 12/14"
+destination = "launchd/com.dan.dand.plist.example -> ~/Library/LaunchAgents/com.dan.dand.plist"
+status = "disabled"
+test = "tests/test_launchd_single_owner.py::test_install_has_one_product_launchd_label"
+reason = "one product daemon owns engines, standup and hotkey; legacy job retired at cutover"
+
+[[producer]]
+id = "/Users/n1_ozzy/Library/LaunchAgents/com.ozzy.voice-standup.plist"
+host = "launchd"
+old_format = "launchd-plist"
+behavior = "supervision replaced by com.dan.dand (KeepAlive=true); old job disabled during journaled cutover Task 12/14"
+destination = "launchd/com.dan.dand.plist.example -> ~/Library/LaunchAgents/com.dan.dand.plist"
+status = "disabled"
+test = "tests/test_launchd_single_owner.py::test_install_has_one_product_launchd_label"
+reason = "one product daemon owns engines, standup and hotkey; legacy job retired at cutover"
+
+[[producer]]
+id = "/tmp/claude-loud-thinking"
+host = "runtime"
+old_format = "off-file-switch"
+behavior = "hard-off switch semantics preserved by voice.hook_enabled (dan voice hook on|off|status) plus explicit DAN_VOICE_HOOK=off session override"
+destination = "~/.dan/config.toml [voice] hook_enabled"
+status = "disabled"
+test = "tests/test_hook_fail_open.py::test_hook_is_fail_open_when_dand_is_down"
+reason = "volatile /tmp switch replaced by config-registry key; hook never creates /tmp state"
+
+[[producer]]
+id = "launchd-label:ai.openclaw.gateway"
+host = "launchd"
+old_format = "launchd-plist"
+behavior = "external host job stays loaded, untouched and NOT relabeled as DAN"
+destination = "none (external)"
+status = "rejected"
+test = "tests/test_launchd_single_owner.py::test_install_has_one_product_launchd_label"
+reason = "not DAN-owned; product installs exactly one label com.dan.dand"
+
+[[producer]]
+id = "launchd-label:com.ozzy.jarvisd"
+host = "launchd"
+old_format = "launchd-plist"
+behavior = "supervision replaced by com.dan.dand (KeepAlive=true); old job disabled during journaled cutover Task 12/14"
+destination = "launchd/com.dan.dand.plist.example -> ~/Library/LaunchAgents/com.dan.dand.plist"
+status = "disabled"
+test = "tests/test_launchd_single_owner.py::test_install_has_one_product_launchd_label"
+reason = "one product daemon owns engines, standup and hotkey; legacy job retired at cutover"
+
+[[producer]]
+id = "launchd-label:com.ozzy.menubar-controller"
+host = "launchd"
+old_format = "launchd-plist"
+behavior = "supervision replaced by com.dan.dand (KeepAlive=true); old job disabled during journaled cutover Task 12/14"
+destination = "launchd/com.dan.dand.plist.example -> ~/Library/LaunchAgents/com.dan.dand.plist"
+status = "disabled"
+test = "tests/test_launchd_single_owner.py::test_install_has_one_product_launchd_label"
+reason = "one product daemon owns engines, standup and hotkey; legacy job retired at cutover"
