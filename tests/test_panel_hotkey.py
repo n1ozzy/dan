@@ -1,24 +1,22 @@
-"""Global PTT hotkey logic (panel shell, MASTER_PLAN §4a operator control).
+"""Global PTT hotkey logic (MASTER_PLAN §4a operator control).
 
-The native NSEvent monitor is thin and untestable without a keyboard +
-Accessibility; all decisions live in pure helpers tested here:
-  - parse_hotkey: "left_cmd+left_shift" -> a macOS device-modifier bitmask
-  - HotkeyEdgeDetector: a stream of modifier flags -> "down"/"up" edges
-  - PttHotkeyClient: an edge -> a POST to /voice/ptt/{down,up}
+Task 9 moved hotkey ownership into the daemon: the pure decision helpers live
+in `dan.input.hotkey` (parse_hotkey, HotkeyEdgeDetector, trust probe) and the
+panel keeps only display helpers (`fetch_effective_hotkey`) plus thin
+re-exports. The panel posts NO PTT edges of its own anymore.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from dan.panel.hotkey import (
+from dan.input.hotkey import (
     HotkeyEdgeDetector,
     HotkeySpecError,
-    PttHotkeyClient,
     accessibility_trust_state,
-    fetch_effective_hotkey,
     parse_hotkey,
 )
+from dan.panel.hotkey import fetch_effective_hotkey
 
 
 # -- parse_hotkey ---------------------------------------------------------
@@ -190,84 +188,17 @@ def test_edge_release_needs_only_one_required_bit_gone():
     assert _detect(required, [0x8 | 0x2, 0x2]) == ["down", "up"]
 
 
-# -- PttHotkeyClient ------------------------------------------------------
+# -- ownership guard ------------------------------------------------------
+# Task 9: the daemon owns PTT edges. The panel module must not regain a
+# client that POSTs /voice/ptt/* on key events.
 
-class _FakePoster:
-    def __init__(self):
-        self.calls = []
+def test_panel_module_owns_no_ptt_client():
+    import dan.panel.hotkey as panel_hotkey
 
-    def __call__(self, url, *, data, headers):
-        self.calls.append({"url": url, "data": data, "headers": headers})
-
-
-def test_client_down_posts_to_ptt_down_with_source_and_token():
-    poster = _FakePoster()
-    client = PttHotkeyClient(
-        "http://127.0.0.1:41741",
-        "tok123",
-        poster=poster,
-        health_checker=lambda: True,
-    )
-    client.down()
-    assert len(poster.calls) == 1
-    call = poster.calls[0]
-    assert call["url"] == "http://127.0.0.1:41741/voice/ptt/down"
-    assert call["headers"]["X-DAN-Token"] == "tok123"
-    assert b'"global_hotkey"' in call["data"]
+    assert not hasattr(panel_hotkey, "PttHotkeyClient")
 
 
-def test_client_up_posts_to_ptt_up():
-    poster = _FakePoster()
-    client = PttHotkeyClient(
-        "http://127.0.0.1:41741/",
-        "tok",
-        poster=poster,
-        health_checker=lambda: True,
-    )
-    client.up()
-    # trailing slash on base must not double up in the path
-    assert poster.calls[0]["url"] == "http://127.0.0.1:41741/voice/ptt/up"
+def test_daemon_side_logic_is_importable_from_dan_input():
+    from dan.input.hotkey import PTT_SOURCE
 
-
-def test_client_skips_ptt_when_backend_is_unhealthy():
-    poster = _FakePoster()
-    client = PttHotkeyClient(
-        "http://127.0.0.1:41741",
-        "tok",
-        poster=poster,
-        health_checker=lambda: False,
-    )
-
-    client.down()
-    client.up()
-
-    assert poster.calls == []
-
-
-def test_client_swallows_poster_errors():
-    def boom(url, *, data, headers):
-        raise OSError("daemon down")
-
-    client = PttHotkeyClient(
-        "http://127.0.0.1:41741",
-        "tok",
-        poster=boom,
-        health_checker=lambda: True,
-    )
-    # a dead daemon must never crash the panel's key handler
-    client.down()
-    client.up()
-
-
-def test_client_dispatch_maps_edge_to_method():
-    poster = _FakePoster()
-    client = PttHotkeyClient(
-        "http://127.0.0.1:41741",
-        "tok",
-        poster=poster,
-        health_checker=lambda: True,
-    )
-    client.dispatch("down")
-    client.dispatch("up")
-    client.dispatch(None)  # no edge -> no call
-    assert [c["url"].rsplit("/", 1)[-1] for c in poster.calls] == ["down", "up"]
+    assert PTT_SOURCE == "global_hotkey"

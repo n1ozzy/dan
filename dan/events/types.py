@@ -33,6 +33,9 @@ class EventType(StrEnum):
     VOICE_SPEAK_CANCELLED = "voice.speak.cancelled"
     VOICE_SPEAK_FAILED = "voice.speak.failed"
 
+    PTT_DOWN = "ptt.down"
+    PTT_UP = "ptt.up"
+
     AUDIO_DEVICES_SNAPSHOT = "audio.devices.snapshot"
     LISTENING_LEASE_CREATED = "listening.lease.created"
     LISTENING_LEASE_RELEASED = "listening.lease.released"

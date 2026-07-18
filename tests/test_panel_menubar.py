@@ -217,11 +217,16 @@ class TestWidgetPanel:
         # textarea kompozytora nie przyjmie ani jednego znaku.
         assert "canBecomeKeyWindow" in self._source()
 
-    def test_panel_hides_on_outside_click_and_resign_key(self) -> None:
+    def test_panel_hides_on_resign_key_without_global_monitors(self) -> None:
+        # Task 9: dand jest jedynym globalnym obserwatorem zdarzeń — panel
+        # chowa kartę wyłącznie delegatem okna (utrata key window), bez
+        # żadnego monitora NSEvent (globalnego ani lokalnego).
         source = self._source()
 
-        assert "NSEventMaskLeftMouseDown" in source
         assert "windowDidResignKey" in source
+        assert "NSEventMaskLeftMouseDown" not in source
+        assert "addGlobalMonitorForEventsMatchingMask" not in source
+        assert "addLocalMonitorForEventsMatchingMask" not in source
 
     def test_panel_positions_under_status_item(self) -> None:
         # Pozycja z ekranu ikony (frame okna przycisku status itemu),

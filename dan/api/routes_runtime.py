@@ -41,7 +41,7 @@ from dan.daemon.app import BRAIN_ADAPTER_SETTING_KEY, DaemonApp
 from dan.runtime.models import RuntimeProcessObservation, RuntimeRisk
 from dan.runtime.supervisor import OFFICIAL_LABEL
 from dan.events.types import EventType
-from dan.panel.hotkey import HotkeySpecError, parse_hotkey
+from dan.input.hotkey import HotkeySpecError, parse_hotkey
 from dan.security.redaction import redact_secrets
 from dan.store.db import close_quietly
 
@@ -7394,6 +7394,34 @@ def get_runtime_legacy(app: DaemonApp) -> dict[str, Any]:
     }
 
 
+def post_runtime_restart(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
+    """POST /runtime/restart: drain in-process, exit with the restart code.
+
+    The coordinator (injectable via `app.restart_coordinator` for tests)
+    closes intake, drains/cancels in-flight voice and stops children, player
+    and hotkey through app.stop(), then exits; launchd resurrects dand. This
+    endpoint never calls launchctl or pkill.
+    """
+
+    reason = "api restart"
+    if isinstance(request_payload, Mapping):
+        raw_reason = request_payload.get("reason")
+        if raw_reason is not None:
+            if not isinstance(raw_reason, str) or not raw_reason.strip():
+                raise ValueError("reason must be a non-empty string.")
+            reason = raw_reason.strip()
+    elif request_payload is not None:
+        raise ValueError("Request JSON must be an object.")
+
+    coordinator = getattr(app, "restart_coordinator", None)
+    if coordinator is None:
+        from dan.daemon.restart import RestartCoordinator
+
+        coordinator = RestartCoordinator(app)
+        app.restart_coordinator = coordinator
+    return coordinator.request_restart(reason=reason)
+
+
 def _conflicts(observations: list[RuntimeProcessObservation]) -> list[RuntimeProcessObservation]:
     return [
         observation
@@ -7414,6 +7442,7 @@ __all__ = [
     "get_runtime_processes",
     "get_runtime_settings",
     "get_runtime_startup",
+    "post_runtime_restart",
     "post_runtime_settings_apply",
     "register_routes",
 ]

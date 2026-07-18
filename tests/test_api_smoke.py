@@ -1460,6 +1460,9 @@ def test_snapshot_state_returns_required_keys(app: DaemonApp) -> None:
         "launchd_label",
         "session_tokens_in",
         "session_tokens_out",
+        # Task 9: daemon-owned hotkey + supervised children are status facts.
+        "hotkey",
+        "children",
     }
 
     snapshot = app.snapshot_state()

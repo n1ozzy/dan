@@ -49,6 +49,7 @@ from dan.api.routes_runtime import (
     get_runtime_settings,
     get_runtime_processes,
     get_runtime_startup,
+    post_runtime_restart,
     post_runtime_settings_apply,
 )
 from dan.api.routes_audio import get_audio_devices
@@ -439,6 +440,13 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
 
         if method == "GET" and path == "/runtime/settings":
             _write_json(handler, 200, get_runtime_settings(app))
+            return
+
+        if method == "POST" and path == "/runtime/restart":
+            request_payload = _read_optional_json_body(handler)
+            # 202: the restart is accepted and happens right after this
+            # response flushes; the coordinator never calls launchctl/pkill.
+            _write_json(handler, 202, post_runtime_restart(app, request_payload))
             return
 
         if method == "POST" and path == "/runtime/settings/apply":

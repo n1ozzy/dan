@@ -3,6 +3,10 @@
 launchd stops the daemon with SIGTERM; without a handler Python dies
 mid-loop, `app.stop()` never runs and events keep a dangling
 `daemon.started` with no matching `daemon.stopped` (G4 punch list).
+
+Since Task 9 the same stop() path also reaps supervised children and releases
+the daemon-owned hotkey monitor (the panel no longer owns any global monitor),
+so a SIGTERM exit must still complete cleanly through that longer teardown.
 """
 
 from __future__ import annotations
@@ -83,6 +87,13 @@ def test_daemon_run_writes_daemon_stopped_on_sigterm(
 
     assert rc == 0
     events = _read_events(db_path)
+    started = [payload for etype, payload in events if etype == "daemon.started"]
     stopped = [payload for etype, payload in events if etype == "daemon.stopped"]
+    assert len(started) == 1
     assert len(stopped) == 1
     assert stopped[0]["reason"] == "SIGTERM"
+    # Task 9 ownership: under DAN_TEST_MODE the real Quartz monitor never
+    # starts, so the SIGTERM teardown must not leave a hotkey owner lock.
+    assert not [
+        payload for etype, payload in events if etype in {"ptt.down", "ptt.up"}
+    ]

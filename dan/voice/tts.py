@@ -171,6 +171,7 @@ class SupertonicEngine:
         self,
         *,
         config: Any,
+        serve_autostart: bool | None = None,
     ) -> None:
         voice_cfg = config.voice
         self._binary = _resolve_supertonic_binary(str(voice_cfg.supertonic_binary or ""))
@@ -214,7 +215,15 @@ class SupertonicEngine:
             getattr(voice_cfg, "supertonic_serve_model", "supertonic-3")
             or "supertonic-3"
         )
-        self._serve_autostart = bool(getattr(voice_cfg, "supertonic_serve_autostart", False))
+        # Task 9: when the daemon's ChildSupervisor owns `supertonic serve`,
+        # it passes serve_autostart=False so this engine only REUSES the
+        # supervised server and never spawns a competing one. None keeps the
+        # config behavior (standalone engine use, e.g. CLI tools).
+        self._serve_autostart = (
+            bool(getattr(voice_cfg, "supertonic_serve_autostart", False))
+            if serve_autostart is None
+            else bool(serve_autostart)
+        )
         self._serve_max_chunk = max(
             1,
             int(getattr(voice_cfg, "supertonic_serve_max_chunk_length", 400) or 400),
@@ -513,6 +522,7 @@ def build_tts_engine(
     name: str,
     *,
     config: Any | None = None,
+    serve_autostart: bool | None = None,
 ) -> Any:
     normalized = str(name or "").strip().lower()
     if normalized in BANNED_ENGINES:
@@ -532,7 +542,7 @@ def build_tts_engine(
                 "TTS engine 'supertonic' needs the daemon config "
                 "(voice.supertonic_* and runtime.runtime_dir)."
             )
-        return SupertonicEngine(config=config)
+        return SupertonicEngine(config=config, serve_autostart=serve_autostart)
     raise TTSEngineError(f"Unknown TTS engine {name!r}.")
 
 

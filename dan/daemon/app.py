@@ -164,6 +164,21 @@ class DaemonApp:
     voice_gateway: Any = None
     voice_cancellation: Any = None
     voice_lease_sweeper: Any = None
+    # Daemon-owned global PTT hotkey (Task 9): the ONE event tap on the
+    # machine lives here, guarded by a file lock in the runtime dir. The
+    # factory is injectable so tests drive a fake tap; None means "build the
+    # real Quartz monitor when allowed".
+    hotkey_monitor: Any = None
+    hotkey_monitor_factory: Any = None
+    # Visible health blocker (missing Accessibility, lock conflict, bad spec);
+    # the rest of dand stays healthy.
+    hotkey_error: str | None = None
+    # Injectable timer for the PTT activation grace (accidental-brush guard).
+    ptt_timer_factory: Any = None
+    # Supervised children (Task 9): only dand starts `supertonic serve`.
+    child_supervisor: Any = None
+    # POST /runtime/restart drains through this coordinator (injectable).
+    restart_coordinator: Any = None
     # Daemon-lifetime (not voice-lifetime): streaming adapters register kill
     # handles here (G4d), the cancellation coordinator fires them (leg 1).
     voice_generation_registry: Any = field(default_factory=_build_generation_registry)
@@ -241,9 +256,19 @@ class DaemonApp:
                         TurnOrchestratorBusyError,
                     )
 
+                    # Supervised Supertonic serve (Task 9): only dand spawns
+                    # it, through the ChildSupervisor, BEFORE the engine is
+                    # built — the engine then reuses the warm server and its
+                    # own serve-autostart stays off (one owner, one child).
+                    if self.child_supervisor is None:
+                        from dan.daemon.supervisor import ChildSupervisor
+
+                        self.child_supervisor = ChildSupervisor()
+                    supervised_serve = self._ensure_supertonic_serve_child()
                     voice_engine = build_tts_engine(
                         self.config.voice.default_tts,
                         config=self.config,
+                        serve_autostart=False if supervised_serve else None,
                     )
                     voice_player = (
                         MockAudioPlayer()
@@ -327,10 +352,14 @@ class DaemonApp:
                 if voice_lease_sweeper is not None:
                     voice_lease_sweeper.start()
 
+                self._start_hotkey_monitor()
+
                 event_store.append(EventType.DAEMON_STARTED, "daemon", {"service": "dand"})
                 state_machine.transition(RuntimeState.IDLE, reason="daemon started")
                 self.started = True
             except Exception:
+                self._stop_hotkey_monitor()
+                self._stop_supervised_children()
                 if voice_lease_sweeper is not None:
                     try:
                         voice_lease_sweeper.stop()
@@ -433,6 +462,12 @@ class DaemonApp:
             # with the brain adapters built in create_daemon_app.
             self.voice_cancellation = None
 
+            # Reverse of start(): intake and playback are already closed above;
+            # now the supervised children (whole process groups), then the
+            # hotkey monitor releases the machine-wide owner lock.
+            self._stop_supervised_children()
+            self._stop_hotkey_monitor()
+
             # The Claude adapter owns one long-lived stream-json subprocess.
             # Close it before the daemon store and lifecycle disappear so no
             # orphan can retain stdin/stdout across shutdown.
@@ -489,7 +524,43 @@ class DaemonApp:
             "launchd_label": self.config.launchd.label,
             "session_tokens_in": self._session_tokens_in,
             "session_tokens_out": self._session_tokens_out,
+            # Task 9: missing Accessibility / lost hotkey lock is a visible
+            # blocker here while the rest of dand stays healthy.
+            "hotkey": self._hotkey_snapshot(),
+            "children": self._children_snapshot(),
         }
+
+    def _hotkey_snapshot(self) -> dict[str, Any]:
+        monitor = self.hotkey_monitor
+        if monitor is None:
+            return {
+                "running": False,
+                "accessibility": None,
+                "blocker": self.hotkey_error,
+            }
+        try:
+            health = monitor.health()
+            return {
+                "running": bool(health.running),
+                "accessibility": health.accessibility,
+                "blocker": self.hotkey_error,
+            }
+        except Exception:  # noqa: BLE001 - a probe failure must not break /state
+            get_logger(__name__).exception("Hotkey health probe failed.")
+            return {
+                "running": False,
+                "accessibility": "unknown",
+                "blocker": self.hotkey_error,
+            }
+
+    def _children_snapshot(self) -> dict[str, Any]:
+        if self.child_supervisor is None:
+            return {}
+        try:
+            return dict(self.child_supervisor.status())
+        except Exception:  # noqa: BLE001 - a probe failure must not break /state
+            get_logger(__name__).exception("Child supervisor status failed.")
+            return {}
 
     def allowed_state_targets(self) -> list[str]:
         state_machine = self._require_state_machine()
@@ -1290,6 +1361,167 @@ class DaemonApp:
 
     def _resolve_voice_conversation_id(self) -> str:
         return self._resolve_dan_conversation_id()
+
+    # -- daemon-owned global PTT hotkey (Task 9) --------------------------
+
+    def _start_hotkey_monitor(self) -> None:
+        """Install the one global hotkey tap, if configured and allowed.
+
+        The default (real Quartz) monitor never starts in tests or with the
+        mic disabled (DAN_TEST_MODE / DAN_DISABLE_MIC); an injected factory
+        bypasses that env gate because injection means a hermetic fake.
+        Failure to own the hotkey is a visible health blocker
+        (`hotkey_error`), never a daemon crash — dand stays healthy while PTT
+        is reported unavailable (no fallback to a panel listener).
+        """
+
+        from dan.input.hotkey import HotkeySpecError, parse_hotkey
+
+        self.hotkey_error = None
+        if not self.config.voice.enabled:
+            return
+        try:
+            required_mask = parse_hotkey(self.config.voice.ptt_hotkey or "")
+        except HotkeySpecError as exc:
+            self.hotkey_error = str(exc)
+            get_logger(__name__).warning("Global PTT hotkey disabled: %s", exc)
+            return
+        if required_mask == 0:
+            return
+        factory = self.hotkey_monitor_factory
+        if factory is None:
+            if os.environ.get("DAN_TEST_MODE") == "1" or os.environ.get(
+                "DAN_DISABLE_MIC"
+            ) == "1":
+                return
+
+            def factory(*, lock_path: Path, required_mask: int, on_edge: Any) -> Any:
+                from dan.input.macos_event_tap import MacOSHotkeyMonitor
+
+                return MacOSHotkeyMonitor(
+                    lock_path=lock_path,
+                    required_mask=required_mask,
+                    on_edge=on_edge,
+                )
+
+        gate = self._build_ptt_activation_gate()
+        monitor = factory(
+            lock_path=self.paths.runtime_dir / "hotkey.lock",
+            required_mask=required_mask,
+            on_edge=gate.edge,
+        )
+        try:
+            monitor.start()
+        except Exception as exc:  # noqa: BLE001 - blocker, not a crash
+            self.hotkey_error = str(exc)
+            get_logger(__name__).warning(
+                "Global PTT hotkey unavailable (dand stays up): %s", exc
+            )
+            return
+        self.hotkey_monitor = monitor
+
+    def _build_ptt_activation_gate(self) -> Any:
+        """Accidental-brush guard (Ozzy): grace before the mic ever arms."""
+
+        from dan.input.hotkey import PttActivationGate
+
+        grace_ms = int(getattr(self.config.voice, "ptt_activation_grace_ms", 0) or 0)
+        return PttActivationGate(
+            grace_seconds=grace_ms / 1000.0,
+            on_down=self._hotkey_ptt_down,
+            on_up=self._hotkey_ptt_up,
+            timer_factory=self.ptt_timer_factory,
+        )
+
+    def _stop_hotkey_monitor(self) -> None:
+        monitor, self.hotkey_monitor = self.hotkey_monitor, None
+        if monitor is None:
+            return
+        try:
+            monitor.stop()
+        except Exception:
+            get_logger(__name__).exception("Hotkey monitor stop failed.")
+
+    def _hotkey_ptt_down(self) -> None:
+        """In-process PTT controller: the tap drives the SAME lease manager as
+        POST /voice/ptt/down (source "global_hotkey") — never HTTP back into
+        the daemon that hosts the tap."""
+
+        try:
+            self.acquire_listening_lease(mode="hold", source="global_hotkey")
+            self._require_event_store().append(
+                EventType.PTT_DOWN, "hotkey", {"source": "global_hotkey"}
+            )
+        except Exception:
+            get_logger(__name__).exception("Hotkey PTT down failed.")
+
+    def _hotkey_ptt_up(self) -> None:
+        try:
+            self.release_listening_leases(mode="hold")
+            self._require_event_store().append(
+                EventType.PTT_UP, "hotkey", {"source": "global_hotkey"}
+            )
+        except Exception:
+            get_logger(__name__).exception("Hotkey PTT up failed.")
+
+    # -- supervised children (Task 9) -------------------------------------
+
+    def _ensure_supertonic_serve_child(self) -> bool:
+        """Register + start `supertonic serve` under the ChildSupervisor.
+
+        Returns True when the serve child is supervised (so the engine must
+        not autostart its own). Configuration gate mirrors the engine's warm-
+        serve contract: a serve URL plus autostart=true means dand owns the
+        server; autostart=false keeps expecting an externally-managed one.
+        """
+
+        voice = self.config.voice
+        if (
+            self.child_supervisor is None
+            or str(voice.default_tts or "").strip().lower() != "supertonic"
+            or not str(voice.supertonic_serve_url or "").strip()
+            or not bool(voice.supertonic_serve_autostart)
+        ):
+            return False
+        from dan.daemon.supervisor import ChildSpec
+        from dan.voice.tts import _resolve_supertonic_binary
+
+        serve_url = str(voice.supertonic_serve_url).rstrip("/")
+        port = serve_url.rsplit(":", 1)[-1]
+        binary = _resolve_supertonic_binary(str(voice.supertonic_binary or ""))
+        self.child_supervisor.register(
+            ChildSpec(
+                name="supertonic",
+                argv=(
+                    binary,
+                    "serve",
+                    "--model",
+                    str(voice.supertonic_serve_model or "supertonic-3"),
+                    "--port",
+                    port,
+                    "--log-level",
+                    "warning",
+                ),
+                health_url=f"{serve_url}/v1/health",
+                restart_limit=3,
+                backoff_seconds=(0.5, 1.0, 2.0, 4.0, 8.0),
+            )
+        )
+        self.child_supervisor.ensure_running("supertonic")
+        return True
+
+    def _stop_supervised_children(self) -> None:
+        if self.child_supervisor is None:
+            return
+        try:
+            self.child_supervisor.stop_all()
+        except Exception:
+            get_logger(__name__).exception("Supervised child shutdown failed.")
+
+    def child_pids(self) -> list[int]:
+        if self.child_supervisor is None:
+            return []
+        return list(self.child_supervisor.child_pids())
 
     def _sweep_listening_leases(self) -> None:
         """Sweeper tick: expire stale leases and sync the recorder."""

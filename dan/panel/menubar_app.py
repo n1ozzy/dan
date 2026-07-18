@@ -23,20 +23,12 @@ from pathlib import Path
 from typing import Any
 
 from dan.config import DANConfig, load_config
-from dan.panel.hotkey import (
-    HotkeyEdgeDetector,
-    HotkeySpecError,
-    PttHotkeyClient,
-    accessibility_trust_state,
-    fetch_effective_hotkey,
-    parse_hotkey,
-)
+# Task 9: the panel owns NO global key/mouse monitor anymore — the daemon's
+# MacOSHotkeyMonitor (dan/input/macos_event_tap.py) is the one event tap on
+# the machine, PTT activation grace included. The panel only displays hotkey
+# state and posts the manual PTT intent from the web UI.
+from dan.panel.hotkey import accessibility_trust_state, fetch_effective_hotkey
 from dan.paths import resolve_runtime_paths
-
-# PTT activation grace: how long the hotkey combo must stay held before the mic
-# actually arms. A quick accidental brush (press+release faster than this) is
-# ignored entirely. Client-side UX constant (Ozzy 2026-07-10: 400 ms).
-PTT_ACTIVATION_GRACE_SECONDS = 0.4
 from dan.security.transport import load_api_token
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -196,8 +188,6 @@ class MenuBarApp:
         self._panel = None
         self._controller = None
         self._webview = None
-        self._hotkey_monitors: list = []
-        self._outside_click_monitor = None
         self._hidden_at = 0.0
         self._shown_at = 0.0
 
@@ -216,25 +206,16 @@ class MenuBarApp:
         self._controller = self._build_controller(AppKit)
         self._panel = self._build_panel(AppKit, WebKit)
         self._status_item = self._build_status_item(AppKit, self._controller)
-        self._install_hotkey_monitors(AppKit)
-        self._install_outside_click_monitor(AppKit)
+        self._report_hotkey_state()
 
         app.run()
 
-    def _install_hotkey_monitors(self, AppKit):  # noqa: N803 - ObjC module name
-        """Watch a held modifier combo anywhere and drive PTT down/up.
+    def _report_hotkey_state(self) -> None:
+        """Display-only hotkey status (Task 9): dand owns the global tap.
 
-        A flagsChanged monitor (global = other apps focused, local = our
-        panel focused) feeds NSEvent.modifierFlags() — masked to the low 16
-        device-dependent bits so left/right are distinguished — through the
-        edge detector. Needs macOS Accessibility permission; without it the
-        global monitor silently sees nothing (the local one still works while
-        the panel is focused). A blank/zero hotkey installs nothing.
-
-        The combo is the daemon's *effective* `voice.ptt_hotkey` (the DB value
-        the panel UI writes to), falling back to the static TOML only when the
-        daemon can't be reached — otherwise the monitor would watch the config
-        default while the user pressed the combo they set in the panel.
+        The panel installs no NSEvent monitor of any kind — it just tells the
+        operator what combo the daemon binds and whether Accessibility trust
+        (now needed by the *daemon* executable, not the panel) looks healthy.
         """
 
         spec = (
@@ -242,101 +223,15 @@ class MenuBarApp:
                 self._settings.api_base_url, self._settings.api_token
             )
             or self._settings.ptt_hotkey
+            or "(brak)"
         )
-        try:
-            mask = parse_hotkey(spec)
-        except HotkeySpecError as exc:
-            print(
-                f"panel: nieprawidlowy skrot PTT {spec!r}: {exc} "
-                "Globalny hotkey wylaczony — ustaw poprawny skrot w panelu.",
-                file=sys.stderr,
-            )
-            return
-        if mask == 0:
-            return
-        detector = HotkeyEdgeDetector(mask)
-        client = PttHotkeyClient(
-            self._settings.api_base_url, self._settings.api_token
-        )
-
-        # PTT activation grace (Ozzy 2026-07-10): a "down" edge does NOT arm the
-        # mic immediately. We wait PTT_ACTIVATION_GRACE_SECONDS; only if the combo
-        # is STILL held when the timer fires do we actually POST /voice/ptt/down.
-        # An accidental brush (press+release faster than the grace) never touches
-        # the mic — the release cancels the pending timer before it fires. The
-        # detector still tracks physical key state; the grace only defers the
-        # HTTP dispatch, so release semantics stay intact.
-        ptt_state: dict[str, Any] = {"timer": None, "down_sent": False}
-
-        def _fire_down() -> None:
-            ptt_state["down_sent"] = True
-            ptt_state["timer"] = None
-            client.dispatch("down")
-
-        def handler(event):
-            device_flags = int(event.modifierFlags()) & 0xFFFF
-            edge = detector.update(device_flags)
-            if edge == "down":
-                if PTT_ACTIVATION_GRACE_SECONDS <= 0:
-                    _fire_down()
-                else:
-                    timer = threading.Timer(PTT_ACTIVATION_GRACE_SECONDS, _fire_down)
-                    timer.daemon = True
-                    ptt_state["down_sent"] = False
-                    ptt_state["timer"] = timer
-                    timer.start()
-            elif edge == "up":
-                pending = ptt_state.get("timer")
-                if pending is not None:
-                    pending.cancel()
-                    ptt_state["timer"] = None
-                if ptt_state.get("down_sent"):
-                    client.dispatch("up")
-                    ptt_state["down_sent"] = False
-                # released within grace → never armed → send nothing
-            return event  # local monitor forwards the event; global ignores it
-
-        flags_changed = AppKit.NSEventMaskFlagsChanged
-        self._hotkey_monitors.append(
-            AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
-                flags_changed, handler
-            )
-        )
-        self._hotkey_monitors.append(
-            AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
-                flags_changed, handler
-            )
-        )
-        # Globalny monitor flagsChanged dostaje zdarzenia TYLKO gdy proces
-        # panelu ma uprawnienie Dostepnosc. Bez niego monitor jest wpiety, ale
-        # handler nigdy sie nie odpala — skrot milczy, choc przycisk PRZYTRZYMAJ
-        # (WebView→HTTP, bez uprawnien) dziala. Wykrywamy to i mowimy wprost,
-        # zamiast udawac, ze hotkey jest aktywny.
         trust = accessibility_trust_state()
-        if trust == "untrusted":
-            print(
-                f"panel: skrot PTT {spec!r} zarejestrowany, ale globalny hotkey "
-                "NIE ZADZIALA — proces panelu nie ma uprawnienia Dostepnosc. "
-                "Ustawienia systemowe > Prywatnosc i ochrona > Dostepnosc — "
-                "wlacz aplikacje uruchamiajaca panel (Terminal/Python), potem "
-                "zrestartuj panel. (Przycisk PRZYTRZYMAJ w panelu dziala bez "
-                "tego uprawnienia.)",
-                file=sys.stderr,
-            )
-        elif trust == "trusted":
-            print(
-                f"panel: globalny PTT hotkey aktywny ({spec}) — Dostepnosc "
-                "przyznana.",
-                file=sys.stderr,
-            )
-        else:  # unknown — nie potrafimy sprawdzic uprawnienia, damy hint
-            print(
-                f"panel: globalny PTT hotkey zarejestrowany ({spec}). Jesli "
-                "trzymanie skrotu nie wlacza nasluchu: Ustawienia systemowe > "
-                "Prywatnosc i ochrona > Dostepnosc — wlacz aplikacje "
-                "uruchamiajaca panel (Terminal/Python), potem zrestartuj panel.",
-                file=sys.stderr,
-            )
+        print(
+            f"panel: globalny PTT hotkey ({spec}) obsluguje demon dand — panel "
+            f"tylko wyswietla stan (Dostepnosc: {trust}). Przycisk PRZYTRZYMAJ "
+            "w panelu dziala niezaleznie od uprawnien.",
+            file=sys.stderr,
+        )
 
     def _install_edit_menu(self, AppKit, app):  # noqa: N803 - ObjC module name
         """Standardowe skróty edycji (⌘A/⌘C/⌘V/⌘X/⌘Z) w polach webview.
@@ -373,21 +268,6 @@ class MenuBarApp:
             edit_menu.addItem_(item)
 
         app.setMainMenu_(main_menu)
-
-    def _install_outside_click_monitor(self, AppKit):  # noqa: N803
-        """Klik poza panelem (w inną aplikację) chowa kartę. Globalny monitor
-        nie widzi zdarzeń własnej apki, więc klik w panel ani w ikonę
-        menubara go nie odpala — toggle zostaje przy togglePanel:."""
-
-        mask = AppKit.NSEventMaskLeftMouseDown | AppKit.NSEventMaskRightMouseDown
-
-        def handler(_event):
-            if self._panel is not None and self._panel.isVisible():
-                self._hide_panel()
-
-        self._outside_click_monitor = (
-            AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(mask, handler)
-        )
 
     def _build_panel(self, AppKit, WebKit):  # noqa: N803 - ObjC module names
         configuration = WebKit.WKWebViewConfiguration.alloc().init()

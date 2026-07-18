@@ -413,10 +413,10 @@ def parse_bool(value: Any) -> bool:
 def parse_hotkey(value: Any) -> str:
     if not isinstance(value, str):
         raise ConfigWriteRejected("hotkey must be a string")
-    from dan.panel.hotkey import (
+    from dan.input.hotkey import (
         HotkeySpecError,
     )
-    from dan.panel.hotkey import (
+    from dan.input.hotkey import (
         parse_hotkey as parse_hotkey_spec,
     )
 
