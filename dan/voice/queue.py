@@ -44,6 +44,11 @@ class VoiceQueue:
     ) -> None:
         if global_pending_limit <= 0 or session_pending_limit <= 0:
             raise ValueError("voice queue pending limits must be positive")
+        event_connection = getattr(event_store, "connection", None)
+        if event_connection is not None and event_connection is not conn:
+            raise VoiceQueueError(
+                "voice queue and event store must use the same SQLite connection"
+            )
         self._conn = conn
         self._event_store = event_store
         self._now = now or utc_now_iso
@@ -281,37 +286,103 @@ class VoiceQueue:
         reason: str | None = None,
         interruption_source: str | None = None,
     ) -> list[str]:
-        rows = self._conn.execute(
-            """
-            SELECT id FROM voice_queue
-            WHERE session_id = ? AND status IN ('queued', 'synthesizing', 'speaking')
-            ORDER BY rowid DESC
-            """,
-            (session_id,),
-        ).fetchall()
-        request_ids = [str(row[0]) for row in rows]
-        if not request_ids:
-            return []
-        now = self._now()
         self._begin_immediate()
         try:
-            self._conn.execute(
-                """
-                UPDATE voice_queue
-                SET status = 'cancelled', playback_completed_at = CASE
-                      WHEN status = 'speaking' THEN ? ELSE playback_completed_at END,
-                    playback_confirmed = 0, updated_at = ?
-                WHERE session_id = ? AND status IN ('queued', 'synthesizing', 'speaking')
-                """,
-                (now, now, session_id),
+            rows = [
+                (str(row[0]), str(row[1]))
+                for row in self._conn.execute(
+                    """
+                    SELECT id, session_id FROM voice_queue
+                    WHERE session_id = ?
+                      AND status IN ('queued', 'synthesizing', 'speaking')
+                    ORDER BY rowid DESC
+                    """,
+                    (session_id,),
+                ).fetchall()
+            ]
+            self._tombstone_turns_in_transaction([session_id])
+            request_ids = self._cancel_rows_in_transaction(
+                rows,
+                now=self._now(),
+                reason=reason,
+                interruption_source=interruption_source,
             )
         except Exception:
             self._conn.rollback()
             raise
         else:
             self._conn.commit()
-        for request_id in request_ids:
-            self._append_event(
+        return request_ids
+
+    def cancel_active(
+        self,
+        *,
+        reason: str | None = None,
+        interruption_source: str | None = None,
+        capture_generation_turn_ids: Callable[[], Iterable[str]] | None = None,
+    ) -> tuple[list[str], list[str], list[str], int]:
+        self._begin_immediate()
+        try:
+            rows = [
+                (str(row[0]), str(row[1]))
+                for row in self._conn.execute(
+                    """
+                    SELECT id, session_id FROM voice_queue
+                    WHERE status IN ('queued', 'synthesizing', 'speaking')
+                    ORDER BY rowid DESC
+                    """
+                ).fetchall()
+            ]
+            queue_turn_ids = _unique_nonempty(session_id for _, session_id in rows)
+            generation_turn_ids = _unique_nonempty(
+                capture_generation_turn_ids()
+                if capture_generation_turn_ids is not None
+                else ()
+            )
+            tombstoned_turn_ids = _unique_nonempty(
+                [*generation_turn_ids, *queue_turn_ids]
+            )
+            tombstoned = self._tombstone_turns_in_transaction(tombstoned_turn_ids)
+            request_ids = self._cancel_rows_in_transaction(
+                rows,
+                now=self._now(),
+                reason=reason,
+                interruption_source=interruption_source,
+            )
+        except Exception:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+        return request_ids, queue_turn_ids, generation_turn_ids, tombstoned
+
+    def _cancel_rows_in_transaction(
+        self,
+        rows: list[tuple[str, str]],
+        *,
+        now: str,
+        reason: str | None,
+        interruption_source: str | None,
+    ) -> list[str]:
+        request_ids: list[str] = []
+        for request_id, session_id in rows:
+            updated = self._conn.execute(
+                """
+                UPDATE voice_queue
+                SET status = 'cancelled', playback_completed_at = CASE
+                      WHEN status = 'speaking' THEN ? ELSE playback_completed_at END,
+                    playback_confirmed = 0, updated_at = ?
+                WHERE id = ? AND status IN ('queued', 'synthesizing', 'speaking')
+                """,
+                (now, now, request_id),
+            ).rowcount
+            if updated != 1:
+                raise VoiceQueueError(
+                    f"request {request_id!r} changed during cancellation"
+                )
+            request_ids.append(request_id)
+        for request_id, session_id in rows:
+            self._append_event_in_transaction(
                 EventType.VOICE_SPEAK_CANCELLED,
                 {
                     "request_id": request_id,
@@ -347,53 +418,92 @@ class VoiceQueue:
         reason: str | None = None,
         interruption_source: str | None = None,
     ) -> bool:
-        row = self._conn.execute(
-            """
-            SELECT session_id FROM voice_queue
-            WHERE id = ? AND status IN ('queued', 'synthesizing', 'speaking')
-            """,
-            (request_id,),
-        ).fetchone()
-        if row is None:
-            return False
-        now = self._now()
-        with self._conn:
-            updated = self._conn.execute(
+        return self._cancel_request(
+            request_id,
+            reason=reason,
+            interruption_source=interruption_source,
+            tombstone_session=True,
+        )
+
+    def cancel_superseded_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None = None,
+        interruption_source: str | None = None,
+    ) -> bool:
+        return self._cancel_request(
+            request_id,
+            reason=reason,
+            interruption_source=interruption_source,
+            tombstone_session=False,
+        )
+
+    def _cancel_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None,
+        interruption_source: str | None,
+        tombstone_session: bool,
+    ) -> bool:
+        self._begin_immediate()
+        try:
+            row = self._conn.execute(
                 """
-                UPDATE voice_queue
-                SET status = 'cancelled', playback_completed_at = CASE
-                      WHEN status = 'speaking' THEN ? ELSE playback_completed_at END,
-                    playback_confirmed = 0, updated_at = ?
+                SELECT id, session_id FROM voice_queue
                 WHERE id = ? AND status IN ('queued', 'synthesizing', 'speaking')
                 """,
-                (now, now, request_id),
-            ).rowcount
-        if updated == 1:
-            self._append_event(
-                EventType.VOICE_SPEAK_CANCELLED,
-                {
-                    "request_id": request_id,
-                    "session_id": str(row[0]),
-                    "reason": reason,
-                    "interruption_source": interruption_source,
-                },
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                self._conn.rollback()
+                return False
+            session_id = str(row[1])
+            if tombstone_session:
+                self._tombstone_turns_in_transaction([session_id])
+            self._cancel_rows_in_transaction(
+                [(str(row[0]), session_id)],
+                now=self._now(),
+                reason=reason,
+                interruption_source=interruption_source,
             )
-        return updated == 1
+        except Exception:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+        return True
 
     def tombstone_turns(self, turn_ids: Iterable[str]) -> int:
-        ids = [str(turn_id) for turn_id in turn_ids if turn_id]
+        ids = _unique_nonempty(turn_ids)
+        if not ids:
+            return 0
+        self._begin_immediate()
+        try:
+            count = self._tombstone_turns_in_transaction(ids)
+        except Exception:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
+        return count
+
+    def _tombstone_turns_in_transaction(self, turn_ids: Iterable[str]) -> int:
+        if not self._conn.in_transaction:
+            raise VoiceQueueError("tombstones require an active transaction")
+        ids = _unique_nonempty(turn_ids)
         if not ids:
             return 0
         now = self._now()
-        with self._conn:
-            self._conn.executemany(
-                "INSERT OR IGNORE INTO cancelled_turns (turn_id, cancelled_at) VALUES (?, ?)",
-                [(turn_id, now) for turn_id in ids],
-            )
-            self._conn.execute(
-                "DELETE FROM cancelled_turns WHERE cancelled_at < ?",
-                (_tombstone_cutoff(now),),
-            )
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO cancelled_turns (turn_id, cancelled_at) VALUES (?, ?)",
+            [(turn_id, now) for turn_id in ids],
+        )
+        self._conn.execute(
+            "DELETE FROM cancelled_turns WHERE cancelled_at < ?",
+            (_tombstone_cutoff(now),),
+        )
         return len(ids)
 
     def is_tombstoned(self, turn_id: str) -> bool:
@@ -504,6 +614,17 @@ class VoiceQueue:
         if self._event_store is not None:
             self._event_store.append(event_type, "voice", payload)
 
+    def _append_event_in_transaction(
+        self, event_type: str, payload: dict[str, Any]
+    ) -> None:
+        if self._event_store is None:
+            return
+        append = getattr(self._event_store, "append_in_transaction", None)
+        if callable(append):
+            append(event_type, "voice", payload)
+            return
+        raise VoiceQueueError("event store does not support transactional event append")
+
 
 def _tombstone_cutoff(now_iso: str) -> str:
     try:
@@ -514,6 +635,10 @@ def _tombstone_cutoff(now_iso: str) -> str:
         moment = moment.replace(tzinfo=UTC)
     cutoff = moment - timedelta(seconds=TOMBSTONE_TTL_SECONDS)
     return cutoff.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _unique_nonempty(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(str(value) for value in values if value))
 
 
 __all__ = [

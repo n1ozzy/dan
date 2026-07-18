@@ -618,6 +618,41 @@ def test_brain_manager_close_terminates_persistent_adapter_process(tmp_path: Pat
     assert process.terminated == 1
 
 
+def test_persistent_generation_unregisters_the_exact_registration_token(
+    tmp_path: Path,
+) -> None:
+    class SpyRegistry(GenerationRegistry):
+        def __init__(self) -> None:
+            super().__init__()
+            self.registrations: list[Any] = []
+            self.unregistered: list[Any] = []
+
+        def register(self, turn_id: str, cancel) -> Any:
+            registration = super().register(turn_id, cancel)
+            self.registrations.append(registration)
+            return registration
+
+        def unregister(self, registration: Any) -> None:
+            self.unregistered.append(registration)
+            super().unregister(registration)
+
+    registry = SpyRegistry()
+    process = FakePersistentProcess([[result_line("ok")]])
+    adapter = ClaudeCliAdapter(
+        process_factory=RecordingFactory(process),
+        generation_registry=registry,
+        state_path=tmp_path / "exact-registration-token.json",
+    )
+    try:
+        adapter.generate(request("start", turn_id="turn-token"))
+    finally:
+        adapter.close()
+
+    assert len(registry.registrations) == 1
+    assert registry.unregistered == registry.registrations
+    assert registry.unregistered[0] is registry.registrations[0]
+
+
 def test_close_signals_active_generation_before_waiting_for_generation_lock(
     tmp_path: Path,
 ) -> None:

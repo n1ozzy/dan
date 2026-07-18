@@ -18,8 +18,12 @@ from pathlib import Path
 import pytest
 
 from dan.store.db import close_quietly, initialize_database
-from dan.voice.cancellation import CancellationCoordinator, GenerationRegistry
-from dan.voice.queue import VoiceQueue
+from dan.voice.cancellation import (
+    CancellationCoordinator,
+    GenerationRegistration,
+    GenerationRegistry,
+)
+from dan.voice.queue import VoiceQueue, VoiceQueueCancelledError
 from tests.voice_helpers import enqueue_voice
 
 
@@ -90,12 +94,29 @@ def test_registry_cancels_registered_generation_once() -> None:
 def test_registry_unregister_removes_the_handle() -> None:
     registry = GenerationRegistry()
     calls: list[str] = []
-    registry.register("turn-1", lambda: calls.append("killed"))
-    registry.unregister("turn-1")
+    registration = registry.register("turn-1", lambda: calls.append("killed"))
+    registry.unregister(registration)
 
     assert registry.active_count() == 0
     assert len(registry.cancel_all()) == 0
     assert calls == []
+
+
+def test_registry_stale_unregister_cannot_remove_newer_same_turn_generation() -> None:
+    registry = GenerationRegistry()
+    calls: list[str] = []
+    stale = registry.register("turn-1", lambda: calls.append("stale"))
+    current = registry.register("turn-1", lambda: calls.append("current"))
+
+    assert isinstance(stale, GenerationRegistration)
+    assert isinstance(current, GenerationRegistration)
+    assert stale is not current
+
+    registry.unregister(stale)
+
+    assert registry.active_count() == 1
+    assert registry.cancel_all() == ["turn-1"]
+    assert calls == ["current"]
 
 
 def test_cancel_all_returns_the_cancelled_turn_ids() -> None:
@@ -123,6 +144,42 @@ def test_registry_survives_a_cancel_callable_that_raises() -> None:
     assert len(registry.cancel_all()) == 2
     assert calls == ["killed"]
     assert registry.active_count() == 0
+
+
+def test_cancellation_epoch_captures_registrations_before_queue_linearization(
+    db_path: Path,
+) -> None:
+    registry = GenerationRegistry()
+    calls: list[str] = []
+
+    def cancel_initial() -> None:
+        calls.append("initial")
+        registry.register("turn-admitted", lambda: calls.append("admitted"))
+
+    registry.register("turn-initial", cancel_initial)
+    coordinator = CancellationCoordinator(
+        factory_for(db_path),
+        generation_registry=registry,
+        playback_owner=StoppableOwner(),
+    )
+
+    result = coordinator.cancel_active_speech(reason="barge_in")
+
+    assert calls == ["initial", "admitted"]
+    assert result["generation_cancelled"] == 2
+    conn = connect(db_path)
+    try:
+        with pytest.raises(VoiceQueueCancelledError, match="turn-admitted was cancelled"):
+            enqueue_voice(VoiceQueue(conn), "late", session="turn-admitted")
+    finally:
+        close_quietly(conn)
+
+    after_epoch = registry.register(
+        "turn-after-linearization", lambda: calls.append("after")
+    )
+    assert calls == ["initial", "admitted"]
+    assert registry.active_count() == 1
+    registry.unregister(after_epoch)
 
 
 # --- CancellationCoordinator (3 legs, idempotent) ------------------------------

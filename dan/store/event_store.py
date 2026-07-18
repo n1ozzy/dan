@@ -33,6 +33,10 @@ class EventStore:
     def __init__(self, conn: sqlite3.Connection):
         self._conn = conn
 
+    @property
+    def connection(self) -> sqlite3.Connection:
+        return self._conn
+
     def append(
         self,
         type: str,
@@ -48,35 +52,90 @@ class EventStore:
 
         try:
             with self._conn:
-                cursor = self._conn.execute(
-                    """
-                    INSERT INTO events (
-                      created_at, type, source, correlation_id, turn_id, payload_json
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        created_at,
-                        event_type,
-                        event_source,
-                        correlation_id,
-                        turn_id,
-                        payload_json,
-                    ),
+                event_id = self._insert_event(
+                    created_at=created_at,
+                    event_type=event_type,
+                    event_source=event_source,
+                    correlation_id=correlation_id,
+                    turn_id=turn_id,
+                    payload_json=payload_json,
                 )
-                event_id = int(cursor.lastrowid)
         except sqlite3.Error as exc:
             raise EventStoreError(f"Could not append event {event_type}: {exc}") from exc
 
-        return Event(
-            id=event_id,
+        return _stored_event(
+            event_id=event_id,
             created_at=created_at,
-            type=event_type,
-            source=event_source,
+            event_type=event_type,
+            event_source=event_source,
             correlation_id=correlation_id,
             turn_id=turn_id,
-            payload=_decode_payload(payload_json),
+            payload_json=payload_json,
         )
+
+    def append_in_transaction(
+        self,
+        type: str,
+        source: str,
+        payload: Mapping[str, Any],
+        correlation_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> Event:
+        if not self._conn.in_transaction:
+            raise EventStoreError("append_in_transaction requires an active transaction.")
+        event_type = _normalize_required_text(type, "event type")
+        event_source = _normalize_required_text(source, "event source")
+        payload_json = _event_payload_json(payload)
+        created_at = utc_now_iso()
+        try:
+            event_id = self._insert_event(
+                created_at=created_at,
+                event_type=event_type,
+                event_source=event_source,
+                correlation_id=correlation_id,
+                turn_id=turn_id,
+                payload_json=payload_json,
+            )
+        except sqlite3.Error as exc:
+            raise EventStoreError(f"Could not append event {event_type}: {exc}") from exc
+
+        return _stored_event(
+            event_id=event_id,
+            created_at=created_at,
+            event_type=event_type,
+            event_source=event_source,
+            correlation_id=correlation_id,
+            turn_id=turn_id,
+            payload_json=payload_json,
+        )
+
+    def _insert_event(
+        self,
+        *,
+        created_at: str,
+        event_type: str,
+        event_source: str,
+        correlation_id: str | None,
+        turn_id: str | None,
+        payload_json: str,
+    ) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO events (
+              created_at, type, source, correlation_id, turn_id, payload_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                created_at,
+                event_type,
+                event_source,
+                correlation_id,
+                turn_id,
+                payload_json,
+            ),
+        )
+        return int(cursor.lastrowid)
 
     def get(self, event_id: int) -> Event | None:
         rows = self._fetch_events(
@@ -150,6 +209,27 @@ class EventStore:
             raise EventStoreError(f"Could not read events: {exc}") from exc
         finally:
             cursor.close()
+
+
+def _stored_event(
+    *,
+    event_id: int,
+    created_at: str,
+    event_type: str,
+    event_source: str,
+    correlation_id: str | None,
+    turn_id: str | None,
+    payload_json: str,
+) -> Event:
+    return Event(
+        id=event_id,
+        created_at=created_at,
+        type=event_type,
+        source=event_source,
+        correlation_id=correlation_id,
+        turn_id=turn_id,
+        payload=_decode_payload(payload_json),
+    )
 
 
 def create_event_store(conn: sqlite3.Connection) -> EventStore:

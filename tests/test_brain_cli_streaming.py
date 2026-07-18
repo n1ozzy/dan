@@ -413,17 +413,20 @@ def test_streaming_registers_a_kill_handle_and_unregisters_after() -> None:
         def __init__(self) -> None:
             super().__init__()
             self.registered: list[str] = []
-            self.unregistered: list[str] = []
+            self.registrations: list[Any] = []
+            self.unregistered: list[Any] = []
             self.handles: dict[str, Any] = {}
 
-        def register(self, turn_id: str, cancel) -> None:
+        def register(self, turn_id: str, cancel) -> Any:
             self.registered.append(turn_id)
             self.handles[turn_id] = cancel
-            super().register(turn_id, cancel)
+            registration = super().register(turn_id, cancel)
+            self.registrations.append(registration)
+            return registration
 
-        def unregister(self, turn_id: str) -> None:
-            self.unregistered.append(turn_id)
-            super().unregister(turn_id)
+        def unregister(self, registration: Any) -> None:
+            self.unregistered.append(registration)
+            super().unregister(registration)
 
     registry = SpyRegistry()
     process = FakeStreamProcess([result("Krótka odpowiedź.")])
@@ -432,7 +435,8 @@ def test_streaming_registers_a_kill_handle_and_unregisters_after() -> None:
     adapter.generate(make_request(), on_delta=lambda _: None)
 
     assert registry.registered == ["turn-stream-1"]
-    assert registry.unregistered == ["turn-stream-1"]
+    assert registry.unregistered == registry.registrations
+    assert registry.unregistered[0] is registry.registrations[0]
     assert registry.active_count() == 0
     # The registered handle really kills the subprocess (leg 1 of §7).
     registry.handles["turn-stream-1"]()

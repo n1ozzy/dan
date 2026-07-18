@@ -388,9 +388,9 @@ def stream_cli_response(
         cancelled.set()
         _signal_process(proc, force=False)
 
-    registered = bool(generation_registry is not None and request.turn_id)
-    if registered:
-        generation_registry.register(request.turn_id, _cancel)
+    registration = None
+    if generation_registry is not None and request.turn_id:
+        registration = generation_registry.register(request.turn_id, _cancel)
 
     parser = _StreamJsonParser(on_delta)
     stderr_lines: list[str] = []
@@ -406,8 +406,8 @@ def stream_cli_response(
         returncode = proc.wait()
     finally:
         watchdog.cancel()
-        if registered:
-            generation_registry.unregister(request.turn_id)
+        if registration is not None:
+            generation_registry.unregister(registration)
         if stdin_thread is not None:
             stdin_thread.join(timeout=2)
         if stderr_thread is not None:
@@ -1077,9 +1077,9 @@ class ClaudeCliAdapter:
 
         with self._active_cancel_lock:
             self._active_cancel = cancel
-        registered = bool(self._generation_registry is not None and request.turn_id)
-        if registered:
-            self._generation_registry.register(request.turn_id, cancel)
+        registration = None
+        if self._generation_registry is not None and request.turn_id:
+            registration = self._generation_registry.register(request.turn_id, cancel)
         try:
             stdin = getattr(process, "stdin", None)
             if stdin is None:
@@ -1142,8 +1142,8 @@ class ClaudeCliAdapter:
             with self._active_cancel_lock:
                 if self._active_cancel is cancel:
                     self._active_cancel = None
-            if registered:
-                self._generation_registry.unregister(request.turn_id)
+            if registration is not None:
+                self._generation_registry.unregister(registration)
 
     def _persistent_stderr_preview(self) -> str:
         thread = self._stderr_thread

@@ -19,6 +19,7 @@ speaker path (ADR-005).
 from __future__ import annotations
 
 import threading
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -28,6 +29,22 @@ from dan.store.event_store import create_event_store
 from dan.voice.queue import VoiceQueue
 
 _LOGGER = get_logger("voice.cancellation")
+
+
+class GenerationRegistration:
+    __slots__ = ("_generation_id", "_turn_id")
+
+    def __init__(self, turn_id: str) -> None:
+        self._turn_id = turn_id
+        self._generation_id = uuid.uuid4().hex
+
+
+class _GenerationCancellationEpoch:
+    __slots__ = ("closed", "turn_ids")
+
+    def __init__(self, turn_ids: list[str]) -> None:
+        self.turn_ids = dict.fromkeys(turn_ids)
+        self.closed = False
 
 
 class GenerationRegistry:
@@ -40,24 +57,44 @@ class GenerationRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._handles: dict[str, Callable[[], None]] = {}
-        self._cancelling = False
+        self._condition = threading.Condition(self._lock)
+        self._handles: dict[
+            str, tuple[GenerationRegistration, Callable[[], None]]
+        ] = {}
+        self._cancellation_epoch: _GenerationCancellationEpoch | None = None
 
-    def register(self, turn_id: str, cancel: Callable[[], None]) -> None:
-        with self._lock:
-            if self._cancelling:
-                # Cancellation in progress: immediately invoke cancel to prevent
-                # any new generation from starting (FIX-09: tombstone race).
+    def register(
+        self, turn_id: str, cancel: Callable[[], None]
+    ) -> GenerationRegistration:
+        normalized_turn_id = str(turn_id)
+        registration = GenerationRegistration(normalized_turn_id)
+        cancel_now = False
+        with self._condition:
+            epoch = self._cancellation_epoch
+            if epoch is not None:
+                epoch.turn_ids.setdefault(normalized_turn_id, None)
+                cancel_now = True
+            else:
+                self._handles[normalized_turn_id] = (registration, cancel)
+        if cancel_now:
+            try:
                 cancel()
-                return
-            self._handles[str(turn_id)] = cancel
+            except Exception:  # noqa: BLE001 — a dead process already satisfies cancel
+                _LOGGER.exception(
+                    "generation cancel handle for turn %s raised.", normalized_turn_id
+                )
+        return registration
 
-    def unregister(self, turn_id: str) -> None:
-        with self._lock:
-            self._handles.pop(str(turn_id), None)
+    def unregister(self, registration: GenerationRegistration) -> None:
+        if not isinstance(registration, GenerationRegistration):
+            raise TypeError("unregister requires a GenerationRegistration token")
+        with self._condition:
+            current = self._handles.get(registration._turn_id)
+            if current is not None and current[0] is registration:
+                self._handles.pop(registration._turn_id, None)
 
     def active_count(self) -> int:
-        with self._lock:
+        with self._condition:
             return len(self._handles)
 
     def cancel_all(self) -> list[str]:
@@ -65,20 +102,37 @@ class GenerationRegistry:
 
         The coordinator tombstones exactly these turn ids, so a generation with
         no queue rows yet is still blocked from enqueuing a late delta (FIX-09)."""
-        with self._lock:
-            self._cancelling = True
+        epoch = self.begin_cancellation()
+        return self.finish_cancellation(epoch)
+
+    def begin_cancellation(self) -> _GenerationCancellationEpoch:
+        with self._condition:
+            while self._cancellation_epoch is not None:
+                self._condition.wait()
             handles = list(self._handles.items())
             self._handles.clear()
-        cancelled: list[str] = []
-        for turn_id, cancel in handles:
+            epoch = _GenerationCancellationEpoch([turn_id for turn_id, _ in handles])
+            self._cancellation_epoch = epoch
+        for turn_id, (_, cancel) in handles:
             try:
                 cancel()
             except Exception:  # noqa: BLE001 — a dead process must not stop the sweep
                 _LOGGER.exception("generation cancel handle for turn %s raised.", turn_id)
-            cancelled.append(turn_id)
-        with self._lock:
-            self._cancelling = False
-        return cancelled
+        return epoch
+
+    def finish_cancellation(
+        self, epoch: _GenerationCancellationEpoch
+    ) -> list[str]:
+        with self._condition:
+            if epoch.closed:
+                return list(epoch.turn_ids)
+            if self._cancellation_epoch is not epoch:
+                raise RuntimeError("generation cancellation epoch is not active")
+            epoch.closed = True
+            self._cancellation_epoch = None
+            turn_ids = list(epoch.turn_ids)
+            self._condition.notify_all()
+            return turn_ids
 
 
 class CancellationCoordinator:
@@ -99,20 +153,23 @@ class CancellationCoordinator:
         reason: str,
         source: str | None = None,
     ) -> dict[str, Any]:
-        generation_turn_ids = self._registry.cancel_all()
-        # Tombstone the still-generating turns FIRST, before the cancel sweep:
-        # a generation dying from the SIGTERM above can emit one last delta, and
-        # this closes the window in which it could enqueue a fresh row (FIX-09).
-        self._tombstone_turns(set(generation_turn_ids))
-        queue_cancelled, queue_turn_ids, queue_speech_ids = self._cancel_queued(
-            reason=reason,
-            interruption_source=source,
-        )
-        # Tombstone the queue turns too (a filler timer is not tied to a live
-        # generation), so the UNION of everything cancelled refuses late rows.
-        tombstoned = self._tombstone_turns(
-            set(generation_turn_ids) | set(queue_turn_ids)
-        )
+        epoch = self._registry.begin_cancellation()
+        try:
+            (
+                queue_cancelled,
+                queue_turn_ids,
+                queue_speech_ids,
+                generation_turn_ids,
+                tombstoned,
+            ) = self._cancel_queued(
+                reason=reason,
+                interruption_source=source,
+                capture_generation_turn_ids=lambda: self._registry.finish_cancellation(
+                    epoch
+                ),
+            )
+        finally:
+            self._registry.finish_cancellation(epoch)
         playback_stopped = self._stop_playback()
         cancelled_speech_id = queue_speech_ids[0] if queue_speech_ids else None
         previous_turn_id = queue_turn_ids[0] if queue_turn_ids else None
@@ -140,44 +197,32 @@ class CancellationCoordinator:
     # -- legs ------------------------------------------------------------------
 
     def _cancel_queued(
-        self, *, reason: str, interruption_source: str | None
-    ) -> tuple[int, list[str], list[str]]:
+        self,
+        *,
+        reason: str,
+        interruption_source: str | None,
+        capture_generation_turn_ids: Callable[[], list[str]],
+    ) -> tuple[int, list[str], list[str], list[str], int]:
         conn = self._connect()
         try:
             queue = VoiceQueue(conn, event_store=create_event_store(conn))
-            rows = [
-                (str(row[0]), str(row[1]) if row[1] is not None else None)
-                for row in conn.execute(
-                    "SELECT id, turn_id FROM voice_queue "
-                    "WHERE status IN ('queued', 'synthesizing', 'speaking') "
-                    "AND turn_id IS NOT NULL "
-                    "ORDER BY rowid DESC"
-                ).fetchall()
-            ]
-            queue_turn_ids: list[str] = []
-            for row_turn_id in [turn_id for (_, turn_id) in rows if turn_id is not None]:
-                if row_turn_id not in queue_turn_ids:
-                    queue_turn_ids.append(row_turn_id)
-            cancelled_request_ids: list[str] = []
-            for turn_id in queue_turn_ids:
-                cancelled_request_ids_for_turn: list[str] = []
-                queue.cancel_turn(
-                    turn_id,
-                    reason=reason,
-                    interruption_source=interruption_source,
-                    cancelled_request_ids=cancelled_request_ids_for_turn,
-                )
-                cancelled_request_ids.extend(cancelled_request_ids_for_turn)
-            return len(cancelled_request_ids), queue_turn_ids, cancelled_request_ids
-        finally:
-            close_quietly(conn)
-
-    def _tombstone_turns(self, turn_ids: set[str]) -> int:
-        if not turn_ids:
-            return 0
-        conn = self._connect()
-        try:
-            return VoiceQueue(conn).tombstone_turns(turn_ids)
+            (
+                cancelled_request_ids,
+                queue_turn_ids,
+                generation_turn_ids,
+                tombstoned,
+            ) = queue.cancel_active(
+                reason=reason,
+                interruption_source=interruption_source,
+                capture_generation_turn_ids=capture_generation_turn_ids,
+            )
+            return (
+                len(cancelled_request_ids),
+                queue_turn_ids,
+                cancelled_request_ids,
+                generation_turn_ids,
+                tombstoned,
+            )
         finally:
             close_quietly(conn)
 
@@ -193,4 +238,8 @@ class CancellationCoordinator:
         return True
 
 
-__all__ = ["CancellationCoordinator", "GenerationRegistry"]
+__all__ = [
+    "CancellationCoordinator",
+    "GenerationRegistration",
+    "GenerationRegistry",
+]
