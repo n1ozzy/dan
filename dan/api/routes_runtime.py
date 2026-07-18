@@ -5573,6 +5573,7 @@ def _build_voice_capabilities(
         str(app.config.voice.playback_binary or "")
     )
     supertonic_available = tts_binary_status == "ok"
+    cancellation_support = app.voice_cancellation is not None
 
     tts_providers = []
     if configured_tts == "mock":
@@ -5776,8 +5777,12 @@ def _build_voice_capabilities(
         "publisher_ready": bool(app.started and app.voice_broker is not None),
         "delivery_observation": "local_lifecycle",
         "acknowledgement_support": True,
-        "cancellation_support": bool(app.voice_cancellation is not None),
-        "interrupt_policy": "local_cancellable",
+        "cancellation_support": cancellation_support,
+        "interrupt_policy": (
+            "local_cancellable"
+            if cancellation_support
+            else "local_cancellation_unavailable"
+        ),
         "queue_status": queue_snapshot.get("status", "unknown"),
         "tts_readiness": _projection_status(tts_projection.get("readiness")),
         "stt_readiness": _projection_status(stt_projection.get("readiness")),
@@ -6800,30 +6805,22 @@ def _build_structured_compatibility_warnings(
             suggested_action="Remove the speed setting or choose a TTS provider with speed support.",
         )
     queue_fields = settings_preview["sections"]["queue_barge_in"]["fields"]
-    if app.config.voice.enabled and app.config.voice.speak_responses and queue_fields["cancel_support"]["status"] == "unsupported":
-        if app.config.voice.broker_enabled:
-            cancel_message = "External shared playback is published as uninterruptible."
-            cancel_reason = (
-                "DAN can observe publication, but the shared broker exposes no per-request "
-                "acknowledgement or cancellation contract."
-            )
-            cancel_action = (
-                "Do not present barge-in or manual cancel as available for shared playback."
-            )
-        else:
-            cancel_message = "Barge-in is enabled by voice flow but cancel support is unavailable."
-            cancel_reason = "Runtime cancellation coordinator is not available from safe probes."
-            cancel_action = (
-                "Start/configure the voice runtime cancellation path before relying on barge-in."
-            )
+    if (
+        app.config.voice.enabled
+        and app.config.voice.speak_responses
+        and queue_fields["cancel_support"]["status"] == "unsupported"
+    ):
         add(
             warning_id="barge_in_cancel_unavailable",
             severity="warning",
             group="voice",
             field_ids=["queue_barge_in.cancel_support", "queue_barge_in.manual_cancel_available"],
-            message=cancel_message,
-            reason=cancel_reason,
-            suggested_action=cancel_action,
+            message="Local cancellation is unavailable for voice playback.",
+            reason="The local cancellation coordinator is not available from safe runtime probes.",
+            suggested_action=(
+                "Start/configure the local voice cancellation path before relying on "
+                "barge-in or manual cancel."
+            ),
         )
     ptt_fields = settings_preview["sections"]["endpointing_ptt"]["fields"]
     if ptt_fields["ptt_mode"]["current"] in CANONICAL_PTT_MODES and ptt_fields["ptt_hotkey"]["status"] == "missing":

@@ -323,6 +323,12 @@ def _voice_runtime_groups(
         ("cancellation_reason", "cancel_reason", "interruption_reason"),
     )
     broker_ready = bool(app.started and app.voice_broker is not None)
+    cancellation_available = app.voice_cancellation is not None
+    interrupt_policy = (
+        "local_cancellable"
+        if cancellation_available
+        else "local_cancellation_unavailable"
+    )
 
     return {
         "capture_input": _runtime_group(
@@ -441,7 +447,7 @@ def _voice_runtime_groups(
                 "publisher_mode": "local",
                 "broker_ready": broker_ready,
                 "acknowledgement": "local_lifecycle",
-                "interrupt_policy": "local_cancellable",
+                "interrupt_policy": interrupt_policy,
                 "output_device": getattr(audio_state, "output_device", None),
                 "output_transport": getattr(audio_state, "output_transport", None),
             },
@@ -462,14 +468,15 @@ def _voice_runtime_groups(
                 "cancellation_reason": cancellation_reason,
                 "cancellation_coordinator": _component_name(app.voice_cancellation),
                 "publisher_mode": "local",
-                "interrupt_policy": "local_cancellable",
-                "cancel_supported": bool(app.voice_cancellation is not None),
+                "interrupt_policy": interrupt_policy,
+                "cancel_supported": cancellation_available,
                 "acknowledgement_supported": True,
             },
             readiness=READINESS_OK,
             dependency_status=(
-                "queue readable; cancellation coordinator "
-                + ("present" if app.voice_cancellation is not None else "not built")
+                "queue readable; local cancellation coordinator present"
+                if cancellation_available
+                else "queue readable; local cancellation unavailable because coordinator is absent"
             ),
             latest_safe_error=voice_error,
             warnings=_queue_warnings(app, queue_rows),
