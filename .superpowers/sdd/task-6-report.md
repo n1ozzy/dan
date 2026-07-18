@@ -141,3 +141,126 @@ Final pre-commit combined gate after refactor and report completion: `129 passed
   output-manifest publication with deterministic fakes.
 - Task boundary: Task 7 still owns persistent snapshots, VoiceService, enqueueing, and the
   sole playback path.
+
+## Review-fix section (2026-07-18)
+
+### RED failures reproduced
+
+The review findings were reproduced before production edits with focused tests:
+
+- Extra `EXTRA.json` beside a valid style manifest was accepted: the regression failed
+  with `DID NOT RAISE AssetVerificationError`.
+- M1 resolved `mastering = "raport"`, then synthesis failed with
+  `unknown resolved mastering profile: 'raport'` before executing ffmpeg.
+- A catalog custom style reached the Supertonic command as bare `M2M1`; the stronger
+  warm-server regression also proved that no `--custom-style-path` command ran.
+- The pipeline loader ignored all seven incompatible TOML mutations tested:
+  `network_fallback`, reference `redistribute`, `sample_rate`, `channels`,
+  `sample_width_bytes`, `publish_below_threshold`, and `output_manifest`.
+- Package-tree corruption and mismatched interpreter provenance both produced
+  `DID NOT RAISE`; model files were accepted by directory name and presence alone.
+- A configured venv Python symlink resolved to the base Homebrew interpreter, proving
+  that package provenance was not tied to the configured interpreter environment.
+- Injecting `_write_output_manifest` failure after acceptance left `zaneta.wav`
+  published without its manifest.
+
+RED commands:
+
+```text
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_voice_assets.py::test_verifier_rejects_extra_unmanifested_json
+
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_voice_tts_supertonic.py::test_m1_raport_profile_executes_supported_mastering_command \
+  tests/test_voice_tts_supertonic.py::test_custom_style_synthesis_uses_manifest_verified_repo_path
+
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_chatterbox_v3_pipeline.py::test_versioned_manifest_pins_sources_parameters_and_local_inputs \
+  tests/test_chatterbox_v3_pipeline.py::test_manifest_fails_closed_on_unsupported_contract_values \
+  tests/test_chatterbox_v3_pipeline.py::test_pinned_runtime_rejects_wrong_package_and_model_bytes \
+  tests/test_chatterbox_v3_pipeline.py::test_pinned_runtime_rejects_mismatched_interpreter_provenance \
+  tests/test_chatterbox_v3_pipeline.py::test_manifest_write_failure_never_publishes_wav
+```
+
+Observed RED summaries: `1 failed`, `2 failed`, and `11 failed`. The venv-path
+regression was then tightened separately and failed with the configured symlink having
+been replaced by the resolved base interpreter path.
+
+### GREEN implementation and results
+
+- Style verification now rejects extra JSON and TTS rechecks the selected style hash,
+  passes its repository path through Supertonic's real `--custom-style-path` option,
+  and bypasses the cache-backed warm server for custom styles. Built-in voices retain
+  the existing warm-server path. Empty HOME and external cache deletion cannot affect
+  this resolution.
+- The accepted broker `raport` ffmpeg chain is supported by compatibility TTS. The test
+  executes a real fake ffmpeg command, records `-af`, and proves the chain starts with
+  `asetrate=44100*1.015` instead of failing as unknown.
+- The Chatterbox manifest pins Python `3.14.6`, the interpreter SHA-256,
+  `chatterbox-tts==0.1.7`, the full 50-file package-tree SHA-256, source commit, and
+  full SHA-256 values for all seven model files used by the V3 load/generation path.
+  The provenance probe runs under the configured venv with `-I` and must report the
+  same interpreter path and package-owned `direct_url.json`.
+- TOML contract values fail closed at load and render boundaries. Only offline,
+  non-redistributed reference input, mono PCM16 at 24 kHz, threshold-only publication,
+  and mandatory output manifests are supported.
+- Accepted output is hashed while still hidden. Its manifest is written to staging
+  before publication; pair publication backs up any previous pair and rolls back on
+  failure, so manifest-write failure cannot leave a newly published WAV.
+- Exact-set verification rejects unmanifested JSON. No-WAV coverage now scans
+  `config/voice`, `dan/voice`, `docs/migration`, and `.superpowers/sdd`.
+
+GREEN commands and output summaries:
+
+```text
+# Focused review-fix and config coverage
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_voice_assets.py tests/test_voice_catalog.py tests/test_voice_route_matrix.py \
+  tests/test_chatterbox_v3_pipeline.py tests/test_voice_tts_supertonic.py \
+  tests/test_config.py tests/test_config_registry.py tests/test_voice_resolver.py \
+  tests/test_voice_persona_binding.py
+# 139 passed, 32 expected deprecation warnings
+
+# Cold HOME focused suite
+HOME="$(mktemp -d)" /Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_voice_assets.py tests/test_voice_catalog.py tests/test_voice_route_matrix.py \
+  tests/test_chatterbox_v3_pipeline.py tests/test_voice_tts_supertonic.py
+# 61 passed, 26 expected deprecation warnings
+
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m dan.voice.assets verify \
+  config/voice/custom_styles/manifest.json
+# verified 20 voice assets
+
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m compileall -q dan tests
+git diff --check
+# both exit 0
+
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python scripts/dan-test-baseline \
+  --compare /Users/n1_ozzy/.dan/migration/test-baseline.json
+# exit 0; 2464 collected/isolated, 0 live_manual, 270 known failures,
+# 0 new failure IDs, duration 366.426s
+```
+
+The local source-truth verification also hashed the real pinned model snapshot, invoked
+the real configured Chatterbox venv provenance probe, and verified the local reference;
+it printed `verified pinned Chatterbox runtime, model files, interpreter package, and
+reference` without synthesizing or playing audio.
+
+### Changed files and self-review
+
+- `config/voice/pipelines/chatterbox-v3-zaneta.toml`
+- `dan/voice/assets.py`
+- `dan/voice/pipelines/chatterbox_v3.py`
+- `dan/voice/tts.py`
+- `tests/test_voice_assets.py`
+- `tests/test_chatterbox_v3_pipeline.py`
+- `tests/test_voice_tts_supertonic.py`
+- `.superpowers/sdd/task-6-report.md`
+
+No `dan/config.py` change remained necessary: adding a new runtime knob would have
+expanded the strict config registry for no benefit, while the required source is the
+repository manifest itself. No Task 7 persistence, snapshots, queue, broker, player,
+or publication ownership was added. The only compatibility-TTS change is converting an
+already resolved custom style name into its hash-verified repository asset argument.
+The pinned Python/package/model hashes intentionally fail closed after any environment
+upgrade until the versioned manifest is reconciled from new local source truth.

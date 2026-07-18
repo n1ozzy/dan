@@ -9,6 +9,20 @@ model_path_env = "DAN_CHATTERBOX_V3_MODEL_DIR"
 python_env = "DAN_CHATTERBOX_V3_PYTHON"
 acceptance_gate_env = "DAN_ZANETA_ACCEPTANCE_GATE"
 network_fallback = false
+python_version = "3.14.6"
+python_sha256 = "c34bcad78c3d2ec91ad6aa673bb0c4aaaa81bc839f4028ab73ac9f179f581972"
+package_name = "chatterbox-tts"
+package_version = "0.1.7"
+package_tree_sha256 = "4142a07efda1a0778c709bd70135e868ed25ab73c64de60b05a0bd63dde29b43"
+
+[model_files]
+"Cangjie5_TC.json" = "7073fd9de919443ae88e0bd2449917a65fe54898a4413ed1edcc4b67f28bce8c"
+"conds.pt" = "6552d70568833628ba019c6b03459e77fe71ca197d5c560cef9411bee9d87f4e"
+"grapheme_mtl_merged_expanded_v1.json" = "69632f47220a788a52ce2661d096453c5655e9bf25289d89a8d832c46ee07dbf"
+"s3gen.pt" = "9b9ff07e60b20c136e2b1b3d7563a24604e8d2c4c267888d1ee929dd0151d2a3"
+"s3gen_v3.pt" = "f7abce4b196dae2d08d9296cbebc6521b046079577643b42a19a03499d08721e"
+"t3_mtl23ls_v3.safetensors" = "5abca8321ede76f8e61f1cc0d19aea6c946b28871017ce8726f8a69203f05953"
+"ve.pt" = "4b16d836bc598509860f6fa068165a8bb5e9ac84f05582dfcf278a5a372879f1"
 
 [reference]
 path_env = "DAN_ZANETA_REFERENCE_WAV"

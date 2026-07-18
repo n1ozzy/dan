@@ -26,6 +26,9 @@ from dan.voice.tts import (
 )
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 def write_script(path: Path, body: str) -> Path:
     path.write_text("#!/bin/bash\n" + body)
     path.chmod(0o700)
@@ -445,6 +448,77 @@ def test_explicit_raw_profile_preserves_unmastered_audio(tmp_path: Path) -> None
     chunk = engine.synthesize("Raw znaczy świadomie bez masteringu.")
 
     assert len(chunk.audio) == 2000
+
+
+def test_m1_raport_profile_executes_supported_mastering_command(tmp_path: Path) -> None:
+    mastering_args = tmp_path / "mastering-args.txt"
+    mastering = write_script(
+        tmp_path / "fake-mastering",
+        f"""
+printf '%s\\n' "$@" > {mastering_args}
+out=""
+for arg in "$@"; do out="$arg"; done
+head -c 100 /dev/zero > "$out"
+""",
+    )
+    engine, _, _ = build_engine(
+        tmp_path,
+        supertonic_voice="M1",
+        mastering_profile="raport",
+        mastering_binary=str(mastering),
+    )
+
+    chunk = engine.synthesize("Raport musi przejsc przez wspierany profil.")
+
+    args = mastering_args.read_text(encoding="utf-8").splitlines()
+    assert len(chunk.audio) == 100
+    assert args[args.index("-af") + 1].startswith("asetrate=44100*1.015")
+
+
+def test_custom_style_synthesis_uses_manifest_verified_repo_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary, args_file = fake_supertonic(tmp_path)
+    player, _ = fake_player(tmp_path)
+    config = full_config(
+        tmp_path,
+        binary,
+        player,
+        supertonic_custom_styles_manifest=str(
+            ROOT / "config" / "voice" / "custom_styles" / "manifest.json"
+        ),
+        supertonic_serve_url="http://127.0.0.1:17777",
+    )
+    fake_home = tmp_path / "cold-home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    serve_calls: list[str] = []
+    monkeypatch.setattr(SupertonicEngine, "_serve_alive", lambda self: True)
+    monkeypatch.setattr(
+        SupertonicEngine,
+        "_synth_serve",
+        lambda self, clean, speed, voice: serve_calls.append(voice) or b"x" * 2000,
+    )
+    engine = build_strict_engine(
+        tmp_path,
+        config,
+        personas={
+            "dan": {
+                "voice": "M2M1",
+                "speed": 1.2,
+                "mastering": "raw",
+                "dsp": "none",
+            }
+        },
+    )
+
+    engine.synthesize("Styl ma pochodzic z repo, nie z cache.")
+
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert serve_calls == []
+    assert args[args.index("--custom-style-path") + 1] == str(
+        (ROOT / "config" / "voice" / "custom_styles" / "M2M1.json").resolve()
+    )
 
 
 def fake_player_recording_argv(tmp_path: Path) -> tuple[Path, Path]:

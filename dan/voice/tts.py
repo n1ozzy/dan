@@ -24,6 +24,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from dan.voice.assets import (
+    AssetVerificationError,
+    VoiceAsset,
+    load_asset_manifest,
+    sha256_file,
+    verify_assets,
+)
 from dan.voice.models import SpeechIntent
 from dan.voice.resolver import VoiceResolver
 
@@ -175,7 +182,18 @@ _MASTER_PROFILES = {
               "aexciter=amount=1.5:drive=5:blend=0.25:freq=3500,crystalizer=i=1.4,deesser=i=0.3,"
               "acompressor=threshold=-18dB:ratio=2.5:attack=6:release=90,"
               "alimiter=limit=0.95,aresample=44100"),
+    "raport": ("asetrate=44100*1.015,aresample=44100,atempo=0.9852,"
+               "equalizer=f=130:t=q:w=1:g=2,equalizer=f=2400:t=q:w=1.5:g=2,"
+               "aexciter=amount=1.5:drive=5:blend=0.25:freq=3500,"
+               "crystalizer=i=1.2,deesser=i=0.3,"
+               "acompressor=threshold=-18dB:ratio=2.5:attack=6:release=90,"
+               "alimiter=limit=0.95,aresample=44100"),
 }
+
+_SUPERTONIC_BUILTIN_VOICES = frozenset(
+    {f"M{index}" for index in range(1, 6)}
+    | {f"F{index}" for index in range(1, 6)}
+)
 
 
 def mastering_filter(profile: str) -> str:
@@ -223,6 +241,26 @@ class SupertonicEngine:
         # global voice/mastering, exactly as before.
         self._persona_provider = persona_provider if callable(persona_provider) else None
         self._binary = _resolve_supertonic_binary(str(voice_cfg.supertonic_binary or ""))
+        repository_root = Path(__file__).resolve().parents[2]
+        manifest_setting = str(
+            getattr(
+                voice_cfg,
+                "supertonic_custom_styles_manifest",
+                "config/voice/custom_styles/manifest.json",
+            )
+            or "config/voice/custom_styles/manifest.json"
+        )
+        manifest_path = Path(os.path.expanduser(manifest_setting))
+        if not manifest_path.is_absolute():
+            manifest_path = repository_root / manifest_path
+        try:
+            custom_manifest = load_asset_manifest(manifest_path)
+            verify_assets(custom_manifest, repo_root=repository_root)
+        except AssetVerificationError as exc:
+            raise TTSEngineError(f"invalid Supertonic custom-style manifest: {exc}") from exc
+        self._custom_voice_assets: dict[str, VoiceAsset] = {
+            asset.name: asset for asset in custom_manifest.assets
+        }
         player = str(voice_cfg.playback_binary or "")
         if player and "/" not in player:
             player = shutil.which(player) or player
@@ -341,7 +379,9 @@ class SupertonicEngine:
             return ""
 
     def _voice_for(self, profile: str) -> str:
-        return self._render_snapshot("compatibility", profile).voice_or_style
+        voice = self._render_snapshot("compatibility", profile).voice_or_style
+        selected_voice, custom_style_path = self._synthesis_voice(voice)
+        return custom_style_path or selected_voice
 
     def _mastering_filter_for(self, profile: str) -> str:
         return mastering_filter(self._render_snapshot("compatibility", profile).mastering_profile)
@@ -360,6 +400,22 @@ class SupertonicEngine:
             utterance_index=0,
         )
         return self._resolver.resolve(intent)
+
+    def _synthesis_voice(self, voice_or_style: str) -> tuple[str, str | None]:
+        asset = self._custom_voice_assets.get(voice_or_style)
+        if asset is not None:
+            actual = sha256_file(asset.path)
+            if actual != asset.sha256:
+                raise TTSEngineError(
+                    f"SHA-256 mismatch for Supertonic custom style {voice_or_style}: "
+                    f"expected {asset.sha256}, got {actual}"
+                )
+            return voice_or_style, str(asset.path)
+        if voice_or_style in _SUPERTONIC_BUILTIN_VOICES:
+            return voice_or_style, None
+        raise TTSEngineError(
+            f"unverified Supertonic custom style: {voice_or_style!r}"
+        )
 
     def _apply_mastering(self, audio: bytes, filter_chain: str) -> bytes:
         """Run the required mastering chain or fail without raw fallback."""
@@ -390,13 +446,21 @@ class SupertonicEngine:
             src.unlink(missing_ok=True)
             dst.unlink(missing_ok=True)
 
-    def _synth_cli(self, clean: str, speed: float, voice: str) -> bytes:
+    def _synth_cli(
+        self,
+        clean: str,
+        speed: float,
+        voice: str,
+        custom_style_path: str | None = None,
+    ) -> bytes:
         out = Path(self.workdir) / f"tts-{uuid.uuid4().hex}.wav"
         cmd = [
             self._binary, "tts", clean, "-o", str(out),
             "--voice", voice, "--lang", self._lang,
             "--steps", str(self._steps), "--speed", f"{speed:.2f}",
         ]
+        if custom_style_path is not None:
+            cmd.extend(["--custom-style-path", custom_style_path])
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=self._timeout, check=False
@@ -423,11 +487,11 @@ class SupertonicEngine:
         speed = snapshot.speed
         # Resolve the persona once per chunk so a live switch takes effect on the
         # next chunk (voice + mastering both key off the same profile).
-        voice = snapshot.voice_or_style
+        voice, custom_style_path = self._synthesis_voice(snapshot.voice_or_style)
         # Warm serve first (no per-chunk model reload); any failure falls back
         # to the CLI so warm-serve never regresses to silence.
         audio: bytes | None = None
-        if self._serve:
+        if self._serve and custom_style_path is None:
             try:
                 audio = self._synth_serve(clean, speed, voice)
             except Exception:
@@ -435,7 +499,7 @@ class SupertonicEngine:
                 if not self._serve_alive():
                     self._serve = None  # server died -> stop trying, go CLI
         if audio is None:
-            audio = self._synth_cli(clean, speed, voice)
+            audio = self._synth_cli(clean, speed, voice, custom_style_path)
         mastering_profile = snapshot.mastering_profile.strip().lower()
         if mastering_profile in {"raw", "none"}:
             filter_chain = ""

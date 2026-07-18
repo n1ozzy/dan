@@ -53,6 +53,44 @@ def test_twenty_custom_styles_are_versioned_and_hash_valid() -> None:
     verify_assets(manifest, repo_root=ROOT)
 
 
+def test_verifier_rejects_extra_unmanifested_json(tmp_path: Path) -> None:
+    style_root = tmp_path / "repo" / "config" / "voice" / "custom_styles"
+    style_root.mkdir(parents=True)
+    asset = style_root / "ONLY.json"
+    asset.write_text("{}", encoding="utf-8")
+    (style_root / "EXTRA.json").write_text("{}", encoding="utf-8")
+    (style_root / "LICENSE.txt").write_text("license", encoding="utf-8")
+    (style_root / "NOTICE.txt").write_text("notice", encoding="utf-8")
+    (style_root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "model_revision": SUPERTONIC_REVISION,
+                "license_path": "LICENSE.txt",
+                "notices_path": "NOTICE.txt",
+                "assets": [
+                    {
+                        "name": "ONLY",
+                        "path": asset.name,
+                        "sha256": sha256_file(asset),
+                        "source": "test",
+                        "recipe": {"kind": "weighted", "parts": {"M1": 1.0}},
+                        "model_revision": SUPERTONIC_REVISION,
+                        "license_decision": "redistributable",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssetVerificationError, match="unmanifested.*EXTRA.json"):
+        verify_assets(
+            load_asset_manifest(style_root / "manifest.json"),
+            repo_root=tmp_path / "repo",
+        )
+
+
 def test_openrail_license_and_notices_are_versioned() -> None:
     manifest = load_asset_manifest(STYLE_ROOT / "manifest.json")
     license_text = manifest.license_path.read_text(encoding="utf-8")
@@ -103,5 +141,14 @@ def test_verifier_never_falls_back_to_home_cache(
         verify_assets(manifest, repo_root=tmp_path / "repo")
 
 
-def test_repository_versions_no_reference_or_generated_wav() -> None:
-    assert not list((ROOT / "config" / "voice").rglob("*.wav"))
+@pytest.mark.parametrize(
+    "relative_root",
+    (
+        "config/voice",
+        "dan/voice",
+        "docs/migration",
+        ".superpowers/sdd",
+    ),
+)
+def test_repository_versions_no_reference_or_generated_wav(relative_root: str) -> None:
+    assert not list((ROOT / relative_root).rglob("*.wav"))

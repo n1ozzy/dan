@@ -150,6 +150,22 @@ def verify_assets(manifest: AssetManifest, *, repo_root: Path) -> None:
             raise AssetVerificationError(
                 f"model revision mismatch for voice asset {asset.name}: {asset.model_revision}"
             )
+    declared_json = {asset.path.resolve() for asset in manifest.assets}
+    versioned_json = {
+        path.resolve()
+        for path in manifest.path.parent.glob("*.json")
+        if path.resolve() != manifest.path.resolve()
+    }
+    extra = sorted(path.name for path in versioned_json - declared_json)
+    missing = sorted(path.name for path in declared_json - versioned_json)
+    if extra:
+        raise AssetVerificationError(
+            f"unmanifested voice asset JSON: {', '.join(extra)}"
+        )
+    if missing:
+        raise AssetVerificationError(
+            f"manifested voice asset JSON is outside the exact set: {', '.join(missing)}"
+        )
 
 
 def load_voice_catalog(directory: str | Path) -> VersionedVoiceCatalog:
