@@ -24,11 +24,23 @@ def write_script(path: Path, body: str) -> Path:
     return path
 
 
-def fake_supertonic(tmp_path: Path, *, rc: int = 0, wav_bytes: int = 2000) -> tuple[Path, Path]:
+def fake_supertonic(
+    tmp_path: Path,
+    *,
+    rc: int = 0,
+    wav_bytes: int = 2000,
+    version: str = "1.3.1",
+) -> tuple[Path, Path]:
     args_file = tmp_path / "supertonic-args.txt"
+    version_calls = tmp_path / "supertonic-version-calls.txt"
     script = write_script(
         tmp_path / "fake-supertonic",
         f"""
+if [ "$1" = "version" ]; then
+  echo x >> {version_calls}
+  echo "supertonic {version}"
+  exit 0
+fi
 printf '%s\n' "$@" > {args_file}
 out=""
 while [ $# -gt 0 ]; do
@@ -235,6 +247,44 @@ def test_warm_serve_failure_falls_back_to_cli_for_same_snapshot(
     args = args_file.read_text(encoding="utf-8").splitlines()
     assert args[args.index("--voice") + 1] == stored.voice_or_style
     assert args[args.index("--speed") + 1] == "1.09"
+
+
+def test_matching_engine_version_with_model_revision_passes(tmp_path: Path) -> None:
+    # Resolver stamps "1.3.1+<model_revision>"; only the semver before "+"
+    # must match the real binary.
+    engine, _ = build_engine(tmp_path)
+    stored = snapshot()
+    stored = RenderSnapshot(**{**stored.__dict__, "engine_version": "1.3.1+model-rev-42"})
+
+    chunk = engine.synthesize("Wersja sie zgadza.", stored)
+
+    assert chunk.audio
+
+
+def test_engine_version_mismatch_fails_closed_with_both_versions(tmp_path: Path) -> None:
+    binary, _ = fake_supertonic(tmp_path, version="9.9.9")
+    engine = build_tts_engine("supertonic", config=config(tmp_path, binary))
+
+    with pytest.raises(TTSEngineError, match=r"1\.3\.1.*9\.9\.9"):
+        engine.synthesize("Nie ta binarka.", snapshot())
+
+
+def test_unparsable_engine_version_fails_closed(tmp_path: Path) -> None:
+    binary, _ = fake_supertonic(tmp_path, version="banana")
+    engine = build_tts_engine("supertonic", config=config(tmp_path, binary))
+
+    with pytest.raises(TTSEngineError, match="version"):
+        engine.synthesize("Bez wersji nie gramy.", snapshot())
+
+
+def test_engine_version_probe_runs_once_and_is_cached(tmp_path: Path) -> None:
+    engine, _ = build_engine(tmp_path)
+
+    engine.synthesize("raz", snapshot())
+    engine.synthesize("dwa", snapshot())
+
+    calls = (tmp_path / "supertonic-version-calls.txt").read_text(encoding="utf-8")
+    assert len(calls.splitlines()) == 1
 
 
 @pytest.mark.parametrize("name", ["edgetts", "piper", "xtts"])

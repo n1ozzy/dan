@@ -221,8 +221,46 @@ class SupertonicEngine:
         )
         self._serve: str | None = None
         self._serve_proc: subprocess.Popen[str] | None = None
+        # Lazily probed real binary version; the snapshot's engine_version
+        # is only trustworthy once it matches the binary that will render it.
+        self._engine_semver: str | None = None
         if self._serve_url:
             self._ensure_serve()
+
+    def _detect_engine_semver(self) -> str:
+        """`supertonic version` -> cached semver; any probe failure is loud."""
+        if self._engine_semver is not None:
+            return self._engine_semver
+        try:
+            proc = subprocess.run(
+                [self._binary, "version"],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+        except Exception as exc:
+            raise TTSEngineError(f"supertonic version probe failed: {exc}") from exc
+        if proc.returncode != 0:
+            raise TTSEngineError(
+                f"supertonic version exited {proc.returncode}: "
+                f"{(proc.stderr or '').strip()[:200]}"
+            )
+        output = f"{proc.stdout or ''} {proc.stderr or ''}"
+        match = re.search(r"\d+\.\d+\.\d+", output)
+        if match is None:
+            raise TTSEngineError(
+                "supertonic version output has no parsable semver: "
+                f"{output.strip()[:200]!r}"
+            )
+        self._engine_semver = match.group(0)
+        return self._engine_semver
+
+    def _verify_engine_version(self, snapshot: RenderSnapshot) -> None:
+        expected = str(snapshot.engine_version).split("+", 1)[0]
+        actual = self._detect_engine_semver()
+        if expected != actual:
+            raise TTSEngineError(
+                f"snapshot engine_version {snapshot.engine_version!r} does not "
+                f"match the real supertonic binary version {actual!r}"
+            )
 
     # -- warm serve ----------------------------------------------------------
 
@@ -379,6 +417,7 @@ class SupertonicEngine:
             raise TTSEngineError(
                 f"snapshot engine {snapshot.engine!r} cannot run on {self.name!r}"
             )
+        self._verify_engine_version(snapshot)
         spoken = apply_pronunciations(str(text or ""), dict(snapshot.pronunciations))
         clean = spoken.translate(_SUPERTONIC_STRIP).strip()
         if not clean:

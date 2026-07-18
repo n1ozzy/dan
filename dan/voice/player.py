@@ -81,7 +81,6 @@ class CoreAudioPlayer:
                 completion.set()
 
             try:
-                on_started()
                 with self._schedule_lock:
                     with self._state_lock:
                         cancelled_before_schedule = (
@@ -94,6 +93,10 @@ class CoreAudioPlayer:
                             f"playback interrupted before schedule for {chunk.text!r}"
                         )
                     self._backend.play(buffer, completed)
+                    # Telemetry truth: playback "started" only once the buffer
+                    # was actually handed to the backend. A failed schedule
+                    # must never leave a phantom 'speaking' row behind.
+                    on_started()
                 if not completion.wait(timeout=300):
                     self.stop()
                     raise CoreAudioPlayerError("native playback completion timed out")
@@ -144,9 +147,17 @@ class MockAudioPlayer:
             self._interrupt = interrupt
             self._active += 1
             self.max_parallel_buffers = max(self.max_parallel_buffers, self._active)
-        on_started()
-        self.started.set()
         try:
+            # Mirror CoreAudioPlayer's schedule contract: the predicate is
+            # re-checked and on_started fires only AFTER the pre-schedule
+            # gate passed, so the mock may never be laxer than production.
+            if not should_play():
+                self.log.append(("play_interrupted", chunk.text))
+                raise PlaybackCancelled(
+                    f"playback interrupted before schedule for {chunk.text!r}"
+                )
+            on_started()
+            self.started.set()
             if self._play_gate is not None:
                 while not self._play_gate.wait(timeout=0.005):
                     if interrupt.is_set():

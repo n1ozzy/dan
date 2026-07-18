@@ -105,19 +105,39 @@ def test_stop_interrupts_current_buffer_and_leaves_no_audio_tail() -> None:
     assert backend.active_buffers == 0
 
 
-def test_stop_between_db_start_and_native_schedule_never_starts_audio() -> None:
+def test_on_started_fires_only_after_native_schedule() -> None:
+    # Telemetry truth: the 'speaking' transition may only be reported once
+    # the buffer was actually handed to the backend, so a cancel can no
+    # longer land between DB start and native schedule.
     backend = FakeCoreAudioBackend()
     player = CoreAudioPlayer(backend=backend)
+    buffers_at_start: list[int] = []
 
-    with pytest.raises(PlaybackCancelled):
+    player.play(
+        chunks()[0],
+        should_play=lambda: True,
+        on_started=lambda: buffers_at_start.append(len(backend.audio)),
+    )
+
+    assert buffers_at_start == [1]
+
+
+def test_failed_native_schedule_never_fires_on_started() -> None:
+    class ExplodingBackend(FakeCoreAudioBackend):
+        def play(self, buffer: bytes, completion) -> None:
+            raise RuntimeError("schedule blew up")
+
+    player = CoreAudioPlayer(backend=ExplodingBackend())
+    started: list[str] = []
+
+    with pytest.raises(RuntimeError):
         player.play(
             chunks()[0],
             should_play=lambda: True,
-            on_started=player.stop,
+            on_started=lambda: started.append("yes"),
         )
 
-    assert backend.audio == []
-    assert backend.active_buffers == 0
+    assert started == []
 
 
 def test_only_native_completion_returns_success() -> None:

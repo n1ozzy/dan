@@ -57,14 +57,20 @@ class VoiceBroker:
         )
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, *, join_timeout: float = 5.0) -> None:
         self._stop.set()
         self.stop_playback()
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=join_timeout)
             if self._thread.is_alive():
-                _LOGGER.warning("Voice broker thread did not stop within timeout.")
-            self._thread = None
+                # Keep the reference: start() refuses while the thread lives,
+                # so a wedged broker never gets a second owner racing it.
+                _LOGGER.warning(
+                    "Voice broker thread did not stop within timeout; "
+                    "keeping ownership to prevent a second broker."
+                )
+            else:
+                self._thread = None
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def stop_playback(self) -> None:
@@ -125,12 +131,20 @@ class VoiceBroker:
                     else None
                 )
 
+                if self._stop.is_set():
+                    # A synthesis finished after stop() must not start playing.
+                    return played
+
                 watcher = self._start_interrupt_watcher(current)
                 try:
                     playback_request = current
                     self._player.play(
                         chunk,
-                        should_play=lambda request=playback_request: self._is_synthesizing(
+                        # The player re-checks the predicate after on_started
+                        # (row already 'speaking'), so it must stay true for
+                        # the whole active playback cycle and turn false only
+                        # after barge-in/cancel ('cancelled'/'failed').
+                        should_play=lambda request=playback_request: self._is_playable(
                             request
                         ),
                         on_started=lambda request=playback_request: (
@@ -138,7 +152,15 @@ class VoiceBroker:
                         ),
                     )
                 except PlaybackCancelled:
-                    pass
+                    # A pre-schedule skip may leave the row 'synthesizing';
+                    # close it out so it never hangs until the next restart.
+                    if self._is_active(current):
+                        self._with_queue(
+                            lambda queue: queue.cancel_request(
+                                current.id,
+                                reason="playback cancelled before schedule",
+                            )
+                        )
                 except Exception as exc:
                     if self._is_active(current):
                         self._mark_failed(current, f"playback failed: {exc}")
@@ -182,6 +204,10 @@ class VoiceBroker:
     def _is_synthesizing(self, request: VoiceRequest) -> bool:
         return self._status(request) == "synthesizing"
 
+    def _is_playable(self, request: VoiceRequest) -> bool:
+        """True while the row still owns playback: synthesizing or speaking."""
+        return self._status(request) in {"synthesizing", "speaking"}
+
     def _is_speaking(self, request: VoiceRequest) -> bool:
         return self._status(request) == "speaking"
 
@@ -205,11 +231,11 @@ class VoiceBroker:
         self,
         request: VoiceRequest,
     ) -> tuple[threading.Event, threading.Thread] | None:
-        if request.interrupt_policy != "interruptible" or not request.session_id:
-            return None
+        # Every playing request gets a watcher: external cancels (DB-only)
+        # must reach the live player, not just future claims.
         stop = threading.Event()
         thread = threading.Thread(
-            target=self._watch_interruptible_request,
+            target=self._watch_playing_request,
             args=(request, stop),
             name=f"dan-voice-interrupt-{request.id[:8]}",
             daemon=True,
@@ -227,15 +253,23 @@ class VoiceBroker:
         stop.set()
         thread.join(timeout=1)
 
-    def _watch_interruptible_request(
+    def _watch_playing_request(
         self,
         request: VoiceRequest,
         stop: threading.Event,
     ) -> None:
+        interruptible = (
+            request.interrupt_policy == "interruptible" and bool(request.session_id)
+        )
         while not stop.is_set() and not self._stop.is_set():
-            if not self._is_active(request):
+            status = self._status(request)
+            if status not in {"queued", "synthesizing", "speaking"}:
+                # Terminal row: only an external cancel/failure interrupts the
+                # player; a normal 'done' must never stop the NEXT request.
+                if status in {"cancelled", "failed"} and not stop.is_set():
+                    self.stop_playback()
                 return
-            if self._same_session_noninterruptible_waiting(request):
+            if interruptible and self._same_session_noninterruptible_waiting(request):
                 self._with_queue(lambda queue: queue.cancel_request(request.id))
                 self.stop_playback()
                 return

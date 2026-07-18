@@ -97,6 +97,8 @@ def test_every_catalog_route_executes_through_real_runtime_boundary(
     def external_edge(argv: list[str], **kwargs: object):
         command = [str(value) for value in argv]
         external_calls.append(command)
+        if len(command) > 1 and command[1] == "version":
+            return subprocess.CompletedProcess(command, 0, "supertonic 1.3.1", "")
         if len(command) > 1 and command[1] == "tts":
             output = Path(command[command.index("-o") + 1])
             output.write_bytes(b"\0" * 2_000)
@@ -176,6 +178,8 @@ def test_zaneta_local_only_chatterbox_fails_closed_then_live_route_executes(
     def external_edge(argv: list[str], **kwargs: object):
         command = [str(value) for value in argv]
         commands.append(command)
+        if len(command) > 1 and command[1] == "version":
+            return subprocess.CompletedProcess(command, 0, "supertonic 1.3.1", "")
         if len(command) > 1 and command[1] == "tts":
             output = Path(command[command.index("-o") + 1])
             output.write_bytes(b"\0" * 2_000)

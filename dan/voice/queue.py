@@ -62,10 +62,6 @@ class VoiceQueue:
         if not isinstance(snapshot, RenderSnapshot):
             raise VoiceQueueError("enqueue requires a RenderSnapshot")
         snapshot.validate_complete()
-        if self.is_tombstoned(intent.session):
-            raise VoiceQueueCancelledError(
-                f"session {intent.session} was cancelled; refusing new speech"
-            )
 
         request_id = uuid.uuid4().hex
         now = self._now()
@@ -76,6 +72,13 @@ class VoiceQueue:
         }
         self._begin_immediate()
         try:
+            # The tombstone check must run inside the write transaction:
+            # a cancellation landing between a pre-transaction check and
+            # BEGIN IMMEDIATE would otherwise let a late chunk slip in.
+            if self.is_tombstoned(intent.session):
+                raise VoiceQueueCancelledError(
+                    f"session {intent.session} was cancelled; refusing new speech"
+                )
             global_count = self._pending_count_in_transaction()
             if global_count >= self._global_pending_limit:
                 raise QueueBackpressure(

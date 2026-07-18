@@ -138,3 +138,27 @@ def test_tombstone_is_idempotent_and_rejects_late_snapshot(conn) -> None:
 
     assert queue.is_tombstoned("dead") is True
     assert enqueue_voice(queue, "Zywe.", session="live").status == "queued"
+
+
+def test_tombstone_landing_right_before_transaction_still_rejects_enqueue(conn) -> None:
+    # Regression for the enqueue/tombstone race: a cancellation that lands
+    # between the pre-transaction check and BEGIN IMMEDIATE must still refuse
+    # the late chunk. The tombstone check therefore has to run INSIDE the
+    # write transaction, where the raise triggers a rollback.
+    queue = VoiceQueue(conn)
+    original_begin = queue._begin_immediate
+
+    def begin_then_tombstone() -> None:
+        original_begin()
+        conn.execute(
+            "INSERT OR IGNORE INTO cancelled_turns (turn_id, cancelled_at) VALUES (?, ?)",
+            ("late-turn", "2026-07-18T00:00:00Z"),
+        )
+
+    queue._begin_immediate = begin_then_tombstone
+
+    with pytest.raises(VoiceQueueCancelledError):
+        enqueue_voice(queue, "Spozniony chunk po cancelu.", session="late-turn")
+
+    assert not conn.in_transaction  # the raise rolled the transaction back
+    assert conn.execute("SELECT COUNT(*) FROM voice_queue").fetchone()[0] == 0

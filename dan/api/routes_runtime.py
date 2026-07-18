@@ -2237,11 +2237,7 @@ def _collect_voice_runtime_compatibility_warnings(
 
         if not app.voice_stt and stt_engine:
             _append_compatibility_warning(warnings, "Voice is enabled but STT engine is unavailable.")
-        tts_runtime_ready = (
-            _shared_voice_publisher_active(app)
-            if app.config.voice.broker_enabled
-            else app.voice_broker is not None
-        )
+        tts_runtime_ready = app.voice_broker is not None
         if not tts_runtime_ready and tts_engine:
             _append_compatibility_warning(warnings, "Voice is enabled but TTS engine is unavailable.")
 
@@ -2733,15 +2729,6 @@ def _status_from_ready(*, started: bool, enabled: bool, ready: bool) -> str:
     if not enabled:
         return "missing"
     return "ok" if ready else "missing"
-
-
-def _shared_voice_publisher_active(app: DaemonApp) -> bool:
-    return bool(
-        app.started
-        and app.config.voice.enabled
-        and app.config.voice.broker_enabled
-        and app.voice_publisher is not None
-    )
 
 
 def _normalize_warning_list(value: Any) -> list[str]:
@@ -4351,11 +4338,7 @@ def _voice_layer_projection_turn_manager(
     }
     effective_value = {
         "gateway_ready": gateway_ready,
-        "broker_ready": (
-            _shared_voice_publisher_active(app)
-            if app.config.voice.broker_enabled
-            else app.voice_broker is not None
-        ),
+        "broker_ready": app.voice_broker is not None,
         "active_generation_count": registry_active,
         "speak_responses": app.config.voice.speak_responses,
     }
@@ -4375,50 +4358,6 @@ def _voice_layer_projection_tts(
     event_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     enabled = bool(app.config.voice.enabled)
-    if app.config.voice.broker_enabled:
-        publisher_ready = _shared_voice_publisher_active(app)
-        readiness = _status_from_ready(
-            started=app.started,
-            enabled=enabled,
-            ready=publisher_ready,
-        )
-        publisher_name = (
-            type(app.voice_publisher).__name__ if app.voice_publisher is not None else None
-        )
-        return _layer_projection(
-            configured_value={
-                "default_tts": app.config.voice.default_tts,
-                "voice_id": app.config.voice.supertonic_voice,
-                "voice_profile": app.config.voice.supertonic_lang,
-                "speed": app.config.voice.supertonic_speed,
-                "broker_enabled": True,
-                "speak_responses": app.config.voice.speak_responses,
-                "publisher_mode": "external_shared",
-            },
-            effective_value={
-                "engine_name": str(app.config.voice.default_tts or "external-default"),
-                "publisher": publisher_name,
-                "publisher_mode": "external_shared",
-                "publisher_ready": publisher_ready,
-                "delivery_observation": "published_without_ack",
-                "acknowledgement": "unavailable",
-                "interrupt_policy": "uninterruptible",
-                "voice_id_runtime": app.config.voice.supertonic_voice,
-                "voice_profile_runtime": app.config.voice.supertonic_lang,
-            },
-            readiness=readiness,
-            dependency_status={
-                "shared_publisher": "ok" if publisher_ready else "missing",
-                "tts_engine": "external",
-                "tts_binary": "not_applicable",
-                "tts_player": "external_unobserved",
-                "playback_binary": "not_applicable",
-                "acknowledgement": "unavailable",
-                "cancellation": "unsupported",
-            },
-            latest_safe_error=event_snapshot.get("latest_safe_error"),
-            warnings=[] if publisher_ready else ["External shared publisher is not active."],
-        )
     tts_ready = app.started and enabled and app.voice_broker is not None
     readiness = _status_from_ready(started=app.started, enabled=enabled, ready=tts_ready)
     configured_tts = str(app.config.voice.default_tts or "").strip()
@@ -4585,46 +4524,6 @@ def _voice_layer_projection_playback(
     event_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     enabled = bool(app.config.voice.enabled)
-    if app.config.voice.broker_enabled:
-        publisher_ready = _shared_voice_publisher_active(app)
-        readiness = _status_from_ready(
-            started=app.started,
-            enabled=enabled and app.config.voice.speak_responses,
-            ready=publisher_ready,
-        )
-        return _layer_projection(
-            configured_value={
-                "broker_enabled": True,
-                "speak_responses": app.config.voice.speak_responses,
-                "publisher_mode": "external_shared",
-                "voice_engine": str(app.config.voice.default_tts or "external-default"),
-            },
-            effective_value={
-                "speaker_available": "external_unobserved",
-                "publisher": (
-                    type(app.voice_publisher).__name__
-                    if app.voice_publisher is not None
-                    else None
-                ),
-                "publisher_mode": "external_shared",
-                "publisher_ready": publisher_ready,
-                "delivery_observation": "published_without_ack",
-                "acknowledgement": "unavailable",
-                "interrupt_policy": "uninterruptible",
-                "latest_activity": event_snapshot.get("latest_speech_activity"),
-            },
-            readiness=readiness,
-            dependency_status={
-                "shared_publisher": "ok" if publisher_ready else "missing",
-                "playback_binary": "not_applicable",
-                "tts_broker": "external",
-                "tts_player": "external_unobserved",
-                "acknowledgement": "unavailable",
-                "cancellation": "unsupported",
-            },
-            latest_safe_error=event_snapshot.get("latest_safe_error"),
-            warnings=[] if publisher_ready else ["External shared publisher is not active."],
-        )
     broker_ready = app.voice_broker is not None
     playback_status, playback_binary, playback_warning = _safe_probe_playback_binary(
         str(app.config.voice.playback_binary or "")
@@ -4705,39 +4604,6 @@ def _voice_layer_projection_queue_barge_in(
     queue_snapshot: dict[str, Any],
     event_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
-    if app.config.voice.broker_enabled:
-        publisher_ready = _shared_voice_publisher_active(app)
-        readiness = _status_from_ready(
-            started=app.started,
-            enabled=bool(app.config.voice.enabled and app.config.voice.speak_responses),
-            ready=publisher_ready,
-        )
-        return _layer_projection(
-            configured_value={
-                "speak_responses": app.config.voice.speak_responses,
-                "queue_persisted": app.config.voice.queue_persisted,
-                "publisher_mode": "external_shared",
-            },
-            effective_value={
-                "queue_counts": queue_snapshot.get("counts"),
-                "publisher_mode": "external_shared",
-                "publisher_ready": publisher_ready,
-                "latest_activity": event_snapshot.get("latest_speech_activity"),
-                "delivery_observation": "published_without_ack",
-                "interrupt_policy": "uninterruptible",
-                "cancel_supported": False,
-                "acknowledgement_supported": False,
-            },
-            readiness=readiness,
-            dependency_status={
-                "shared_publisher": "ok" if publisher_ready else "missing",
-                "external_queue_acknowledgement": "unavailable",
-                "external_request_cancellation": "unsupported",
-                "voice_queue_table": str(queue_snapshot.get("status", "unknown")),
-            },
-            latest_safe_error=event_snapshot.get("latest_safe_error"),
-            warnings=[] if publisher_ready else ["External shared publisher is not active."],
-        )
     readiness = queue_snapshot.get("status", "unknown")
     dependency_status = {
         "voice_queue_table": str(queue_snapshot.get("status", "unknown")),
@@ -4843,14 +4709,9 @@ def _turn_detection_projection(app: DaemonApp) -> dict[str, Any]:
         pre_activation_buffer_ms = "unsupported"
         silence_duration_ms = "unsupported"  # silence ending is lease/PTT-driven
         vad_threshold = app.config.voice.stt_min_rms  # map the energy threshold
-        if app.config.voice.broker_enabled:
-            interrupt_response = "unavailable_external_shared"
-            semantic_interruption = "unsupported"
-            priority_user_lane = "uninterruptible_external_shared"
-        else:
-            interrupt_response = "partial"  # we have queue-level barge-in
-            semantic_interruption = "partial"  # we have barge-in but not semantic understanding
-            priority_user_lane = "partial"  # the local broker can be interrupted
+        interrupt_response = "partial"  # we have queue-level barge-in
+        semantic_interruption = "partial"  # we have barge-in but not semantic understanding
+        priority_user_lane = "partial"  # the local broker can be interrupted
         background_autonomy_lane = "unsupported"
         warnings = [
             "Energy/RMS capture gate used (not streaming VAD)",
@@ -4860,22 +4721,13 @@ def _turn_detection_projection(app: DaemonApp) -> dict[str, Any]:
             f"VAD threshold approximated from STT RMS threshold ({app.config.voice.stt_min_rms})",
             "Background autonomy lane unsupported"
         ]
-        if app.config.voice.broker_enabled:
-            warnings.extend(
-                (
-                    "External shared playback is uninterruptible from DAN.",
-                    "External shared playback acknowledgement is unavailable.",
-                    "Semantic interruption is unsupported for external shared playback.",
-                )
+        warnings.extend(
+            (
+                "Interrupt response is partial (queue-level barge-in)",
+                "Semantic interruption is partial",
+                "Priority user lane is partial (local broker can be interrupted)",
             )
-        else:
-            warnings.extend(
-                (
-                    "Interrupt response is partial (queue-level barge-in)",
-                    "Semantic interruption is partial",
-                    "Priority user lane is partial (local broker can be interrupted)",
-                )
-            )
+        )
 
     return {
         "mode": _projection(
@@ -5023,11 +4875,7 @@ def _voice_projection(
     tts_ready = _status_from_ready(
         started=app.started,
         enabled=app.config.voice.enabled and app.config.voice.speak_responses,
-        ready=(
-            _shared_voice_publisher_active(app)
-            if app.config.voice.broker_enabled
-            else app.voice_broker is not None
-        ),
+        ready=app.voice_broker is not None,
     )
 
     warnings = []
@@ -5724,9 +5572,7 @@ def _build_voice_capabilities(
     playback_status, playback_binary, _ = _safe_probe_playback_binary(
         str(app.config.voice.playback_binary or "")
     )
-    shared_mode = bool(app.config.voice.broker_enabled)
-    shared_publisher_ready = _shared_voice_publisher_active(app)
-    supertonic_available = shared_publisher_ready or tts_binary_status == "ok"
+    supertonic_available = tts_binary_status == "ok"
 
     tts_providers = []
     if configured_tts == "mock":
@@ -5786,7 +5632,7 @@ def _build_voice_capabilities(
             "developer_only": False,
             "status": "ok" if supertonic_available else "missing",
             "binary": tts_binary,
-            "transport": "external_shared" if shared_mode else "local",
+            "transport": "local",
         },
     )
     if configured_tts and configured_tts not in {"mock", "supertonic"}:
@@ -5924,14 +5770,14 @@ def _build_voice_capabilities(
         ),
         "endpointing_support": app.config.voice.ptt_mode in CANONICAL_PTT_MODES,
         "ptt_support": True,
-        "playback_support": shared_publisher_ready or playback_status == "ok",
+        "playback_support": playback_status == "ok",
         "playback_binary": playback_binary,
-        "publisher_mode": "external_shared" if shared_mode else "local",
-        "publisher_ready": shared_publisher_ready if shared_mode else app.voice_broker is not None,
-        "delivery_observation": "published_without_ack" if shared_mode else "local_lifecycle",
-        "acknowledgement_support": not shared_mode,
-        "cancellation_support": bool(app.voice_cancellation is not None and not shared_mode),
-        "interrupt_policy": "uninterruptible" if shared_mode else "local_cancellable",
+        "publisher_mode": "local",
+        "publisher_ready": bool(app.started and app.voice_broker is not None),
+        "delivery_observation": "local_lifecycle",
+        "acknowledgement_support": True,
+        "cancellation_support": bool(app.voice_cancellation is not None),
+        "interrupt_policy": "local_cancellable",
         "queue_status": queue_snapshot.get("status", "unknown"),
         "tts_readiness": _projection_status(tts_projection.get("readiness")),
         "stt_readiness": _projection_status(stt_projection.get("readiness")),
@@ -7126,27 +6972,13 @@ def _runtime_readiness_projection(
     )
 
     default_tts = str(app.config.voice.default_tts or "").strip()
-    shared_mode = bool(app.config.voice.broker_enabled)
-    shared_publisher_ready = _shared_voice_publisher_active(app)
-    if shared_mode:
-        fields["tts_provider"] = _readiness_projection(
-            value={
-                "mode": "external_shared",
-                "publisher_ready": shared_publisher_ready,
-                "engine_hint": default_tts or None,
-                "acknowledgement": "unavailable",
-            },
-            status="ok" if shared_publisher_ready else "missing",
-            warning=None if shared_publisher_ready else "External shared publisher is not active.",
-        )
-    else:
-        tts_status = "ok" if default_tts else "missing"
-        fields["tts_provider"] = _readiness_projection(
-            value="configured" if default_tts else "missing",
-            status=tts_status,
-            warning=None if default_tts else "TTS provider is not configured.",
-            source="config",
-        )
+    tts_status = "ok" if default_tts else "missing"
+    fields["tts_provider"] = _readiness_projection(
+        value="configured" if default_tts else "missing",
+        status=tts_status,
+        warning=None if default_tts else "TTS provider is not configured.",
+        source="config",
+    )
 
     default_stt = str(app.config.voice.default_stt or "").strip()
     stt_status = "ok" if default_stt else "missing"
@@ -7171,29 +7003,17 @@ def _runtime_readiness_projection(
         warning=recorder_warning,
     )
 
-    if shared_mode:
-        fields["playback_command"] = _readiness_projection(
-            value={
-                "mode": "external_shared",
-                "publisher_ready": shared_publisher_ready,
-                "local_player_required": False,
-                "remote_playback_acknowledgement": "unavailable",
-            },
-            status="ok" if shared_publisher_ready else "missing",
-            warning=None if shared_publisher_ready else "External shared publisher is not active.",
-        )
-    else:
-        playback_status, playback_binary, playback_warning = _safe_probe_playback_binary(
-            str(app.config.voice.playback_binary or "")
-        )
-        fields["playback_command"] = _readiness_projection(
-            value={
-                "exists": playback_status == "ok",
-                "detected": playback_binary is not None,
-            },
-            status=playback_status,
-            warning=playback_warning,
-        )
+    playback_status, playback_binary, playback_warning = _safe_probe_playback_binary(
+        str(app.config.voice.playback_binary or "")
+    )
+    fields["playback_command"] = _readiness_projection(
+        value={
+            "exists": playback_status == "ok",
+            "detected": playback_binary is not None,
+        },
+        status=playback_status,
+        warning=playback_warning,
+    )
 
     internet_capability = _runtime_projection_value(tools_projection.get("internet_capability")) or {}
     if isinstance(internet_capability, dict):
@@ -7211,7 +7031,7 @@ def _runtime_readiness_projection(
 
     if app.config.voice.enabled and not app.config.voice.broker_enabled:
         warnings.append("voice enabled but broker disabled")
-    if app.config.voice.speak_responses and not default_tts and not shared_mode:
+    if app.config.voice.speak_responses and not default_tts:
         warnings.append("speak_responses enabled but TTS missing")
     if current_provider is not None:
         provider_name = str(current_provider.get("name") or "").strip().lower()
