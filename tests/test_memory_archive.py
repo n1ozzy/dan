@@ -31,6 +31,8 @@ def test_database_initializes_separate_memory_archive_and_fts5_tables(
 
 
 def test_migration_adds_memory_archive_without_replacing_existing_data() -> None:
+    # A real v2 database always has a voice_queue (created by the v1 schema),
+    # so the fixture must carry one for the v5 snapshot rebuild to migrate.
     conn = sqlite3.connect(":memory:")
     conn.executescript(
         """
@@ -42,15 +44,36 @@ def test_migration_adds_memory_archive_without_replacing_existing_data() -> None
         INSERT INTO schema_version VALUES (2, '2026-07-16T00:00:00Z', 'existing v2');
         CREATE TABLE existing_user_data (value TEXT NOT NULL);
         INSERT INTO existing_user_data VALUES ('keep me');
+        CREATE TABLE voice_queue (
+          id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          turn_id TEXT,
+          text TEXT NOT NULL,
+          priority INTEGER NOT NULL DEFAULT 0,
+          voice_id TEXT,
+          interrupt_policy TEXT NOT NULL DEFAULT 'finish_current',
+          status TEXT NOT NULL,
+          error TEXT,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          spoken_at TEXT
+        );
+        INSERT INTO voice_queue (id, created_at, updated_at, text, status)
+        VALUES ('v2-row', '2026-07-16T00:00:00Z', '2026-07-16T00:00:00Z',
+                'zostań po przebudowie', 'done');
         """
     )
 
     apply_migrations(conn)
 
-    assert LATEST_SCHEMA_VERSION == 4
+    assert LATEST_SCHEMA_VERSION == 5
     assert "memory_archive_documents" in table_names(conn)
     assert "memory_archive_sync_state" in table_names(conn)
     assert conn.execute("SELECT value FROM existing_user_data").fetchone()[0] == "keep me"
+    survived = conn.execute(
+        "SELECT text, source FROM voice_queue WHERE id = 'v2-row'"
+    ).fetchone()
+    assert survived == ("zostań po przebudowie", "legacy-migration")
 
 
 def test_migration_rejects_non_fts_table_conflict_before_recording_v3() -> None:

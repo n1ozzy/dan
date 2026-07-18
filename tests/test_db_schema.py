@@ -465,8 +465,11 @@ def test_applying_migrations_twice_is_idempotent(tmp_path: Path) -> None:
     close_quietly(conn)
 
 
-def test_migration_lineage_is_the_v4_core_schema_bump() -> None:
-    assert LATEST_SCHEMA_VERSION == 4
+def test_voice_snapshots_are_the_v5_core_schema_bump() -> None:
+    # Task 7 (DAN Foundation Release 1) bumped the core schema to v5: the
+    # voice_queue rebuild with mandatory render snapshots. Bump this pin only
+    # together with a reviewed migration.
+    assert LATEST_SCHEMA_VERSION == 5
 
 
 def test_schema_sql_declares_memory_os_v1_tables() -> None:
@@ -499,15 +502,55 @@ def test_v4_migration_creates_lineage_tables_for_preexisting_v3_database(
     tmp_path: Path,
 ) -> None:
     conn = initialize_database(tmp_path / "dan.db")
+    # Roll the fixture back to a real v3 shape: no lineage tables, a
+    # pre-snapshot voice_queue (dropping the v5 table drops its triggers and
+    # indexes with it) and no version rows past 3.
     conn.execute("DROP TABLE migration_record_map")
     conn.execute("DROP TABLE migration_sources")
-    conn.execute("DELETE FROM schema_version WHERE version = 4")
+    conn.execute("DROP TABLE voice_queue")
+    conn.execute(
+        """
+        CREATE TABLE voice_queue (
+          id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          turn_id TEXT,
+          text TEXT NOT NULL,
+          priority INTEGER NOT NULL DEFAULT 0,
+          voice_id TEXT,
+          interrupt_policy TEXT NOT NULL DEFAULT 'finish_current',
+          status TEXT NOT NULL,
+          error TEXT,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          spoken_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO voice_queue (id, created_at, updated_at, text, status)
+        VALUES ('legacy-row', '2026-07-10T00:00:00Z', '2026-07-10T00:00:00Z',
+                'przetrwaj przebudowę', 'done')
+        """
+    )
+    conn.execute("DELETE FROM schema_version WHERE version >= 4")
     conn.commit()
 
     apply_migrations(conn)
 
     assert {"migration_sources", "migration_record_map"}.issubset(table_names(conn))
-    assert get_schema_version(conn) == 4
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM schema_version WHERE version = 4"
+        ).fetchone()[0]
+        == 1
+    )
+    assert get_schema_version(conn) == LATEST_SCHEMA_VERSION
+    survived = conn.execute(
+        "SELECT text, source, render_snapshot_json FROM voice_queue"
+        " WHERE id = 'legacy-row'"
+    ).fetchone()
+    assert survived == ("przetrwaj przebudowę", "legacy-migration", "legacy-unresolved")
     close_quietly(conn)
 
 
@@ -562,13 +605,31 @@ def test_sidecar_migration_does_not_migrate_existing_memory_blocks_data(
 
 def test_migration_adds_spoken_at_to_a_preexisting_v1_voice_queue(tmp_path: Path) -> None:
     # An existing v1 database (voice_queue without spoken_at) must gain the
-    # column through the idempotent v2 migration without losing its rows.
+    # column through the idempotent v2 migration and carry its rows through
+    # the v5 snapshot rebuild without losing them.
     db_path = tmp_path / "dan.db"
     conn = initialize_database(db_path)
-    # Roll the fixture back to a real v1 shape: no spoken_at column, no index,
-    # no v2 version row (the index must go before the column it references).
-    conn.execute("DROP INDEX IF EXISTS idx_voice_queue_spoken_at")
-    conn.execute("ALTER TABLE voice_queue DROP COLUMN spoken_at")
+    # Roll the fixture back to a real v1 shape: rebuild voice_queue without
+    # spoken_at (dropping the v5 table drops its triggers and indexes) and
+    # erase every post-v1 version row.
+    conn.execute("DROP TABLE voice_queue")
+    conn.execute(
+        """
+        CREATE TABLE voice_queue (
+          id TEXT PRIMARY KEY,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          turn_id TEXT,
+          text TEXT NOT NULL,
+          priority INTEGER NOT NULL DEFAULT 0,
+          voice_id TEXT,
+          interrupt_policy TEXT NOT NULL DEFAULT 'finish_current',
+          status TEXT NOT NULL,
+          error TEXT,
+          metadata_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
     conn.execute("DELETE FROM schema_version WHERE version >= 2")
     conn.execute(
         """
@@ -585,8 +646,12 @@ def test_migration_adds_spoken_at_to_a_preexisting_v1_voice_queue(tmp_path: Path
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(voice_queue)")}
     assert "spoken_at" in columns
-    survived = conn.execute("SELECT text FROM voice_queue WHERE id = 'keep-me'").fetchone()
-    assert survived[0] == "stare zdanie"
+    survived = conn.execute(
+        "SELECT text, status, source, render_snapshot_json FROM voice_queue"
+        " WHERE id = 'keep-me'"
+    ).fetchone()
+    assert survived == ("stare zdanie", "done", "legacy-migration", "legacy-unresolved")
+    assert get_schema_version(conn) == LATEST_SCHEMA_VERSION
     close_quietly(conn)
 
 
