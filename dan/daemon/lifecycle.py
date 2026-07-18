@@ -53,6 +53,7 @@ from dan.api.routes_runtime import (
     post_runtime_settings_apply,
 )
 from dan.api.routes_audio import get_audio_devices
+from dan.api.routes_sessions import get_sessions
 from dan.api.routes_settings import (
     explain_setting,
     get_settings,
@@ -71,6 +72,7 @@ from dan.api.routes_voice import (
     post_ptt_up,
     post_voice_pause,
     post_voice_queue_cancel,
+    post_voice_queue_current_cancel,
     post_voice_queue_flush,
     post_voice_resume,
     post_voice_speak,
@@ -152,6 +154,7 @@ TOKEN_PROTECTED_GET_PATHS = {
     "/runtime/settings",
     "/voice/queue",
     "/voice/runtime",
+    "/sessions",
 }
 
 
@@ -609,6 +612,17 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, post_voice_queue_flush(app, request_payload))
             return
 
+        # "current" is a reserved queue resource: skip the claimed row (Task
+        # 10 panel intent). It must match before the generic {id}/cancel rule.
+        if method == "POST" and path == "/voice/queue/current/cancel":
+            request_payload = _read_optional_json_body(handler)
+            _write_json(
+                handler,
+                200,
+                post_voice_queue_current_cancel(app, request_payload),
+            )
+            return
+
         voice_cancel_id = _voice_queue_cancel_resource_id(path)
         if method == "POST" and voice_cancel_id is not None:
             request_payload = _read_optional_json_body(handler)
@@ -644,6 +658,10 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
 
         if method == "GET" and path == "/voice/listening":
             _write_json(handler, 200, get_listening(app))
+            return
+
+        if method == "GET" and path == "/sessions":
+            _write_json(handler, 200, get_sessions(app))
             return
 
         if method == "GET" and path == "/voice/queue":

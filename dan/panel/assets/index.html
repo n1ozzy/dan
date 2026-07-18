@@ -11,6 +11,9 @@
          i barwi się stanem. Dekoracyjna (aria-hidden) — treść niosą pill
          stanu i hero offline; JS ustawia body[data-state]. -->
     <div class="state-frame" aria-hidden="true"></div>
+    <!-- One-shot notyfikacja dostępności daemona: "DAN padł" / "DAN znów
+         działa" — zapala się tylko na ZMIANĘ stanu, nie przy każdym pollu. -->
+    <p id="daemonAvailabilityNotice" class="daemon-availability-notice" aria-live="assertive" hidden></p>
     <main class="cockpit" aria-label="Kokpit DANa">
       <div class="views">
         <!-- CZAT: jedyny widok domyślny — rozmowa na całej powierzchni. -->
@@ -157,7 +160,9 @@
               </div>
               <div class="mission-actions">
                 <button id="refreshQueueButton" type="button" class="ghost">Refresh queue</button>
-                <button id="cancelCurrentSpeechButton" type="button" class="ghost" disabled>Cancel current speech</button>
+                <button id="pauseVoiceButton" type="button" class="ghost" title="POST /voice/pause — broker przestaje brać nowe pozycje">Pauza głosu</button>
+                <button id="resumeVoiceButton" type="button" class="ghost" title="POST /voice/resume">Wznów głos</button>
+                <button id="cancelCurrentSpeechButton" type="button" class="ghost" title="POST /voice/queue/current/cancel — pomija tylko bieżącą wypowiedź">Pomiń bieżące</button>
               </div>
             </div>
             <div id="queueBargeInList" class="list compact-list"></div>
@@ -304,9 +309,11 @@
         <section id="view-system" class="view" aria-label="System">
           <div class="system-section-label" aria-hidden="true">Ustawienia</div>
           <p class="muted section-desc">Zmiany obsługiwane przez runtime zapisują się automatycznie.</p>
+          <div class="mission-actions">
+            <button id="restartDANButton" type="button" class="ghost" title="POST /runtime/restart — daemon dokańcza bieżącą pracę i wstaje sam">Bezpieczny restart DANa</button>
+          </div>
           <div id="restartRequiredBanner" class="restart-required-banner" hidden>
             <span id="restartRequiredMessage">Wymagany restart dla oczekujących ustawień.</span>
-            <button id="restartDANButton" type="button" class="ghost">Restart DANa</button>
           </div>
 
           <details class="sys-section active-settings-section collapsible-card" open aria-labelledby="activeBrainSettingsHeading">

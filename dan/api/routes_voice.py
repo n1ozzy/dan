@@ -177,6 +177,55 @@ def post_voice_queue_cancel(
     return {"ok": True, "request_id": request_id, "status": "cancelled"}
 
 
+def post_voice_queue_current_cancel(
+    app: DaemonApp,
+    request_payload: Any,
+) -> dict[str, Any]:
+    """Skip the currently claimed utterance only (panel operator intent).
+
+    "Current" is the row the broker has claimed: status 'speaking' first,
+    'synthesizing' otherwise. Cancelling it flips the row terminal, which the
+    broker's interrupt watcher observes to stop live playback — the rest of
+    the queue keeps playing (skip, not flush). 404 when nothing is claimed.
+    """
+
+    _require_voice_enabled(app)
+    service = _require_voice_service(app)
+    reason = "api skip current"
+    if isinstance(request_payload, Mapping):
+        raw_reason = request_payload.get("reason")
+        if raw_reason is not None:
+            if not isinstance(raw_reason, str) or not raw_reason.strip():
+                raise VoiceRequestValidationError("reason must be a non-empty string.")
+            reason = raw_reason.strip()
+
+    rows = _safe_voice_queue(app)
+    current: dict[str, Any] | None = None
+    for status in ("speaking", "synthesizing"):
+        # list_voice_queue returns newest-first; the broker claims oldest-first,
+        # so the claimed row is the oldest matching one.
+        claimed = [row for row in rows if str(row.get("status")) == status]
+        if claimed:
+            current = claimed[-1]
+            break
+    if current is None:
+        raise DaemonAppNotFoundError(
+            "no voice request is currently playing or claimed"
+        )
+
+    request_id = str(current.get("id"))
+    if not service.cancel_request(request_id, reason=reason):
+        raise DaemonAppNotFoundError(
+            f"voice request {request_id!r} is unknown or already terminal"
+        )
+    return {
+        "ok": True,
+        "request_id": request_id,
+        "status": "cancelled",
+        "was_status": str(current.get("status")),
+    }
+
+
 def post_voice_queue_flush(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
     """Cancel pending speech for exactly one session (scoped flush)."""
 
@@ -809,6 +858,7 @@ __all__ = [
     "post_ptt_up",
     "post_voice_pause",
     "post_voice_queue_cancel",
+    "post_voice_queue_current_cancel",
     "post_voice_queue_flush",
     "post_voice_resume",
     "post_voice_speak",

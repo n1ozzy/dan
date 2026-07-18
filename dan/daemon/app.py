@@ -739,7 +739,7 @@ class DaemonApp:
                 """
                 SELECT id, created_at, updated_at, turn_id, text, priority,
                        voice_id, interrupt_policy, status, error,
-                       metadata_json, spoken_at
+                       metadata_json, spoken_at, playback_confirmed
                 FROM voice_queue
                 ORDER BY rowid DESC
                 LIMIT ?
@@ -2590,6 +2590,10 @@ def _voice_queue_row(row: sqlite3.Row | tuple[Any, ...]) -> dict[str, Any]:
         "voice_id": str(row[6]) if row[6] else None,
         "interrupt_policy": str(row[7]),
         "spoken_at": str(row[11]) if row[11] else None,
+        # Playback telemetry: True only after the player confirmed audible
+        # output. The panel uses it to tell "synthesized" from "played"
+        # honestly instead of guessing green from 'done' alone (Task 10).
+        "playback_confirmed": bool(row[12]),
         "error": str(redact_secrets(row[9])) if row[9] else None,
         "text_length": len(text),
         "text_preview": preview,

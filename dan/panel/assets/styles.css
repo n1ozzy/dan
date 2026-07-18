@@ -1925,3 +1925,27 @@ details.card.collapsible[open] summary::after {
     grid-template-columns: minmax(82px, 32%) minmax(0, 1fr);
   }
 }
+
+/* Task 10: one-shot pasek dostępności daemona ("DAN padł" / "DAN znów działa").
+   Zapala się tylko na zmianę stanu; kolor mówi kierunek przejścia. */
+.daemon-availability-notice {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  margin: 0;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: rgba(45, 212, 191, 0.16);
+  color: #5eead4;
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  pointer-events: none;
+}
+
+.daemon-availability-notice.daemon-down {
+  background: rgba(248, 113, 113, 0.16);
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.4);
+}

@@ -511,7 +511,10 @@ function bindElements() {
     "testPttButton",
     "pttTestStatusList",
     "refreshQueueButton",
+    "pauseVoiceButton",
+    "resumeVoiceButton",
     "cancelCurrentSpeechButton",
+    "daemonAvailabilityNotice",
     "queueBargeInList",
     "queueApplyStatus",
     "activeToolsSettingsSection",
@@ -620,10 +623,12 @@ function bindEvents() {
       bindIf(elem, "change", () => instantApply(group));
     }
   }
-  bindIf(el.restartDANButton, "click", () => {
-    setText(el.activeSettingsStatus, "Zrestartuj DANa z terminala: scripts/dan restart");
-  });
+  // Task 10: operator controls are pure API intents (thin client) — the
+  // daemon owns pause/resume/skip/restart, the panel only asks for them.
+  bindIf(el.restartDANButton, "click", safeRestartDaemon);
   bindIf(el.refreshQueueButton, "click", refreshVoiceQueue);
+  bindIf(el.pauseVoiceButton, "click", pauseVoicePlayback);
+  bindIf(el.resumeVoiceButton, "click", resumeVoicePlayback);
   bindIf(el.cancelCurrentSpeechButton, "click", cancelCurrentSpeech);
   bindIf(el.refreshRuntimeLogsSummaryButton, "click", refreshEvents);
   bindIf(el.resetBrainPreviewButton, "click", resetSettingsPreview);
@@ -760,6 +765,33 @@ async function refreshVoiceQueue() {
   }
 }
 
+// Etykieta etapu mowy PO POLSKU, z telemetrii — "odtworzono" tylko gdy
+// player potwierdził dźwięk (playback_confirmed), nigdy z samego 'done'.
+function voiceStageLabel(item) {
+  const row = item || {};
+  if (row.playback_confirmed) {
+    return "odtworzono";
+  }
+  const status = String(row.status || "").toLowerCase();
+  if (status === "queued") {
+    return "przyjęto";
+  }
+  if (status === "speaking") {
+    return "odtwarzanie";
+  }
+  if (status === "cancelled") {
+    return "anulowano";
+  }
+  if (status === "failed") {
+    return "błąd";
+  }
+  if (status === "synthesizing" || status === "done") {
+    // 'done' bez potwierdzenia odtworzenia to wciąż tylko synteza — uczciwie.
+    return "syntetyzowanie";
+  }
+  return "unknown";
+}
+
 function renderVoiceQueue(rows) {
   renderQueueBargeInSummary(cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {}, rows);
   clearNode(el.voiceQueueList);
@@ -772,7 +804,7 @@ function renderVoiceQueue(rows) {
     row.className = "list-row";
     appendLine(
       row,
-      `${item.status || "unknown"} · ${item.kind || "sentence"} #${item.seq ?? "?"}`,
+      `${voiceStageLabel(item)} · ${item.status || "unknown"} · ${item.kind || "sentence"} #${item.seq ?? "?"}`,
       "input-line",
     );
     appendLine(
@@ -2928,11 +2960,6 @@ function renderQueueBargeInSummary(payload, rows = null) {
   ]);
   row.appendChild(values);
   el.queueBargeInList.appendChild(row);
-  setText(el.queueApplyStatus, "Manual cancel route not implemented in this panel.");
-  if (el.cancelCurrentSpeechButton) {
-    el.cancelCurrentSpeechButton.disabled = true;
-    el.cancelCurrentSpeechButton.title = "not implemented";
-  }
 }
 
 function latestProjectionWarning(group) {
@@ -2999,11 +3026,95 @@ function latestEventSummaryForFamilies(events, families) {
   return event ? `${event.type || "event"} #${event.id || "?"}` : "none";
 }
 
-async function cancelCurrentSpeech() {
-  setText(el.queueApplyStatus, "Manual cancel route not implemented.");
-  if (el.cancelCurrentSpeechButton) {
-    el.cancelCurrentSpeechButton.disabled = true;
+// --- Operator intents (Task 10) ---------------------------------------------
+// The panel is a thin API client: every operator control maps to exactly one
+// daemon route. No launchd, no signals, no broker files — losing dand turns
+// these into visible no-ops ("offline"), never into local resurrection.
+const OPERATOR_INTENTS = {
+  pause_voice: { method: "POST", path: "/voice/pause" },
+  resume_voice: { method: "POST", path: "/voice/resume" },
+  skip_current: { method: "POST", path: "/voice/queue/current/cancel" },
+  safe_restart: { method: "POST", path: "/runtime/restart" },
+};
+
+function operatorIntentPlan(name, online) {
+  const intent = OPERATOR_INTENTS[name];
+  if (!intent) {
+    return { allowed: false, message: `Nieznana intencja operatora: ${name}` };
   }
+  if (!online) {
+    return {
+      allowed: false,
+      message: "Daemon offline — sterowanie wyłączone; panel nie wskrzesza dand.",
+    };
+  }
+  return { allowed: true, method: intent.method, path: intent.path };
+}
+
+async function sendOperatorIntent(name, options = {}) {
+  const online = Object.prototype.hasOwnProperty.call(options, "online")
+    ? options.online
+    : cockpit.online;
+  const request = options.request
+    || ((method, path) => requestJson(path, { method, body: {} }));
+  const plan = operatorIntentPlan(name, online);
+  if (!plan.allowed) {
+    return { ok: false, blocked: true, message: plan.message };
+  }
+  const payload = await request(plan.method, plan.path);
+  return { ok: true, blocked: false, method: plan.method, path: plan.path, payload };
+}
+
+async function runOperatorIntent(name, statusNode, successMessage, notFoundMessage) {
+  try {
+    const result = await sendOperatorIntent(name);
+    if (result.blocked) {
+      setText(statusNode, result.message);
+      return;
+    }
+    setText(statusNode, successMessage);
+  } catch (error) {
+    const status = error && error.detail ? error.detail.status : null;
+    if (status === 404 && notFoundMessage) {
+      setText(statusNode, notFoundMessage);
+      return;
+    }
+    setText(statusNode, error && error.message ? error.message : "intent failed");
+  }
+}
+
+async function pauseVoicePlayback() {
+  await runOperatorIntent(
+    "pause_voice",
+    el.queueApplyStatus,
+    "Głos wstrzymany (broker nie bierze nowych pozycji).",
+  );
+}
+
+async function resumeVoicePlayback() {
+  await runOperatorIntent(
+    "resume_voice",
+    el.queueApplyStatus,
+    "Głos wznowiony.",
+  );
+}
+
+async function cancelCurrentSpeech() {
+  await runOperatorIntent(
+    "skip_current",
+    el.queueApplyStatus,
+    "Pominięto bieżącą wypowiedź — kolejka gra dalej.",
+    "Nic teraz nie gra — nie ma czego pominąć.",
+  );
+  await refreshVoiceQueue();
+}
+
+async function safeRestartDaemon() {
+  await runOperatorIntent(
+    "safe_restart",
+    el.activeSettingsStatus,
+    "Restart przyjęty (202) — daemon dokończy bieżącą pracę i wstanie sam.",
+  );
 }
 
 async function applyRuntimeSettingsGroup(group) {
@@ -8419,8 +8530,43 @@ function apiBase() {
   return cockpit.apiBase.replace(/\/+$/, "");
 }
 
+// One-shot "DAN padł" / "DAN znów działa" notifications (Task 10): a message
+// fires only on an availability EDGE — repeated failing polls stay silent
+// until the daemon actually comes back.
+function createDaemonAvailabilityTracker(notify) {
+  let wasOnline = null;
+  return {
+    poll(online) {
+      const isOnline = Boolean(online);
+      if (wasOnline === null) {
+        if (!isOnline) {
+          notify("DAN padł");
+        }
+      } else if (wasOnline && !isOnline) {
+        notify("DAN padł");
+      } else if (!wasOnline && isOnline) {
+        notify("DAN znów działa");
+      }
+      wasOnline = isOnline;
+    },
+  };
+}
+
+function notifyDaemonAvailability(message) {
+  const node = el.daemonAvailabilityNotice;
+  if (!node) {
+    return;
+  }
+  node.hidden = false;
+  node.classList.toggle("daemon-down", message === "DAN padł");
+  setText(node, message);
+}
+
+const daemonAvailability = createDaemonAvailabilityTracker(notifyDaemonAvailability);
+
 function setOnline(online) {
   cockpit.online = online;
+  daemonAvailability.poll(online);
   // Żywa ramka karty jest wskaźnikiem online/offline (teal/czerwień) — nie ma
   // osobnej sekcji statusu; body.offline dodatkowo wygasza kompozytor.
   document.body.classList.toggle("offline", !online);
@@ -8467,7 +8613,10 @@ function setInteractiveEnabled(enabled) {
     el.pttMergeWindowInput,
     el.applyPttSettingsButton,
     el.refreshQueueButton,
+    el.pauseVoiceButton,
+    el.resumeVoiceButton,
     el.cancelCurrentSpeechButton,
+    el.restartDANButton,
     el.toolsEnabledToggle,
     el.toolsNetworkEnabledToggle,
     el.applyToolsSettingsButton,

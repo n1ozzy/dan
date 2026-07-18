@@ -27,6 +27,11 @@ REQUIRED_ROUTES = (
     "/voice/listen/unlock",
     "/voice/listening",
     "/voice/queue",
+    # Task 10: operator intents are pure API calls (thin client).
+    "/voice/pause",
+    "/voice/resume",
+    "/voice/queue/current/cancel",
+    "/runtime/restart",
     "/conversations",
     "/turns",
     "/memory",
