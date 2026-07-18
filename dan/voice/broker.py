@@ -40,6 +40,7 @@ class VoiceBroker:
         self._player = player
         self._poll_interval = poll_interval
         self._stop = threading.Event()
+        self._paused = threading.Event()
         self._thread: threading.Thread | None = None
         self._drain_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dan-tts")
@@ -72,6 +73,18 @@ class VoiceBroker:
             else:
                 self._thread = None
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def pause(self) -> None:
+        """Stop claiming new queue rows; the active chunk plays to its end."""
+
+        self._paused.set()
+
+    def resume(self) -> None:
+        self._paused.clear()
+
+    @property
+    def paused(self) -> bool:
+        return self._paused.is_set()
 
     def stop_playback(self) -> None:
         try:
@@ -188,6 +201,9 @@ class VoiceBroker:
         return self._engine.synthesize(request.text, snapshot)
 
     def _claim(self) -> VoiceRequest | None:
+        # A paused broker never claims; already-claimed work finishes normally.
+        if self._paused.is_set():
+            return None
         return self._with_queue(lambda queue: queue.claim_next())
 
     def _status(self, request: VoiceRequest) -> str | None:

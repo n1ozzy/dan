@@ -52,7 +52,12 @@ from dan.api.routes_runtime import (
     post_runtime_settings_apply,
 )
 from dan.api.routes_audio import get_audio_devices
-from dan.api.routes_settings import get_settings, update_settings
+from dan.api.routes_settings import (
+    explain_setting,
+    get_settings,
+    put_setting,
+    update_settings,
+)
 from dan.api.routes_voice import (
     VoiceDisabledError,
     VoiceRequestValidationError,
@@ -63,6 +68,11 @@ from dan.api.routes_voice import (
     post_listen_unlock,
     post_ptt_down,
     post_ptt_up,
+    post_voice_pause,
+    post_voice_queue_cancel,
+    post_voice_queue_flush,
+    post_voice_resume,
+    post_voice_speak,
 )
 from dan.api.routes_state import get_state
 from dan.api.routes_tools import ToolRequestValidationError, get_tools, post_tool_request
@@ -96,7 +106,15 @@ from dan.memory import MemoryError
 from dan.tools.registry import ToolRegistryError
 from dan.turns.models import ConversationRepositoryError, TurnRepositoryError
 from dan.turns.orchestrator import TurnOrchestratorBusyError, TurnOrchestratorError
+from dan.config_registry import ConfigRegistryError
+from dan.voice.assets import AssetVerificationError
 from dan.voice.listening import ListeningLeaseError
+from dan.voice.queue import (
+    QueueBackpressure,
+    VoiceQueueCancelledError,
+    VoiceQueueError,
+)
+from dan.voice.resolver import VoiceResolverError
 
 
 MAX_REQUEST_BODY_BYTES = 1_048_576
@@ -105,9 +123,11 @@ ALLOWED_CORS_ORIGINS = {
     "http://127.0.0.1:41800",
     "http://localhost:41800",
 }
+# PUT is deliberately absent: the browser panel never issues it, so it is not
+# advertised cross-origin; the CLI talks same-origin with the transport token.
 CORS_ALLOW_METHODS = "GET, POST, PATCH, DELETE, OPTIONS"
 CORS_ALLOW_HEADERS = f"Content-Type, {API_TOKEN_HEADER}"
-MUTATING_METHODS = {"POST", "PATCH", "DELETE"}
+MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Slowloris guard: drop a connection whose request never completes (FIX-06).
 HANDLER_TIMEOUT_SECONDS = 10.0
 # Each /stream session holds its own SQLite handle + worker thread; cap them.
@@ -206,6 +226,9 @@ def _make_handler(app: DaemonApp) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             self._dispatch_request("POST")
 
+        def do_PUT(self) -> None:
+            self._dispatch_request("PUT")
+
         def do_PATCH(self) -> None:
             self._dispatch_request("PATCH")
 
@@ -292,6 +315,8 @@ def _is_token_protected_read(method: str, path: str) -> bool:
     if method != "GET":
         return False
     if path in TOKEN_PROTECTED_GET_PATHS:
+        return True
+    if _settings_explain_key(path) is not None:
         return True
     if _worker_job_resource_id(path) is not None:
         return True
@@ -566,6 +591,49 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, update_settings(app, request_payload))
             return
 
+        if method == "POST" and path == "/voice/speak":
+            request_payload = _read_json_body(handler)
+            _write_json(handler, 201, post_voice_speak(app, request_payload))
+            return
+
+        if method == "POST" and path == "/voice/queue/flush":
+            request_payload = _read_optional_json_body(handler)
+            _write_json(handler, 200, post_voice_queue_flush(app, request_payload))
+            return
+
+        voice_cancel_id = _voice_queue_cancel_resource_id(path)
+        if method == "POST" and voice_cancel_id is not None:
+            request_payload = _read_optional_json_body(handler)
+            _write_json(
+                handler,
+                200,
+                post_voice_queue_cancel(app, voice_cancel_id, request_payload),
+            )
+            return
+
+        if method == "POST" and path == "/voice/pause":
+            request_payload = _read_optional_json_body(handler)
+            _write_json(handler, 200, post_voice_pause(app, request_payload))
+            return
+
+        if method == "POST" and path == "/voice/resume":
+            request_payload = _read_optional_json_body(handler)
+            _write_json(handler, 200, post_voice_resume(app, request_payload))
+            return
+
+        settings_explain_key = _settings_explain_key(path)
+        if method == "GET" and settings_explain_key is not None:
+            _write_json(handler, 200, explain_setting(app, settings_explain_key))
+            return
+
+        settings_key = _settings_resource_key(path)
+        if method == "PUT" and settings_key is not None:
+            request_payload = _read_json_body(handler)
+            if not isinstance(request_payload, dict):
+                raise ValueError("Request JSON must be an object.")
+            _write_json(handler, 200, put_setting(app, settings_key, request_payload))
+            return
+
         if method == "GET" and path == "/voice/listening":
             _write_json(handler, 200, get_listening(app))
             return
@@ -604,7 +672,7 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, post_text_input(app, request_payload))
             return
 
-        if method in {"PATCH", "DELETE"}:
+        if method in {"PUT", "PATCH", "DELETE"}:
             _write_json(
                 handler,
                 405,
@@ -642,6 +710,16 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         )
     except VoiceDisabledError as exc:
         _write_json(handler, 409, {"error": str(exc), "status": 409})
+    except (VoiceResolverError, AssetVerificationError) as exc:
+        # A speak whose snapshot cannot be resolved is rejected before any
+        # queue/event write: clear client error, empty queue.
+        _write_json(handler, 400, {"error": str(exc), "status": 400})
+    except QueueBackpressure as exc:
+        _write_json(handler, 429, {"error": str(exc), "status": 429})
+    except VoiceQueueCancelledError as exc:
+        _write_json(handler, 409, {"error": str(exc), "status": 409})
+    except VoiceQueueError as exc:
+        _write_json(handler, 400, {"error": str(exc), "status": 400})
     except ListeningLeaseError as exc:
         # Unknown listening source/mode is bad client input, not a fault (FIX-17).
         _write_json(handler, 400, {"error": str(exc), "status": 400})
@@ -662,6 +740,7 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         _write_json(handler, status, {"error": str(exc), "status": status})
     except (
         ValueError,
+        ConfigRegistryError,
         DaemonAppError,
         EventStoreError,
         MemoryError,
@@ -801,6 +880,41 @@ def _query_memory_kinds(query: dict[str, list[str]], key: str) -> list[str] | No
                 raise ValueError(f"{key} must not contain empty values.")
             kinds.append(normalized)
     return kinds
+
+
+def _voice_queue_cancel_resource_id(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if (
+        len(parts) != 4
+        or parts[0] != "voice"
+        or parts[1] != "queue"
+        or parts[3] != "cancel"
+    ):
+        return None
+    request_id = unquote(parts[2]).strip()
+    if not request_id:
+        return None
+    return request_id
+
+
+def _settings_explain_key(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) != 3 or parts[0] != "settings" or parts[1] != "explain":
+        return None
+    key = unquote(parts[2]).strip()
+    if not key:
+        return None
+    return key
+
+
+def _settings_resource_key(path: str) -> str | None:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) != 2 or parts[0] != "settings":
+        return None
+    key = unquote(parts[1]).strip()
+    if not key or key == "explain":
+        return None
+    return key
 
 
 def _worker_job_resource_id(path: str) -> str | None:

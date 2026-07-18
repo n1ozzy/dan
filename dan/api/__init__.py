@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 __all__ = [
+    "client",
     "routes_events",
     "routes_health",
     "routes_history",
@@ -11,4 +12,5 @@ __all__ = [
     "routes_runtime",
     "routes_settings",
     "routes_state",
+    "routes_voice",
 ]

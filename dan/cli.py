@@ -6,12 +6,18 @@ import argparse
 import json
 import signal
 import sys
+import unicodedata
 from dataclasses import asdict
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
+from dan.api.client import (
+    DaemonAPIError,
+    DaemonClient,
+    DaemonUnreachableError,
+)
 from dan.config import ConfigError, DANConfig, load_config
 from dan.config_registry import ConfigRegistryError, ConfigStore
 from dan.daemon.app import DaemonAppError, create_daemon_app, create_daemon_app_from_config
@@ -42,6 +48,49 @@ def build_parser() -> argparse.ArgumentParser:
     config_commands.add_parser("show")
     config_explain = config_commands.add_parser("explain")
     config_explain.add_argument("key")
+    config_explain.add_argument("--json", dest="json_output", action="store_true")
+    config_set = config_commands.add_parser("set")
+    config_set.add_argument("key")
+    config_set.add_argument("value")
+    config_set.add_argument("--json", dest="json_output", action="store_true")
+    config_set.add_argument("--url", help="Base URL for a running dand")
+    config_set.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    speak_parser = subcommands.add_parser("speak")
+    speak_parser.add_argument("text", nargs="?")
+    speak_parser.add_argument("--json", dest="json_output", action="store_true")
+    speak_parser.add_argument("--as", dest="persona", required=True)
+    speak_parser.add_argument("--session", default="cli")
+    speak_parser.add_argument("--source", default="cli")
+    speak_parser.add_argument("--stdin", dest="use_stdin", action="store_true")
+    speak_parser.add_argument("--url", help="Base URL for a running dand")
+    speak_parser.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    queue_parser = subcommands.add_parser("queue")
+    queue_commands = queue_parser.add_subparsers(dest="queue_command", required=True)
+    queue_list = queue_commands.add_parser("list")
+    queue_list.add_argument("--json", dest="json_output", action="store_true")
+    queue_list.add_argument("--limit", type=int, default=20)
+    queue_list.add_argument("--url", help="Base URL for a running dand")
+    queue_list.add_argument("--timeout", type=_positive_timeout, default=5.0)
+    queue_cancel = queue_commands.add_parser("cancel")
+    queue_cancel.add_argument("request_id")
+    queue_cancel.add_argument("--json", dest="json_output", action="store_true")
+    queue_cancel.add_argument("--url", help="Base URL for a running dand")
+    queue_cancel.add_argument("--timeout", type=_positive_timeout, default=5.0)
+    queue_flush = queue_commands.add_parser("flush")
+    queue_flush.add_argument("--session", required=True)
+    queue_flush.add_argument("--json", dest="json_output", action="store_true")
+    queue_flush.add_argument("--url", help="Base URL for a running dand")
+    queue_flush.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    voice_parser = subcommands.add_parser("voice")
+    voice_commands = voice_parser.add_subparsers(dest="voice_command", required=True)
+    voice_hook = voice_commands.add_parser("hook")
+    voice_hook.add_argument("action", choices=["on", "off", "status"])
+    voice_hook.add_argument("--json", dest="json_output", action="store_true")
+    voice_hook.add_argument("--url", help="Base URL for a running dand")
+    voice_hook.add_argument("--timeout", type=_positive_timeout, default=5.0)
 
     paths_parser = subcommands.add_parser("paths")
     paths_commands = paths_parser.add_subparsers(dest="paths_command", required=True)
@@ -167,7 +216,10 @@ def build_parser() -> argparse.ArgumentParser:
     runtime_legacy = runtime_commands.add_parser("legacy")
     runtime_legacy.add_argument("--url", help="Base URL for a running dand")
 
-    subcommands.add_parser("doctor")
+    doctor_parser = subcommands.add_parser("doctor")
+    doctor_parser.add_argument("--json", dest="json_output", action="store_true")
+    doctor_parser.add_argument("--url", help="Base URL for a running dand")
+    doctor_parser.add_argument("--timeout", type=_positive_timeout, default=2.0)
     return parser
 
 
@@ -190,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "config" and args.config_command == "explain":
         try:
-            _print_json(
+            explanation = (
                 ConfigStore(
                     config.source_path,
                     owner_path=paths.owner_path,
@@ -202,15 +254,28 @@ def main(argv: list[str] | None = None) -> int:
         except ConfigRegistryError as exc:
             print(f"ConfigError: {exc}", file=sys.stderr)
             return 2
+        explanation["source"] = explanation["source_surface"]
+        _emit_payload(explanation, args.json_output)
         return 0
+
+    if args.command == "config" and args.config_command == "set":
+        return _handle_config_set(args, config)
+
+    if args.command == "speak":
+        return _handle_speak(args, config)
+
+    if args.command == "queue":
+        return _handle_queue(args, config)
+
+    if args.command == "voice" and args.voice_command == "hook":
+        return _handle_voice_hook(args, config)
 
     if args.command == "paths" and args.paths_command == "show":
         _print_json(paths.to_dict())
         return 0
 
     if args.command == "doctor":
-        _print_json(_doctor_payload(config, paths))
-        return 0
+        return _handle_doctor(args, config, paths)
 
     if args.command == "db":
         return _handle_db_command(args.db_command, paths)
@@ -320,6 +385,217 @@ def _handle_daemon_run(config_path: str | None) -> int:
         signal.signal(signal.SIGTERM, previous_sigterm)
         if app is not None:
             app.close()
+
+
+def _emit_payload(payload: dict[str, Any], json_output: bool) -> None:
+    """Machine mode prints exactly one JSON object on stdout."""
+
+    if json_output:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    else:
+        _print_json(payload)
+
+
+def _emit_error(payload: dict[str, Any], json_output: bool, rc: int) -> int:
+    if json_output:
+        # The single stdout object carries the error; logs belong on stderr.
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    else:
+        _print_json_error(payload)
+    return rc
+
+
+def _daemon_client(args: argparse.Namespace, config: DANConfig) -> DaemonClient:
+    return DaemonClient(
+        _base_url(args, config),
+        token=_transport_token,
+        timeout=getattr(args, "timeout", 5.0),
+    )
+
+
+def _speak_text_from_args(
+    args: argparse.Namespace,
+) -> tuple[str | None, dict[str, Any] | None]:
+    if args.use_stdin:
+        raw = sys.stdin.buffer.read()
+        try:
+            text = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            return None, {
+                "error": "invalid_stdin_encoding",
+                "message": f"stdin must be strict UTF-8: {exc}",
+            }
+    elif args.text is not None:
+        text = args.text
+    else:
+        return None, {
+            "error": "missing_text",
+            "message": "provide TEXT or --stdin",
+        }
+    text = unicodedata.normalize("NFC", text).strip()
+    if not text:
+        return None, {"error": "empty_text", "message": "speech text is empty"}
+    return text, None
+
+
+def _handle_speak(args: argparse.Namespace, config: DANConfig) -> int:
+    json_output = args.json_output
+    text, input_error = _speak_text_from_args(args)
+    if input_error is not None:
+        return _emit_error(input_error, json_output, 2)
+
+    client = _daemon_client(args, config)
+    payload = {
+        "text": text,
+        "persona": args.persona,
+        "session": args.session,
+        "source": args.source,
+    }
+    try:
+        response = client.speak(payload)
+    except DaemonAPIError as exc:
+        return _emit_error(exc.payload, json_output, 2)
+    except DaemonUnreachableError as exc:
+        return _emit_error(
+            {"error": "daemon_unreachable", "message": str(exc)}, json_output, 3
+        )
+
+    if response.get("status") != "queued" or not response.get("request_id"):
+        # Exit 0 strictly means: a complete row is committed as 'queued'.
+        return _emit_error(
+            {"error": "speak_not_committed", "response": response}, json_output, 2
+        )
+    if json_output:
+        _emit_payload(response, True)
+    else:
+        print(f"queued {response['request_id']}")
+    return 0
+
+
+def _handle_queue(args: argparse.Namespace, config: DANConfig) -> int:
+    json_output = args.json_output
+    client = _daemon_client(args, config)
+    try:
+        if args.queue_command == "list":
+            response = client.voice_queue(limit=args.limit)
+        elif args.queue_command == "cancel":
+            response = client.cancel_request(args.request_id)
+        elif args.queue_command == "flush":
+            response = client.flush_session(args.session)
+        else:
+            print(f"unknown queue command: {args.queue_command}", file=sys.stderr)
+            return 2
+    except DaemonAPIError as exc:
+        return _emit_error(exc.payload, json_output, 2)
+    except DaemonUnreachableError as exc:
+        return _emit_error(
+            {"error": "daemon_unreachable", "message": str(exc)}, json_output, 3
+        )
+    _emit_payload(response, json_output)
+    return 0
+
+
+def _handle_config_set(args: argparse.Namespace, config: DANConfig) -> int:
+    json_output = args.json_output
+    client = _daemon_client(args, config)
+    try:
+        value = json.loads(args.value)
+    except json.JSONDecodeError:
+        value = args.value
+    try:
+        response = client.put_setting(args.key, value)
+    except DaemonAPIError as exc:
+        return _emit_error(exc.payload, json_output, 2)
+    except DaemonUnreachableError as exc:
+        return _emit_error(
+            {"error": "daemon_unreachable", "message": str(exc)}, json_output, 3
+        )
+    _emit_payload(response, json_output)
+    return 0
+
+
+def _handle_voice_hook(args: argparse.Namespace, config: DANConfig) -> int:
+    json_output = args.json_output
+    client = _daemon_client(args, config)
+    hook_key = "voice.hook_enabled"
+    try:
+        if args.action in {"on", "off"}:
+            enabled = args.action == "on"
+            client.put_setting(hook_key, enabled)
+            response = {"ok": True, "key": hook_key, "hook_enabled": enabled}
+        else:
+            explanation = client.explain_setting(hook_key)
+            response = {
+                "key": hook_key,
+                "hook_enabled": explanation.get("value"),
+                "owner": explanation.get("owner"),
+                "source": explanation.get("source"),
+            }
+    except DaemonAPIError as exc:
+        return _emit_error(exc.payload, json_output, 2)
+    except DaemonUnreachableError as exc:
+        return _emit_error(
+            {"error": "daemon_unreachable", "message": str(exc)}, json_output, 3
+        )
+    _emit_payload(response, json_output)
+    return 0
+
+
+_DOCTOR_UNKNOWN = "unknown"
+
+
+def _handle_doctor(
+    args: argparse.Namespace,
+    config: DANConfig,
+    paths: RuntimePaths,
+) -> int:
+    """Local facts plus what a running daemon truthfully reports.
+
+    Anything the daemon cannot confirm stays "unknown" — no invented metrics.
+    """
+
+    json_output = args.json_output
+    payload = _doctor_payload(config, paths)
+    client = _daemon_client(args, config)
+    try:
+        health = client.health()
+        payload["daemon"] = {"status": "ok", "health": health}
+    except DaemonAPIError as exc:
+        payload["daemon"] = {
+            "status": "error",
+            "http_status": exc.status,
+            "error": str(exc),
+        }
+    except DaemonUnreachableError as exc:
+        payload["daemon"] = {"status": "unreachable", "error": str(exc)}
+
+    voice_runtime: dict[str, Any] = {
+        "broker_present": _DOCTOR_UNKNOWN,
+        "broker_ready": _DOCTOR_UNKNOWN,
+        "engine": _DOCTOR_UNKNOWN,
+        "queue_counts": _DOCTOR_UNKNOWN,
+    }
+    if payload["daemon"]["status"] == "ok":
+        try:
+            runtime = client.voice_runtime().get("voice_runtime") or {}
+            groups = runtime.get("groups") or {}
+            playback = (groups.get("playback") or {}).get("effective") or {}
+            tts_group = groups.get("tts_voice_model") or {}
+            queue_group = (groups.get("queue_barge_in") or {}).get("effective") or {}
+            engine = (tts_group.get("effective") or {}).get("engine") or (
+                tts_group.get("configured") or {}
+            ).get("default_tts")
+            voice_runtime = {
+                "broker_present": playback.get("broker") is not None,
+                "broker_ready": playback.get("broker_ready", _DOCTOR_UNKNOWN),
+                "engine": engine or _DOCTOR_UNKNOWN,
+                "queue_counts": queue_group.get("queue_counts", _DOCTOR_UNKNOWN),
+            }
+        except (DaemonAPIError, DaemonUnreachableError):
+            pass
+    payload["voice_runtime"] = voice_runtime
+    _emit_payload(payload, json_output)
+    return 0
 
 
 def _handle_input_text(args: argparse.Namespace, base_url: str) -> int:

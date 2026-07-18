@@ -11,11 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from dan.api.routes_runtime import CANONICAL_PTT_MODES
-from dan.daemon.app import DaemonApp
+from dan.daemon.app import DaemonApp, DaemonAppNotFoundError, DaemonAppNotStartedError
 from dan.security.redaction import redact_secrets
 from dan.voice.listening import ALLOWED_SOURCES
-from dan.voice.models import ListeningLease
+from dan.voice.models import ListeningLease, SpeechIntent
 from dan.voice.tts import BANNED_ENGINES, RESERVED_ENGINES
+
+
+DEFAULT_SPEAK_SOURCE = "api"
+DEFAULT_SPEAK_SESSION = "api"
 
 
 ROUTE_GROUP = "voice"
@@ -107,6 +111,106 @@ def get_listening(app: DaemonApp) -> dict[str, Any]:
         "voice_enabled": bool(app.config.voice.enabled),
         "leases": [_lease_payload(lease) for lease in leases],
     }
+
+
+def _require_voice_service(app: DaemonApp) -> Any:
+    if not app.started or app.voice_service is None:
+        raise DaemonAppNotStartedError("Voice service is not running.")
+    return app.voice_service
+
+
+def _require_voice_broker(app: DaemonApp) -> Any:
+    if not app.started or app.voice_broker is None:
+        raise DaemonAppNotStartedError("Voice broker is not running.")
+    return app.voice_broker
+
+
+def post_voice_speak(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
+    """Admit one speech intent through VoiceService.submit() only.
+
+    Validation happens before any queue/event write; the 201 response is
+    emitted only after the queue row is fully committed as 'queued'. The
+    response redacts the utterance text by default.
+    """
+
+    _require_voice_enabled(app)
+    service = _require_voice_service(app)
+    if not isinstance(request_payload, Mapping):
+        raise VoiceRequestValidationError("Request JSON must be an object.")
+    intent = SpeechIntent.from_mapping(
+        request_payload,
+        source=DEFAULT_SPEAK_SOURCE,
+        session=DEFAULT_SPEAK_SESSION,
+    )
+    request = service.submit(intent)
+    return {
+        "status": request.status,
+        "request_id": request.id,
+        "session": request.session_id,
+        "persona": request.persona,
+        "source": request.source,
+        "lane": request.lane,
+        "utterance_index": request.utterance_index,
+        "created_at": request.created_at,
+        "text_length": len(request.text),
+    }
+
+
+def post_voice_queue_cancel(
+    app: DaemonApp,
+    request_id: str,
+    request_payload: Any,
+) -> dict[str, Any]:
+    _require_voice_enabled(app)
+    service = _require_voice_service(app)
+    reason = "api cancel"
+    if isinstance(request_payload, Mapping):
+        raw_reason = request_payload.get("reason")
+        if raw_reason is not None:
+            if not isinstance(raw_reason, str) or not raw_reason.strip():
+                raise VoiceRequestValidationError("reason must be a non-empty string.")
+            reason = raw_reason.strip()
+    if not service.cancel_request(request_id, reason=reason):
+        raise DaemonAppNotFoundError(
+            f"voice request {request_id!r} is unknown or already terminal"
+        )
+    return {"ok": True, "request_id": request_id, "status": "cancelled"}
+
+
+def post_voice_queue_flush(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
+    """Cancel pending speech for exactly one session (scoped flush)."""
+
+    _require_voice_enabled(app)
+    service = _require_voice_service(app)
+    if not isinstance(request_payload, Mapping):
+        raise VoiceRequestValidationError("Request JSON must be an object.")
+    session = request_payload.get("session")
+    if not isinstance(session, str) or not session.strip():
+        raise VoiceRequestValidationError(
+            "session is required: flush cancels one session only."
+        )
+    session = session.strip()
+    cancelled = service.cancel_session(session, reason="api flush")
+    return {
+        "ok": True,
+        "session": session,
+        "cancelled": cancelled,
+        "cancelled_count": len(cancelled),
+    }
+
+
+def post_voice_pause(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
+    _require_voice_enabled(app)
+    broker = _require_voice_broker(app)
+    broker.pause()
+    return {"ok": True, "paused": True}
+
+
+def post_voice_resume(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
+    _require_voice_enabled(app)
+    broker = _require_voice_broker(app)
+    broker.resume()
+    return {"ok": True, "paused": False}
 
 
 def get_voice_queue(app: DaemonApp, *, limit: int = 20) -> dict[str, Any]:
@@ -703,5 +807,10 @@ __all__ = [
     "post_listen_unlock",
     "post_ptt_down",
     "post_ptt_up",
+    "post_voice_pause",
+    "post_voice_queue_cancel",
+    "post_voice_queue_flush",
+    "post_voice_resume",
+    "post_voice_speak",
     "register_routes",
 ]

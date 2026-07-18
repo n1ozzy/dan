@@ -138,6 +138,7 @@ memory.compiled_context_include_procedural
 voice.enabled
 voice.speak_responses
 voice.broker_enabled
+voice.hook_enabled
 voice.output_gain
 voice.default_tts
 voice.default_stt
@@ -293,6 +294,7 @@ _VOICE_RESOLVER_CONSUMERS = {
 
 _SPECIAL_CONSUMERS = {
     "owner.display_name": ("PersonaRenderer",),
+    "voice.hook_enabled": ("VoiceHook",),
     "brain.current_adapter": ("BrainManager",),
     "dan.conversation_id": ("TurnOrchestrator",),
     "voice.conversation_id": ("VoiceTurnGateway",),

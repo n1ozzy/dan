@@ -592,6 +592,8 @@ def test_cli_doctor_returns_expected_keys(tmp_path: Path) -> None:
         "brain_adapter",
         "daemon_host",
         "daemon_port",
+        "daemon",
+        "voice_runtime",
     }
 
     result = run_cli("--config", str(config_path), "doctor")

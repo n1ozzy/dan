@@ -184,6 +184,10 @@ class VoiceConfig:
     enabled: bool = False
     speak_responses: bool = False
     broker_enabled: bool = False
+    # Message-display voice hook toggle exposed as `dan voice hook on|off`.
+    # The hook script reads this installation key through the settings API;
+    # the daemon itself never spawns the hook.
+    hook_enabled: bool = True
     output_gain: float = 1.0
     default_tts: str = "supertonic"
     default_stt: str = "mlx_whisper"
