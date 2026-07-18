@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from dan.events.types import EventType
+from dan.store.event_store import create_event_store
 from dan.store.repositories import utc_now_iso
 from dan.voice.models import RenderSnapshot, SpeechIntent, VoiceRequest
 
@@ -45,7 +46,7 @@ class VoiceQueue:
         if global_pending_limit <= 0 or session_pending_limit <= 0:
             raise ValueError("voice queue pending limits must be positive")
         event_connection = getattr(event_store, "connection", None)
-        if event_connection is not None and event_connection is not conn:
+        if event_store is not None and event_connection is not conn:
             raise VoiceQueueError(
                 "voice queue and event store must use the same SQLite connection"
             )
@@ -497,14 +498,23 @@ class VoiceQueue:
             return 0
         now = self._now()
         self._conn.executemany(
-            "INSERT OR IGNORE INTO cancelled_turns (turn_id, cancelled_at) VALUES (?, ?)",
+            """
+            INSERT INTO cancelled_turns (turn_id, cancelled_at) VALUES (?, ?)
+            ON CONFLICT(turn_id) DO UPDATE SET cancelled_at = excluded.cancelled_at
+            """,
             [(turn_id, now) for turn_id in ids],
         )
         self._conn.execute(
             "DELETE FROM cancelled_turns WHERE cancelled_at < ?",
             (_tombstone_cutoff(now),),
         )
-        return len(ids)
+        placeholders = ",".join("?" for _ in ids)
+        return int(
+            self._conn.execute(
+                f"SELECT COUNT(*) FROM cancelled_turns WHERE turn_id IN ({placeholders})",
+                ids,
+            ).fetchone()[0]
+        )
 
     def is_tombstoned(self, turn_id: str) -> bool:
         row = self._conn.execute(
@@ -618,7 +628,7 @@ class VoiceQueue:
         self, event_type: str, payload: dict[str, Any]
     ) -> None:
         if self._event_store is None:
-            return
+            self._event_store = create_event_store(self._conn)
         append = getattr(self._event_store, "append_in_transaction", None)
         if callable(append):
             append(event_type, "voice", payload)

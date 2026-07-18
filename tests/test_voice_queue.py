@@ -22,7 +22,8 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 
 class Events:
-    def __init__(self) -> None:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
         self.items: list[tuple[str, dict]] = []
 
     def append(self, event_type, source, payload) -> None:
@@ -33,7 +34,7 @@ class Events:
 
 
 def test_enqueue_persists_complete_intent_snapshot_and_event(conn) -> None:
-    events = Events()
+    events = Events(conn)
     request = enqueue_voice(
         VoiceQueue(conn, event_store=events),
         "Pierwsze zdanie.",
@@ -71,7 +72,7 @@ def test_lane_then_priority_then_rowid_controls_claim_order(conn) -> None:
 
 
 def test_queue_lifecycle_requires_synthesis_before_playback(conn) -> None:
-    events = Events()
+    events = Events(conn)
     queue = VoiceQueue(conn, event_store=events)
     request = enqueue_voice(queue, "Pelny cykl.")
 

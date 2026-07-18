@@ -149,6 +149,54 @@ def test_direct_cancellation_tombstones_the_turn_before_late_enqueue(
         enqueue_voice(queue, "late tail", session=request.session_id, utterance_index=1)
 
 
+@pytest.mark.parametrize("operation", ["session", "request"])
+def test_plain_queue_cancellation_persists_cancel_event_in_same_database(
+    conn: sqlite3.Connection,
+    operation: str,
+) -> None:
+    queue = VoiceQueue(conn)
+    request = enqueue_voice(queue, "plain queue", session=f"plain-{operation}")
+
+    if operation == "session":
+        assert queue.cancel_session(request.session_id, reason="barge_in") == [request.id]
+    else:
+        assert queue.cancel_request(request.id, reason="barge_in") is True
+
+    events = conn.execute(
+        "SELECT payload_json FROM events WHERE type = 'voice.speak.cancelled'"
+    ).fetchall()
+    assert len(events) == 1
+    assert request.id in str(events[0][0])
+    assert queue.get(request.id).status == "cancelled"
+    assert queue.is_tombstoned(request.session_id) is True
+
+
+def test_recancel_refreshes_stale_tombstone_before_ttl_cleanup(
+    conn: sqlite3.Connection,
+) -> None:
+    stale = "2026-07-18T00:00:00Z"
+    refreshed = "2026-07-18T02:00:01Z"
+    conn.execute(
+        "INSERT INTO cancelled_turns (turn_id, cancelled_at) VALUES (?, ?)",
+        ("turn-stale", stale),
+    )
+    conn.commit()
+    queue = VoiceQueue(conn, now=lambda: refreshed)
+
+    durable = queue.tombstone_turns(["turn-stale"])
+
+    row = conn.execute(
+        "SELECT cancelled_at FROM cancelled_turns WHERE turn_id = ?",
+        ("turn-stale",),
+    ).fetchone()
+    assert row == (refreshed,)
+    actual = conn.execute(
+        "SELECT COUNT(*) FROM cancelled_turns WHERE turn_id = ?",
+        ("turn-stale",),
+    ).fetchone()[0]
+    assert durable == actual == 1
+
+
 def test_cancellation_rejects_event_store_on_a_different_connection(
     conn: sqlite3.Connection,
 ) -> None:
@@ -160,6 +208,17 @@ def test_cancellation_rejects_event_store_on_a_different_connection(
             VoiceQueue(conn, event_store=create_event_store(other))
     finally:
         close_quietly(other)
+
+
+def test_cancellation_rejects_transactional_store_without_connection_identity(
+    conn: sqlite3.Connection,
+) -> None:
+    class UnboundTransactionalStore:
+        def append_in_transaction(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    with pytest.raises(VoiceQueueError, match="same SQLite connection"):
+        VoiceQueue(conn, event_store=UnboundTransactionalStore())
 
 
 def test_cancellation_rejects_nontransactional_event_store(
