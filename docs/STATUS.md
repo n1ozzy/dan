@@ -2,6 +2,19 @@
 
 Classification: current.
 
+## Release 1 cutover — 2026-07-18
+
+- Production runtime: this repo at `~/Documents/dev/DAN`, branch
+  `agent/dan-release1-integration`, tag `dan-v1-foundation-candidate` (`1852d7f`).
+- Daemon: launchd `com.dan.dand` → `~/.dan/bin/dand` (venv `~/.dan/venv`),
+  API `127.0.0.1:41741`; supertonic serve (:7788) is dand's supervised child.
+- Persona canon: `config/persona/DAN.md` IN THIS REPO; voice canon:
+  `config/voice/personas.toml` (old `~/.config/voice` bridge retired).
+- Old stack (jarvisd/screen, voice_broker, dev/dan feeder) stopped and parked in
+  `~/Documents/DAN-migration-backups/`; any `dev/dan` paths below are historical.
+- 7-day observation window in progress (until ~2026-07-25); donor deletion only
+  after operator sign-off. Sections below are older snapshots.
+
 ## Owner runtime override — 2026-07-13
 
 - One shared DAN/Jarvis canon:

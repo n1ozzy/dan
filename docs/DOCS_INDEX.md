@@ -2,9 +2,18 @@
 
 Classification: authoritative.
 
-This index explains which Jarvis docs are current sources, runbooks, or legacy
+This index explains which docs are current sources, runbooks, or legacy
 evidence. If docs conflict, AGENTS.md + docs/PROJECT_RULES.md + docs/STATUS.md
 win over old handoffs/roadmaps.
+
+> **Naming note (Release 1, 2026-07-18):** the daemon formerly named `jarvisd`
+> is now **`dand`** (launchd label `com.dan.dand`); the product/repo renamed
+> Jarvis → DAN. Architecture docs below (CONTRACTS, DECISIONS, PRODUCT,
+> PROJECT_RULES, PANEL_CONTRACT, SECURITY_MODEL, MACOS_*, LAUNCH_SUPERVISION)
+> still say `jarvisd`/`com.ozzy.jarvisd` — read those names as `dand`/
+> `com.dan.dand`; the contracts themselves remain in force. `JARVIS_*` and
+> `*HANDOFF*` files are historical evidence, not active instructions.
+> Operator docs written post-rename: CO-JEST-GDZIE, GLOS-I-KOLEJKA, ODZYSKIWANIE.
 
 ## Authoritative Docs
 
