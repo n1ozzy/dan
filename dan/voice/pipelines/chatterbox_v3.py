@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -63,6 +64,14 @@ class PipelineManifest:
             MappingProxyType(dict(sorted(self.model_files.items()))),
         )
 
+    @property
+    def model_repo_id(self) -> str:
+        return _MODEL_REPO_ID
+
+    @property
+    def model_lock_path(self) -> Path:
+        return self.model_path / _MODEL_LOCK_NAME
+
 
 @dataclass(frozen=True)
 class RenderArtifact:
@@ -77,6 +86,8 @@ Runner = Callable[[str, Path, PipelineManifest, int], None]
 Scorer = Callable[[Path, str, PipelineManifest], float]
 
 _MODEL_SAMPLE_RATE = 24_000
+_MODEL_REPO_ID = "ResembleAI/chatterbox"
+_MODEL_LOCK_NAME = "snapshot-lock.json"
 _MODEL_FILES = frozenset(
     {
         "Cangjie5_TC.json",
@@ -142,6 +153,8 @@ def load_pipeline_manifest(
     synthesis = _required_table(raw, "synthesis")
     acceptance = _required_table(raw, "acceptance")
     _require_exact_int(raw, "schema_version", 1)
+    _require_exact_text(raw, "model_repo_id", _MODEL_REPO_ID)
+    _require_exact_text(runtime, "model_lock_name", _MODEL_LOCK_NAME)
     _require_exact_bool(runtime, "network_fallback", False)
     _require_exact_bool(reference, "redistribute", False)
     _require_exact_text(synthesis, "language", "pl")
@@ -151,6 +164,11 @@ def load_pipeline_manifest(
     _require_exact_bool(acceptance, "publish_below_threshold", False)
     _require_exact_bool(acceptance, "output_manifest", True)
     reference_path = _required_env_path(env, _required_text(reference, "path_env"))
+    acceptance_threshold = _required_finite_float(acceptance, "threshold")
+    if acceptance_threshold < 0.9:
+        raise PipelineCapabilityError(
+            "pipeline field 'threshold' must be at least 0.9"
+        )
     return PipelineManifest(
         name=_required_text(raw, "name"),
         source_revision=_required_revision(raw, "source_revision"),
@@ -172,12 +190,12 @@ def load_pipeline_manifest(
         reference_path=reference_path,
         reference_sha256=_required_sha(reference, "sha256"),
         reference_license_decision=_required_local_only(reference),
-        exaggeration=float(synthesis["exaggeration"]),
-        cfg_weight=float(synthesis["cfg_weight"]),
-        temperature=float(synthesis["temperature"]),
+        exaggeration=_required_finite_float(synthesis, "exaggeration"),
+        cfg_weight=_required_finite_float(synthesis, "cfg_weight"),
+        temperature=_required_finite_float(synthesis, "temperature"),
         seed=int(synthesis["seed"]),
         max_attempts=int(synthesis["max_attempts"]),
-        acceptance_threshold=float(acceptance["threshold"]),
+        acceptance_threshold=acceptance_threshold,
         sample_rate=int(synthesis["sample_rate"]),
         channels=int(synthesis["channels"]),
         sample_width_bytes=int(synthesis["sample_width_bytes"]),
@@ -215,6 +233,7 @@ def verify_pinned_runtime(manifest: PipelineManifest) -> None:
             "Chatterbox source revision mismatch: "
             f"expected {manifest.source_revision}, got {actual_source}"
         )
+    _verify_model_snapshot_lock(manifest)
     if set(manifest.model_files) != _MODEL_FILES:
         raise PipelineCapabilityError(
             "Chatterbox model file set mismatch: "
@@ -292,8 +311,6 @@ class ChatterboxV3ZanetaPipeline:
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Zaneta render text must be non-empty")
         _verify_manifest_contract(manifest)
-        if manifest.acceptance_threshold < 0.9:
-            raise PipelineCapabilityError("Zaneta acceptance threshold may not be below 0.9")
         if manifest.max_attempts < 1:
             raise PipelineCapabilityError("Zaneta max_attempts must be positive")
         verify_reference_rights_and_hash(manifest)
@@ -308,7 +325,9 @@ class ChatterboxV3ZanetaPipeline:
             try:
                 self._runner(text, candidate, manifest, seed)
                 _verify_pcm16(candidate, sample_rate=manifest.sample_rate)
-                score = float(self._scorer(candidate, text, manifest))
+                score = _finite_float(
+                    self._scorer(candidate, text, manifest), "acceptance score"
+                )
                 last_score = score
                 if score < manifest.acceptance_threshold:
                     continue
@@ -371,8 +390,7 @@ with wave.open(cfg["output"], "wb") as handle:
         "sample_rate": manifest.sample_rate,
         "seed": seed,
     }
-    env = dict(os.environ)
-    env.update(
+    env = _isolated_subprocess_env(
         {
             "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1",
@@ -380,11 +398,18 @@ with wave.open(cfg["output"], "wb") as handle:
         }
     )
     result = subprocess.run(
-        [str(manifest.python_executable), "-c", worker, json.dumps(payload, ensure_ascii=False)],
+        [
+            str(manifest.python_executable),
+            "-I",
+            "-c",
+            worker,
+            json.dumps(payload, ensure_ascii=False),
+        ],
         capture_output=True,
         text=True,
         check=False,
         env=env,
+        cwd=manifest.model_path,
     )
     if result.returncode != 0:
         raise PipelineCapabilityError(
@@ -429,6 +454,36 @@ def _verify_pcm16(path: Path, *, sample_rate: int) -> None:
     if actual != expected:
         raise PipelineCapabilityError(
             f"generator WAV must be mono PCM16 at {sample_rate} Hz; got {actual}"
+        )
+
+
+def _verify_model_snapshot_lock(manifest: PipelineManifest) -> None:
+    lock_path = manifest.model_lock_path
+    if not lock_path.is_file():
+        raise PipelineCapabilityError(
+            f"Chatterbox snapshot lock is missing: {lock_path}"
+        )
+    try:
+        payload = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PipelineCapabilityError(
+            f"could not load Chatterbox snapshot lock: {lock_path}"
+        ) from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise PipelineCapabilityError("Chatterbox snapshot lock schema_version must be 1")
+    if payload.get("repo_id") != manifest.model_repo_id:
+        raise PipelineCapabilityError(
+            "Chatterbox snapshot repo id mismatch: "
+            f"expected {manifest.model_repo_id}, got {payload.get('repo_id')}"
+        )
+    if payload.get("revision") != manifest.model_revision:
+        raise PipelineCapabilityError(
+            "Chatterbox snapshot revision mismatch: "
+            f"expected {manifest.model_revision}, got {payload.get('revision')}"
+        )
+    if payload.get("files") != dict(manifest.model_files):
+        raise PipelineCapabilityError(
+            "Chatterbox snapshot file map mismatch against pinned pipeline TOML"
         )
 
 
@@ -491,6 +546,12 @@ def _publish_accepted_candidate(
     staged_manifest = manifest_path.parent / f".{manifest_path.name}.{token}.staged"
     output_backup = output.parent / f".{output.name}.{token}.backup"
     manifest_backup = manifest_path.parent / f".{manifest_path.name}.{token}.backup"
+    output_had_previous = output.exists()
+    manifest_had_previous = manifest_path.exists()
+    if output_had_previous != manifest_had_previous:
+        raise PipelineCapabilityError(
+            "existing Zaneta output and manifest must either both exist or both be absent"
+        )
     for path in (staged_manifest, output_backup, manifest_backup):
         path.unlink(missing_ok=True)
     _write_output_manifest(
@@ -502,27 +563,55 @@ def _publish_accepted_candidate(
         score=score,
         manifest=manifest,
     )
-    output_had_previous = output.exists()
-    manifest_had_previous = manifest_path.exists()
+    publication_complete = False
+    rollback_complete = False
     try:
         if output_had_previous:
             os.replace(output, output_backup)
         if manifest_had_previous:
             os.replace(manifest_path, manifest_backup)
-        os.replace(candidate, output)
         os.replace(staged_manifest, manifest_path)
-    except Exception:
-        output.unlink(missing_ok=True)
-        manifest_path.unlink(missing_ok=True)
-        if output_had_previous and output_backup.exists():
-            os.replace(output_backup, output)
-        if manifest_had_previous and manifest_backup.exists():
-            os.replace(manifest_backup, manifest_path)
+        os.replace(candidate, output)
+        publication_complete = True
+    except BaseException:
+        _rollback_publication(
+            output,
+            manifest_path,
+            output_backup,
+            manifest_backup,
+            output_had_previous=output_had_previous,
+            manifest_had_previous=manifest_had_previous,
+        )
+        rollback_complete = True
         raise
     finally:
         staged_manifest.unlink(missing_ok=True)
-        output_backup.unlink(missing_ok=True)
-        manifest_backup.unlink(missing_ok=True)
+        if publication_complete or rollback_complete:
+            output_backup.unlink(missing_ok=True)
+            manifest_backup.unlink(missing_ok=True)
+
+
+def _rollback_publication(
+    output: Path,
+    manifest_path: Path,
+    output_backup: Path,
+    manifest_backup: Path,
+    *,
+    output_had_previous: bool,
+    manifest_had_previous: bool,
+) -> None:
+    if not output_had_previous or output_backup.exists():
+        output.unlink(missing_ok=True)
+
+    if manifest_had_previous:
+        if manifest_backup.exists():
+            manifest_path.unlink(missing_ok=True)
+            os.replace(manifest_backup, manifest_path)
+    else:
+        manifest_path.unlink(missing_ok=True)
+
+    if output_had_previous and output_backup.exists():
+        os.replace(output_backup, output)
 
 
 def _required_table(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]:
@@ -558,6 +647,19 @@ def _required_revision(payload: Mapping[str, Any], key: str) -> str:
     if len(value) != 40 or any(char not in "0123456789abcdef" for char in value):
         raise PipelineCapabilityError(f"pipeline field {key!r} must be a 40-character revision")
     return value
+
+
+def _required_finite_float(payload: Mapping[str, Any], key: str) -> float:
+    return _finite_float(payload.get(key), f"pipeline field {key!r}")
+
+
+def _finite_float(value: Any, label: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise PipelineCapabilityError(f"{label} must be a finite number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise PipelineCapabilityError(f"{label} must be a finite number")
+    return result
 
 
 def _required_env_path(environ: Mapping[str, str], key: str) -> Path:
@@ -602,6 +704,17 @@ def _require_exact_text(payload: Mapping[str, Any], key: str, expected: str) -> 
 
 
 def _verify_manifest_contract(manifest: PipelineManifest) -> None:
+    for field_name in (
+        "exaggeration",
+        "cfg_weight",
+        "temperature",
+        "acceptance_threshold",
+    ):
+        _finite_float(getattr(manifest, field_name), field_name)
+    if manifest.acceptance_threshold < 0.9:
+        raise PipelineCapabilityError(
+            "acceptance_threshold must be at least 0.9"
+        )
     expected = {
         "network_fallback": False,
         "sample_rate": _MODEL_SAMPLE_RATE,
@@ -619,8 +732,7 @@ def _verify_manifest_contract(manifest: PipelineManifest) -> None:
 
 
 def _probe_python_provenance(manifest: PipelineManifest) -> Mapping[str, Any]:
-    env = dict(os.environ)
-    env.update(
+    env = _isolated_subprocess_env(
         {
             "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1",
@@ -640,6 +752,7 @@ def _probe_python_provenance(manifest: PipelineManifest) -> Mapping[str, Any]:
         check=False,
         timeout=30,
         env=env,
+        cwd=manifest.model_path,
     )
     if result.returncode != 0:
         raise PipelineCapabilityError(
@@ -660,6 +773,16 @@ def _required_probe_text(payload: Mapping[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise PipelineCapabilityError(f"Chatterbox provenance is missing {key}")
     return value
+
+
+def _isolated_subprocess_env(extra: Mapping[str, str]) -> dict[str, str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("PYTHON")
+    }
+    environment.update(extra)
+    return environment
 
 
 def _sha256_file(path: Path) -> str:

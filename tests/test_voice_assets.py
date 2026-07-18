@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -141,14 +143,14 @@ def test_verifier_never_falls_back_to_home_cache(
         verify_assets(manifest, repo_root=tmp_path / "repo")
 
 
-@pytest.mark.parametrize(
-    "relative_root",
-    (
-        "config/voice",
-        "dan/voice",
-        "docs/migration",
-        ".superpowers/sdd",
-    ),
-)
-def test_repository_versions_no_reference_or_generated_wav(relative_root: str) -> None:
-    assert not list((ROOT / relative_root).rglob("*.wav"))
+def test_repository_versions_no_reference_or_generated_wav() -> None:
+    result = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    tracked = [Path(os.fsdecode(raw)) for raw in result.stdout.split(b"\0") if raw]
+    tracked_wavs = sorted(str(path) for path in tracked if path.suffix.lower() == ".wav")
+
+    assert tracked_wavs == []

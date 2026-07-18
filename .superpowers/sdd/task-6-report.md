@@ -264,3 +264,133 @@ or publication ownership was added. The only compatibility-TTS change is convert
 already resolved custom style name into its hash-verified repository asset argument.
 The pinned Python/package/model hashes intentionally fail closed after any environment
 upgrade until the versioned manifest is reconciled from new local source truth.
+
+## Second review-fix section (2026-07-18)
+
+### RED failures reproduced
+
+All second-wave review findings were reproduced before their production edits.
+
+1. Non-finite TOML synthesis/threshold values, non-finite scorer results, and a
+   configured threshold below `0.9` were accepted. The focused command reported
+   `20 failed, 15 deselected`.
+2. Final publication replaced the WAV before its manifest and caught only
+   `Exception`. Manifest-order, empty-target `KeyboardInterrupt`, and four
+   replacement rollback injections reported `6 failed, 35 deselected`; the direct
+   failure state was `manifest_visible == False` with `wav_published == True`.
+3. The generation subprocess inherited hostile `PYTHONPATH`/`PYTHONHOME`, had no
+   safe `cwd`, and omitted `-I`, despite the provenance probe using `-I`.
+4. A missing snapshot lock, forged model revision, and mismatched lock file map were
+   all accepted. The combined isolation/snapshot command reported
+   `5 failed, 40 deselected`.
+5. The old no-WAV test scanned only four selected directories and only lowercase
+   `*.wav`. With an alternate Git index containing tracked
+   `review-fixture/VOICE.WAV`, the repository-wide replacement test reported
+   `1 failed` and named that path. The real index was not modified.
+6. The old route matrix serialized a resolver snapshot and compared it back to the
+   same object. The replacement test executed every route through the real resolver,
+   engine factory, and synthesis boundary; RED reported `1 failed, 2 passed` when the
+   first versioned DSP route reached runtime without an ffmpeg postprocess command.
+
+RED commands:
+
+```text
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_chatterbox_v3_pipeline.py \
+  -k 'non_finite or hard_floor or invalid_runtime_threshold'
+
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_chatterbox_v3_pipeline.py \
+  -k 'publication_replaces or keyboard_interrupt or base_exception'
+
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_chatterbox_v3_pipeline.py \
+  -k 'versioned_manifest or snapshot_lock or forged_snapshot or mismatched_snapshot or hostile_import'
+
+GIT_INDEX_FILE=<alternate-index-with-review-fixture/VOICE.WAV> \
+  /Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_voice_assets.py::test_repository_versions_no_reference_or_generated_wav
+
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_voice_route_matrix.py
+```
+
+### GREEN implementation
+
+- Pipeline TOML float fields are type-checked and finite at load. The same finite
+  checks run again at the render boundary for manually constructed manifests and
+  scorer results. The configured and runtime acceptance threshold must be finite and
+  at least `0.9`.
+- Pair publication is deliberately not described as two-file atomicity. It hides an
+  old WAV before its old manifest, publishes the new manifest before the new WAV, and
+  catches `BaseException`. Rollback removes a new WAV before its manifest and restores
+  an old manifest before its WAV. Failure injection after each replace proves the old
+  pair is restored with no staged, candidate, or backup residue.
+- Provenance probe and actual generation now use the same configured interpreter with
+  `-I`, a verified model-directory `cwd`, offline flags, and an environment stripped
+  of every inherited `PYTHON*` variable. A hostile cwd package and `PYTHONPATH` cannot
+  substitute the verified `chatterbox-tts` package.
+- The pipeline TOML pins `model_repo_id = "ResembleAI/chatterbox"` and
+  `model_lock_name = "snapshot-lock.json"`. Runtime requires that local lock to contain
+  schema version 1, the exact repository ID, exact model revision, and an exact file
+  hash map equal to `[model_files]`, then separately hashes every on-disk model file.
+  There is no network or HOME-cache fallback.
+- `docs/migration/CHATTERBOX-V3-INSTALLER-CONTRACT.md` defines the installer outputs,
+  lock format, environment paths, and runtime verification boundary.
+- The no-WAV guard reads every path from `git ls-files -z` and rejects `.wav` suffixes
+  case-insensitively without directory exclusions.
+- The route matrix executes every catalog persona through `VoiceResolver`,
+  `build_tts_engine`, and `SupertonicEngine.synthesize`; only final Supertonic/ffmpeg
+  subprocesses and audio bytes are faked. It proves voice, speed, custom-style path,
+  mastering, and DSP command behavior. Zaneta separately proves local-only Chatterbox
+  capability failure followed by the explicit Supertonic live fallback.
+
+### GREEN commands and results
+
+```text
+# Covering suites plus affected config/resolver tests
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_chatterbox_v3_pipeline.py tests/test_voice_assets.py \
+  tests/test_voice_route_matrix.py tests/test_voice_catalog.py \
+  tests/test_voice_tts_supertonic.py tests/test_config.py \
+  tests/test_config_registry.py tests/test_voice_resolver.py \
+  tests/test_voice_persona_binding.py
+# 167 passed, 34 expected deprecation warnings
+
+# Cold HOME covering suite
+HOME="$(mktemp -d)" \
+  /Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m pytest -q \
+  tests/test_chatterbox_v3_pipeline.py tests/test_voice_assets.py \
+  tests/test_voice_route_matrix.py tests/test_voice_catalog.py \
+  tests/test_voice_tts_supertonic.py
+# 89 passed, 28 expected deprecation warnings
+
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m compileall -q dan tests
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python -m dan.voice.assets verify \
+  config/voice/custom_styles/manifest.json
+git diff --check
+# all exit 0; asset verifier printed "verified 20 voice assets"
+
+/Users/n1_ozzy/Documents/dev/jarvis/.venv/bin/python scripts/dan-test-baseline \
+  --compare /Users/n1_ozzy/.dan/migration/test-baseline.json
+# exit 0; 2492 collected/isolated, 0 live_manual, 270 unchanged known failures,
+# 0 new failure IDs, 0 removed failure IDs, duration 366.392s
+```
+
+### Changed files and self-review
+
+- `config/voice/pipelines/chatterbox-v3-zaneta.toml`
+- `dan/voice/pipelines/chatterbox_v3.py`
+- `dan/voice/tts.py`
+- `docs/migration/CHATTERBOX-V3-INSTALLER-CONTRACT.md`
+- `tests/test_chatterbox_v3_pipeline.py`
+- `tests/test_voice_assets.py`
+- `tests/test_voice_route_matrix.py`
+- `.superpowers/sdd/task-6-report.md`
+
+Scope review found no Task 7 persistence, snapshot store, queue, broker, player, or
+enqueue changes. No synthesis, playback, network access, or live/manual audio test ran.
+The existing local Hugging Face snapshot predates this contract and currently lacks the
+new `snapshot-lock.json`; the runtime therefore fails closed until the local installer
+produces the documented lock. This is an intentional provenance gate, but it is an
+operator-visible provisioning requirement.

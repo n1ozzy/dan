@@ -504,11 +504,15 @@ class SupertonicEngine:
         if mastering_profile in {"raw", "none"}:
             filter_chain = ""
         else:
-            filter_chain = mastering_filter(mastering_profile)
-            if not filter_chain:
+            mastering_chain = mastering_filter(mastering_profile)
+            if not mastering_chain:
                 raise TTSEngineError(
                     f"unknown resolved mastering profile: {snapshot.mastering_profile!r}"
                 )
+            filter_chain = mastering_chain
+        dsp_chain = snapshot.dsp.strip()
+        if dsp_chain and dsp_chain.lower() != "none":
+            filter_chain = ",".join(part for part in (dsp_chain, filter_chain) if part)
         return SynthesizedChunk(
             text=text,
             audio=self._apply_mastering(audio, filter_chain),
