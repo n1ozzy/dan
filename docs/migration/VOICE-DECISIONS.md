@@ -128,3 +128,10 @@ urządzenia) i schedulował bufory Int16 mono — CoreAudio przerywał playback
 połączenie w formacie bufora (Float32, mono; mixer miksuje do urządzenia)
 z reconnectem przy zmianie formatu. Pierwszy failed request tego biegu w
 kolejce live-gates to właśnie ten bug (zachowany jako dowód).
+
+**Werdykt operatora (2026-07-18, po powtórce matrycy):** Ozzy odsłuchał pełną
+matrycę live z nowego danda dwukrotnie (pierwszy bieg + powtórka na żądanie:
+dan, danusia, jarvis/M1, zaneta — 4/4 done, playback potwierdzony) i klepnął
+wszystkie trasy głosowe („Klepnięte") — zero tras odrzuconych, cutover ma
+zielone światło. Wcześniejsza wiadomość „jarvis nieakceptuje tego testu"
+pochodziła z innego okna i została jawnie wycofana przez Ozzy'ego.
