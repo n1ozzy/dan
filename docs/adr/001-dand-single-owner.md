@@ -1,58 +1,62 @@
-# ADR 001: `dand` jest jedynym właścicielem audio, hotkeya i kolejki głosu
+# ADR 001: `dand` is the sole owner of audio, the hotkey and the voice queue
 
-Status: przyjęty (Wydanie 1, konsolidacja produktu)
+Status: accepted (Release 1, product consolidation)
 
-## Kontekst
+## Context
 
-Stary układ miał wielu właścicieli tej samej wartości: osobny broker głosu,
-feeder-bash pilnujący pliku playlisty, panel wołający bezpośrednio `launchctl`
-i `pkill`, hotkey w osobnym procesie i skrypty odtwarzające WAV-y wprost.
-Skutki: dwa odtwarzacze naraz, requesty ginące między procesami, „naprawy"
-przez zabijanie procesów na ślepo i stan, którego nikt nie umiał odtworzyć.
+The old layout had multiple owners of the same value: a separate voice broker,
+a bash feeder watching the playlist file, a panel calling `launchctl` and
+`pkill` directly, a hotkey in a separate process and scripts playing WAVs
+outright. The consequences: two players at once, requests lost between
+processes, "repairs" by killing processes blindly and a state nobody could
+reproduce.
 
-## Decyzja
+## Decision
 
-Jedna wartość — jeden właściciel. Właścicielem **audio, globalnego hotkeya
-PTT i trwałej kolejki głosu** jest wyłącznie daemon `dand`:
+One value — one owner. The owner of **audio, the global PTT hotkey and the
+durable voice queue** is exclusively the `dand` daemon:
 
-- broker głosu działa w procesie `dand`; synteza i playback nie istnieją
-  poza nim, a broker bierze dokładnie jeden element do playbacku naraz;
-- każdy producent mowy (CLI, panel, hooki, skille, inne agenty) przechodzi
-  przez API/CLI (`dan speak`), nigdy bezpośrednio do silnika czy głośnika;
-- kolejka jest trwała w SQLite w `~/.dan/dan.db`, którego jedynym writerem
-  jest `dand`.
+- the voice broker runs inside the `dand` process; synthesis and playback do
+  not exist outside it, and the broker takes exactly one item for playback
+  at a time;
+- every producer of speech (CLI, panel, hooks, skills, other agents) goes
+  through the API/CLI (`dan speak`), never directly to the engine or the
+  speaker;
+- the queue is durable in SQLite in `~/.dan/dan.db`, whose only writer
+  is `dand`.
 
 ### Restart: exit 86 + launchd `KeepAlive`
 
-Bezpieczny restart (`POST /runtime/restart`) domyka intake, drenuje głos,
-zatrzymuje dzieci i **kończy proces kodem `RESTART_EXIT_CODE = 86`**
-(`dan/daemon/restart.py`). Wskrzeszenie to robota platformy: plist
-`com.dan.dand` ma `KeepAlive = true`, więc launchd wstawia daemona z
-powrotem. Nikt — ani daemon, ani panel — nie woła `launchctl` czy `pkill`.
-Kod 86 odróżnia w logach „poproszono o restart" od crashu i czystego stopu.
+A safe restart (`POST /runtime/restart`) closes intake, drains the voice,
+stops the children and **exits the process with `RESTART_EXIT_CODE = 86`**
+(`dan/daemon/restart.py`). Resurrection is the platform's job: the
+`com.dan.dand` plist has `KeepAlive = true`, so launchd puts the daemon
+back up. Nobody — neither the daemon nor the panel — calls `launchctl` or
+`pkill`. Code 86 distinguishes "a restart was requested" in the logs from a
+crash and from a clean stop.
 
-### Hotkey: wyłączność przez `flock` na `hotkey.lock`
+### Hotkey: exclusivity via `flock` on `hotkey.lock`
 
-Globalny monitor PTT bierze wyłączny, nieblokujący `flock` na
-`~/.dan/runtime/hotkey.lock` (`dan/input/macos_event_tap.py`). Lock jest na
-open-file-description, więc nawet drugi monitor w tym samym procesie go nie
-obejdzie. Brak locka lub brak uprawnień Accessibility to widoczny błąd,
-nie cicha degradacja.
+The global PTT monitor takes an exclusive, non-blocking `flock` on
+`~/.dan/runtime/hotkey.lock` (`dan/input/macos_event_tap.py`). The lock is
+on the open file description, so even a second monitor in the same process
+cannot get around it. A missing lock or missing Accessibility permission is
+a visible error, not a silent degradation.
 
-### Porty: `ForeignPortOwnerError`
+### Ports: `ForeignPortOwnerError`
 
-Supervisor dzieci (`dan/daemon/supervisor.py`) przed startem usługi sprawdza
-właściciela portu. Port zajęty przez proces spoza rodziny `dand` podnosi
-`ForeignPortOwnerError` — daemon **odmawia** startu usługi zamiast zabijać
-cudzy proces albo po cichu zmieniać port.
+The child supervisor (`dan/daemon/supervisor.py`) checks the port owner
+before starting a service. A port occupied by a process outside the `dand`
+family raises `ForeignPortOwnerError` — the daemon **refuses** to start the
+service instead of killing someone else's process or silently changing the
+port.
 
-## Konsekwencje
+## Consequences
 
-- Panel jest czystym klientem HTTP: pauza/wznów/pomiń/restart to wywołania
-  API; gdy daemon leży, panel pokazuje „offline" i nie wskrzesza niczego.
-- Nie istnieje żaden legalny drugi tor mowy (bezpośredni player, osobny
-  broker, feeder plikowy). Testy kontraktowe pilnują pojedynczego
-  odtwarzacza, pojedynczej instancji daemona i braku `launchctl`/`pkill`
-  w kodzie runtime.
-- Awaria daemona zatrzymuje głos w całości — to celowe: lepszy jeden
-  widoczny brak właściciela niż dwóch właścicieli naraz.
+- The panel is a pure HTTP client: pause/resume/skip/restart are API calls;
+  when the daemon is down, the panel shows "offline" and resurrects nothing.
+- No legitimate second speech path exists (a direct player, a separate
+  broker, a file feeder). Contract tests enforce a single player, a single
+  daemon instance and the absence of `launchctl`/`pkill` in runtime code.
+- A daemon failure stops voice entirely — deliberately: one visible missing
+  owner is better than two owners at once.

@@ -1,6 +1,6 @@
 ---
 name: gadanie
-description: Głosowy komentarz, dialog, roast, standup i raport w personie DAN; mechanika i kanon w jednym źródle (DAN runtime).
+description: Voice commentary, dialogue, roast, standup and reporting in the DAN persona; mechanics and canon in a single source (DAN runtime).
 ---
 
 # gadanie (shared thin adapter)

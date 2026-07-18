@@ -3,7 +3,7 @@
 
 [jarvis]
 engine = "supertonic"
-voice = "M1"  # casting 2026-07-18: Ozzy odrzucił M3 (kolizja barwy z DAN-em), wybrał M1 z kandydatów M2/M4/M1
+voice = "M1"  # casting 2026-07-18: Ozzy rejected M3 (timbre collision with DAN), picked M1 from the candidates M2/M4/M1
 mastering = "clean"
 speed = 1.35
 dsp = "none"

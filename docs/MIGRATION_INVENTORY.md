@@ -1,5 +1,8 @@
 # Jarvis v4.1 — Migration Inventory (AUTHORITATIVE)
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 > **Status:** AUTHORITATIVE (Prompt 00B). Built from a read-only inspection of
 > the old repo and the diagnostic archive
 > `jarvis-diagnostic-20260630-194208.tar.gz`. The old repo was **not modified**;

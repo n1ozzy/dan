@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pl">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,54 +7,54 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body data-view="chat" data-state="offline">
-    <!-- Żywa ramka stanu: neon obiega krawędź karty, gdy DAN pracuje,
-         i barwi się stanem. Dekoracyjna (aria-hidden) — treść niosą pill
-         stanu i hero offline; JS ustawia body[data-state]. -->
+    <!-- Live state frame: neon runs around the card edge while DAN works,
+         and takes on the state color. Decorative (aria-hidden) — the state
+         pill and the offline hero carry the content; JS sets body[data-state]. -->
     <div class="state-frame" aria-hidden="true"></div>
-    <!-- One-shot notyfikacja dostępności daemona: "DAN padł" / "DAN znów
-         działa" — zapala się tylko na ZMIANĘ stanu, nie przy każdym pollu. -->
+    <!-- One-shot daemon availability notification: "DAN went down" / "DAN is
+         back up" — it lights up only on a state CHANGE, not on every poll. -->
     <p id="daemonAvailabilityNotice" class="daemon-availability-notice" aria-live="assertive" hidden></p>
-    <main class="cockpit" aria-label="Kokpit DANa">
+    <main class="cockpit" aria-label="DAN cockpit">
       <div class="views">
-        <!-- CZAT: jedyny widok domyślny — rozmowa na całej powierzchni. -->
-        <section id="view-chat" class="view active" aria-label="Rozmowa">
+        <!-- CHAT: the only default view — the conversation fills the whole surface. -->
+        <section id="view-chat" class="view active" aria-label="Chat">
           <header class="chat-toolbar single-dan-toolbar">
             <strong>DAN</strong>
-            <span class="muted">jedna ciągła rozmowa</span>
+            <span class="muted">one continuous conversation</span>
           </header>
           <div
             id="activityStrip"
             class="activity-strip"
             data-runtime-state="UNKNOWN"
-            aria-label="Bieżąca aktywność DANa"
+            aria-label="Current DAN activity"
             aria-live="polite"
             aria-atomic="true"
           >
             <span class="activity-state">
-              <span class="activity-label">Stan</span>
+              <span class="activity-label">State</span>
               <strong id="stateLabel">…</strong>
             </span>
             <span class="activity-stage">
-              <span class="activity-label">Etap</span>
-              <span id="activityStage">Łączenie…</span>
+              <span class="activity-label">Stage</span>
+              <span id="activityStage">Connecting…</span>
             </span>
             <span id="activityDetail" class="activity-detail" hidden>
-              <span class="activity-label">Narzędzie</span>
+              <span class="activity-label">Tool</span>
               <code id="activityTool"></code>
               <span id="activityStatus" class="activity-status"></span>
               <span id="activityResult" class="activity-result" hidden></span>
             </span>
           </div>
-          <div id="turnList" class="chat-log" aria-label="Przebieg rozmowy"></div>
+          <div id="turnList" class="chat-log" aria-label="Conversation history"></div>
           <form id="textForm" class="composer">
             <div class="composer-row">
               <textarea
                 id="textInput"
                 rows="2"
-                placeholder="Napisz do DANa…"
-                title="Enter wysyła • Shift+Enter = nowa linia"
+                placeholder="Write to DAN…"
+                title="Enter sends • Shift+Enter = new line"
               ></textarea>
-              <button id="sendButton" type="submit" class="primary">Wyślij</button>
+              <button id="sendButton" type="submit" class="primary">Send</button>
             </div>
             <div class="composer-status">
               <span id="voiceStatus" class="hud-item" aria-live="polite">
@@ -68,68 +68,68 @@
           <pre id="voiceError" class="error-box" hidden></pre>
         </section>
 
-        <!-- PAMIĘĆ: trwałe notatki mózgu na pełnym ekranie. -->
+        <!-- MEMORY: durable brain notes on a full screen. -->
         <section id="view-memory" class="view" aria-labelledby="memoryHeading">
           <div class="section-head">
-            <h2 id="memoryHeading">Pamięć</h2>
-            <button id="refreshMemoryButton" type="button" class="ghost">Odśwież</button>
+            <h2 id="memoryHeading">Memory</h2>
+            <button id="refreshMemoryButton" type="button" class="ghost">Refresh</button>
           </div>
           <p class="muted section-desc">
-            Pamięć to notatki, które DAN czyta na starcie każdej rozmowy.<br />
-            Wyższy priorytet = notatka ważniejsza.<br /> 
+            Memory is the notes DAN reads at the start of every conversation.<br />
+            Higher priority = more important note.<br /> 
           </p>
           <details class="memory-new">
-            <summary>+ Nowa notatka</summary>
+            <summary>+ New note</summary>
             <form id="memoryForm" class="memory-form">
               <label class="field-label">
-                <span>Rodzaj</span>
+                <span>Kind</span>
                 <select id="memoryKind">
-                  <option value="fact">Fakt</option>
-                  <option value="user_preference">Preferencja</option>
-                  <option value="project">Projekt</option>
-                  <option value="identity">Tożsamość</option>
-                  <option value="summary">Podsumowanie</option>
-                  <option value="temporary">Tymczasowe</option>
+                  <option value="fact">Fact</option>
+                  <option value="user_preference">Preference</option>
+                  <option value="project">Project</option>
+                  <option value="identity">Identity</option>
+                  <option value="summary">Summary</option>
+                  <option value="temporary">Temporary</option>
                 </select>
               </label>
               <label class="field-label">
-                <span>Tytuł</span>
-                <input id="memoryTitle" type="text" placeholder="krótka nazwa, po której poznasz notatkę" />
+                <span>Title</span>
+                <input id="memoryTitle" type="text" placeholder="a short name you will recognize the note by" />
               </label>
               <label class="field-label">
-                <span>Treść</span>
-                <textarea id="memoryBody" rows="3" placeholder="to dokładnie przeczyta model"></textarea>
+                <span>Content</span>
+                <textarea id="memoryBody" rows="3" placeholder="the model will read exactly this"></textarea>
               </label>
               <label class="field-label">
-                <span>Priorytet</span>
+                <span>Priority</span>
                 <input id="memoryPriority" type="number" value="0" />
-                <small class="field-hint">0 = zwykła; wyżej = ważniejsza</small>
+                <small class="field-hint">0 = normal; higher = more important</small>
               </label>
-              <button id="createMemoryButton" type="submit" class="primary">Utwórz notatkę</button>
+              <button id="createMemoryButton" type="submit" class="primary">Create note</button>
             </form>
           </details>
           <div id="memoryList" class="list"></div>
           <pre id="memoryError" class="error-box" hidden></pre>
         </section>
 
-        <!-- LOGI: dziennik zdarzeń po ludzku — co DAN robi na bieżąco. -->
+        <!-- LOGS: a human-readable event journal — what DAN is doing right now. -->
         <section id="view-logs" class="view" aria-labelledby="logsHeading">
           <div class="section-head">
-            <h2 id="logsHeading">Dziennik</h2>
-            <button id="refreshEventsButton" type="button" class="ghost">Odśwież</button>
+            <h2 id="logsHeading">Journal</h2>
+            <button id="refreshEventsButton" type="button" class="ghost">Refresh</button>
           </div>
           <p class="muted section-desc">
-            Co DAN robi na bieżąco — tury, głos i narzędzia.
-            Najnowsze na górze.
+            What DAN is doing right now — turns, voice and tools.
+            Newest on top.
           </p>
           <h3 id="eventsDiagnosticsHeading">Events</h3>
           <label class="field-label log-filter">
-            <span>Pokaż</span>
+            <span>Show</span>
             <select id="logFilter">
-              <option value="all">Wszystko</option>
-              <option value="turns">Tury</option>
-              <option value="voice">Głos</option>
-              <option value="tools">Narzędzia</option>
+              <option value="all">All</option>
+              <option value="turns">Turns</option>
+              <option value="voice">Voice</option>
+              <option value="tools">Tools</option>
             </select>
           </label>
           <div id="eventList" class="list"></div>
@@ -153,16 +153,16 @@
           <div class="sys-section active-settings-section" aria-labelledby="queueBargeInHeading">
             <div class="section-head">
               <div>
-                <h2 id="queueBargeInHeading">Kolejka głosu</h2>
+                <h2 id="queueBargeInHeading">Voice queue</h2>
                 <p class="muted section-desc">
-                  Kolejka mowy, aktywny element, obsługa anulowania, przerwana tura i ostatni błąd kolejki.
+                  Speech queue, active item, cancellation support, interrupted turn and the latest queue error.
                 </p>
               </div>
               <div class="mission-actions">
                 <button id="refreshQueueButton" type="button" class="ghost">Refresh queue</button>
-                <button id="pauseVoiceButton" type="button" class="ghost" title="POST /voice/pause — broker przestaje brać nowe pozycje">Pauza głosu</button>
-                <button id="resumeVoiceButton" type="button" class="ghost" title="POST /voice/resume">Wznów głos</button>
-                <button id="cancelCurrentSpeechButton" type="button" class="ghost" title="POST /voice/queue/current/cancel — pomija tylko bieżącą wypowiedź">Pomiń bieżące</button>
+                <button id="pauseVoiceButton" type="button" class="ghost" title="POST /voice/pause — the broker stops taking new items">Pause voice</button>
+                <button id="resumeVoiceButton" type="button" class="ghost" title="POST /voice/resume">Resume voice</button>
+                <button id="cancelCurrentSpeechButton" type="button" class="ghost" title="POST /voice/queue/current/cancel — skips only the current utterance">Skip current</button>
               </div>
             </div>
             <div id="queueBargeInList" class="list compact-list"></div>
@@ -201,10 +201,10 @@
           <div class="sys-section" aria-labelledby="runtimeOverviewHeading">
             <div class="section-head">
               <h2 id="runtimeOverviewHeading">Runtime diagnostics</h2>
-              <button id="refreshRuntimeOverviewButton" type="button" class="ghost">Odśwież</button>
+              <button id="refreshRuntimeOverviewButton" type="button" class="ghost">Refresh</button>
             </div>
             <p class="muted section-desc">
-              Tylko odczyt: warstwy runtime z bezpiecznych endpointów daemona.
+              Read-only: runtime layers from safe daemon endpoints.
             </p>
             <div id="runtimeOverviewList" class="list compact-list"></div>
             <pre id="runtimeOverviewError" class="error-box" hidden></pre>
@@ -213,12 +213,12 @@
           <details class="sys-section card collapsible" aria-labelledby="advancedHeading">
             <summary>
               <h3 id="advancedHeading">Raw technical details</h3>
-              <span class="summary-hint muted">stan · runtime</span>
+              <span class="summary-hint muted">state · runtime</span>
             </summary>
             <div class="subsection" aria-labelledby="healthHeading">
-              <h4 id="healthHeading">Surowy stan</h4>
+              <h4 id="healthHeading">Raw state</h4>
               <p class="muted section-desc">
-                Pełny <code>/health</code> i <code>/state</code>, bez upiększeń.
+                Full <code>/health</code> and <code>/state</code>, without embellishments.
               </p>
               <dl id="healthStateList" class="kv-list"></dl>
               <pre id="healthError" class="error-box" hidden></pre>
@@ -226,10 +226,10 @@
             <div class="subsection" aria-labelledby="runtimeHeading">
               <div class="section-head">
                 <h4 id="runtimeHeading">Runtime</h4>
-                <button id="refreshRuntimeButton" type="button" class="ghost">Odśwież</button>
+                <button id="refreshRuntimeButton" type="button" class="ghost">Refresh</button>
               </div>
               <p class="muted section-desc">
-                Proces dand i wykryte konflikty z legacy. Tylko odczyt.
+                The dand process and detected legacy conflicts. Read-only.
               </p>
               <dl id="runtimeList" class="kv-list"></dl>
               <div id="runtimeObservationList" class="list compact-list"></div>
@@ -258,34 +258,34 @@
               <span class="summary-hint muted">advanced diagnostics</span>
             </summary>
             <div class="subsection" aria-labelledby="connectionHeading">
-              <h4 id="connectionHeading">Połączenie</h4>
+              <h4 id="connectionHeading">Connection</h4>
               <dl id="healthHumanList" class="health-human"></dl>
               <label class="inline-field">
-                <span id="apiHeading">Adres daemona</span>
+                <span id="apiHeading">Daemon address</span>
                 <input id="apiBaseInput" type="url" inputmode="url" autocomplete="off" />
               </label>
               <p class="muted section-desc">
-                Adres daemona. Zmieniaj tylko, jeśli wiesz po co.
+                The daemon address. Change it only if you know why.
               </p>
             </div>
             <div class="subsection" aria-labelledby="settingsHeading">
               <div class="section-head">
-                <h4 id="settingsHeading">Ustawienia surowe</h4>
-                <button id="refreshSettingsButton" type="button" class="ghost">Odśwież</button>
+                <h4 id="settingsHeading">Raw settings</h4>
+                <button id="refreshSettingsButton" type="button" class="ghost">Refresh</button>
               </div>
               <p class="muted section-desc">
-                Pary klucz → wartość zapisywane prosto do bazy daemona. Dla
-                zaawansowanych.
+                Key → value pairs written straight to the daemon database. For
+                advanced users.
               </p>
               <form id="settingsForm" class="settings-form">
-                <input id="settingKey" type="text" placeholder="klucz" aria-label="Klucz ustawienia" />
+                <input id="settingKey" type="text" placeholder="key" aria-label="Setting key" />
                 <input
                   id="settingValue"
                   type="text"
-                  placeholder='wartość JSON, np. true albo "tekst"'
-                  aria-label="Wartość ustawienia (JSON)"
+                  placeholder='JSON value, e.g. true or "text"'
+                  aria-label="Setting value (JSON)"
                 />
-                <button id="saveSettingButton" type="submit">Zapisz</button>
+                <button id="saveSettingButton" type="submit">Save</button>
               </form>
               <div id="settingsList" class="list compact-list"></div>
               <pre id="settingsError" class="error-box" hidden></pre>
@@ -295,45 +295,45 @@
           <div class="sys-section" aria-labelledby="toolsHeading">
             <div class="section-head">
               <h2 id="toolsHeading">Tools / Internet diagnostics</h2>
-              <button id="refreshToolsButton" type="button" class="ghost">Odśwież</button>
+              <button id="refreshToolsButton" type="button" class="ghost">Refresh</button>
             </div>
             <p class="muted section-desc">
-              Zarejestrowane narzędzia jednego bezpośredniego toru wykonania.
+              Registered tools of the single direct execution path.
             </p>
             <div id="toolList" class="list"></div>
             <pre id="toolsError" class="error-box" hidden></pre>
           </div>
         </section>
 
-        <!-- SYSTEM: cockpit-first runtime controls; full logs live in LOGI. -->
+        <!-- SYSTEM: cockpit-first runtime controls; full logs live in LOGS. -->
         <section id="view-system" class="view" aria-label="System">
-          <div class="system-section-label" aria-hidden="true">Ustawienia</div>
-          <p class="muted section-desc">Zmiany obsługiwane przez runtime zapisują się automatycznie.</p>
+          <div class="system-section-label" aria-hidden="true">Settings</div>
+          <p class="muted section-desc">Changes the runtime supports are saved automatically.</p>
           <div class="mission-actions">
-            <button id="restartDANButton" type="button" class="ghost" title="POST /runtime/restart — daemon dokańcza bieżącą pracę i wstaje sam">Bezpieczny restart DANa</button>
+            <button id="restartDANButton" type="button" class="ghost" title="POST /runtime/restart — the daemon finishes its current work and comes back up on its own">Safe DAN restart</button>
           </div>
           <div id="restartRequiredBanner" class="restart-required-banner" hidden>
-            <span id="restartRequiredMessage">Wymagany restart dla oczekujących ustawień.</span>
+            <span id="restartRequiredMessage">Restart required for pending settings.</span>
           </div>
 
           <details class="sys-section active-settings-section collapsible-card" open aria-labelledby="activeBrainSettingsHeading">
             <summary class="section-head">
               <div>
-                <h2 id="activeBrainSettingsHeading">Mózg</h2>
+                <h2 id="activeBrainSettingsHeading">Brain</h2>
               </div>
             </summary>
             <div class="settings-control-grid">
               <label class="field-label">
-                <span>Dostawca</span>
-                <select id="activeBrainProviderSelect" aria-label="Dostawca mózgu"></select>
+                <span>Provider</span>
+                <select id="activeBrainProviderSelect" aria-label="Brain provider"></select>
               </label>
               <label class="field-label">
                 <span>Model</span>
-                <select id="activeBrainModelSelect" aria-label="Model mózgu"></select>
+                <select id="activeBrainModelSelect" aria-label="Brain model"></select>
               </label>
               <label class="field-label">
-                <span>Poziom wysiłku</span>
-                <select id="activeBrainEffortSelect" aria-label="Poziom wysiłku mózgu"></select>
+                <span>Effort level</span>
+                <select id="activeBrainEffortSelect" aria-label="Brain effort level"></select>
               </label>
             </div>
             <p id="brainApplyStatus" class="muted apply-status" aria-live="polite"></p>
@@ -342,37 +342,37 @@
           <details class="sys-section active-settings-section collapsible-card" aria-labelledby="voiceTtsSettingsHeading">
             <summary class="section-head">
               <div>
-                <h2 id="voiceTtsSettingsHeading">Głos / TTS</h2>
-                <span id="voiceHeading" hidden>Głos / TTS</span>
+                <h2 id="voiceTtsSettingsHeading">Voice / TTS</h2>
+                <span id="voiceHeading" hidden>Voice / TTS</span>
               </div>
             </summary>
             <div class="settings-control-grid">
               <label class="inline-toggle">
                 <input id="voiceSpeakResponsesToggle" type="checkbox" />
-                <span>Mów odpowiedzi</span>
+                <span>Speak responses</span>
               </label>
               <div class="inline-toggle read-only-setting">
-                <span>Broker głosu</span>
+                <span>Voice broker</span>
                 <span id="voiceBrokerEnabledToggle" class="status-badge" role="status">unknown</span>
               </div>
               <label class="field-label">
-                <span>Silnik mowy</span>
-                <select id="voiceTtsSelect" aria-label="Domyślny TTS"></select>
+                <span>Speech engine</span>
+                <select id="voiceTtsSelect" aria-label="Default TTS"></select>
               </label>
               <label class="field-label">
-                <span>Model mowy</span>
-                <select id="voiceTtsModelSelect" aria-label="Model TTS"></select>
+                <span>Speech model</span>
+                <select id="voiceTtsModelSelect" aria-label="TTS model"></select>
               </label>
               <label class="field-label">
-                <span>ID głosu</span>
-                <select id="voiceVoiceIdSelect" aria-label="Identyfikator głosu"></select>
+                <span>Voice ID</span>
+                <select id="voiceVoiceIdSelect" aria-label="Voice identifier"></select>
               </label>
               <label class="field-label">
-                <span>Profil głosu</span>
-                <select id="voiceProfileSelect" aria-label="Profil głosu"></select>
+                <span>Voice profile</span>
+                <select id="voiceProfileSelect" aria-label="Voice profile"></select>
               </label>
               <label class="field-label">
-                <span>Szybkość / tempo</span>
+                <span>Speed / tempo</span>
                 <input id="voiceSpeedInput" type="number" step="0.05" min="0.5" max="2" />
               </label>
             </div>
@@ -383,21 +383,21 @@
           <details class="sys-section active-settings-section collapsible-card" aria-labelledby="voiceSttSettingsHeading">
             <summary class="section-head">
               <div>
-                <h2 id="voiceSttSettingsHeading">Nasłuch (STT)</h2>
+                <h2 id="voiceSttSettingsHeading">Listening (STT)</h2>
               </div>
             </summary>
             <div class="settings-control-grid">
               <label class="field-label">
-                <span>Dostawca STT</span>
-                <select id="voiceSttSelect" aria-label="Domyślny STT"></select>
+                <span>STT provider</span>
+                <select id="voiceSttSelect" aria-label="Default STT"></select>
               </label>
               <label class="field-label">
-                <span>Model STT</span>
-                <select id="voiceSttModelSelect" aria-label="Model STT"></select>
+                <span>STT model</span>
+                <select id="voiceSttModelSelect" aria-label="STT model"></select>
               </label>
               <label class="field-label">
-                <span>Język</span>
-                <select id="voiceSttLanguageSelect" aria-label="Język STT"></select>
+                <span>Language</span>
+                <select id="voiceSttLanguageSelect" aria-label="STT language"></select>
               </label>
             </div>
             <p id="sttApplyStatus" class="muted apply-status" aria-live="polite"></p>
@@ -411,11 +411,11 @@
             </summary>
             <div class="settings-control-grid">
               <label class="field-label">
-                <span>Tryb PTT</span>
-                <select id="pttModeSelect" aria-label="Tryb PTT"></select>
+                <span>PTT mode</span>
+                <select id="pttModeSelect" aria-label="PTT mode"></select>
               </label>
               <label class="field-label ptt-hotkey-field">
-                <span>Globalny skrót</span>
+                <span>Global shortcut</span>
                 <span class="inline-field-row">
                   <input
                     id="pttHotkeyInput"
@@ -424,21 +424,21 @@
                     autocomplete="off"
                     spellcheck="false"
                     placeholder="right_cmd+right_shift"
-                    aria-label="Globalny skrót PTT"
+                    aria-label="Global PTT shortcut"
                   />
-                  <button id="pttRecordShortcutButton" type="button" class="ghost">Nagraj skrót</button>
+                  <button id="pttRecordShortcutButton" type="button" class="ghost">Record shortcut</button>
                 </span>
                 <span id="pttShortcutValidation" class="field-help" aria-live="polite"></span>
               </label>
               <label class="field-label">
-                <span>Okno scalania</span>
+                <span>Merge window</span>
                 <input id="pttMergeWindowInput" type="number" step="0.5" min="0" />
               </label>
             </div>
-            <div class="voice-mode ptt-operator-controls" role="group" aria-label="Kontrolki operatora PTT">
-              <button id="pttModeButton" type="button" class="mode-button" title="Przytrzymaj, aby utworzyć lease PTT">Przytrzymaj</button>
-              <button id="listenToggle" type="button" class="mode-button" title="Przełącz zablokowany lease nasłuchu">Zablokowany</button>
-              <button id="testPttButton" type="button" class="mode-button" title="Wywołaj /voice/ptt/down i /voice/ptt/up, potem pokaż bezpieczne dowody runtime">Test PTT</button>
+            <div class="voice-mode ptt-operator-controls" role="group" aria-label="PTT operator controls">
+              <button id="pttModeButton" type="button" class="mode-button" title="Hold to create a PTT lease">Hold</button>
+              <button id="listenToggle" type="button" class="mode-button" title="Toggle the locked listening lease">Locked</button>
+              <button id="testPttButton" type="button" class="mode-button" title="Call /voice/ptt/down and /voice/ptt/up, then show safe runtime evidence">Test PTT</button>
             </div>
             <div id="pttTestStatusList" class="list compact-list"></div>
             <p id="pttApplyStatus" class="muted apply-status" aria-live="polite"></p>
@@ -447,16 +447,16 @@
           <details id="activeToolsSettingsSection" class="sys-section active-settings-section collapsible-card" aria-labelledby="activeToolsSettingsHeading">
             <summary class="section-head">
               <div>
-                <h2 id="activeToolsSettingsHeading">Narzędzia</h2>
+                <h2 id="activeToolsSettingsHeading">Tools</h2>
               </div>
             </summary>
             <div id="toolsControlGrid" class="settings-control-grid">
               <label class="inline-toggle">
                 <input id="toolsEnabledToggle" type="checkbox" disabled />
-                <span>Narzędzia włączone</span>
+                <span>Tools enabled</span>
               </label>
               <div class="inline-toggle read-only-setting">
-                <span>Dostęp do internetu</span>
+                <span>Internet access</span>
                 <span id="toolsNetworkEnabledToggle" class="status-badge" role="status">unknown</span>
               </div>
             </div>
@@ -466,15 +466,15 @@
           <details class="sys-section active-settings-section collapsible-card" aria-labelledby="activePersonalitySettingsHeading">
             <summary class="section-head">
               <div>
-                <h2 id="activePersonalitySettingsHeading">Osobowość</h2>
+                <h2 id="activePersonalitySettingsHeading">Personality</h2>
               </div>
             </summary>
             <div class="inline-toggle read-only-setting">
-              <span>Tożsamość</span>
-              <strong class="status-badge">DAN — kanon</strong>
+              <span>Identity</span>
+              <strong class="status-badge">DAN — canon</strong>
             </div>
             <p id="personaApplyStatus" class="muted apply-status" aria-live="polite">
-              Jedna tożsamość ponad czatem, głosem i providerem.
+              One identity across chat, voice and provider.
             </p>
           </details>
 
@@ -482,16 +482,16 @@
         </section>
       </div>
 
-      <!-- Pasek zakładek: jeden widok naraz. -->
-      <nav class="tabbar" aria-label="Widoki panelu">
+      <!-- Tab bar: one view at a time. -->
+      <nav class="tabbar" aria-label="Panel views">
         <button type="button" class="tab-button active" data-view="chat" aria-selected="true">
-          Czat
+          Chat
         </button>
         <button type="button" class="tab-button" data-view="memory" aria-selected="false">
-          Pamięć
+          Memory
         </button>
         <button type="button" class="tab-button" data-view="logs" aria-selected="false">
-          Logi
+          Logs
         </button>
         <button type="button" class="tab-button" data-view="system" aria-selected="false">
           System

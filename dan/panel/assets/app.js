@@ -23,27 +23,27 @@ const cockpit = {
   apiBase: DEFAULT_API_BASE,
   online: false,
   selectedConversationId: readStoredConversationId(),
-  // Tytuły rozmów dorabiane z pierwszego input_text (GET /turns?limit=1);
-  // cache po id rozmowy, bo pierwsza tura się nie zmienia.
+  // Conversation titles are derived from the first input_text (GET /turns?limit=1);
+  // cached by conversation id, because the first turn never changes.
   conversationTitles: new Map(),
-  // Ostatni znany stan pracy daemona — wyświetlany bezpośrednio w pasku
-  // aktywności i używany do sterowania żywą ramką.
+  // Last known daemon work state — shown directly in the activity strip
+  // and used to drive the live frame.
   runtimeState: "unknown",
   runtimeStateRevision: 0,
   runtimeStateRequestId: 0,
   activity: {
     lastEventId: 0,
-    stage: "Łączenie…",
+    stage: "Connecting…",
     toolName: "",
     toolStatus: "",
     resultSummary: "",
   },
-  // Zakładka LOGI: aktywny filtr + ostatnia partia zdarzeń, żeby zmiana
-  // filtra przerysowała dziennik bez ponownego strzału do daemona.
+  // LOGS tab: active filter + the last batch of events, so a filter
+  // change redraws the journal without another request to the daemon.
   logFilter: "all",
   lastEvents: [],
-  // Tryb "nowa rozmowa": nie auto-wybieraj najnowszej rozmowy przy refreshu,
-  // dopóki operator nie wyśle pierwszej wiadomości.
+  // "New conversation" mode: do not auto-select the newest conversation on refresh
+  // until the operator sends the first message.
   composingNew: false,
   healthRetryTimer: null,
   voice: {
@@ -94,32 +94,32 @@ const STREAM_MAX_RETRY_MS = 15000;
 const MAX_LIVE_EVENT_ROWS = 50;
 const MAX_ACTIVITY_RESULT_SUMMARY_CHARS = 160;
 const ACTIVITY_STAGE_LABELS = Object.freeze({
-  "turn.started": "Rozpoczęcie tury",
-  "turn.context.built": "Kontekst gotowy",
-  "brain.requested": "Model pracuje",
-  "brain.responded": "Model odpowiedział",
-  "tool.requested": "Przygotowanie narzędzia",
-  "tool.started": "Narzędzie działa",
-  "tool.finished": "Narzędzie zakończone",
-  "tool.failed": "Błąd narzędzia",
-  "turn.finished": "Odpowiedź gotowa",
-  "turn.failed": "Błąd tury",
-  "turn.cancelled": "Tura przerwana",
+  "turn.started": "Turn started",
+  "turn.context.built": "Context ready",
+  "brain.requested": "Model working",
+  "brain.responded": "Model responded",
+  "tool.requested": "Preparing tool",
+  "tool.started": "Tool running",
+  "tool.finished": "Tool finished",
+  "tool.failed": "Tool error",
+  "turn.finished": "Response ready",
+  "turn.failed": "Turn error",
+  "turn.cancelled": "Turn cancelled",
 });
 const ACTIVITY_RUNTIME_STAGE_LABELS = Object.freeze({
-  IDLE: "Gotowy",
-  THINKING: "Myślenie",
-  TOOLING: "Narzędzie działa",
-  LISTENING: "Nasłuch",
-  TRANSCRIBING: "Transkrypcja",
-  SPEAKING: "Mówienie",
-  ERROR: "Błąd runtime",
+  IDLE: "Ready",
+  THINKING: "Thinking",
+  TOOLING: "Tool running",
+  LISTENING: "Listening",
+  TRANSCRIBING: "Transcription",
+  SPEAKING: "Speaking",
+  ERROR: "Runtime error",
 });
 const ACTIVITY_TOOL_STATUS_LABELS = Object.freeze({
-  requested: "przygotowanie",
+  requested: "preparing",
   started: "start",
-  success: "sukces",
-  error: "błąd",
+  success: "success",
+  error: "error",
 });
 // When the daemon is unreachable at load (e.g. panel started before the daemon
 // finished booting), re-poll health on this interval so the panel recovers on
@@ -162,41 +162,41 @@ const MISSION_CONTROL_ENDPOINTS = Object.freeze([
   { key: "events", path: "/events?latest=true&limit=50", method: "GET" },
 ]);
 const RUNTIME_OVERVIEW_FIELD_SOURCES = Object.freeze({
-  health: "Zdrowie",
-  state: "Stan",
-  settings: "Ustawienia",
-  runtimeSettings: "Ustawienia runtime",
-  runtimeProcesses: "Procesy runtime",
-  brain: "Adaptery mózgu",
-  audio: "Urządzenia audio",
-  voice: "Nasłuch głosu",
-  voiceRuntime: "Runtime głosu",
-  voiceQueue: "Kolejka głosu",
-  tools: "Rejestr narzędzi",
-  memory: "Pamięć",
+  health: "Health",
+  state: "State",
+  settings: "Settings",
+  runtimeSettings: "Runtime settings",
+  runtimeProcesses: "Runtime processes",
+  brain: "Brain adapters",
+  audio: "Audio devices",
+  voice: "Voice listening",
+  voiceRuntime: "Voice runtime",
+  voiceQueue: "Voice queue",
+  tools: "Tool registry",
+  memory: "Memory",
   memoryItems: "Memory OS",
-  events: "Zdarzenia",
-  contract: "Kontrakt DANa",
+  events: "Events",
+  contract: "DAN contract",
 });
 
-// Ludzkie nazwy narzędzi (rejestr daemona) — używane w sekcji
-// „Możliwości DANa”. Fallback dla rodzin ui_/screen_/terminal_,
-// a na końcu surowa nazwa, żeby nowe narzędzie nigdy nie zniknęło z widoku.
+// Human tool names (daemon registry) — used in the
+// "DAN capabilities" section. Fallback for the ui_/screen_/terminal_ families,
+// and finally the raw name, so a new tool never disappears from the view.
 const TOOL_LABELS = {
-  file_read: "Odczyt pliku",
-  file_write: "Zapis pliku",
-  memory_save: "Zapis do pamięci",
-  shell_read: "Polecenie w terminalu",
-  screen_read_window: "Odczyt okna ekranu",
-  screen_ocr_region: "Odczyt ekranu (OCR)",
-  system_status: "Stan systemu",
-  ui_active_app: "Sterowanie UI: aktywna aplikacja",
-  ui_read_window: "Sterowanie UI: odczyt okna",
-  ui_click: "Sterowanie UI: kliknięcie",
-  ui_type: "Sterowanie UI: pisanie",
-  ui_focus_app: "Sterowanie UI: fokus aplikacji",
-  terminal_read_screen: "Odczyt ekranu terminala",
-  terminal_paste: "Wklejenie do terminala",
+  file_read: "File read",
+  file_write: "File write",
+  memory_save: "Save to memory",
+  shell_read: "Terminal command",
+  screen_read_window: "Screen window read",
+  screen_ocr_region: "Screen read (OCR)",
+  system_status: "System status",
+  ui_active_app: "UI control: active application",
+  ui_read_window: "UI control: window read",
+  ui_click: "UI control: click",
+  ui_type: "UI control: typing",
+  ui_focus_app: "UI control: application focus",
+  terminal_read_screen: "Terminal screen read",
+  terminal_paste: "Paste into terminal",
   echo: "Echo (test)",
 };
 
@@ -208,42 +208,42 @@ function toolLabel(name) {
   const humanTail = (prefix, lead) =>
     `${lead}: ${key.slice(prefix.length).replace(/_/g, " ")}`;
   if (key.startsWith("ui_")) {
-    return humanTail("ui_", "Sterowanie UI");
+    return humanTail("ui_", "UI control");
   }
   if (key.startsWith("screen_")) {
-    return humanTail("screen_", "Ekran");
+    return humanTail("screen_", "Screen");
   }
   if (key.startsWith("terminal_")) {
     return humanTail("terminal_", "Terminal");
   }
-  return key || "narzędzie";
+  return key || "tool";
 }
 
-// Etykiety klas ryzyka po polsku (PermissionClass w daemonie).
+// Human-readable risk class labels (PermissionClass in the daemon).
 const RISK_LABELS = {
-  safe_read: "bezpieczny odczyt",
-  safe_status: "odczyt stanu",
-  file_read: "czyta pliki",
-  file_write: "pisze pliki",
-  shell_read: "czyta przez terminal",
-  shell_write: "pisze przez terminal",
-  network: "sieć",
-  destructive: "destrukcyjne — zawsze pyta",
-  ui_read: "czyta interfejs",
-  ui_act: "steruje interfejsem",
-  screen_read: "czyta ekran",
-  terminal_read: "czyta terminal",
-  terminal_write: "pisze do terminala",
-  memory_write: "zapis do pamięci",
+  safe_read: "safe read",
+  safe_status: "status read",
+  file_read: "reads files",
+  file_write: "writes files",
+  shell_read: "reads via terminal",
+  shell_write: "writes via terminal",
+  network: "network",
+  destructive: "destructive — always asks",
+  ui_read: "reads the UI",
+  ui_act: "controls the UI",
+  screen_read: "reads the screen",
+  terminal_read: "reads the terminal",
+  terminal_write: "writes to the terminal",
+  memory_write: "writes to memory",
 };
 
 function riskLabel(risk) {
   const key = typeof risk === "string" ? risk : "";
-  return RISK_LABELS[key] || key || "nieznane";
+  return RISK_LABELS[key] || key || "unknown";
 }
 
-// Waga ryzyka dla koloru chipa: odczyty spokojne (szarość), zapisy uważne
-// (bursztyn), destructive alarmowe (czerwień). Nieznane traktuj jak zapis.
+// Risk weight for the chip color: reads are calm (grey), writes careful
+// (amber), destructive alarming (red). Treat unknown as a write.
 const RISK_TIERS = {
   safe_read: "read",
   safe_status: "read",
@@ -266,69 +266,69 @@ function riskTier(risk) {
   return RISK_TIERS[key] || "write";
 }
 
-// Rodzaje bloków pamięci po polsku (MEMORY_KINDS w daemonie).
+// Human-readable memory block kinds (MEMORY_KINDS in the daemon).
 const MEMORY_KIND_LABELS = {
-  identity: "Tożsamość",
-  user_preference: "Preferencja",
-  project: "Projekt",
-  fact: "Fakt",
-  summary: "Podsumowanie",
-  temporary: "Tymczasowe",
+  identity: "Identity",
+  user_preference: "Preference",
+  project: "Project",
+  fact: "Fact",
+  summary: "Summary",
+  temporary: "Temporary",
 };
 
 function memoryKindLabel(kind) {
   const key = typeof kind === "string" ? kind : "";
-  return MEMORY_KIND_LABELS[key] || key || "notatka";
+  return MEMORY_KIND_LABELS[key] || key || "note";
 }
 
-// Typy zdarzeń daemona po ludzku (EventType). Fallback po rodzinie, na końcu
-// surowy typ — dziennik nigdy nie gubi wiersza, ale prawie zawsze mówi po
-// polsku. Nazwy krótkie i operatorskie („Nasłuch: początek”, nie techniczne
-// „listening.lease.created”).
+// Human-readable daemon event types (EventType). Family fallback, raw type
+// last — the journal never loses a row, but almost always speaks human.
+// Short operator-style names ("Listening: start", not the technical
+// "listening.lease.created").
 const EVENT_LABELS = {
   "daemon.started": "Daemon: start",
-  "daemon.stopped": "Daemon: zatrzymany",
-  "daemon.failed": "Daemon: błąd",
-  "state.changed": "Zmiana stanu",
-  "input.text.received": "Wiadomość tekstowa",
-  "input.voice.transcribed": "Głos rozpoznany",
-  "input.rejected": "Wejście odrzucone",
-  "turn.started": "Tura: start",
-  "turn.context.built": "Tura: kontekst gotowy",
-  "turn.finished": "Tura: koniec",
-  "turn.failed": "Tura: błąd",
-  "turn.cancelled": "Tura: przerwana",
-  "brain.requested": "Model: zapytanie",
-  "brain.responded": "Model: odpowiedź",
-  "brain.failed": "Model: błąd",
-  "brain.cancelled": "Model: przerwane",
-  "brain.switched": "Model: przełączony",
-  "voice.speak.queued": "Mowa: w kolejce",
-  "voice.speak.started": "Mowa: start",
-  "voice.speak.finished": "Wypowiedź zakończona",
-  "voice.speak.cancelled": "Mowa: przerwana",
-  "voice.speak.failed": "Mowa: błąd",
-  "audio.devices.snapshot": "Audio: urządzenia",
-  "listening.lease.created": "Nasłuch: początek",
-  "listening.lease.released": "Nasłuch: koniec",
-  "listening.lease.expired": "Nasłuch: wygasł",
-  "listening.lease.cancelled": "Nasłuch: anulowany",
-  "memory.updated": "Pamięć: zaktualizowana",
-  "memory.disabled": "Pamięć: notatka wyłączona",
-  "memory.candidate.created": "Pamięć: propozycja",
-  "memory.candidate.promoted": "Pamięć: zatwierdzona",
-  "tool.requested": "Narzędzie: prośba",
-  "tool.started": "Narzędzie: start",
-  "tool.finished": "Narzędzie: koniec",
-  "tool.failed": "Narzędzie: błąd",
-  "error.raised": "Błąd",
-  "worker.job.created": "Zadanie w tle: utworzone",
-  "worker.job.progress": "Zadanie w tle: postęp",
-  "worker.job.finished": "Zadanie w tle: koniec",
-  "worker.job.failed": "Zadanie w tle: błąd",
-  "worker.job.cancelled": "Zadanie w tle: przerwane",
-  "runtime.legacy.conflict.detected": "Runtime: konflikt legacy",
-  "runtime.process.observed": "Runtime: proces",
+  "daemon.stopped": "Daemon: stopped",
+  "daemon.failed": "Daemon: error",
+  "state.changed": "State change",
+  "input.text.received": "Text message",
+  "input.voice.transcribed": "Voice transcribed",
+  "input.rejected": "Input rejected",
+  "turn.started": "Turn: start",
+  "turn.context.built": "Turn: context ready",
+  "turn.finished": "Turn: end",
+  "turn.failed": "Turn: error",
+  "turn.cancelled": "Turn: cancelled",
+  "brain.requested": "Model: request",
+  "brain.responded": "Model: response",
+  "brain.failed": "Model: error",
+  "brain.cancelled": "Model: cancelled",
+  "brain.switched": "Model: switched",
+  "voice.speak.queued": "Speech: queued",
+  "voice.speak.started": "Speech: start",
+  "voice.speak.finished": "Utterance finished",
+  "voice.speak.cancelled": "Speech: cancelled",
+  "voice.speak.failed": "Speech: error",
+  "audio.devices.snapshot": "Audio: devices",
+  "listening.lease.created": "Listening: start",
+  "listening.lease.released": "Listening: end",
+  "listening.lease.expired": "Listening: expired",
+  "listening.lease.cancelled": "Listening: cancelled",
+  "memory.updated": "Memory: updated",
+  "memory.disabled": "Memory: note disabled",
+  "memory.candidate.created": "Memory: proposal",
+  "memory.candidate.promoted": "Memory: approved",
+  "tool.requested": "Tool: request",
+  "tool.started": "Tool: start",
+  "tool.finished": "Tool: end",
+  "tool.failed": "Tool: error",
+  "error.raised": "Error",
+  "worker.job.created": "Background job: created",
+  "worker.job.progress": "Background job: progress",
+  "worker.job.finished": "Background job: end",
+  "worker.job.failed": "Background job: error",
+  "worker.job.cancelled": "Background job: cancelled",
+  "runtime.legacy.conflict.detected": "Runtime: legacy conflict",
+  "runtime.process.observed": "Runtime: process",
 };
 
 const INACTIVE_DECISION_EVENT_TYPES = new Set([
@@ -337,8 +337,8 @@ const INACTIVE_DECISION_EVENT_TYPES = new Set([
   "tool.rejected",
 ]);
 
-// Dawne zdarzenia decyzji mogą nadal istnieć w historii backendu. Panel
-// świadomie ich nie pokazuje ani nie używa do odświeżeń lub stanu UI.
+// Old decision events may still exist in the backend history. The panel
+// deliberately neither shows them nor uses them for refreshes or UI state.
 function isInactiveDecisionEvent(type) {
   const key = String(type || "");
   return key.startsWith("approval.") || INACTIVE_DECISION_EVENT_TYPES.has(key);
@@ -349,16 +349,16 @@ function eventLabel(type) {
   if (EVENT_LABELS[key]) {
     return EVENT_LABELS[key];
   }
-  if (key.startsWith("turn.")) return "Tura: …";
-  if (key.startsWith("voice.")) return "Mowa: …";
-  if (key.startsWith("listening.")) return "Nasłuch: …";
-  if (key.startsWith("tool.")) return "Narzędzie: …";
-  if (key.startsWith("memory.")) return "Pamięć: …";
+  if (key.startsWith("turn.")) return "Turn: …";
+  if (key.startsWith("voice.")) return "Speech: …";
+  if (key.startsWith("listening.")) return "Listening: …";
+  if (key.startsWith("tool.")) return "Tool: …";
+  if (key.startsWith("memory.")) return "Memory: …";
   if (key.startsWith("brain.")) return "Model: …";
-  return key || "zdarzenie";
+  return key || "event";
 }
 
-// Filtr dziennika wg rodziny typu: tury / głos / narzędzia.
+// Journal filter by type family: turns / voice / tools.
 function eventMatchesFilter(type, filter) {
   const key = typeof type === "string" ? type : "";
   if (isInactiveDecisionEvent(key)) {
@@ -386,7 +386,7 @@ function eventMatchesFilter(type, filter) {
 
 const el = {};
 
-// Relative labels ("2 min temu") drift while the panel sits open; refresh
+// Relative labels ("2 min ago") drift while the panel sits open; refresh
 // every rendered [data-timestamp] node on this interval.
 const RELATIVE_TIME_TICK_MS = 60000;
 
@@ -657,8 +657,8 @@ function bindEvents() {
       el.textForm.requestSubmit();
     }
   });
-  // Pole rośnie z treścią (2 → ~5 rzędów), potem przewija się wewnątrz —
-  // komunikatorowy composer bez ręcznego ciągnięcia uchwytu.
+  // The field grows with the content (2 → ~5 rows), then scrolls inside —
+  // a messenger-style composer without dragging a manual handle.
   bindIf(el.textInput, "input", autoGrowComposer);
   for (const tab of document.querySelectorAll(".tab-button")) {
     tab.addEventListener("click", () => switchView(tab.dataset.view));
@@ -758,36 +758,36 @@ async function refreshVoiceQueue() {
     clearNode(el.queueBargeInList);
     const row = document.createElement("div");
     row.className = "list-row";
-    appendLine(row, "Kolejka głosu niedostępna", "input-line");
+    appendLine(row, "Voice queue unavailable", "input-line");
     appendLine(row, error.message || "request failed", "muted");
     el.voiceQueueList.appendChild(row);
     setText(el.queueApplyStatus, error.message || "queue refresh failed");
   }
 }
 
-// Etykieta etapu mowy PO POLSKU, z telemetrii — "odtworzono" tylko gdy
-// player potwierdził dźwięk (playback_confirmed), nigdy z samego 'done'.
+// Speech stage label, from telemetry — "played" only when the
+// player confirmed audio (playback_confirmed), never from 'done' alone.
 function voiceStageLabel(item) {
   const row = item || {};
   if (row.playback_confirmed) {
-    return "odtworzono";
+    return "played";
   }
   const status = String(row.status || "").toLowerCase();
   if (status === "queued") {
-    return "przyjęto";
+    return "accepted";
   }
   if (status === "speaking") {
-    return "odtwarzanie";
+    return "playing";
   }
   if (status === "cancelled") {
-    return "anulowano";
+    return "cancelled";
   }
   if (status === "failed") {
-    return "błąd";
+    return "error";
   }
   if (status === "synthesizing" || status === "done") {
-    // 'done' bez potwierdzenia odtworzenia to wciąż tylko synteza — uczciwie.
-    return "syntetyzowanie";
+    // 'done' without a playback confirmation is still just synthesis — honest.
+    return "synthesizing";
   }
   return "unknown";
 }
@@ -796,7 +796,7 @@ function renderVoiceQueue(rows) {
   renderQueueBargeInSummary(cockpit.runtimeSettingsApply.payload || cockpit.settingsPreview.payload || {}, rows);
   clearNode(el.voiceQueueList);
   if (rows.length === 0) {
-    renderEmpty(el.voiceQueueList, "Kolejka głosu pusta");
+    renderEmpty(el.voiceQueueList, "Voice queue empty");
     return;
   }
   for (const item of rows) {
@@ -819,8 +819,8 @@ function renderVoiceQueue(rows) {
       appendLine(row, item.error, "error-line");
     }
     const timing = [
-      item.created_at ? `utworzono ${formatRelative(item.created_at)}` : null,
-      item.spoken_at ? `start audio ${formatRelative(item.spoken_at)}` : null,
+      item.created_at ? `created ${formatRelative(item.created_at)}` : null,
+      item.spoken_at ? `audio start ${formatRelative(item.spoken_at)}` : null,
     ].filter(Boolean);
     if (timing.length > 0) {
       appendLine(row, timing.join(" · "), "muted");
@@ -844,30 +844,30 @@ function renderVoice() {
     el.testPttButton.classList.toggle("active", false);
   }
 
-  let status = "cisza — przytrzymaj hotkey PTT";
+  let status = "silence — hold the PTT hotkey";
   if (!cockpit.online) {
     status = "daemon offline";
   } else if (!cockpit.voice.enabled) {
-    status = "głos wyłączony w configu";
+    status = "voice disabled in config";
   } else if (cockpit.voice.listening) {
     const holding = cockpit.voice.leases.some((lease) => lease.mode === "hold");
-    status = holding ? "słucha (PTT)" : "słucha (nasłuch)";
+    status = holding ? "listening (PTT)" : "listening (continuous)";
   } else if (locked) {
-    status = "nasłuch uzbrojony";
+    status = "listening armed";
   }
   setText(el.voiceStatusText, status);
-  // Fala przy statusie ożywa tylko, gdy mikrofon naprawdę zbiera.
+  // The wave next to the status comes alive only while the microphone really captures.
   el.voiceStatus.classList.toggle("live", cockpit.voice.listening);
-  // Status pokazujemy tylko, gdy mikrofon faktycznie słucha — cisza/spoczynek
-  // nie ma po co zajmować miejsca „cisza — przytrzymaj hotkey" pod polem.
+  // The status shows only while the microphone actually listens — silence/rest
+  // has no reason to occupy the "silence — hold the hotkey" spot under the field.
   el.voiceStatus.hidden = !cockpit.voice.listening;
-  // Zbierający mikrofon to też „praca” — ramka ma wtedy obiegać.
+  // A capturing microphone is also "work" — the frame should run around then.
   applyStateFrame();
   renderPttTestStatusList();
 }
 
-// Panel ustawia TRYB słuchania (PTT vs ciągły nasłuch); samo trzymanie PTT
-// żyje na globalnym hotkeyu (menubar), nie na przycisku w webview.
+// The panel sets the listening MODE (PTT vs continuous listening); the PTT hold
+// itself lives on the global hotkey (menubar), not on a button in the webview.
 async function setVoiceMode(mode) {
   if (!cockpit.online || !cockpit.voice.enabled) {
     return;
@@ -999,7 +999,7 @@ async function refreshHealthAndState() {
     }
     setOnline(false);
     setActivityRuntimeState("offline");
-    cockpit.activity.stage = "Brak połączenia";
+    cockpit.activity.stage = "No connection";
     renderActivity();
     clearNode(el.healthHumanList);
     clearNode(el.healthStateList);
@@ -1008,15 +1008,15 @@ async function refreshHealthAndState() {
   }
 }
 
-// Ludzki stan daemona w sekcji Połączenie: 3–4 pozycje po polsku zamiast
-// surowej kv-listy (ta zostaje w „Diagnostyka (surowe)”).
+// Human daemon state in the Connection section: 3–4 readable entries instead
+// of the raw kv-list (that one stays in "Raw diagnostics").
 function renderHealthHuman(merged) {
   renderKeyValues(el.healthHumanList, [
-    ["Działa od", merged.started ? formatRelative(merged.started) : "n/a"],
-    ["Wersja schematu", merged.schema_version],
-    ["Głos", merged.voice_enabled ? "włączony" : "wyłączony"],
-    ["Tokeny sesji ↑", merged.session_tokens_in != null ? merged.session_tokens_in.toLocaleString() : "n/a"],
-    ["Tokeny sesji ↓", merged.session_tokens_out != null ? merged.session_tokens_out.toLocaleString() : "n/a"],
+    ["Up since", merged.started ? formatRelative(merged.started) : "n/a"],
+    ["Schema version", merged.schema_version],
+    ["Voice", merged.voice_enabled ? "enabled" : "disabled"],
+    ["Session tokens ↑", merged.session_tokens_in != null ? merged.session_tokens_in.toLocaleString() : "n/a"],
+    ["Session tokens ↓", merged.session_tokens_out != null ? merged.session_tokens_out.toLocaleString() : "n/a"],
   ]);
 }
 
@@ -1181,32 +1181,32 @@ const RUNTIME_SETTINGS_GROUP_FIELDS = Object.freeze({
 });
 
 const RUNTIME_SETTINGS_GROUP_LABELS = Object.freeze({
-  brain: "Mózg / Dostawca",
-  tts: "Głos / TTS",
-  stt: "Głos / STT",
-  ptt: "PTT / Detekcja końca",
-  tools: "Narzędzia / Internet",
-  persona: "Osobowość",
+  brain: "Brain / Provider",
+  tts: "Voice / TTS",
+  stt: "Voice / STT",
+  ptt: "PTT / End detection",
+  tools: "Tools / Internet",
+  persona: "Personality",
 });
 
 const RUNTIME_SETTING_LABELS = Object.freeze({
-  "brain.provider": "Dostawca mózgu",
-  "brain.model": "Model mózgu",
-  "brain.effort": "Poziom wysiłku",
-  "brain.fast": "Tryb szybki",
-  "voice.speak_responses": "Mów odpowiedzi",
-  "voice.default_tts": "Silnik mowy",
-  "voice.default_stt": "Silnik transkrypcji",
-  "voice.stt_model": "Model STT",
-  "voice.stt_language": "Język STT",
-  "voice.ptt_mode": "Tryb PTT",
-  "voice.ptt_hotkey": "Skrót PTT",
-  "voice.merge_window": "Okno scalania",
-  "tools.enabled": "Narzędzia włączone",
-  "tools.network_enabled": "Dostęp do internetu",
-  "security.network_enabled": "Polityka sieci",
-  "security.destructive_tools_enabled": "Destrukcyjne dozwolone",
-  "persona.profile": "Profil persony",
+  "brain.provider": "Brain provider",
+  "brain.model": "Brain model",
+  "brain.effort": "Effort level",
+  "brain.fast": "Fast mode",
+  "voice.speak_responses": "Speak responses",
+  "voice.default_tts": "Speech engine",
+  "voice.default_stt": "Transcription engine",
+  "voice.stt_model": "STT model",
+  "voice.stt_language": "STT language",
+  "voice.ptt_mode": "PTT mode",
+  "voice.ptt_hotkey": "PTT shortcut",
+  "voice.merge_window": "Merge window",
+  "tools.enabled": "Tools enabled",
+  "tools.network_enabled": "Internet access",
+  "security.network_enabled": "Network policy",
+  "security.destructive_tools_enabled": "Destructive allowed",
+  "persona.profile": "Persona profile",
 });
 
 const RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY = Object.freeze({
@@ -1234,29 +1234,29 @@ const RUNTIME_SETTINGS_PREVIEW_FIELD_BY_KEY = Object.freeze({
 
 const HUMAN_SETTING_LABELS = Object.freeze({
   ...RUNTIME_SETTING_LABELS,
-  active_persona: "Profil persony",
-  broker_enabled: "Broker głosu",
-  command_status: "Status komendy",
-  credentials_or_command_status: "Status uprawnień",
-  default_stt: "Silnik transkrypcji",
-  default_tts: "Silnik mowy",
-  endpointing_support: "Wsparcie endpointingu",
-  fast: "Tryb szybki",
-  language: "Język",
-  merge_window: "Okno scalania",
+  active_persona: "Persona profile",
+  broker_enabled: "Voice broker",
+  command_status: "Command status",
+  credentials_or_command_status: "Credentials status",
+  default_stt: "Transcription engine",
+  default_tts: "Speech engine",
+  endpointing_support: "Endpointing support",
+  fast: "Fast mode",
+  language: "Language",
+  merge_window: "Merge window",
   model: "Model",
-  provider: "Dostawca mózgu",
-  ptt_hotkey: "Skrót PTT",
-  ptt_mode: "Tryb PTT",
-  silence_duration: "Czas ciszy",
-  silence_threshold: "Próg ciszy",
-  speak_responses: "Mów odpowiedzi",
-  speed_or_rate: "Szybkość",
-  stt_model: "Model STT",
-  stt_provider: "Silnik transkrypcji",
-  tools_support: "Narzędzia",
-  tts_model: "Model mowy",
-  tts_provider: "Silnik mowy",
+  provider: "Brain provider",
+  ptt_hotkey: "PTT shortcut",
+  ptt_mode: "PTT mode",
+  silence_duration: "Silence duration",
+  silence_threshold: "Silence threshold",
+  speak_responses: "Speak responses",
+  speed_or_rate: "Speed",
+  stt_model: "STT model",
+  stt_provider: "Transcription engine",
+  tools_support: "Tools",
+  tts_model: "Speech model",
+  tts_provider: "Speech engine",
   voice_id: "Voice id",
   voice_profile: "Voice profile",
 });
@@ -1309,7 +1309,7 @@ function runtimeSettingsSetPreview(group, draft) {
   cockpit.runtimeSettingsApply.groupResults[group] = "";
 }
 
-function runtimeSettingsClearPreview(group = null, message = "Podgląd zresetowany do wartości efektywnej.") {
+function runtimeSettingsClearPreview(group = null, message = "Preview reset to the effective value.") {
   if (group) {
     delete cockpit.runtimeSettingsApply.preview[group];
     cockpit.runtimeSettingsApply.groupResults[group] = message;
@@ -1323,7 +1323,7 @@ function runtimeSettingsClearPreview(group = null, message = "Podgląd zresetowa
 
 function runtimeSettingsFormatValue(value) {
   if (typeof value === "boolean") {
-    return value ? "Włączone" : "Wyłączone";
+    return value ? "Enabled" : "Disabled";
   }
   return humanDisplayValue(value);
 }
@@ -1331,7 +1331,7 @@ function runtimeSettingsFormatValue(value) {
 function humanSettingLabel(value) {
   const raw = String(value || "").trim();
   if (!raw) {
-    return "Ustawienie";
+    return "Setting";
   }
   if (HUMAN_SETTING_LABELS[raw]) {
     return HUMAN_SETTING_LABELS[raw];
@@ -1347,44 +1347,44 @@ function humanSettingLabel(value) {
 
 function humanDisplayValue(value) {
   if (value === undefined || value === null || value === "") {
-    return "Nieznane";
+    return "Unknown";
   }
   if (typeof value === "boolean") {
-    return value ? "Włączone" : "Wyłączone";
+    return value ? "Enabled" : "Disabled";
   }
   if (Array.isArray(value)) {
-    return value.length > 0 ? value.map(humanDisplayValue).join(", ") : "Brak";
+    return value.length > 0 ? value.map(humanDisplayValue).join(", ") : "None";
   }
   const text = settingsPreviewValue(value);
-  if (text === "yes") return "Włączone";
-  if (text === "no") return "Wyłączone";
-  if (text === "unknown") return "Nieznane";
-  if (text === "missing") return "Brak";
-  if (text === "found") return "Znalezione";
-  if (text === "logged_in") return "Zalogowane";
-  if (text === "next_turn") return "Następna tura";
-  if (text === "requires_new_session") return "Wymaga nowej sesji";
-  if (text === "requires_daemon_restart") return "Wymaga restartu daemonu";
-  if (text === "not_apply_capable") return "Nie można zastosować";
-  if (text === "available") return "Dostępne";
-  if (text === "unavailable") return "Brak";
-  if (text === "disabled") return "Wyłączone";
-  if (text === "enabled") return "Włączone";
+  if (text === "yes") return "Enabled";
+  if (text === "no") return "Disabled";
+  if (text === "unknown") return "Unknown";
+  if (text === "missing") return "None";
+  if (text === "found") return "Found";
+  if (text === "logged_in") return "Logged in";
+  if (text === "next_turn") return "Next turn";
+  if (text === "requires_new_session") return "Requires a new session";
+  if (text === "requires_daemon_restart") return "Requires daemon restart";
+  if (text === "not_apply_capable") return "Cannot apply";
+  if (text === "available") return "Available";
+  if (text === "unavailable") return "None";
+  if (text === "disabled") return "Disabled";
+  if (text === "enabled") return "Enabled";
   return text;
 }
 
 function humanStatusLabel(status, options = {}) {
-  if (options.requiresRestart) return "Wymaga restartu";
-  if (options.blocked) return "Zablokowane";
+  if (options.requiresRestart) return "Requires restart";
+  if (options.blocked) return "Blocked";
   const raw = String(status || "").toLowerCase();
-  if (["ok", "ready", "available", "registered"].includes(raw)) return "Dostępne";
-  if (["enabled", "on", "true", "yes"].includes(raw)) return "Włączone";
-  if (["disabled", "off", "false", "no"].includes(raw)) return "Wyłączone";
-  if (["missing", "unavailable", "not_found"].includes(raw)) return "Brak";
-  if (["blocked", "invalid", "error"].includes(raw)) return "Zablokowane";
-  if (["unsupported", "not_supported"].includes(raw)) return "Nieobsługiwane";
-  if (raw === "read_only" || raw === "readonly") return "Tylko odczyt";
-  return "Nieznane";
+  if (["ok", "ready", "available", "registered"].includes(raw)) return "Available";
+  if (["enabled", "on", "true", "yes"].includes(raw)) return "Enabled";
+  if (["disabled", "off", "false", "no"].includes(raw)) return "Disabled";
+  if (["missing", "unavailable", "not_found"].includes(raw)) return "None";
+  if (["blocked", "invalid", "error"].includes(raw)) return "Blocked";
+  if (["unsupported", "not_supported"].includes(raw)) return "Unsupported";
+  if (raw === "read_only" || raw === "readonly") return "Read-only";
+  return "Unknown";
 }
 
 function humanShortReason(value) {
@@ -1394,52 +1394,52 @@ function humanShortReason(value) {
   }
   const lower = text.toLowerCase();
   if (lower.includes("no network/search tool")) {
-    return "Brak zarejestrowanego narzędzia sieci/szukania";
+    return "No registered network/search tool";
   }
   if (lower.includes("runtime tool/network policy reload")) {
-    return "Zmiana polityki runtime wymaga restartu";
+    return "Runtime policy change requires a restart";
   }
   if (lower.includes("new provider session") || lower.includes("requires new session")) {
-    return "Wymagana nowa sesja dostawcy";
+    return "New provider session required";
   }
   if (lower.includes("requires daemon restart") || lower.includes("requires restart")) {
-    return "Wymagany restart";
+    return "Restart required";
   }
   if (lower.includes("registry-backed")) {
-    return "Brak przełącznika sieci działającego na żywo";
+    return "No live network switch";
   }
   if (lower.includes("not apply-capable")) {
-    return "Nie można zastosować";
+    return "Cannot apply";
   }
   if (lower.includes("backend offline")) {
-    return "backend niedostępny";
+    return "backend unreachable";
   }
   if (lower.includes("missing")) {
     return text.length > 90 ? `${text.slice(0, 87)}...` : text;
   }
-  const withoutKeys = text.replace(/\b[a-z]+(?:[._-][a-z0-9]+)+\b/gi, "ustawienie");
+  const withoutKeys = text.replace(/\b[a-z]+(?:[._-][a-z0-9]+)+\b/gi, "setting");
   return withoutKeys.length > 90 ? `${withoutKeys.slice(0, 87)}...` : withoutKeys;
 }
 
-function humanActionForReason(reason, fallback = "Brak dostępnej akcji w tej chwili.") {
+function humanActionForReason(reason, fallback = "No action available right now.") {
   const lower = String(reason || "").toLowerCase();
-  if (lower.includes("network/search tool") || lower.includes("narzędzia sieci/szukania")) {
-    return "Zainstaluj albo zarejestruj narzędzie sieci/szukania.";
+  if (lower.includes("network/search tool") || lower.includes("no registered network/search tool")) {
+    return "Install or register a network/search tool.";
   }
   if (lower.includes("restart")) {
-    return "Zrestartuj DANa, żeby to zmienić.";
+    return "Restart DAN to change this.";
   }
-  if (lower.includes("new provider session") || lower.includes("requires new session") || lower.includes("nowa sesja dostawcy")) {
-    return "DAN zastosuje to przy starcie nowej sesji dostawcy.";
+  if (lower.includes("new provider session") || lower.includes("requires new session") || lower.includes("new provider session required")) {
+    return "DAN will apply this when a new provider session starts.";
   }
   if (lower.includes("auth")) {
-    return "Uwierzytelnij CLI dostawcy, jeśli DAN to odrzuci.";
+    return "Authenticate the provider CLI if DAN rejects this.";
   }
   if (lower.includes("voice id")) {
-    return "Ustaw ID głosu przed użyciem tego głosu.";
+    return "Set the voice ID before using this voice.";
   }
   if (lower.includes("local model")) {
-    return "Skonfiguruj lokalny model przed włączeniem tego dostawcy.";
+    return "Configure the local model before enabling this provider.";
   }
   return fallback;
 }
@@ -1556,7 +1556,7 @@ function runtimeSettingsUnknownDisabledReason(payload, key) {
   if ((key === "voice.ptt_hotkey" || key === "brain.effort") && runtimeSettingsUnknownCanApply(payload, key)) {
     return "";
   }
-  return "Wartość efektywna: nieznana. Powód: runtime nie raportuje tego ustawienia. Zastosowanie wyłączone.";
+  return "Effective value: unknown. Reason: the runtime does not report this setting. Apply disabled.";
 }
 
 function runtimeSettingsUnknownDisabledMessage(group, settings, payload) {
@@ -1609,12 +1609,12 @@ function runtimeSettingsFieldCannotApplyReason(payload, key) {
     const field = runtimeSettingsPreviewFieldForKey(payload, key);
     const reason = humanShortReason(field.blocker || field.warning);
     if (field.requires_restart || field.requires_reload) {
-      return "Wymaga restartu. Zrestartuj DANa, żeby to zmienić.";
+      return "Requires restart. Restart DAN to change this.";
     }
     if (reason) {
-      return `Zablokowane. ${humanActionForReason(reason)}`;
+      return `Blocked. ${humanActionForReason(reason)}`;
     }
-    return `${humanSettingLabel(key)} nie może być teraz zastosowane.`;
+    return `${humanSettingLabel(key)} cannot be applied right now.`;
   }
   return "";
 }
@@ -1627,12 +1627,12 @@ function runtimeSettingsGroupApplyBlockedReason(group, settings, payload) {
   for (const key of changedKeys) {
     const field = runtimeSettingsPreviewFieldForKey(payload, key);
     if (field.requires_restart || field.requires_reload) {
-      return "Wymaga restartu";
+      return "Requires restart";
     }
   }
   for (const key of changedKeys) {
     if (!runtimeSettingsFieldCanApplyNow(payload, key)) {
-      return "Nie można zastosować";
+      return "Cannot apply";
     }
   }
   return "";
@@ -1640,7 +1640,7 @@ function runtimeSettingsGroupApplyBlockedReason(group, settings, payload) {
 
 function runtimeSettingsCompactUnknownStatus(value) {
   if (runtimeSettingsValueIsUnknown(value)) {
-    return "Wartość efektywna: nieznana. Powód: runtime nie raportuje tego ustawienia.";
+    return "Effective value: unknown. Reason: the runtime does not report this setting.";
   }
   return settingsPreviewValue(value);
 }
@@ -1656,7 +1656,7 @@ function runtimeSettingsPendingMessage(group, settings, payload) {
     const effective = runtimeSettingsCurrentValueForKey(payload, key);
     return `${label}: ${runtimeSettingsFormatValue(effective)} -> ${runtimeSettingsFormatValue(settings[key])}`;
   });
-  return `Oczekująca zmiana: ${pieces.join("; ")}`;
+  return `Pending change: ${pieces.join("; ")}`;
 }
 
 function runtimeSettingsAttemptPendingMessage(group, settings, payload) {
@@ -1669,7 +1669,7 @@ function runtimeSettingsAttemptPendingMessage(group, settings, payload) {
     const effective = runtimeSettingsCurrentValueForKey(payload, key);
     return `${label}: ${runtimeSettingsFormatValue(effective)} -> ${runtimeSettingsFormatValue(settings[key])}`;
   });
-  return `Oczekująca zmiana: ${pieces.join("; ")}`;
+  return `Pending change: ${pieces.join("; ")}`;
 }
 
 function runtimeSettingsPendingBackendMessage(pending, validationMessage = "") {
@@ -1678,8 +1678,8 @@ function runtimeSettingsPendingBackendMessage(pending, validationMessage = "") {
   }
   const reason = humanShortReason(validationMessage);
   return reason
-    ? `${pending}. Backend zweryfikuje: ${humanActionForReason(reason)}`
-    : `${pending}. Backend zweryfikuje.`;
+    ? `${pending}. Backend will verify: ${humanActionForReason(reason)}`
+    : `${pending}. Backend will verify.`;
 }
 
 function runtimeSettingsGroupResult(group) {
@@ -1688,7 +1688,7 @@ function runtimeSettingsGroupResult(group) {
 
 function runtimeSettingsGroupNoChangesMessage(group) {
   const label = RUNTIME_SETTINGS_GROUP_LABELS[group] || group;
-  return `Brak zmian w sekcji ${label}.`;
+  return `No changes in the ${label} section.`;
 }
 
 function runtimeSettingValuesEquivalent(left, right) {
@@ -1793,10 +1793,10 @@ async function refreshSettingsPreview() {
     if (hadPendingPreview) {
       for (const group of Object.keys(safeObject(cockpit.runtimeSettingsApply.preview))) {
         if (runtimeSettingsHasPendingPreview(group)) {
-          cockpit.runtimeSettingsApply.groupResults[group] = "Stan efektywny odświeżony; oczekujący podgląd zachowany.";
+          cockpit.runtimeSettingsApply.groupResults[group] = "Effective state refreshed; pending preview kept.";
         }
       }
-      setText(el.activeSettingsStatus, "Stan efektywny odświeżony; oczekujący podgląd zachowany.");
+      setText(el.activeSettingsStatus, "Effective state refreshed; pending preview kept.");
     }
     cockpit.settingsPreview.model = settingsPreviewModelFromPayload(
       payload,
@@ -1813,11 +1813,11 @@ async function refreshSettingsPreview() {
 
 function resetSettingsPreview() {
   cockpit.settingsPreview.overrides = {};
-  runtimeSettingsClearPreview(null, "Podgląd zresetowany do wartości efektywnej.");
+  runtimeSettingsClearPreview(null, "Preview reset to the effective value.");
   cockpit.settingsPreview.model = settingsPreviewModelFromPayload(cockpit.settingsPreview.payload || {});
   renderRuntimeSettingsControls(cockpit.settingsPreview.payload || cockpit.runtimeSettingsApply.payload || {});
   renderSettingsPreview(cockpit.settingsPreview.model);
-  setText(el.activeSettingsStatus, "Podgląd zresetowany.");
+  setText(el.activeSettingsStatus, "Preview reset.");
 }
 
 function renderRuntimeSettingsControls(payload) {
@@ -1917,7 +1917,7 @@ function updateRestartRequiredBanner() {
   const suffix = keys.length > 3 ? ` +${keys.length - 3}` : "";
   setText(
     el.restartRequiredMessage,
-    `Wymagany restart: ${labels.join(", ")}${suffix}. Zapisz zmiany, potem zrestartuj DANa.`,
+    `Restart required: ${labels.join(", ")}${suffix}. Save the changes, then restart DAN.`,
   );
 }
 
@@ -1946,26 +1946,26 @@ function renderSettingsSectionSummary(node, payload, sectionId, limit = 12) {
     const action = reason
       ? humanActionForReason(reason)
       : field.editable_now
-        ? "Zastosuj w Systemie."
+        ? "Apply in System."
         : field.requires_restart
-          ? "Zrestartuj DANa, żeby to zmienić."
-          : "Brak";
+          ? "Restart DAN to change this."
+          : "None";
     const value = humanDisplayValue(field.effective !== undefined ? field.effective : field.current);
     const pieces = [
       value,
       status,
       reason || null,
-      action && action !== "Brak" ? action : null,
+      action && action !== "None" ? action : null,
     ].filter(Boolean);
-    return [humanSettingLabel(field.label || field.id), pieces.join(" · ") || "Nieznane"];
+    return [humanSettingLabel(field.label || field.id), pieces.join(" · ") || "Unknown"];
   });
   renderKeyValues(values, rows);
   row.appendChild(values);
   node.appendChild(row);
 }
 
-// Ładne, spójne podpisy modeli w dropdownie — surowe id (np. "claude-haiku-4-5-20251001",
-// z datą, gdy reszta bez) wyglądają niespójnie. Wartość selecta zostaje realnym id.
+// Nice, consistent model captions in the dropdown — raw ids (e.g. "claude-haiku-4-5-20251001",
+// dated while the rest are not) look inconsistent. The select value stays the real id.
 function prettyModelLabel(id) {
   const raw = String(id == null ? "" : id).trim();
   if (!raw) return raw;
@@ -1980,9 +1980,9 @@ function renderBrainApplyControls(payload) {
   const graph = safeObject(payload.capability_graph);
   const brain = safeObject(graph.brain_capabilities);
   const providers = Array.isArray(brain.providers) ? brain.providers : [];
-  // Pokaż tylko dostawców realnie DOSTĘPNYCH — ukryj niezainstalowane lokalne runtime'y
-  // (ollama/mlx/llama.cpp/bielik/mistral), żeby lista nie była zaśmiecona martwymi opcjami.
-  // Aktywnego dostawcę trzymamy zawsze, nawet gdyby chwilowo raportował available=false.
+  // Show only providers that are actually AVAILABLE — hide uninstalled local runtimes
+  // (ollama/mlx/llama.cpp/bielik/mistral) so the list is not littered with dead options.
+  // Keep the active provider always, even if it momentarily reports available=false.
   const normalProviders = providers.filter(
     (provider) =>
       !provider.developer_only &&
@@ -2003,7 +2003,7 @@ function renderBrainApplyControls(payload) {
   if (keepDeveloperProviderActive) {
     providerOptions.unshift({
       value: "",
-      label: "Brak aktywnego normalnego dostawcy",
+      label: "No active normal provider",
       disabled: true,
     });
   }
@@ -2020,7 +2020,7 @@ function renderBrainApplyControls(payload) {
   );
   if (el.activeBrainProviderSelect) {
     el.activeBrainProviderSelect.title = keepDeveloperProviderActive
-      ? "Aktywny dostawca developerski/testowy"
+      ? "Active developer/test provider"
       : "";
     el.activeBrainProviderSelect.disabled = keepDeveloperProviderActive && providerOptions.length === 1;
   }
@@ -2053,7 +2053,7 @@ function updateBrainControlOptions() {
       value: item.id,
       label: prettyModelLabel(item.id),
       disabled: item.available === false,
-      title: item.available === false ? "Backend raportuje model jako niedostępny." : "",
+      title: item.available === false ? "The backend reports this model as unavailable." : "",
     })),
     modelIds.includes(currentModelControlValue) ? currentModelControlValue : previewModel,
   );
@@ -2147,7 +2147,7 @@ function renderTtsApplyControls(payload) {
       value: provider.id,
       label: provider.label || provider.id,
       disabled: provider.available === false,
-      title: provider.available === false ? "Dostawca TTS jest niedostępny." : "Zapisz do restartu.",
+      title: provider.available === false ? "The TTS provider is unavailable." : "Save until restart.",
     })),
     currentTts,
   );
@@ -2182,7 +2182,7 @@ function renderTtsApplyControls(payload) {
   if (el.voiceTtsModelSelect) el.voiceTtsModelSelect.disabled = settingsFieldAllowedValuesWithCurrent(ttsModelField).length === 0;
   if (el.voiceVoiceIdSelect) el.voiceVoiceIdSelect.disabled = settingsFieldAllowedValuesWithCurrent(voiceIdField).length === 0;
   if (el.voiceProfileSelect) el.voiceProfileSelect.disabled = settingsFieldAllowedValuesWithCurrent(voiceProfileField).length === 0;
-  // Single-option engine/model/profile dropdowns are hidden; ID głosu keeps its manual entry.
+  // Single-option engine/model/profile dropdowns are hidden; the Voice ID keeps its manual entry.
   setFieldVisibleForSelect(el.voiceTtsSelect, ttsProviders.length);
   setFieldVisibleForSelect(el.voiceTtsModelSelect, settingsFieldAllowedValuesWithCurrent(ttsModelField).length);
   setFieldVisibleForSelect(el.voiceProfileSelect, settingsFieldAllowedValuesWithCurrent(voiceProfileField).length);
@@ -2193,7 +2193,7 @@ function renderTtsApplyControls(payload) {
   }
   updateTtsControlOptions();
   if (ttsField.requires_restart || ttsModelField.requires_restart || voiceIdField.requires_restart) {
-    setText(el.voiceApplyStatus, "Wymaga restartu. Zrestartuj DANa, żeby to zmienić.");
+    setText(el.voiceApplyStatus, "Requires restart. Restart DAN to change this.");
   }
   updateRestartRequiredBanner();
 }
@@ -2211,7 +2211,7 @@ function renderSttApplyControls(payload) {
       value: provider.id,
       label: provider.label || provider.id,
       disabled: provider.available === false,
-      title: provider.available === false ? "Dostawca albo runtime STT jest niedostępny." : "Zapisz do restartu.",
+      title: provider.available === false ? "The STT provider or runtime is unavailable." : "Save until restart.",
     })),
     projectionValue(voice.default_stt),
   );
@@ -2240,7 +2240,7 @@ function renderSttApplyControls(payload) {
   setFieldVisibleForSelect(el.voiceSttSelect, sttProviders.length);
   updateSttControlOptions();
   if (sttField.requires_restart || sttModelField.requires_restart || languageField.requires_restart) {
-    setText(el.sttApplyStatus, "Wymaga restartu. Zrestartuj DANa, żeby to zmienić.");
+    setText(el.sttApplyStatus, "Requires restart. Restart DAN to change this.");
   }
   updateRestartRequiredBanner();
 }
@@ -2252,7 +2252,7 @@ function updateTtsControlOptions() {
   const ttsCanApply = runtimeSettingsFieldCanApplyNow(payload, "voice.default_tts");
   const speakCanApply = runtimeSettingsFieldCanApplyNow(payload, "voice.speak_responses");
   const blockers = [];
-  if (!tts || tts.available === false) blockers.push("Brak dostawcy TTS");
+  if (!tts || tts.available === false) blockers.push("No TTS provider");
   const ttsField = settingsPreviewField(payload, "voice_tts", "tts_provider");
   const voiceIdField = settingsPreviewField(payload, "voice_tts", "voice_id");
   if (ttsField.blocker && !String(ttsField.blocker).includes("requires restart")) blockers.push(ttsField.blocker);
@@ -2266,7 +2266,7 @@ function updateTtsControlOptions() {
   if (el.voiceSpeakResponsesToggle) {
     el.voiceSpeakResponsesToggle.disabled = unknownMessage !== "";
     el.voiceSpeakResponsesToggle.title = unknownMessage || (ttsGroupBlocked && !speakCanApply
-      ? runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts") || "Backend zweryfikuje zmianę."
+      ? runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts") || "The backend will verify the change."
       : "");
   }
   const ttsApplyBlocked = ttsGroupBlocked || Boolean(applyBlockedReason);
@@ -2278,7 +2278,7 @@ function updateTtsControlOptions() {
       validationMessage = blockers[0];
     } else {
       validationMessage = runtimeSettingsFieldCannotApplyReason(payload, "voice.default_tts")
-        || `Zablokowane. ${humanActionForReason("not apply-capable")}`;
+        || `Blocked. ${humanActionForReason("not apply-capable")}`;
     }
   }
   setText(
@@ -2287,7 +2287,7 @@ function updateTtsControlOptions() {
       ? unknownMessage
       : pending
         ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
-        : result || validationMessage || "Wymaga restartu. Zrestartuj DANa, żeby zmienić silnik, model, głos albo szybkość.",
+        : result || validationMessage || "Requires restart. Restart DAN to change the engine, model, voice or speed.",
   );
   setButtonEnabled(
     el.applyTtsSettingsButton,
@@ -2301,7 +2301,7 @@ function updateSttControlOptions() {
   runtimeSettingsSetPreview("stt", runtimeSettingsDraftForGroup("stt"));
   const stt = runtimeSettingsVoiceProvider(payload, el.voiceSttSelect ? el.voiceSttSelect.value : "", "stt");
   const blockers = [];
-  if (!stt || stt.available === false) blockers.push("Brak dostawcy albo runtime STT");
+  if (!stt || stt.available === false) blockers.push("No STT provider or runtime");
   const draft = runtimeSettingsPayloadForGroup("stt", runtimeSettingsDraftForGroup("stt"));
   const pending = runtimeSettingsAttemptPendingMessage("stt", draft, payload);
   const unknownMessage = runtimeSettingsUnknownDisabledMessage("stt", draft, payload);
@@ -2313,7 +2313,7 @@ function updateSttControlOptions() {
       ? unknownMessage
       : pending
         ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, validationMessage)}`
-        : result || validationMessage || "Wymaga restartu. Zrestartuj DANa, żeby zmienić ustawienia transkrypcji.",
+        : result || validationMessage || "Requires restart. Restart DAN to change the transcription settings.",
   );
   setButtonEnabled(
     el.applySttSettingsButton,
@@ -2378,7 +2378,7 @@ function updatePttControlOptions() {
       ? shortcutMessage
       : pending
         ? `${result ? `${result} ` : ""}${runtimeSettingsPendingBackendMessage(pending, blocker)}`
-        : result || blocker || "Wymaga restartu. Zrestartuj DANa, żeby zmienić okno scalania.",
+        : result || blocker || "Requires restart. Restart DAN to change the merge window.",
   );
   setButtonEnabled(
     el.applyPttSettingsButton,
@@ -2390,11 +2390,11 @@ function updatePttControlOptions() {
 function validatePttShortcut(value) {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) {
-    return "Skrót PTT jest wymagany.";
+    return "The PTT shortcut is required.";
   }
   const tokens = raw.split("+").map((item) => item.trim()).filter(Boolean);
   if (tokens.length < 2) {
-    return "Skrót PTT musi łączyć co najmniej dwa klawisze.";
+    return "The PTT shortcut must combine at least two keys.";
   }
   const known = new Set([
     "cmd",
@@ -2415,7 +2415,7 @@ function validatePttShortcut(value) {
     "space",
   ]);
   const invalid = tokens.find((token) => !known.has(token) && !/^[a-z0-9]$/.test(token));
-  return invalid ? `Nieobsługiwany klawisz skrótu: ${invalid}` : "";
+  return invalid ? `Unsupported shortcut key: ${invalid}` : "";
 }
 
 function renderPttShortcutValidation(value) {
@@ -2423,8 +2423,8 @@ function renderPttShortcutValidation(value) {
     return;
   }
   const message = cockpit.pttShortcutRecording
-    ? "Nagrywanie skrótu..."
-    : validatePttShortcut(value) || "Skrót wygląda poprawnie.";
+    ? "Recording the shortcut..."
+    : validatePttShortcut(value) || "The shortcut looks valid.";
   setText(el.pttShortcutValidation, message);
 }
 
@@ -2485,7 +2485,7 @@ function recordPttShortcut() {
 
 async function testPttPath() {
   if (!cockpit.online || !cockpit.voice.enabled) {
-    renderPttTestStatusList("Backend albo głos są wyłączone.");
+    renderPttTestStatusList("The backend or voice is disabled.");
     return;
   }
   renderPttTestStatusList("Test PTT...");
@@ -2494,9 +2494,9 @@ async function testPttPath() {
     await requestJson("/voice/ptt/down", { method: "POST", body: { source: "panel_test" } });
     await requestJson("/voice/ptt/up", { method: "POST", body: { source: "panel_test" } });
     await Promise.allSettled([refreshVoice(), refreshEvents(), refreshSettingsPreview()]);
-    renderPttTestStatusList("Impuls lease PTT zakończony.");
+    renderPttTestStatusList("PTT lease pulse finished.");
   } catch (error) {
-    renderPttTestStatusList(error && error.message ? error.message : "Test PTT nie powiódł się.");
+    renderPttTestStatusList(error && error.message ? error.message : "PTT test failed.");
     renderError(el.voiceError, error);
   } finally {
     setBusy(el.testPttButton, false);
@@ -2513,15 +2513,15 @@ function renderPttTestStatusList(message = "") {
   const locked = leases.some((lease) => lease.mode === "locked");
   const row = document.createElement("article");
   row.className = "list-row compact-status-row";
-  appendLine(row, "Stan testu PTT", "input-line");
+  appendLine(row, "PTT test state", "input-line");
   const values = document.createElement("dl");
   values.className = "kv-list";
   renderKeyValues(values, [
-    ["Skrót", el.pttHotkeyInput ? validatePttShortcut(el.pttHotkeyInput.value) || "poprawny" : "nieznany"],
-    ["Lease", hold ? "hold aktywny" : locked ? "zablokowany" : "bezczynny"],
-    ["Recorder", cockpit.voice.listening ? "nagrywa/nasłuchuje" : "bezczynny"],
+    ["Shortcut", el.pttHotkeyInput ? validatePttShortcut(el.pttHotkeyInput.value) || "valid" : "unknown"],
+    ["Lease", hold ? "hold active" : locked ? "locked" : "idle"],
+    ["Recorder", cockpit.voice.listening ? "recording/listening" : "idle"],
     ["STT", pttVadModeSummary(cockpit.runtimeSettingsApply.payload || {})],
-    ["Test", message || "Gotowy"],
+    ["Test", message || "Ready"],
   ]);
   row.appendChild(values);
   el.pttTestStatusList.appendChild(row);
@@ -2534,12 +2534,12 @@ function pttVadModeSummary(payload) {
   }
   const endpointing = settingsPreviewFieldValue(payload, "voice_stt", "endpointing_support");
   if (endpointing === true) {
-    return "zgłoszone wsparcie server_vad/semantic_vad";
+    return "server_vad/semantic_vad support reported";
   }
   if (endpointing === false) {
-    return "wyłączone";
+    return "disabled";
   }
-  return "nieznane";
+  return "unknown";
 }
 
 function renderToolsApplyControls(payload) {
@@ -2564,7 +2564,7 @@ function renderToolsApplyControls(payload) {
     applyCapabilities,
     missingInternetReason,
   );
-  const compactBlocked = operator.applyStatus !== "Dostępne" || !hasLiveApplyControl;
+  const compactBlocked = operator.applyStatus !== "Available" || !hasLiveApplyControl;
   setToolsSectionCompactMode(compactBlocked);
   updateToolsControlOptions();
 }
@@ -2603,7 +2603,7 @@ function setToolsToggleState(toggle, checked, key, applyCapabilities, forceDisab
   toggle.title = disabledReason || "";
   if (String(toggle.tagName || "").toLowerCase() !== "input") {
     const blockedSetup = key === "tools.network_enabled" && forceDisabledReason;
-    setText(toggle, checked ? "Dostępne" : blockedSetup ? "Blokada setupu" : "Brak");
+    setText(toggle, checked ? "Available" : blockedSetup ? "Setup blocked" : "None");
     toggle.disabled = true;
     return;
   }
@@ -2616,15 +2616,15 @@ function setReadOnlyBooleanStatus(node, value) {
     return;
   }
   const known = value === true || value === false;
-  const text = known ? (value ? "Włączone" : "Wyłączone") : "Nieznane";
+  const text = known ? (value ? "Enabled" : "Disabled") : "Unknown";
   if (String(node.tagName || "").toLowerCase() === "input") {
     node.checked = Boolean(value);
     node.disabled = true;
-    node.title = "Status runtime tylko do odczytu.";
+    node.title = "Runtime status is read-only.";
     return;
   }
   setText(node, text);
-  node.title = known ? "Status runtime tylko do odczytu." : "Powód: runtime nie raportuje tego ustawienia.";
+  node.title = known ? "Runtime status is read-only." : "Reason: the runtime does not report this setting.";
   if (node.classList && typeof node.classList.toggle === "function") {
     node.classList.toggle("status-on", value === true);
     node.classList.toggle("status-off", value === false);
@@ -2635,13 +2635,13 @@ function setReadOnlyBooleanStatus(node, value) {
 function runtimeSettingsToolControlDisabledReason(key, capability) {
   const label = humanSettingLabel(key);
   if (capability.requires_restart) {
-    return `${label}: wymaga restartu`;
+    return `${label}: requires restart`;
   }
   if (capability.apply_capable !== true) {
-    return `${label}: tylko odczyt`;
+    return `${label}: read-only`;
   }
   if (capability.blocker) {
-    return `${label}: ${humanShortReason(capability.blocker) || "zablokowane"}`;
+    return `${label}: ${humanShortReason(capability.blocker) || "blocked"}`;
   }
   return "";
 }
@@ -2661,18 +2661,18 @@ function runtimeSettingsChangedKeys(group, settings, payload) {
 
 function runtimeSettingsToolsApplyDisabledReason(payload, settings, applyCapabilities, tools) {
   if (!cockpit.online) {
-    return "Błąd: backend offline";
+    return "Error: backend offline";
   }
   if (cockpit.runtimeSettingsApply.applyingGroup) {
-    return "Oczekuje: inne zastosowanie ustawień jest w toku";
+    return "Waiting: another settings apply is in progress";
   }
   const operator = toolsInternetOperatorState(tools, applyCapabilities);
   const changedKeys = runtimeSettingsChangedKeys("tools", settings, payload);
   if (changedKeys.length === 0) {
     return "";
   }
-  if (operator.applyStatus === "Zablokowane" || operator.applyStatus === "Wymaga restartu") {
-    return `${operator.applyStatus}. Zastosowanie wyłączone. ${operator.action}`;
+  if (operator.applyStatus === "Blocked" || operator.applyStatus === "Requires restart") {
+    return `${operator.applyStatus}. Apply disabled. ${operator.action}`;
   }
   for (const key of changedKeys) {
     const reason = runtimeSettingsToolControlDisabledReason(key, safeObject(safeObject(applyCapabilities)[key]));
@@ -2693,7 +2693,7 @@ function toolsInternetSummaryText(payload, tools = null) {
   }
   const warning = projectionWarning(source.internet_capability);
   if (state === "unavailable") {
-    return `Blokada setupu${warning ? `: ${humanShortReason(warning)}` : ""}`;
+    return `Setup blocked${warning ? `: ${humanShortReason(warning)}` : ""}`;
   }
   return warning || toolsInternetStateLabel(state);
 }
@@ -2734,10 +2734,10 @@ function runtimeSettingsToolsNoLiveApplyReason(applyCapabilities, tools = null) 
     }
   }
   if (restartCount > 0) {
-    return "Wymaga restartu";
+    return "Requires restart";
   }
   if (notCapableCount > 0) {
-    return "Tylko odczyt";
+    return "Read-only";
   }
   return "";
 }
@@ -2755,27 +2755,27 @@ function setToolsSectionCompactMode(compact) {
   if (el.resetToolsPreviewButton) {
     el.resetToolsPreviewButton.disabled = false;
     el.resetToolsPreviewButton.hidden = false;
-    el.resetToolsPreviewButton.title = compact ? "Backend zweryfikuje zmiany Narzędzia / Internet." : "";
+    el.resetToolsPreviewButton.title = compact ? "The backend will verify Tools / Internet changes." : "";
   }
 }
 
 function toolsInternetStateLabel(state) {
   if (state === "available") {
-    return "Dostępne";
+    return "Available";
   }
   if (state === "unavailable") {
-    return "Blokada setupu";
+    return "Setup blocked";
   }
   if (state === "missing") {
-    return "Brak";
+    return "None";
   }
   if (state === "enabled") {
-    return "Włączone";
+    return "Enabled";
   }
   if (state === "disabled") {
-    return "Wyłączone";
+    return "Disabled";
   }
-  return state ? humanDisplayValue(state) : "Nieznane";
+  return state ? humanDisplayValue(state) : "Unknown";
 }
 
 function toolsInternetOperatorState(tools, applyCapabilities) {
@@ -2791,32 +2791,32 @@ function toolsInternetOperatorState(tools, applyCapabilities) {
   const restartOnly = !runtimeSettingsToolsHasLiveApplyControl(applyCapabilities)
     && Object.values(safeObject(applyCapabilities)).some((item) => safeObject(item).requires_restart);
   const blockerReason = humanShortReason(warning || runtimeSettingsToolBlockers(applyCapabilities, tools)[0]);
-  const reason = internetMissing ? "Brak zarejestrowanego narzędzia sieci/szukania" : blockerReason;
+  const reason = internetMissing ? "No registered network/search tool" : blockerReason;
   const action = reason
     ? humanActionForReason(reason)
     : restartOnly
-      ? "Zrestartuj DANa, żeby to zmienić."
-      : "Brak";
+      ? "Restart DAN to change this."
+      : "None";
   const applyStatus = internetMissing || blockerReason
-    ? "Zablokowane"
+    ? "Blocked"
     : restartOnly
-      ? "Wymaga restartu"
-      : "Dostępne";
+      ? "Requires restart"
+      : "Available";
   return {
-    toolsStatus: toolsOn ? "Włączone" : "Wyłączone",
-    internetStatus: internetMissing ? "Blokada setupu" : toolsInternetStateLabel(rawInternetState),
-    searchToolStatus: networkToolMissing ? "Brak" : (networkTool ? "Dostępne" : "Nieznane"),
-    reason: reason || "Brak",
+    toolsStatus: toolsOn ? "Enabled" : "Disabled",
+    internetStatus: internetMissing ? "Setup blocked" : toolsInternetStateLabel(rawInternetState),
+    searchToolStatus: networkToolMissing ? "None" : (networkTool ? "Available" : "Unknown"),
+    reason: reason || "None",
     action,
     applyStatus,
-    applyLabel: applyStatus === "Dostępne" ? "dostępne" : "wyłączone",
+    applyLabel: applyStatus === "Available" ? "available" : "disabled",
     whatThisMeans: internetMissing && toolsOn
-      ? "Narzędzia są włączone, ale internet jest niedostępny, bo nie ma zarejestrowanego narzędzia sieci/szukania."
+      ? "Tools are enabled, but the internet is unavailable because no network/search tool is registered."
       : internetMissing
-        ? "Internet jest niedostępny, bo nie ma zarejestrowanego narzędzia sieci/szukania."
+        ? "The internet is unavailable because no network/search tool is registered."
         : restartOnly
-          ? "Ustawienia narzędzi są skonfigurowane, ale ich zmiana wymaga restartu DANa."
-          : "Ustawienia narzędzi można tu przejrzeć przed zastosowaniem.",
+          ? "Tool settings are configured, but changing them requires a DAN restart."
+          : "Tool settings can be reviewed here before applying.",
   };
 }
 
@@ -2825,16 +2825,16 @@ function renderToolsInternetCompactStatusList(payload, tools, applyCapabilities)
   if (!el.toolsInternetStatusList) return;
   const row = document.createElement("article");
   row.className = "list-row compact-status-row";
-  appendLine(row, "Narzędzia / Internet", "input-line");
+  appendLine(row, "Tools / Internet", "input-line");
   const values = document.createElement("dl");
   values.className = "kv-list";
   const operator = toolsInternetOperatorState(tools, applyCapabilities);
   renderKeyValues(values, [
-    ["Narzędzia", operator.toolsStatus],
-    ["Dostęp do internetu", operator.internetStatus],
-    ["Powód", operator.reason],
-    ["Akcja", operator.action],
-    ["Zastosowanie", operator.applyLabel],
+    ["Tools", operator.toolsStatus],
+    ["Internet access", operator.internetStatus],
+    ["Reason", operator.reason],
+    ["Action", operator.action],
+    ["Apply", operator.applyLabel],
   ]);
   row.appendChild(values);
   el.toolsInternetStatusList.appendChild(row);
@@ -2845,7 +2845,7 @@ function renderToolsInternetStatusList(payload, tools, applyCapabilities) {
   if (!el.toolsInternetStatusList) return;
   const row = document.createElement("article");
   row.className = "list-row";
-  appendLine(row, "Efektywny stan Narzędzia / Internet", "input-line");
+  appendLine(row, "Effective Tools / Internet state", "input-line");
   const values = document.createElement("dl");
   values.className = "kv-list";
   const internet = safeObject(projectionValue(tools.internet_capability));
@@ -2856,18 +2856,18 @@ function renderToolsInternetStatusList(payload, tools, applyCapabilities) {
     : Object.values(safeObject(applyCapabilities)).some((item) => safeObject(item).requires_restart);
   const blocker = projectionValue(tools.blocker)
     || runtimeSettingsToolBlockers(applyCapabilities, tools)[0]
-    || "brak";
-  const internetWarning = projectionWarning(tools.internet_capability) || "brak";
+    || "none";
+  const internetWarning = projectionWarning(tools.internet_capability) || "none";
   const operator = toolsInternetOperatorState(tools, applyCapabilities);
   renderKeyValues(values, [
-    ["Narzędzia", operator.toolsStatus],
-    ["Dostęp do internetu", toolsInternetStateLabel(internet.state || projectionStatus(tools.internet_capability))],
-    ["Powód", humanShortReason(internetWarning) || "Brak"],
-    ["Akcja", operator.action],
-    ["Narzędzie szukania", operator.searchToolStatus],
-    ["Zastosowanie", applyCapability === "yes" ? "Dostępne" : operator.applyStatus],
-    ["Restart wymagany", requiresRestart ? "Wymaga restartu" : "Wyłączone"],
-    ["Blokada", humanShortReason(blocker) || "Brak"],
+    ["Tools", operator.toolsStatus],
+    ["Internet access", toolsInternetStateLabel(internet.state || projectionStatus(tools.internet_capability))],
+    ["Reason", humanShortReason(internetWarning) || "None"],
+    ["Action", operator.action],
+    ["Search tool", operator.searchToolStatus],
+    ["Apply", applyCapability === "yes" ? "Available" : operator.applyStatus],
+    ["Restart required", requiresRestart ? "Requires restart" : "Disabled"],
+    ["Blocker", humanShortReason(blocker) || "None"],
   ]);
   row.appendChild(values);
   el.toolsInternetStatusList.appendChild(row);
@@ -3040,12 +3040,12 @@ const OPERATOR_INTENTS = {
 function operatorIntentPlan(name, online) {
   const intent = OPERATOR_INTENTS[name];
   if (!intent) {
-    return { allowed: false, message: `Nieznana intencja operatora: ${name}` };
+    return { allowed: false, message: `Unknown operator intent: ${name}` };
   }
   if (!online) {
     return {
       allowed: false,
-      message: "Daemon offline — sterowanie wyłączone; panel nie wskrzesza dand.",
+      message: "Daemon offline — controls disabled; the panel does not resurrect dand.",
     };
   }
   return { allowed: true, method: intent.method, path: intent.path };
@@ -3087,7 +3087,7 @@ async function pauseVoicePlayback() {
   await runOperatorIntent(
     "pause_voice",
     el.queueApplyStatus,
-    "Głos wstrzymany (broker nie bierze nowych pozycji).",
+    "Voice paused (the broker takes no new items).",
   );
 }
 
@@ -3095,7 +3095,7 @@ async function resumeVoicePlayback() {
   await runOperatorIntent(
     "resume_voice",
     el.queueApplyStatus,
-    "Głos wznowiony.",
+    "Voice resumed.",
   );
 }
 
@@ -3103,8 +3103,8 @@ async function cancelCurrentSpeech() {
   await runOperatorIntent(
     "skip_current",
     el.queueApplyStatus,
-    "Pominięto bieżącą wypowiedź — kolejka gra dalej.",
-    "Nic teraz nie gra — nie ma czego pominąć.",
+    "Skipped the current utterance — the queue keeps playing.",
+    "Nothing is playing right now — nothing to skip.",
   );
   await refreshVoiceQueue();
 }
@@ -3113,7 +3113,7 @@ async function safeRestartDaemon() {
   await runOperatorIntent(
     "safe_restart",
     el.activeSettingsStatus,
-    "Restart przyjęty (202) — daemon dokończy bieżącą pracę i wstanie sam.",
+    "Restart accepted (202) — the daemon will finish its current work and come back up on its own.",
   );
 }
 
@@ -3322,23 +3322,23 @@ function runtimeSettingsErrorMessage(error) {
   const payload = safeObject(detail.payload);
   const blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
   const status = payload.status || "";
-  const reason = humanShortReason(blockers[0] || (error && error.message ? error.message : "Zastosowanie nie powiodło się"));
+  const reason = humanShortReason(blockers[0] || (error && error.message ? error.message : "Apply failed"));
   if (status === "requires_restart") {
-    return `Wymaga restartu. ${humanActionForReason(reason)}`;
+    return `Requires restart. ${humanActionForReason(reason)}`;
   }
   if (status === "blocked") {
-    return `Zablokowane. ${humanActionForReason(reason)}`;
+    return `Blocked. ${humanActionForReason(reason)}`;
   }
   if (blockers.length > 0) {
-    return `Zablokowane. ${humanActionForReason(reason)}`;
+    return `Blocked. ${humanActionForReason(reason)}`;
   }
   if (detail.status === 400) {
-    return `Błąd walidacji: ${error.message}`;
+    return `Validation error: ${error.message}`;
   }
   if (detail.status === 409 || detail.status === 422) {
-    return `Zablokowane. ${humanActionForReason(reason)}`;
+    return `Blocked. ${humanActionForReason(reason)}`;
   }
-  return error && error.message ? error.message : "Zastosowanie nie powiodło się";
+  return error && error.message ? error.message : "Apply failed";
 }
 
 function runtimeSettingsApplyResultMessage(payload, group, settings, runtimeSettings) {
@@ -3349,19 +3349,19 @@ function runtimeSettingsApplyResultMessage(payload, group, settings, runtimeSett
   const blockers = Array.isArray(payload.blockers) ? payload.blockers : [];
   const requiresRestart = Array.isArray(payload.requires_restart_keys) ? payload.requires_restart_keys : [];
   if (status === "requires_restart" || requiresRestart.length > 0) {
-    const reason = humanShortReason(blockers[0] || "Wymagany restart");
-    return `Wymaga restartu. ${humanActionForReason(reason)}`;
+    const reason = humanShortReason(blockers[0] || "Restart required");
+    return `Requires restart. ${humanActionForReason(reason)}`;
   }
   if (status === "blocked" || blockers.length > 0) {
-    const reason = humanShortReason(blockers[0] || "Zablokowane");
-    return `Zablokowane. ${humanActionForReason(reason)}`;
+    const reason = humanShortReason(blockers[0] || "Blocked");
+    return `Blocked. ${humanActionForReason(reason)}`;
   }
   if (status === "applied" || applied.length > 0) {
     const count = applied.length || Object.keys(safeObject(settings)).length;
     if (runtimeSettingsRequestedValuesApplied(settings, runtimeSettings)) {
-      return `Zastosowano ${count} ustawienie${count === 1 ? "" : "ń"}. Stan efektywny odświeżony.`;
+      return `Applied ${count} setting${count === 1 ? "" : "s"}. Effective state refreshed.`;
     }
-    return "Bez zmian: stan efektywny nie zmienił się po odświeżeniu.";
+    return "No changes: the effective state did not change after the refresh.";
   }
   return runtimeSettingsGroupNoChangesMessage(group);
 }
@@ -3471,7 +3471,7 @@ function setSelectOptions(select, options, selectedValue) {
   if (selectedValue !== undefined && selectedValue !== null) {
     select.value = String(selectedValue);
   }
-  // A manually typed value (input "lub wpisz ręcznie") wins over the built options
+  // A manually typed value (input "or type manually") wins over the built options
   // so a fresh model-id can be applied before the backend/oracle knows it.
   applyManualSelectOverride(select);
 }
@@ -3500,7 +3500,7 @@ function applyManualSelectOverride(select) {
   if (!present) {
     const option = document.createElement("option");
     option.value = value;
-    setText(option, `${value} (ręcznie)`);
+    setText(option, `${value} (manual)`);
     select.appendChild(option);
   }
   select.value = value;
@@ -4621,81 +4621,81 @@ function operationalChecklistItems(snapshot) {
   const turnId = traceValue(context, "turn_id");
   return [
     checklistItem(
-      "Daemon działa",
+      "Daemon running",
       backend ? "pass" : "fail",
-      backend ? "health/state daemona wczytane" : "backend offline albo brak health",
+      backend ? "daemon health/state loaded" : "backend offline or health missing",
       "/health + /state",
-      "Uruchom scripts/dan status, jeśli to nie przechodzi.",
+      "Run scripts/dan status if this does not pass.",
     ),
     checklistItem(
-      "Panel połączony",
+      "Panel connected",
       backend ? "pass" : "fail",
-      backend ? "panel widzi endpointy daemona" : "backend nieosiągalny",
+      backend ? "the panel sees the daemon endpoints" : "backend unreachable",
       "/health",
-      "Odśwież Kontrolę misji po starcie daemona.",
+      "Refresh Mission Control after the daemon starts.",
     ),
     checklistItem(
-      "Ścieżka tekstowa dostępna",
+      "Text path available",
       backend && runtimeLoaded ? "pass" : backend ? "manual" : "fail",
-      backend ? "panel może wysłać POST /input/text poza Kontrolą misji" : "backend offline",
+      backend ? "the panel can send POST /input/text outside Mission Control" : "backend offline",
       "panel composer + runtime projection",
-      "Wyślij jedną krótką turę tekstową z Czatu.",
+      "Send one short text turn from Chat.",
     ),
     checklistItem(
-      "Kolejka głosu widoczna",
+      "Voice queue visible",
       queueVisible ? "pass" : "unknown",
-      queueVisible ? "projekcja kolejki wczytana" : "brakuje źródła kolejki głosu",
+      queueVisible ? "queue projection loaded" : "voice queue source missing",
       "/voice/queue?limit=12",
-      "Powiedz raz i sprawdź, czy pojawiły się wiersze queued/final/error.",
+      "Speak once and check whether queued/final/error rows appeared.",
     ),
     checklistItem(
-      "PTT dostępne",
+      "PTT available",
       pttChecklistStatus(context),
       pttChecklistWhy(context),
       "/voice/runtime endpointing_vad_ptt",
-      "Przytrzymaj natywny skrót; Kontrola misji nie może sama aktywować mikrofonu.",
+      "Hold the native shortcut; Mission Control cannot activate the microphone by itself.",
     ),
     checklistItem(
-      "Dostawca mózgu znany",
+      "Brain provider known",
       providerKnown ? "pass" : "unknown",
-      providerKnown ? `dostawca ${overviewValue(providerKnown)} widoczny` : "brakuje aktywnego dostawcy",
+      providerKnown ? `provider ${overviewValue(providerKnown)} visible` : "active provider missing",
       "/runtime/settings brain.providers",
-      "Wyślij turę i sprawdź provider/model w ostatnim trace.",
+      "Send a turn and check provider/model in the latest trace.",
     ),
     checklistItem(
-      "Status TTS znany",
+      "TTS status known",
       ttsKnown ? "pass" : "unknown",
-      ttsKnown ? `TTS ${settingsPreviewValue(ttsKnown)}` : "brakuje statusu TTS",
+      ttsKnown ? `TTS ${settingsPreviewValue(ttsKnown)}` : "TTS status missing",
       "/runtime/settings voice_tts",
-      "Uruchom ręczny test mowy poza panelem.",
+      "Run a manual speech test outside the panel.",
     ),
     checklistItem(
-      "Status STT znany",
+      "STT status known",
       sttKnown ? "pass" : "unknown",
-      sttKnown ? `STT ${settingsPreviewValue(sttKnown)}` : "brakuje statusu STT",
+      sttKnown ? `STT ${settingsPreviewValue(sttKnown)}` : "STT status missing",
       "/runtime/settings voice_stt",
-      "Uruchom ręczny test transkrypcji poza panelem.",
+      "Run a manual transcription test outside the panel.",
     ),
     checklistItem(
-      "Status narzędzi/internetu znany",
+      "Tools/internet status known",
       toolsKnown ? "pass" : "unknown",
-      toolsKnown ? toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)) : "brakuje projekcji narzędzi/internetu",
+      toolsKnown ? toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)) : "tools/internet projection missing",
       "/runtime/settings tools_internet",
-      "Nie uruchamiaj tu narzędzi; sprawdź tylko politykę.",
+      "Do not run tools here; check only the policy.",
     ),
     checklistItem(
-      "Pamięć widoczna",
+      "Memory visible",
       memoryVisible ? "pass" : "unknown",
-      memoryVisible ? "podsumowania/elementy pamięci wczytane" : "brakuje źródła pamięci",
+      memoryVisible ? "memory summaries/items loaded" : "memory source missing",
       "/memory + /memory/items",
-      "Utwórz albo zatwierdź pamięć, potem odśwież.",
+      "Create or approve a memory, then refresh.",
     ),
     checklistItem(
-      "Ostatni trace tury widoczny",
+      "Latest turn trace visible",
       turnId ? "pass" : "unknown",
-      turnId ? `ostatnia tura ${shortId(turnId)} widoczna` : "brak ostatniego trace tury",
+      turnId ? `latest turn ${shortId(turnId)} visible` : "no latest turn trace",
       "/runtime/settings latest_turn_trace",
-      "Uruchom jedną turę tekstową albo głosową.",
+      "Run one text or voice turn.",
     ),
   ];
 }
@@ -4707,10 +4707,10 @@ function checklistItem(label, status, why, source, hint) {
 function renderVoiceDoctor(snapshot) {
   clearNode(el.voiceDoctorList);
   const context = runtimeOverviewContext(snapshot || {});
-  el.voiceDoctorList.appendChild(doctorKvCard("Diagnostyka głosu", voiceDoctorRows(context)));
-  el.voiceDoctorList.appendChild(doctorKvCard("Diagnoza", [
-    ["reguły", voiceDoctorDiagnoses(context).join("; ") || "brak"],
-    ["znaczenie", voiceDoctorMeaning(context)],
+  el.voiceDoctorList.appendChild(doctorKvCard("Voice diagnostics", voiceDoctorRows(context)));
+  el.voiceDoctorList.appendChild(doctorKvCard("Diagnosis", [
+    ["rules", voiceDoctorDiagnoses(context).join("; ") || "none"],
+    ["meaning", voiceDoctorMeaning(context)],
   ]));
 }
 
@@ -4748,16 +4748,16 @@ function getTurnDetectionFieldEffectiveValue(context, fieldName) {
 function getTurnDetectionFieldDisplayValue(context, fieldName) {
   const value = getTurnDetectionFieldEffectiveValue(context, fieldName);
   if (value === undefined || value === null) {
-    return "nieznane";
+    return "unknown";
   }
   if (typeof value === 'string' && value.toLowerCase() === 'unknown') {
-    return "nieznane";
+    return "unknown";
   }
   if (Array.isArray(value)) {
     return value.join(", ");
   }
   if (typeof value === 'boolean') {
-    return value ? "tak" : "nie";
+    return value ? "yes" : "no";
   }
   return String(value);
 }
@@ -4778,23 +4778,23 @@ function voiceDoctorRows(context) {
     ["last cancellation reason", firstPresent(latestQueueValue(context.queueRows, ["cancellation_reason", "cancel_reason"]), latestBargeInSummary(context.events))],
     ["interrupted_previous_response", firstPresent(latestEventPayloadValue(context.events, ["interrupted_previous_response"]), traceValue(context, "interrupted_previous_response"))],
     ["latest voice error", latestVoiceLayerError(context, "tts_voice_model", ["voice", "audio", "speech", "stt", "tts"])],
-    ["Tryb TK", getTurnDetectionFieldDisplayValue(context, "mode")],
-    ["Silnik TK", getTurnDetectionFieldDisplayValue(context, "current_engine")],
-    ["Próbkowanie", getTurnDetectionFieldDisplayValue(context, "sample_rate")],
-    ["Ramka MS", getTurnDetectionFieldDisplayValue(context, "frame_ms")],
-    ["Min. przechwytywania MS", getTurnDetectionFieldDisplayValue(context, "min_capture_ms")],
-    ["Próg RMS", getTurnDetectionFieldDisplayValue(context, "rms_threshold")],
-    ["Min. czas głoski", getTurnDetectionFieldDisplayValue(context, "min_voiced_seconds")],
-    ["Stosunek głoski", getTurnDetectionFieldDisplayValue(context, "min_voiced_ratio")],
+    ["TD mode", getTurnDetectionFieldDisplayValue(context, "mode")],
+    ["TD engine", getTurnDetectionFieldDisplayValue(context, "current_engine")],
+    ["Sample rate", getTurnDetectionFieldDisplayValue(context, "sample_rate")],
+    ["Frame ms", getTurnDetectionFieldDisplayValue(context, "frame_ms")],
+    ["Min capture ms", getTurnDetectionFieldDisplayValue(context, "min_capture_ms")],
+    ["RMS threshold", getTurnDetectionFieldDisplayValue(context, "rms_threshold")],
+    ["Min voiced time", getTurnDetectionFieldDisplayValue(context, "min_voiced_seconds")],
+    ["Voiced ratio", getTurnDetectionFieldDisplayValue(context, "min_voiced_ratio")],
     ["VAD streaming", getTurnDetectionFieldDisplayValue(context, "streaming_vad_supported")],
-    ["Buff. przedaktyw. MS", getTurnDetectionFieldDisplayValue(context, "pre_activation_buffer_ms")],
-    ["Cisza trw. MS", getTurnDetectionFieldDisplayValue(context, "silence_duration_ms")],
-    ["Próg VAD", getTurnDetectionFieldDisplayValue(context, "vad_threshold")],
-    ["Odp. na przerwanie", getTurnDetectionFieldDisplayValue(context, "interrupt_response")],
-    ["Przerwanie semantyczne", getTurnDetectionFieldDisplayValue(context, "semantic_interruption")],
-    ["Priorytet użytkownika", getTurnDetectionFieldDisplayValue(context, "priority_user_lane")],
-    ["Samodzielność tła", getTurnDetectionFieldDisplayValue(context, "background_autonomy_lane")],
-    ["Ostrzeżenia TK", getTurnDetectionFieldDisplayValue(context, "warnings")],
+    ["Pre-activation buffer ms", getTurnDetectionFieldDisplayValue(context, "pre_activation_buffer_ms")],
+    ["Silence duration ms", getTurnDetectionFieldDisplayValue(context, "silence_duration_ms")],
+    ["VAD threshold", getTurnDetectionFieldDisplayValue(context, "vad_threshold")],
+    ["Interrupt response", getTurnDetectionFieldDisplayValue(context, "interrupt_response")],
+    ["Semantic interruption", getTurnDetectionFieldDisplayValue(context, "semantic_interruption")],
+    ["User priority", getTurnDetectionFieldDisplayValue(context, "priority_user_lane")],
+    ["Background autonomy", getTurnDetectionFieldDisplayValue(context, "background_autonomy_lane")],
+    ["TD warnings", getTurnDetectionFieldDisplayValue(context, "warnings")],
   ];
 }
 
@@ -4938,20 +4938,20 @@ function operatorSummaryFromSnapshot(snapshot) {
     warnings: warnings.slice(0, 3),
     nextAction: operatorNextAction(status, blockers, warnings),
     backendConnected,
-    daemonStatus: firstPresent(context.state.state, context.health.state, context.health.service, "nieznane"),
-    panelStatus: backendConnected ? "połączony z backendem" : "backend nieosiągalny",
-    activeProvider: firstPresent(projectionValue(context.brainRuntime.current_adapter), context.activeAdapter, "nieznane"),
+    daemonStatus: firstPresent(context.state.state, context.health.state, context.health.service, "unknown"),
+    panelStatus: backendConnected ? "connected to the backend" : "backend unreachable",
+    activeProvider: firstPresent(projectionValue(context.brainRuntime.current_adapter), context.activeAdapter, "unknown"),
     voiceStatus: missionVoiceStatus(context),
     toolsInternetStatus: firstPresent(toolsInternetSummaryText(context.runtimeSettings, safeObject(context.runtimeSettings.tools)), networkToolSummary(context.tools), "unknown"),
     memoryStatus: memoryEnabledSummary(context),
-    latestCriticalBlocker: blockers[0] || "brak",
-    latestSafeError: traceLatestSafeError(context) || "brak",
+    latestCriticalBlocker: blockers[0] || "none",
+    latestSafeError: traceLatestSafeError(context) || "none",
     lastRefreshTime: cockpit.missionControl.lastRefreshAt
       ? formatFullDate(cockpit.missionControl.lastRefreshAt)
-      : "nieznane",
+      : "unknown",
     lastImportantEvent: lastImportantEventSummary(context),
     safetyGuarantee:
-      "Tryb produkcyjny; stan należy do backendu; diagnostyka redagowana; bez renderowania sekretów",
+      "Production mode; state belongs to the backend; diagnostics redacted; no secrets rendered",
   };
 }
 
@@ -5059,15 +5059,15 @@ function operatorStatusLine(status, blockers, warnings, context) {
     return `Offline: ${humanShortReason(blockers[0] || "backend offline")}`;
   }
   if (status === "unknown") {
-    return "Nieznane: brakuje projekcji runtime";
+    return "Unknown: runtime projection missing";
   }
   if (status === "blocked") {
-    return `Zablokowane: ${blockers.slice(0, 2).join(", ")}`;
+    return `Blocked: ${blockers.slice(0, 2).join(", ")}`;
   }
   if (status === "degraded") {
-    return `Ograniczone: ${warnings.slice(0, 2).join(", ") || "pozostały ostrzeżenia"}`;
+    return `Degraded: ${warnings.slice(0, 2).join(", ") || "warnings remain"}`;
   }
-  return `Gotowe: ${operatorReadySignals(context).slice(0, 3).join(", ")}${warnings.length > 0 ? ", pozostały ostrzeżenia" : ""}`;
+  return `Ready: ${operatorReadySignals(context).slice(0, 3).join(", ")}${warnings.length > 0 ? ", warnings remain" : ""}`;
 }
 
 function operatorReadySignals(context) {
@@ -5082,18 +5082,18 @@ function operatorReadySignals(context) {
 
 function operatorNextAction(status, blockers, warnings) {
   if (status === "offline") {
-    return "Uruchom albo sprawdź daemona przez scripts/dan status, potem odśwież.";
+    return "Start or check the daemon via scripts/dan status, then refresh.";
   }
   if (status === "unknown") {
-    return "Odśwież Kontrolę misji, gdy /runtime/settings będzie dostępne.";
+    return "Refresh Mission Control when /runtime/settings becomes available.";
   }
   if (status === "blocked") {
-    return `Napraw pierwszy blocker: ${blockers[0] || "blocker runtime"}.`;
+    return `Fix the first blocker: ${blockers[0] || "runtime blocker"}.`;
   }
   if (status === "degraded") {
-    return `Przetestuj następną bezpieczną ścieżkę, potem sprawdź ostrzeżenie: ${warnings[0] || "ostatnie ostrzeżenie"}.`;
+    return `Test the next safe path, then check the warning: ${warnings[0] || "latest warning"}.`;
   }
-  return "Następny test: wyślij turę tekstową, przytrzymaj PTT ręcznie, sprawdź pamięć i ostatni trace.";
+  return "Next test: send a text turn, hold PTT manually, check memory and the latest trace.";
 }
 
 function lastImportantEventSummary(context) {
@@ -5477,7 +5477,7 @@ const RUNTIME_OVERVIEW_SECTIONS = [
     ],
   },
   {
-    title: "Ostatni trace tury",
+    title: "Latest turn trace",
     fields: [
       field("turn_id", "runtimeSettings", (ctx) => traceValue(ctx, "turn_id"), {
         readiness: (ctx) => traceReadiness(ctx, "turn_id"),
@@ -5818,7 +5818,7 @@ const RUNTIME_OVERVIEW_SECTIONS = [
           RUNTIME_OVERVIEW_UNKNOWN,
         ),
       ),
-      field("kolejka głosu", "voiceQueue", (ctx) => voiceQueueSummary(ctx.queueRows, ctx.voiceQueue), {
+      field("voice queue", "voiceQueue", (ctx) => voiceQueueSummary(ctx.queueRows, ctx.voiceQueue), {
         readiness: (ctx) => voiceRuntimeGroupReadiness(ctx, "queue_barge_in"),
         dependency: (ctx) => voiceRuntimeGroupDependency(ctx, "queue_barge_in"),
         warnings: (ctx) => voiceRuntimeGroupWarnings(ctx, "queue_barge_in"),
@@ -5826,12 +5826,12 @@ const RUNTIME_OVERVIEW_SECTIONS = [
     ],
   },
   {
-    title: "Narzędzia/Internet",
+    title: "Tools/Internet",
     fields: [
-      field("zarejestrowane narzędzia", "tools", (ctx) =>
-        ctx.tools.length > 0 ? `${ctx.tools.length} zarejestrowane` : "brak zarejestrowanych",
+      field("registered tools", "tools", (ctx) =>
+        ctx.tools.length > 0 ? `${ctx.tools.length} registered` : "none registered",
       ),
-      field("widoczne klasy ryzyka", "tools", (ctx) => toolRiskSummary(ctx.tools)),
+      field("visible risk classes", "tools", (ctx) => toolRiskSummary(ctx.tools)),
       field("internet/network capability", "tools", (ctx) => networkToolSummary(ctx.tools), {
         readiness: (ctx) =>
           networkToolCandidates(ctx.tools).length > 0
@@ -7098,8 +7098,8 @@ async function sendTextInput(event) {
 
   const body = { text, source: "panel" };
 
-  // Optymistyczny dymek: wysłana wiadomość od razu ląduje w czacie i pole
-  // się czyści (jak w komunikatorze), a nie dopiero po odpowiedzi daemona.
+  // Optimistic bubble: the sent message lands in the chat right away and the field
+  // clears (like a messenger), not only after the daemon replies.
   appendPendingUserBubble(text);
   el.textInput.value = "";
   el.textInput.style.height = "";
@@ -7120,8 +7120,8 @@ async function sendTextInput(event) {
   }
 }
 
-// Wysokość pola śledzi treść aż do limitu z CSS (max-height), potem scroll.
-// Reset (pusta wartość) wraca do bazowych dwóch rzędów.
+// The field height follows the content up to the CSS limit (max-height), then scrolls.
+// A reset (empty value) returns to the base two rows.
 function autoGrowComposer() {
   const field = el.textInput;
   field.style.height = "auto";
@@ -7156,16 +7156,16 @@ async function refreshHistory() {
 }
 
 async function refreshTurns(conversationId) {
-  // Najnowsza wymiana ma być widoczna od razu na górze; oldest-first z limitem
-  // ucinało świeże tury w długich rozmowach i chowało resztę na dole listy.
+  // The newest exchange must be visible at the top right away; oldest-first with a limit
+  // cut fresh turns in long conversations and hid the rest at the bottom of the list.
   const query = `/turns?conversation_id=${encodeURIComponent(conversationId)}&limit=20&newest_first=true`;
   const payload = await requestJson(query);
   const turns = Array.isArray(payload.turns) ? payload.turns : [];
   renderTurns(turns);
 }
 
-// Rozmowy żyją w dropdownie przy czacie (nie w osobnej sekcji): wybór
-// przełącza przebieg, "+" zaczyna nową rozmowę.
+// Conversations live in a dropdown next to the chat (not in a separate section):
+// a choice switches the transcript, "+" starts a new conversation.
 function renderConversations(conversations) {
   // No dropdown. Keep the function as a no-op status sync for older call sites.
   if (Array.isArray(conversations) && conversations[0] && conversations[0].id) {
@@ -7177,9 +7177,9 @@ function ensureNewConversationOption() {
   // Single DAN conversation: no manual new-chat option.
 }
 
-// Kafelek bez tytułu dostaje początek pierwszego input_text rozmowy. Jedna
-// tania prośba (limit=1, oldest-first) na rozmowę, potem cache — pierwsza
-// tura jest niezmienna, więc nic tu nie musi się odświeżać.
+// An untitled tile gets the start of the conversation's first input_text. One
+// cheap request (limit=1, oldest-first) per conversation, then cache — the first
+// turn is immutable, so nothing here needs to refresh.
 async function ensureConversationTitle(conversationId, node) {
   if (cockpit.conversationTitles.has(conversationId)) {
     return;
@@ -7196,7 +7196,7 @@ async function ensureConversationTitle(conversationId, node) {
       setText(node, title);
     }
   } catch (error) {
-    // Fallbackowa etykieta z zegarem już stoi; spróbujemy przy kolejnym renderze.
+    // The clock fallback label is already in place; we will retry on the next render.
     cockpit.conversationTitles.delete(conversationId);
   }
 }
@@ -7216,12 +7216,12 @@ function renderTurns(turns) {
   clearNode(el.turnList);
 
   if (turns.length === 0) {
-    renderEmpty(el.turnList, "Pusta rozmowa — napisz coś poniżej.");
+    renderEmpty(el.turnList, "Empty conversation — write something below.");
     return;
   }
 
-  // Fetch przychodzi newest-first (świeże tury nie giną przy limicie);
-  // czat czyta się chronologicznie, więc odwracamy i dowozimy scroll na dół.
+  // The fetch arrives newest-first (fresh turns are not lost to the limit);
+  // the chat reads chronologically, so we reverse and deliver the scroll to the bottom.
   const chronological = [...turns].reverse();
   for (const turn of chronological) {
     el.turnList.appendChild(chatTurn(turn));
@@ -7231,8 +7231,8 @@ function renderTurns(turns) {
 
 function scrollChatToBottom() {
   el.turnList.scrollTop = el.turnList.scrollHeight;
-  // Wysokość logu potrafi się zmienić już po renderze (np. karta zgód
-  // urośnie w kolumnie ops) — dosuwamy jeszcze raz po przeliczeniu layoutu.
+  // The log height can still change after the render (e.g. the approvals card
+  // grows in the ops column) — we nudge once more after the layout recalculates.
   window.requestAnimationFrame(() => {
     el.turnList.scrollTop = el.turnList.scrollHeight;
   });
@@ -7276,13 +7276,13 @@ function chatTurn(turn) {
 
 function turnPlaceholder(status) {
   if (status === "failed") {
-    return "tura nieudana";
+    return "turn failed";
   }
   if (status === "cancelled") {
-    return "przerwana";
+    return "cancelled";
   }
   if (status === "finished") {
-    return "(bez odpowiedzi)";
+    return "(no response)";
   }
   return "…";
 }
@@ -7360,7 +7360,7 @@ function renderMemory(blocks) {
   clearNode(el.memoryList);
 
   if (blocks.length === 0) {
-    renderEmpty(el.memoryList, "Brak aktywnej pamięci");
+    renderEmpty(el.memoryList, "No active memory");
     return;
   }
 
@@ -7373,7 +7373,7 @@ function renderMemory(blocks) {
       appendLine(row, block.body, "final-line");
     }
 
-    // Chipy: rodzaj po ludzku + priorytet — na jedno spojrzenie widać wagę.
+    // Chips: human-readable kind + priority — the weight is visible at a glance.
     const chips = document.createElement("div");
     chips.className = "mem-chips";
     const kindChip = document.createElement("span");
@@ -7383,7 +7383,7 @@ function renderMemory(blocks) {
     priorityChip.className = "mem-chip";
     setText(
       priorityChip,
-      block.panel_source === "memory_os_item" ? "Memory OS" : `Priorytet ${block.priority ?? 0}`,
+      block.panel_source === "memory_os_item" ? "Memory OS" : `Priority ${block.priority ?? 0}`,
     );
     chips.append(kindChip, priorityChip);
     if (block.status) {
@@ -7394,14 +7394,14 @@ function renderMemory(blocks) {
     }
     row.appendChild(chips);
 
-    // Pochodzenie bloku po ludzku: kto zaproponował i kto zatwierdził.
+    // Block origin in human terms: who proposed it and who approved it.
     const metadata = block.metadata || {};
     if (metadata.proposed_by || metadata.promoted_by) {
       appendLine(row, memorySourceLine(metadata), "muted");
     }
 
     if (block.panel_source === "memory_os_item") {
-      appendLine(row, "Memory OS item — widoczny w panelu; dobór do promptu zależy od polityki pamięci.", "muted");
+      appendLine(row, "Memory OS item — visible in the panel; prompt selection depends on the memory policy.", "muted");
       el.memoryList.appendChild(row);
       continue;
     }
@@ -7413,8 +7413,8 @@ function renderMemory(blocks) {
     priorityInput.type = "number";
     priorityInput.className = "priority-input";
     priorityInput.value = String(block.priority ?? 0);
-    priorityInput.setAttribute("aria-label", "Nowy");
-    const priorityButton = smallButton("Zapisz ");
+    priorityInput.setAttribute("aria-label", "New");
+    const priorityButton = smallButton("Save ");
     priorityButton.addEventListener("click", async () => {
       const priority = Number.parseInt(priorityInput.value, 10);
       if (!Number.isFinite(priority)) {
@@ -7435,7 +7435,7 @@ function renderMemory(blocks) {
       }
     });
 
-    const disableButton = smallButton("Wyłącz");
+    const disableButton = smallButton("Disable");
     disableButton.classList.add("danger");
     disableButton.addEventListener("click", async () => {
       clearError(el.memoryError);
@@ -7456,14 +7456,14 @@ function renderMemory(blocks) {
   }
 }
 
-// Pochodzenie notatki po ludzku zamiast surowego proposed_by/promoted_by.
+// Note origin in human terms instead of raw proposed_by/promoted_by.
 function memorySourceLine(metadata) {
   const parts = [];
   if (metadata.proposed_by) {
-    parts.push(`zaproponował: ${memoryActorLabel(metadata.proposed_by)}`);
+    parts.push(`proposed by: ${memoryActorLabel(metadata.proposed_by)}`);
   }
   if (metadata.promoted_by) {
-    parts.push(`zatwierdził: ${memoryActorLabel(metadata.promoted_by)}`);
+    parts.push(`approved by: ${memoryActorLabel(metadata.promoted_by)}`);
   }
   return parts.join(" · ");
 }
@@ -7471,8 +7471,8 @@ function memorySourceLine(metadata) {
 function memoryActorLabel(value) {
   const actor = String(value || "");
   if (actor === "assistant" || actor === "brain" || actor === "model") return "model";
-  if (actor === "memory_worker" || actor === "worker") return "proces pamięci";
-  if (actor === "panel" || actor === "user") return "Ty";
+  if (actor === "memory_worker" || actor === "worker") return "memory process";
+  if (actor === "panel" || actor === "user") return "You";
   return actor.replace(/_/g, " ") || "backend";
 }
 
@@ -7497,7 +7497,7 @@ function resetActivity() {
   cockpit.runtimeStateRevision = 0;
   cockpit.runtimeStateRequestId += 1;
   cockpit.activity.lastEventId = 0;
-  cockpit.activity.stage = "Łączenie…";
+  cockpit.activity.stage = "Connecting…";
   cockpit.activity.toolName = "";
   cockpit.activity.toolStatus = "";
   cockpit.activity.resultSummary = "";
@@ -7593,7 +7593,7 @@ function boundedActivityText(value, maxChars) {
 function renderActivity() {
   const runtimeState = cockpit.runtimeState || "unknown";
   setText(el.stateLabel, runtimeState.toLowerCase() === "unknown" ? "…" : runtimeState);
-  setText(el.activityStage, cockpit.activity.stage || "Łączenie…");
+  setText(el.activityStage, cockpit.activity.stage || "Connecting…");
   if (el.activityStrip) {
     el.activityStrip.dataset.runtimeState = runtimeState;
   }
@@ -7617,10 +7617,10 @@ function renderActivity() {
   }
 }
 
-// Żywa ramka stanu: jeden atrybut body[data-state] steruje neonem na krawędzi
-// karty. Priorytet od najważniejszego: brak łącza (offline) > daemon pracuje
-// (busy: myśli/używa narzędzia/mówi/słucha) > spoczynek (online).
-// Ruch (obieganie) tylko przy busy — czyli gdy coś naprawdę trwa.
+// Live state frame: a single body[data-state] attribute drives the neon on the
+// card edge. Priority from the most important: no link (offline) > daemon working
+// (busy: thinking/using a tool/speaking/listening) > rest (online).
+// Motion (running around) only when busy — that is, when something is really happening.
 function applyStateFrame() {
   let state = "offline";
   if (cockpit.online) {
@@ -7633,9 +7633,9 @@ function applyStateFrame() {
   document.body.dataset.state = state;
 }
 
-// Daemon "pracuje", gdy jego RuntimeState wyszedł ze spoczynku (myśli, używa
-// narzędzia, mówi, słucha) albo mikrofon właśnie zbiera dźwięk. IDLE i wszystko nieznane =
-// spoczynek, żeby ramka nie kręciła się bez powodu.
+// The daemon "works" when its RuntimeState left rest (thinking, using a tool,
+// speaking, listening) or the microphone is capturing sound right now. IDLE and anything unknown =
+// rest, so the frame does not spin without a reason.
 function isDaemonBusy() {
   const state = String(cockpit.runtimeState || "").toUpperCase();
   if (
@@ -7649,8 +7649,8 @@ function isDaemonBusy() {
   return cockpit.voice.listening === true;
 }
 
-// Jeden widok naraz: zakładki przełączają panele, stan widoku żyje tylko
-// w DOM (thin client — żadnej persystencji poza tokenem API).
+// One view at a time: tabs switch panels, view state lives only
+// in the DOM (thin client — no persistence beyond the API token).
 function switchView(view) {
   document.body.dataset.view = view;
   for (const tab of document.querySelectorAll(".tab-button")) {
@@ -7670,7 +7670,7 @@ function renderTools(tools) {
   clearNode(el.toolList);
 
   if (tools.length === 0) {
-    renderEmpty(el.toolList, "Brak narzędzi");
+    renderEmpty(el.toolList, "No tools");
     return;
   }
 
@@ -7678,7 +7678,7 @@ function renderTools(tools) {
     const row = document.createElement("div");
     row.className = "list-row";
 
-    // Ludzka nazwa + chip klasy ryzyka (nigdy „file_read - file_read”).
+    // Human name + risk class chip (never "file_read - file_read").
     const head = document.createElement("div");
     head.className = "tool-head";
     const name = document.createElement("span");
@@ -7733,7 +7733,7 @@ function renderBrainAdapters(payload) {
   }
   setText(
     el.brainAdapterLabel,
-    `aktywny: ${payload.current || "n/a"} · domyślny: ${payload.default || "n/a"}`,
+    `active: ${payload.current || "n/a"} · default: ${payload.default || "n/a"}`,
   );
 }
 
@@ -7742,7 +7742,7 @@ function renderSettings(settings) {
 
   const entries = Object.entries(settings);
   if (entries.length === 0) {
-    renderEmpty(el.settingsList, "Brak ustawień");
+    renderEmpty(el.settingsList, "No settings");
     return;
   }
 
@@ -7909,7 +7909,7 @@ function renderEvents(events) {
   if (shown.length === 0) {
     renderEmpty(
       el.eventList,
-      filter === "all" ? "Brak zdarzeń" : "Brak zdarzeń w tym filtrze",
+      filter === "all" ? "No events" : "No events in this filter",
     );
     return;
   }
@@ -7919,8 +7919,8 @@ function renderEvents(events) {
   }
 }
 
-// Wiersz dziennika po ludzku: ludzka etykieta zdarzenia + meta
-// #id · źródło · czas względny (mono, najmniej ważna linijka).
+// Human journal row: a human event label + meta
+// #id · source · relative time (mono, the least important line).
 function eventRow(event) {
   const row = document.createElement("div");
   row.className = "list-row";
@@ -8236,8 +8236,8 @@ function handleStreamMessage(raw) {
 
   const type = String(event.type || "");
   if (type === "state.changed" && event.payload && event.payload.new_state) {
-    // Stan pracy prosto ze strumienia — ramka reaguje natychmiast, bez
-    // czekania na następny heartbeat /state.
+    // Work state straight from the stream — the frame reacts immediately, without
+    // waiting for the next /state heartbeat.
     applyStateFrame();
   }
   if (type.startsWith("input.") || type.startsWith("turn.")) {
@@ -8415,7 +8415,7 @@ function renderRuntimeObservations(observations) {
   clearNode(el.runtimeObservationList);
 
   if (observations.length === 0) {
-    renderEmpty(el.runtimeObservationList, "Brak obserwacji");
+    renderEmpty(el.runtimeObservationList, "No observations");
     return;
   }
 
@@ -8530,7 +8530,7 @@ function apiBase() {
   return cockpit.apiBase.replace(/\/+$/, "");
 }
 
-// One-shot "DAN padł" / "DAN znów działa" notifications (Task 10): a message
+// One-shot "DAN went down" / "DAN is back up" notifications (Task 10): a message
 // fires only on an availability EDGE — repeated failing polls stay silent
 // until the daemon actually comes back.
 function createDaemonAvailabilityTracker(notify) {
@@ -8540,12 +8540,12 @@ function createDaemonAvailabilityTracker(notify) {
       const isOnline = Boolean(online);
       if (wasOnline === null) {
         if (!isOnline) {
-          notify("DAN padł");
+          notify("DAN went down");
         }
       } else if (wasOnline && !isOnline) {
-        notify("DAN padł");
+        notify("DAN went down");
       } else if (!wasOnline && isOnline) {
-        notify("DAN znów działa");
+        notify("DAN is back up");
       }
       wasOnline = isOnline;
     },
@@ -8558,7 +8558,7 @@ function notifyDaemonAvailability(message) {
     return;
   }
   node.hidden = false;
-  node.classList.toggle("daemon-down", message === "DAN padł");
+  node.classList.toggle("daemon-down", message === "DAN went down");
   setText(node, message);
 }
 
@@ -8567,8 +8567,8 @@ const daemonAvailability = createDaemonAvailabilityTracker(notifyDaemonAvailabil
 function setOnline(online) {
   cockpit.online = online;
   daemonAvailability.poll(online);
-  // Żywa ramka karty jest wskaźnikiem online/offline (teal/czerwień) — nie ma
-  // osobnej sekcji statusu; body.offline dodatkowo wygasza kompozytor.
+  // The live card frame is the online/offline indicator (teal/red) — there is no
+  // separate status section; body.offline additionally dims the composer.
   document.body.classList.toggle("offline", !online);
   applyStateFrame();
   setInteractiveEnabled(online);
@@ -8643,8 +8643,8 @@ function setInteractiveEnabled(enabled) {
 }
 
 function clearDynamicSections() {
-  // Nieaktualne błędy sekcji nie mogą wisieć pod świeżym stanem offline —
-  // jedyną diagnozą pozostaje healthError w Zaawansowane → Stan daemona.
+  // Stale section errors must not hang under a fresh offline state —
+  // the only remaining diagnosis is healthError in Advanced → Daemon state.
   for (const box of [
     el.historyError,
     el.inputError,
@@ -8706,8 +8706,8 @@ function clearDynamicSections() {
   cockpit.voice.listening = false;
   cockpit.voice.leases = [];
   renderVoice();
-  // Jeden mocny komunikat offline z akcją zamiast szarego "Daemon offline"
-  // powtórzonego w każdej sekcji — czerwona ramka i pill niosą resztę.
+  // One strong offline message with an action instead of a grey "Daemon offline"
+  // repeated in every section — the red frame and the pill carry the rest.
   renderOfflineHero();
   renderMissionControl(missionControlOfflineSnapshot());
 }
@@ -8719,15 +8719,15 @@ function renderOfflineHero() {
 
   const title = document.createElement("p");
   title.className = "offline-title";
-  setText(title, "Daemon nie odpowiada");
+  setText(title, "Daemon not responding");
 
   const hint = document.createElement("p");
   hint.className = "offline-hint muted";
-  setText(hint, "Uruchom go w terminalu: dan start — panel połączy się sam.");
+  setText(hint, "Start it in a terminal: dan start — the panel will connect on its own.");
 
   const retry = document.createElement("button");
   retry.type = "button";
-  setText(retry, "Spróbuj teraz");
+  setText(retry, "Try now");
   retry.addEventListener("click", refreshAll);
 
   hero.append(title, hint, retry);
@@ -8852,8 +8852,8 @@ function shortId(value) {
   return `${text.slice(0, 8)}...${text.slice(-4)}`;
 }
 
-// Węzeł czasu względnego: etykieta "2 min temu", pełna data w tooltipie,
-// ISO w dataset.timestamp, żeby ticker mógł odświeżać etykiety w miejscu.
+// Relative time node: a "2 min ago" label, the full date in the tooltip,
+// ISO in dataset.timestamp so the ticker can refresh labels in place.
 function timeNode(iso) {
   const node = document.createElement("time");
   if (iso) {
@@ -8884,14 +8884,14 @@ function formatRelative(iso) {
   }
   const minutes = Math.floor(diffMs / 60000);
   if (minutes < 1) {
-    return "przed chwilą";
+    return "just now";
   }
   if (minutes < 60) {
-    return `${minutes} min temu`;
+    return `${minutes} min ago`;
   }
   const hours = Math.floor(minutes / 60);
   if (hours < 24) {
-    return hours === 1 ? "godzinę temu" : `${hours} godz. temu`;
+    return hours === 1 ? "an hour ago" : `${hours} h ago`;
   }
   return formatClock(iso);
 }

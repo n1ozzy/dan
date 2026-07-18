@@ -1,38 +1,38 @@
 # Radio DAN
 
-**Stan uczciwie: Radio Studio to Wydanie 2. Nie istnieje w tym wydaniu.**
+**The honest state: Radio Studio is Release 2. It does not exist in this release.**
 
-W Wydaniu 1 nie ma schedulera radia, zakładki „Radio DAN" w panelu, sesji
-radiowych z uczestnikami ani formatów (dobranocka, standup, roast, telefon).
-Żaden dokument ani skill nie powinien udawać, że jest inaczej.
+Release 1 has no radio scheduler, no "Radio DAN" tab in the panel, no radio
+sessions with participants and no formats (dobranocka (bedtime-story show),
+standup, roast, call-in). No document or skill should pretend otherwise.
 
-## Co z Wydania 1 jest już kompatybilne z przyszłym Radiem
+## What in Release 1 is already compatible with the future Radio
 
-Radio będzie zakładką tego samego produktu, na tych samych kontraktach:
+Radio will be a tab of the same product, on the same contracts:
 
-- **kolejka głosu w `dand`** — trwała, ze snapshotem renderu i pasmami
-  (`live`, `normal`, `background`); scheduler radia będzie jej producentem,
-  nie osobnym systemem (`docs/GLOS-I-KOLEJKA.md`);
-- **sesje kolejki** — `dan speak --session ...` i `dan queue flush --session ...`
-  już dziś izolują strumień wypowiedzi (np. sesja `radio`);
-- **persony głosowe** — konfiguracja w `config/voice/personas.toml`
-  (m.in. `dan`, `danusia`), wybierane jawnie przez `--as`;
-- **pipeline offline Chatterbox V3** — przygotowane kwestie renderowane poza
-  żywą kolejką;
-- **adaptery mózgów** (uczestnik = jawne `identity + brain + voice`):
+- **the voice queue in `dand`** — persistent, with a render snapshot and lanes
+  (`live`, `normal`, `background`); the radio scheduler will be its producer,
+  not a separate system (`docs/GLOS-I-KOLEJKA.md`);
+- **queue sessions** — `dan speak --session ...` and `dan queue flush --session ...`
+  already isolate a stream of utterances today (e.g. a `radio` session);
+- **voice personas** — configured in `config/voice/personas.toml`
+  (among others `dan`, `danusia`), selected explicitly via `--as`;
+- **the Chatterbox V3 offline pipeline** — prepared lines rendered outside the
+  live queue;
+- **brain adapters** (participant = an explicit `identity + brain + voice`):
   `claude_cli`, `codex_cli`, `groq`, `openai`, `ollama`, `qwen`, `eco`
-  oraz `mock`/`test` do testów — wszystkie za wspólnym kontraktem
-  `BrainAdapter` (`dan/brain/`);
-- **panel + strumień eventów** — przyszły widok „co gra / co czeka" będzie
-  czytał te same eventy `voice.*`.
+  plus `mock`/`test` for testing — all behind the common `BrainAdapter`
+  contract (`dan/brain/`);
+- **the panel + event stream** — the future "what's playing / what's waiting"
+  view will read the same `voice.*` events.
 
-## Czego NIE ma (i nie udajemy, że jest)
+## What does NOT exist (and we do not pretend it does)
 
-- schedulera studia (kolejność uczestników, backpressure, max 1 oczekująca
-  wypowiedź uczestnika);
-- trybów/formatów sesji radiowej i jej osobnej historii;
-- dołączania Ozzy'ego mikrofonem do sesji radiowej i zdalnego „telefonu";
-- wizualizera.
+- a studio scheduler (participant ordering, backpressure, max 1 pending
+  utterance per participant);
+- radio session modes/formats and its separate history;
+- Ozzy joining a radio session by microphone and a remote "call-in";
+- a visualizer.
 
-Radio dostanie osobną specyfikację i plan dopiero po przejściu bramek
-fundamentu (spec konsolidacji, §7 i §9).
+Radio gets its own specification and plan only after the foundation gates have
+passed (the consolidation spec, §7 and §9).

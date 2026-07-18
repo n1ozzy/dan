@@ -1,37 +1,38 @@
-# Przenoszenie DAN-a na inny komputer
+# Moving DAN to another computer
 
-## Co jest w Git (jedzie z repo)
+## What is in Git (travels with the repo)
 
-- cały kod (`dan/`, `scripts/`, `launchd/`, `integrations/`);
-- kanon persony: `config/persona/DAN.md`;
-- konfiguracja głosu: `config/voice/` — `personas.toml`, `pronunciations.toml`,
-  `gains.json`, pipeline'y i 20 wersjonowanych custom stylów Supertonica
-  z deterministycznymi przepisami i SHA-256;
-- przykład konfiguracji: `config/dan.example.toml`;
-- dokumentacja i testy.
+- all of the code (`dan/`, `scripts/`, `launchd/`, `integrations/`);
+- the persona canon: `config/persona/DAN.md`;
+- voice configuration: `config/voice/` — `personas.toml`, `pronunciations.toml`,
+  `gains.json`, the pipelines and 20 versioned Supertonic custom styles
+  with deterministic recipes and SHA-256;
+- example configuration: `config/dan.example.toml`;
+- documentation and tests.
 
-## Co jest lokalne/prywatne (NIGDY nie wysyłać)
+## What is local/private (NEVER send it anywhere)
 
-- `~/.dan/dan.db` — rozmowa, pamięć, kolejka, eventy; to jest prywatna
-  historia właściciela;
-- `~/.dan/config.toml` — lokalna konfiguracja (porty, ścieżki, urządzenia);
-- `~/.dan/logs/`, `~/.dan/backups/`, `~/.dan/migration/` — logi i backupy;
-- bazowe modele TTS/STT — instalator dociąga je w pinowanej rewizji, nie
-  siedzą w repo;
-- referencyjny WAV Lily i wygenerowane WAV-y Żanety — **local-only**: brak
-  wystarczającej proweniencji do redystrybucji; w repo jest tylko oczekiwany
-  SHA-256 jako metadana;
-- klucze API i sekrety (audyt: `scripts/dan-release-audit`).
+- `~/.dan/dan.db` — conversation, memory, queue, events; this is the owner's
+  private history;
+- `~/.dan/config.toml` — local configuration (ports, paths, devices);
+- `~/.dan/logs/`, `~/.dan/backups/`, `~/.dan/migration/` — logs and backups;
+- the base TTS/STT models — the installer fetches them at a pinned revision;
+  they do not live in the repo;
+- Lily's reference WAV and Żaneta's generated WAVs — **local-only**: not
+  enough provenance for redistribution; the repo holds only the expected
+  SHA-256 as metadata;
+- API keys and secrets (audit: `scripts/dan-release-audit`).
 
-## Licencje assetów
+## Asset licenses
 
-Custom style głosu (`config/voice/custom_styles/`) są derywatami modelu
-Supertonic (rewizja `724fb5ab…`) i jadą z licencją **OpenRAIL-M**
-(`LICENSE-OpenRAIL-M.txt` + `NOTICE.txt` obok plików). Pipeline offline
-Chatterbox V3 weryfikuje pinowany commit źródła i snapshot modelu, z
-wyłączonym network-fallbackiem. Szczegóły: `docs/migration/VOICE-DECISIONS.md`.
+The custom voice styles (`config/voice/custom_styles/`) are derivatives of the
+Supertonic model (revision `724fb5ab…`) and ship under the **OpenRAIL-M**
+license (`LICENSE-OpenRAIL-M.txt` + `NOTICE.txt` next to the files). The
+Chatterbox V3 offline pipeline verifies the pinned source commit and the model
+snapshot, with the network fallback disabled. Details:
+`docs/migration/VOICE-DECISIONS.md`.
 
-## Czysta instalacja (np. nowy Mac z M5)
+## Clean installation (e.g. a new Mac with an M5)
 
 ```bash
 git clone <repo> DAN && cd DAN
@@ -39,13 +40,13 @@ bash scripts/install.sh --no-launchd
 dan doctor --json
 ```
 
-1. `install.sh` tworzy `~/.dan/venv`, wrappery `~/.dan/bin/{dan,dand}`,
-   przechodzi preflight (każdy asset local-only jest jawnie wyjaśniony,
-   nie ukryty za fallbackiem) i zapisuje manifest instalacji;
-2. skopiuj `config/dan.example.toml` → `~/.dan/config.toml`, przejrzyj;
-3. świadomy autostart: `bash scripts/install-launchd.sh --yes`;
-4. weryfikacja: `dan doctor --json` musi być czyste na pustym `$HOME` —
-   produkt nie może zależeć od cache'ów ani repozytoriów starego komputera.
+1. `install.sh` creates `~/.dan/venv` and the `~/.dan/bin/{dan,dand}` wrappers,
+   runs the preflight (every local-only asset is explicitly explained,
+   not hidden behind a fallback) and writes the installation manifest;
+2. copy `config/dan.example.toml` → `~/.dan/config.toml`, review it;
+3. deliberate autostart: `bash scripts/install-launchd.sh --yes`;
+4. verification: `dan doctor --json` must come out clean on an empty `$HOME` —
+   the product must not depend on caches or repositories from the old computer.
 
-Odinstalowanie jest manifest-scoped: `scripts/uninstall.sh` (zostawia
-`dan.db` i backupy).
+Uninstall is manifest-scoped: `scripts/uninstall.sh` (leaves `dan.db` and the
+backups in place).

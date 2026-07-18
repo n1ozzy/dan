@@ -1,7 +1,7 @@
 # DAN Current State
 
-Classification: historical handoff — superseded 2026-07-18 by Release 1
-(see `docs/STATUS.md`, section "Release 1 cutover"). Kept as evidence only.
+Classification: historical evidence (handoff) — superseded 2026-07-18 by Release 1;
+see `docs/STATUS.md`, section "Release 1 cutover".
 Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `58cca12 docs: finalize Memory OS rollout handoff` in the local checkout.
 Public reference: `https://github.com/n1ozzy/jarvis` public `main`, used only as a secondary reference.
 

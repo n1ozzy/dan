@@ -147,7 +147,7 @@ def test_cockpit_is_single_view_app_with_tabbar() -> None:
     assert "chat-toolbar" in markup
     assert "conversationSelect" not in markup
     assert "newConversationButton" not in markup
-    assert "jedna ciągła rozmowa" in markup
+    assert "one continuous conversation" in markup
     assert "composer" in markup
     assert "chat-log" in markup
     assert "tabbar" in styles
@@ -182,7 +182,7 @@ def test_chat_has_static_backend_driven_activity_strip() -> None:
     assert 'aria-live="polite"' in markup
     assert 'data-runtime-state="UNKNOWN"' in markup
     assert 'id="stateLabel">…<' in markup
-    assert 'id="activityStage">Łączenie…<' in markup
+    assert 'id="activityStage">Connecting…<' in markup
     for element_id in ("activityStage", "activityTool", "activityStatus", "activityResult"):
         assert f'id="{element_id}"' in markup
     assert ".activity-strip" in styles
@@ -248,7 +248,7 @@ def test_index_has_active_settings_sections_with_instant_backend_apply() -> None
     assert "activeBrainModelSelect" in markup
     assert "activeBrainEffortSelect" in markup
     assert "pttHotkeyInput" in markup
-    assert "Zmiany obsługiwane przez runtime zapisują się automatycznie" in markup
+    assert "Changes the runtime supports are saved automatically" in markup
     for old_button in (
         "applyBrainSettingsButton",
         "applyTtsSettingsButton",
@@ -312,7 +312,7 @@ def test_runtime_overview_is_read_only_inventory_from_existing_safe_routes() -> 
         "Turn State",
         "Readiness / Blockers",
         "Brain/Provider",
-        "Ostatni trace tury",
+        "Latest turn trace",
         "Debug timeline",
         "Voice Settings: Capture/Input",
         "Voice Settings: STT/Transcription",
@@ -320,7 +320,7 @@ def test_runtime_overview_is_read_only_inventory_from_existing_safe_routes() -> 
         "Voice Settings: TTS/Voice Model",
         "Voice Settings: Playback",
         "Voice Settings: Queue/Barge-in",
-        "Narzędzia/Internet",
+        "Tools/Internet",
         "Logs/Trace",
         "Runtime Checks",
     ):
@@ -344,7 +344,7 @@ def test_runtime_overview_sections_are_ordered_and_source_aware() -> None:
         'title: "Turn State"',
         'title: "Readiness / Blockers"',
         'title: "Brain/Provider"',
-        'title: "Ostatni trace tury"',
+        'title: "Latest turn trace"',
         'title: "Debug timeline"',
         'title: "Voice Settings: Capture/Input"',
         'title: "Voice Settings: STT/Transcription"',
@@ -352,7 +352,7 @@ def test_runtime_overview_sections_are_ordered_and_source_aware() -> None:
         'title: "Voice Settings: TTS/Voice Model"',
         'title: "Voice Settings: Playback"',
         'title: "Voice Settings: Queue/Barge-in"',
-        'title: "Narzędzia/Internet"',
+        'title: "Tools/Internet"',
         'title: "Logs/Trace"',
         'title: "Runtime Checks"',
     )
@@ -412,7 +412,7 @@ def test_runtime_overview_pins_real_diagnostic_fields() -> None:
         "recorder/playback command",
         "network/tools capability",
         "readinessSummary",
-        "Ostatni trace tury",
+        "Latest turn trace",
         "Debug timeline",
         "turn_id",
         "conversation_id",
@@ -646,8 +646,8 @@ def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) 
 
             const ready = context.operatorSummaryFromSnapshot(baseSnapshot);
             assert.strictEqual(ready.status, "ready");
-            assert.match(ready.statusLine, /Gotowe/i);
-            assert.match(ready.nextAction, /wyślij turę tekstową/i);
+            assert.match(ready.statusLine, /Ready/i);
+            assert.match(ready.nextAction, /send a text turn/i);
 
             const blockedSnapshot = JSON.parse(JSON.stringify(baseSnapshot));
             blockedSnapshot.runtimeSettings.runtime_readiness.top_blockers = projection(
@@ -657,7 +657,7 @@ def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) 
             blockedSnapshot.runtimeSettings.runtime_readiness.tts_provider = projection("", "missing");
             const blocked = context.operatorSummaryFromSnapshot(blockedSnapshot);
             assert.strictEqual(blocked.status, "blocked");
-            assert.match(blocked.statusLine, /Zablokowane/i);
+            assert.match(blocked.statusLine, /Blocked/i);
             assert.deepStrictEqual([...blocked.blockers.slice(0, 2)], [
               "Voice enabled but TTS provider is missing.",
               "PTT source invalid warning.",
@@ -668,7 +668,7 @@ def test_operator_summary_model_computes_status_and_next_action(tmp_path: Path) 
               failures: ["/health"],
             }});
             assert.strictEqual(offline.status, "offline");
-            assert.match(offline.statusLine, /backend niedostępny/i);
+            assert.match(offline.statusLine, /backend unreachable/i);
             assert.match(offline.nextAction, /daemon/i);
             """
         ),
@@ -750,17 +750,17 @@ def test_operational_checklist_voice_and_provider_doctors_pin_required_diagnosti
     script = APP_JS.read_text(encoding="utf-8")
 
     for item in (
-        "Daemon działa",
-        "Panel połączony",
-        "Ścieżka tekstowa dostępna",
-        "Kolejka głosu widoczna",
-        "PTT dostępne",
-        "Dostawca mózgu znany",
-        "Status TTS znany",
-        "Status STT znany",
-        "Status narzędzi/internetu znany",
-        "Pamięć widoczna",
-        "Ostatni trace tury widoczny",
+        "Daemon running",
+        "Panel connected",
+        "Text path available",
+        "Voice queue visible",
+        "PTT available",
+        "Brain provider known",
+        "TTS status known",
+        "STT status known",
+        "Tools/internet status known",
+        "Memory visible",
+        "Latest turn trace visible",
     ):
         assert item in script
 
@@ -853,8 +853,8 @@ def test_tools_internet_controls_do_not_expose_legacy_decision_controls() -> Non
     markup = INDEX_HTML.read_text(encoding="utf-8")
     script = APP_JS.read_text(encoding="utf-8")
 
-    assert "Narzędzia" in markup
-    assert "Dostęp do internetu" in markup
+    assert "Tools" in markup
+    assert "Internet access" in markup
     for marker in (
         "grantShellToggle",
         "grantFileWriteToggle",
@@ -1037,16 +1037,16 @@ def test_system_unknown_runtime_values_disable_apply_and_do_not_create_pending_c
 
             context.renderBrainApplyControls(payload);
             assert.doesNotMatch(context.__el.brainApplyStatus.textContent, /Unknown -> low/i);
-            assert.match(context.__el.brainApplyStatus.textContent, /Wartość efektywna: nieznana/i);
-            assert.match(context.__el.brainApplyStatus.textContent, /Powód: runtime nie raportuje tego ustawienia/i);
-            assert.match(context.__el.brainApplyStatus.textContent, /Zastosowanie wyłączone/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Effective value: unknown/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Reason: the runtime does not report this setting/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Apply disabled/i);
             assert.strictEqual(context.__el.activeBrainEffortSelect.disabled, true);
             assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
 
             context.renderPttApplyControls(payload);
             assert.doesNotMatch(context.__el.pttApplyStatus.textContent, /Unknown -> hold/i);
-            assert.match(context.__el.pttApplyStatus.textContent, /Wartość efektywna: nieznana/i);
-            assert.match(context.__el.pttApplyStatus.textContent, /Powód: runtime nie raportuje tego ustawienia/i);
+            assert.match(context.__el.pttApplyStatus.textContent, /Effective value: unknown/i);
+            assert.match(context.__el.pttApplyStatus.textContent, /Reason: the runtime does not report this setting/i);
             assert.strictEqual(context.__el.pttModeSelect.disabled, true);
             assert.strictEqual(context.__el.applyPttSettingsButton.disabled, true);
             """
@@ -1185,7 +1185,7 @@ def test_ptt_hotkey_missing_value_remains_apply_capable(tmp_path: Path) -> None:
             assert.deepStrictEqual(JSON.parse(JSON.stringify(filtered)), {{
               "voice.ptt_hotkey": "right_cmd+right_shift",
             }});
-            assert.match(context.__el.pttApplyStatus.textContent, /Skrót PTT/i);
+            assert.match(context.__el.pttApplyStatus.textContent, /PTT shortcut/i);
             assert.strictEqual(context.__el.applyPttSettingsButton.disabled, false);
             """
         ),
@@ -1378,14 +1378,14 @@ def test_claude_cli_provider_controls_render_and_apply_semantics_gate(
               renderBrainApplyControls(newSessionPayload);
             `, context);
             assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
-            assert.match(context.__el.brainApplyStatus.textContent, /Brak zmian w sekcji Mózg \\/ Dostawca/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /No changes in the Brain \\/ Provider section/i);
             vm.runInContext(`
               el.activeBrainEffortSelect.value = "low";
               updateBrainControlOptions();
             `, context);
             assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, false);
-            assert.match(context.__el.brainApplyStatus.textContent, /Backend zweryfikuje/i);
-            assert.match(context.__el.brainApplyStatus.textContent, /sesji dostawcy/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Backend will verify/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /provider session/i);
             assert.strictEqual(
               context.providerApplyBlocker(newSessionPayload.capability_graph.brain_capabilities.providers[0], "claude_cli"),
               "Backend says Claude must start a new provider session.",
@@ -1546,8 +1546,8 @@ def test_settings_apply_feedback_preserves_pending_preview_and_reset_is_explicit
             assert.strictEqual(context.__el.voiceSpeakResponsesToggle.checked, false);
             context.__el.voiceSpeakResponsesToggle.checked = true;
             context.updateTtsControlOptions();
-            assert.match(context.__el.ttsApplyStatus.textContent, /Oczekująca/i);
-            assert.match(context.__el.ttsApplyStatus.textContent, /Wyłączone -> Włączone|false -> true/i);
+            assert.match(context.__el.ttsApplyStatus.textContent, /Pending/i);
+            assert.match(context.__el.ttsApplyStatus.textContent, /Disabled -> Enabled|false -> true/i);
             assert.strictEqual(context.__el.applyTtsSettingsButton.disabled, false);
             assert.strictEqual(requests.length, 0);
 
@@ -1557,11 +1557,11 @@ def test_settings_apply_feedback_preserves_pending_preview_and_reset_is_explicit
               renderTtsApplyControls(payload);
             `, context);
             assert.strictEqual(context.__el.voiceSpeakResponsesToggle.checked, true);
-            assert.match(context.__el.ttsApplyStatus.textContent, /oczekujący podgląd zachowany|Oczekująca/i);
+            assert.match(context.__el.ttsApplyStatus.textContent, /pending preview kept|Pending/i);
 
             context.resetSettingsPreview();
             assert.strictEqual(context.__el.voiceSpeakResponsesToggle.checked, false);
-            assert.match(context.__el.ttsApplyStatus.textContent, /Podgląd zresetowany|Brak zmian/i);
+            assert.match(context.__el.ttsApplyStatus.textContent, /Preview reset|No changes/i);
             """
         ),
         encoding="utf-8",
@@ -1756,9 +1756,9 @@ def test_brain_apply_sends_changed_fields_for_backend_validation(tmp_path: Path)
               "brain.effort": "high",
             }});
             assert.match(context.runtimeSettingsPendingMessage("brain", draft, payload), /model/i);
-            assert.doesNotMatch(context.runtimeSettingsPendingMessage("brain", draft, payload), /Poziom wysiłku/);
-            assert.match(context.runtimeSettingsAttemptPendingMessage("brain", draft, payload), /Poziom wysiłku/);
-            assert.match(context.runtimeSettingsGroupApplyBlockedReason("brain", draft, payload), /Nie można|Wymag/);
+            assert.doesNotMatch(context.runtimeSettingsPendingMessage("brain", draft, payload), /Effort level/);
+            assert.match(context.runtimeSettingsAttemptPendingMessage("brain", draft, payload), /Effort level/);
+            assert.match(context.runtimeSettingsGroupApplyBlockedReason("brain", draft, payload), /Cannot|Requires/);
             """
         ),
         encoding="utf-8",
@@ -2106,8 +2106,8 @@ def test_codex_brain_apply_sends_missing_auth_attempt_but_blocks_unknown_model_v
               updateBrainControlOptions();
             `, context);
             assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, false);
-            assert.match(context.__el.brainApplyStatus.textContent, /Backend zweryfikuje/i);
-            assert.match(context.__el.brainApplyStatus.textContent, /Uwierzytelnij|Nie można/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Backend will verify/i);
+            assert.match(context.__el.brainApplyStatus.textContent, /Authenticate|Cannot/i);
 
             (async () => {{
               await context.applyRuntimeSettingsGroup("brain");
@@ -2298,8 +2298,8 @@ def test_brain_apply_disabled_for_reload_only_brain_field_changes(tmp_path: Path
                       JSON.parse(JSON.stringify(context.runtimeSettingsChangedKeys("brain", changed, context.payload))),
                   ["brain.effort"],
                 );
-                assert.match(context.__el.brainApplyStatus.textContent, /Oczekująca zmiana/);
-                assert.match(context.__el.brainApplyStatus.textContent, /Backend zweryfikuje/i);
+                assert.match(context.__el.brainApplyStatus.textContent, /Pending change/);
+                assert.match(context.__el.brainApplyStatus.textContent, /Backend will verify/i);
                 assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, false);
 
                 (async () => {{
@@ -2454,9 +2454,9 @@ def test_developer_only_brain_provider_preserved_without_auto_switch_or_pending(
                     assert.strictEqual(context.__el.activeBrainProviderSelect.value, "");
                     assert.strictEqual(context.__el.activeBrainProviderSelect.disabled, false);
                     assert.strictEqual(context.__el.applyBrainSettingsButton.disabled, true);
-                    assert.doesNotMatch(context.__el.brainApplyStatus.textContent, /Oczekująca zmiana/i);
+                    assert.doesNotMatch(context.__el.brainApplyStatus.textContent, /Pending change/i);
                     if (context.__el.activeBrainProviderSelect.childNodes.length) {{
-                      assert.strictEqual(context.__el.activeBrainProviderSelect.childNodes[0].textContent, "Brak aktywnego normalnego dostawcy");
+                      assert.strictEqual(context.__el.activeBrainProviderSelect.childNodes[0].textContent, "No active normal provider");
                       assert.doesNotMatch(context.__el.activeBrainProviderSelect.childNodes[0].textContent, /mock|Developer\\/Test/i);
                     }}
                 """
@@ -2574,7 +2574,7 @@ def test_personality_apply_posts_when_persona_requires_restart(tmp_path: Path) -
                   updatePersonaControlOptions();
                 `, context);
 
-                assert.match(context.__el.personaApplyStatus.textContent, /Oczekująca zmiana/);
+                assert.match(context.__el.personaApplyStatus.textContent, /Pending change/);
                 assert.strictEqual(context.__el.applyPersonaSettingsButton.disabled, false);
                 (async () => {{
                   await context.applyRuntimeSettingsGroup("persona");
@@ -2725,8 +2725,8 @@ def test_tts_speak_responses_posts_even_when_backend_must_validate_group(tmp_pat
                 assert.strictEqual(context.__el.voiceSpeakResponsesToggle.disabled, false);
                 context.__el.voiceSpeakResponsesToggle.checked = true;
                 context.updateTtsControlOptions();
-                assert.match(context.__el.ttsApplyStatus.textContent, /Oczekująca zmiana/);
-                assert.match(context.__el.ttsApplyStatus.textContent, /Backend zweryfikuje/i);
+                assert.match(context.__el.ttsApplyStatus.textContent, /Pending change/);
+                assert.match(context.__el.ttsApplyStatus.textContent, /Backend will verify/i);
                 assert.strictEqual(context.__el.applyTtsSettingsButton.disabled, false);
                 (async () => {{
                   await context.applyRuntimeSettingsGroup("tts");
@@ -2973,7 +2973,7 @@ def test_system_tab_has_auto_applied_settings_sections_and_logs_own_diagnostics(
     ):
         assert obsolete_control not in system_view
 
-    assert "Zmiany obsługiwane przez runtime zapisują się automatycznie." in system_view
+    assert "Changes the runtime supports are saved automatically." in system_view
 
     for diagnostic_id in (
         "quickHealthHeading",
@@ -3003,8 +3003,8 @@ def test_system_tab_is_actionable_first_and_logs_own_diagnostics() -> None:
     assert system_view.index("activeToolsSettingsHeading") < system_view.index("activePersonalitySettingsHeading")
     assert "connectionHeading" not in system_view
     assert "settingsHeading" not in system_view
-    assert "Połączenie" not in system_view
-    assert "Ustawienia surowe" not in system_view
+    assert "Connection" not in system_view
+    assert "Raw settings" not in system_view
     assert "Runtime Diagnostics" not in system_view
     assert "Settings Preview" not in system_view
     assert "Latest Turn Trace" not in system_view
@@ -3019,12 +3019,12 @@ def test_system_tab_is_actionable_first_and_logs_own_diagnostics() -> None:
         "Tools / Internet diagnostics",
         "Raw technical details",
         "Runtime summary",
-        "Kolejka głosu",
+        "Voice queue",
         "Runtime Checks",
         "Latest Turn Trace",
         "Settings Preview",
-        "Połączenie",
-        "Ustawienia surowe",
+        "Connection",
+        "Raw settings",
     ):
         assert moved_heading in logs_view
 
@@ -3038,20 +3038,20 @@ def test_system_tab_uses_human_operator_labels_not_backend_keys() -> None:
     system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
 
     for human_label in (
-        ">Narzędzia włączone<",
-        ">Dostęp do internetu<",
-        ">Mów odpowiedzi<",
-        ">Broker głosu<",
-        ">Silnik mowy<",
-        ">Model mowy<",
-        ">Tożsamość<",
-        ">DAN — kanon<",
+        ">Tools enabled<",
+        ">Internet access<",
+        ">Speak responses<",
+        ">Voice broker<",
+        ">Speech engine<",
+        ">Speech model<",
+        ">Identity<",
+        ">DAN — canon<",
     ):
         assert human_label in system_view
 
     for control_id, label in (
-        ("toolsEnabledToggle", "Narzędzia włączone"),
-        ("voiceSpeakResponsesToggle", "Mów odpowiedzi"),
+        ("toolsEnabledToggle", "Tools enabled"),
+        ("voiceSpeakResponsesToggle", "Speak responses"),
     ):
         assert re.search(
             rf'<input id="{control_id}"[^>]*>\s*<span>{re.escape(label)}</span>',
@@ -3060,12 +3060,12 @@ def test_system_tab_uses_human_operator_labels_not_backend_keys() -> None:
         ), control_id
 
     assert re.search(
-        r'<div class="inline-toggle read-only-setting">\s*<span>Dostęp do internetu</span>\s*<span id="toolsNetworkEnabledToggle" class="status-badge" role="status">unknown</span>',
+        r'<div class="inline-toggle read-only-setting">\s*<span>Internet access</span>\s*<span id="toolsNetworkEnabledToggle" class="status-badge" role="status">unknown</span>',
         system_view,
         re.S,
     )
     assert re.search(
-        r'<div class="inline-toggle read-only-setting">\s*<span>Broker głosu</span>\s*<span id="voiceBrokerEnabledToggle" class="status-badge" role="status">unknown</span>',
+        r'<div class="inline-toggle read-only-setting">\s*<span>Voice broker</span>\s*<span id="voiceBrokerEnabledToggle" class="status-badge" role="status">unknown</span>',
         system_view,
         re.S,
     )
@@ -3089,12 +3089,12 @@ def test_system_tab_has_requested_cockpit_section_headings() -> None:
     markup = INDEX_HTML.read_text(encoding="utf-8")
     system_view = markup[markup.index('id="view-system"') : markup.index('<nav class="tabbar"')]
     expected_headings = [
-        "Mózg",
-        "Głos / TTS",
-        "Nasłuch (STT)",
+        "Brain",
+        "Voice / TTS",
+        "Listening (STT)",
         "PTT",
-        "Narzędzia",
-        "Osobowość",
+        "Tools",
+        "Personality",
     ]
     for heading in expected_headings:
         assert heading in system_view
@@ -3182,7 +3182,7 @@ def test_runtime_settings_apply_payload_is_allowlisted_and_posts(tmp_path: Path)
             }};
             assert.strictEqual(
               context.runtimeSettingsErrorMessage(backendError),
-              "Zablokowane. Brak dostępnej akcji w tej chwili.",
+              "Blocked. No action available right now.",
             );
             const toolsFiltered = context.runtimeSettingsPayloadForGroup("tools", {{
               "security.require_approval_for_network": false,
@@ -4100,14 +4100,14 @@ def test_live_activity_tracks_backend_state_stage_and_safe_tool_status(tmp_path:
 
         push(1, "state.changed", { new_state: "THINKING" });
         assert.strictEqual(node("stateLabel").textContent, "THINKING");
-        assert.strictEqual(node("activityStage").textContent, "Myślenie");
+        assert.strictEqual(node("activityStage").textContent, "Thinking");
 
         push(2, "turn.context.built", {});
-        assert.strictEqual(node("activityStage").textContent, "Kontekst gotowy");
+        assert.strictEqual(node("activityStage").textContent, "Context ready");
 
         push(3, "tool.requested", { tool_name: "ui_click" });
         assert.strictEqual(node("activityTool").textContent, "ui_click");
-        assert.strictEqual(node("activityStatus").textContent, "przygotowanie");
+        assert.strictEqual(node("activityStatus").textContent, "preparing");
 
         push(4, "tool.started", { tool_name: "ui_click" });
         assert.strictEqual(node("activityStatus").textContent, "start");
@@ -4128,7 +4128,7 @@ def test_live_activity_tracks_backend_state_stage_and_safe_tool_status(tmp_path:
             content: secretValue,
           },
         });
-        assert.strictEqual(node("activityStatus").textContent, "sukces");
+        assert.strictEqual(node("activityStatus").textContent, "success");
         assert.strictEqual(node("activityResult").textContent, "ok=true · clicked=true");
         let visibleActivityText = ["stateLabel", "activityStage", "activityTool", "activityStatus", "activityResult"]
           .map((id) => node(id).textContent)
@@ -4140,7 +4140,7 @@ def test_live_activity_tracks_backend_state_stage_and_safe_tool_status(tmp_path:
           error: `must-not-render-${secretValue}`,
         });
         assert.strictEqual(node("activityTool").textContent, "shell_read");
-        assert.strictEqual(node("activityStatus").textContent, "błąd");
+        assert.strictEqual(node("activityStatus").textContent, "error");
         visibleActivityText = ["stateLabel", "activityStage", "activityTool", "activityStatus", "activityResult"]
           .map((id) => node(id).textContent)
           .join(" ");
@@ -4148,12 +4148,12 @@ def test_live_activity_tracks_backend_state_stage_and_safe_tool_status(tmp_path:
 
         push(8, "state.changed", { new_state: "IDLE" });
         assert.strictEqual(node("stateLabel").textContent, "IDLE");
-        assert.strictEqual(node("activityStage").textContent, "Gotowy");
+        assert.strictEqual(node("activityStage").textContent, "Ready");
 
         const visibleIdsBeforeLegacyApproval = eventIds();
         push(9, "approval.created", {});
         assert.deepStrictEqual(eventIds(), visibleIdsBeforeLegacyApproval);
-        assert.strictEqual(node("activityStage").textContent, "Gotowy");
+        assert.strictEqual(node("activityStage").textContent, "Ready");
         """,
     )
 
@@ -4196,7 +4196,7 @@ def test_live_state_event_wins_over_an_older_inflight_state_snapshot(tmp_path: P
           await staleRefresh;
 
           assert.strictEqual(node("stateLabel").textContent, "SPEAKING");
-          assert.strictEqual(node("activityStage").textContent, "Mówienie");
+          assert.strictEqual(node("activityStage").textContent, "Speaking");
         })().catch((error) => {
           console.error(error);
           process.exit(1);
@@ -4241,8 +4241,8 @@ def test_activity_replays_recent_events_in_id_order_and_skips_legacy_decisions(
 
           assert.deepStrictEqual(eventIds(), [3, 2, 1]);
           assert.strictEqual(node("stateLabel").textContent, "TOOLING");
-          assert.strictEqual(node("activityStage").textContent, "Narzędzie zakończone");
-          assert.strictEqual(node("activityStatus").textContent, "sukces");
+          assert.strictEqual(node("activityStage").textContent, "Tool finished");
+          assert.strictEqual(node("activityStatus").textContent, "success");
           assert.strictEqual(node("activityResult").textContent, "ok=true · clicked=true");
           assert.match(context.streamUrl(), /after_id=4$/);
         })().catch((error) => {
@@ -4416,7 +4416,7 @@ def test_stream_hello_resets_cursor_when_server_event_epoch_is_newer(tmp_path: P
 
         assert.strictEqual(context.streamUrl(), "ws://127.0.0.1:41741/stream?after_id=0");
         assert.deepStrictEqual(eventIds(), []);
-        assert.strictEqual(node("activityStage").textContent, "Łączenie…");
+        assert.strictEqual(node("activityStage").textContent, "Connecting…");
 
         context.handleStreamMessage(JSON.stringify({
           type: "stream.hello",
@@ -4519,7 +4519,7 @@ def test_app_renders_relative_times_with_full_date_tooltip() -> None:
     script = APP_JS.read_text(encoding="utf-8")
 
     assert "formatRelative" in script
-    assert "min temu" in script
+    assert "min ago" in script
     assert "dataset.timestamp" in script
     assert ".title = " in script
 
@@ -4542,7 +4542,7 @@ def test_memory_rows_expose_priority_and_disable_actions() -> None:
     assert '"DELETE"' in script
     assert "proposed_by" in script
     assert "promoted_by" in script
-    assert "Wyłącz" in script
+    assert "Disable" in script
 
 
 def test_memory_view_reads_legacy_blocks_and_memory_os_items() -> None:
@@ -4567,7 +4567,7 @@ def test_memory_view_is_obvious_on_arrival() -> None:
 
     # Formularz w rozwijanym <details> — domyślnie widać listę + przycisk.
     assert "memory-new" in markup
-    assert "Nowa notatka" in markup
+    assert "New note" in markup
 
     # Rodzaj jako select z realnymi wartościami z daemona (MEMORY_KINDS).
     assert "<select id=\"memoryKind\"" in markup
@@ -4580,7 +4580,7 @@ def test_memory_view_is_obvious_on_arrival() -> None:
 
     # Ludzkie nazwy rodzaju + pochodzenie po polsku na blokach listy.
     assert "MEMORY_KIND_LABELS" in script
-    assert "zaproponował" in script
+    assert "proposed by" in script
 
 
 def test_logs_tab_reads_like_a_polish_diary() -> None:
@@ -4685,11 +4685,11 @@ def test_system_view_is_human_readable() -> None:
     # Ludzki stan daemona żyje w diagnostyce, nie w głównym przepływie Systemu.
     assert "healthHumanList" in markup
     assert "renderHealthHuman" in script
-    assert "Działa od" in script
+    assert "Up since" in script
 
     # Model po ludzku (aktywny / domyślny), nie „current - default”.
-    assert "aktywny:" in script
-    assert "domyślny:" in script
+    assert "active:" in script
+    assert "default:" in script
 
     # Surowa diagnostyka jest w LOGI, nie dominuje Systemu.
     assert "Raw technical details" in logs_view

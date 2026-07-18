@@ -1,5 +1,8 @@
 # Jarvis v4.2 — macOS Capability Inventory
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 > **Status:** DESIGN (FAZA B1, [MASTER_PLAN.md](MASTER_PLAN.md)). This document
 > inventories macOS capability classes Jarvis may be designed to use. It is an
 > **inventory, not a roadmap**: nothing here is an implementation commitment

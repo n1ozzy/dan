@@ -24,7 +24,7 @@ gain keeps the existing loudness fallback
 
 | Key | Sources | Reader | Effective old value | Final route | Asset | Audio evidence | Decision |
 |---|---|---|---|---|---|---|---|
-| `persona:jarvis` | active personas, Jarvis TOML, overrides, panel | VoiceResolver | conflicting M3 clean 1.35 and override M2 1.4 | supertonic M1 clean 1.35 DSP none (casting 2026-07-18; wcześniej M3 — kolidował z DAN-em) | pinned base M1 | Ozzy: casting konsoli odsłuchowej 2026-07-18, kandydaci M2/M4/M1, wybrany M1; akceptacja słowna po odsłuchu det-takes | versioned-final |
+| `persona:jarvis` | active personas, Jarvis TOML, overrides, panel | VoiceResolver | conflicting M3 clean 1.35 and override M2 1.4 | supertonic M1 clean 1.35 DSP none (casting 2026-07-18; previously M3 — it collided with DAN) | pinned base M1 | Ozzy: audition-console casting 2026-07-18, candidates M2/M4/M1, M1 picked; verbal acceptance after the det-takes listening | versioned-final |
 | `persona:dan` | active personas plus six backups, say.py, voice turns | VoiceResolver | M3 raw 1.28 active; older 1.25 | supertonic M3 raw 1.28 DSP none | pinned base M3 | active accepted route; raw won mastering audit | versioned-final |
 | `persona:danusia` | active personas plus backups, radio scenarios | VoiceResolver | F4 clean 1.28 active; older 1.25 | supertonic F4 clean 1.28 DSP none | pinned base F4 | active accepted route | versioned-final |
 | `persona:zaneta` | active personas, PERSONA-ZANETA, V3 generators | VoiceResolver plus offline pipeline | live F2 raw 1.15; offline Lily V3 | offline Chatterbox V3 explicit; live fallback supertonic F2 raw 1.15 | local-only reference hash 06f54e0f; no WAV versioned | V3 accepted 0.95 to 1.00; better than V2 | versioned-final-local-only |
@@ -85,53 +85,56 @@ pipeline requires explicit local paths, verifies the Chatterbox source commit
 `5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18`, disables network fallback, and only
 publishes mono PCM16 candidates scoring at least `0.9`.
 
-## Korekta 2026-07-18: casting głosu Jarvisa
+## Correction 2026-07-18: Jarvis voice casting
 
-Podczas odsłuchu akceptacyjnego (Task 14) Ozzy odrzucił trasę `persona:jarvis`
-na M3 („Jarvis musi mieć inny głos niż M3" — kolizja barwy z DAN-em, clean vs
-raw nie wystarcza do rozróżnienia). Casting na konsoli odsłuchowej
-(deterministyczne take'y, mastering i tempo produkcyjne, różny tylko kod
-głosu): kandydaci M2 (Jarvis sprzed 2026-07-09), M4 (wolny kod), M1 (barwa
-Maksa/Codexa). **Wybrany: M1** — świadoma kolizja z Maksem ([M1] raport 1.18);
-rozróżnia ich mastering (clean vs raport) i tempo (1.35 vs 1.18). Wpisane do
+During the acceptance listening session (Task 14) Ozzy rejected the
+`persona:jarvis` route on M3 („Jarvis musi mieć inny głos niż M3" — "Jarvis
+must have a different voice than M3": a timbre collision with DAN; clean vs
+raw is not enough to tell them apart). Casting on the audition console
+(deterministic takes, production mastering and tempo, only the voice code
+differing): candidates M2 (the Jarvis from before 2026-07-09), M4 (an
+unclaimed code), M1 (the Maks/Codex timbre). **Picked: M1** — a deliberate
+collision with Maks ([M1] raport 1.18); they are told apart by mastering
+(clean vs raport) and tempo (1.35 vs 1.18). Written into
 `~/.config/voice/personas.toml` (backup `personas.toml.bak-2026-07-18-jarvis-m1`),
-regresja voice stacku po zmianie czysta. Dowody: verdicts.jsonl i
-det-takes/chosen.json w katalogu konsoli odsłuchowej.
+the voice-stack regression after the change was clean. Evidence: verdicts.jsonl
+and det-takes/chosen.json in the audition-console directory.
 
 ## Live voice gates 2026-07-18 (Task 14 Step 3)
 
-Izolowany `dand` (port 41999, osobny HOME/DB/venv, kod z gałęzi release,
-katalog głosów z wersjonowanego `config/voice/`) grał NA ŻYWO przy operatorze;
-stary broker/supertonic nietknięte (serve :7788 użyty wyłącznie jako ciepły
-engine-klient). Raport: `~/.dan/migration/release1-voice-acceptance.json`
-(mode live-audio, ok=true, dan/danusia/jarvis wszystkie `done` z
+An isolated `dand` (port 41999, separate HOME/DB/venv, code from the release
+branch, voice catalog from the versioned `config/voice/`) played LIVE with the
+operator present; the old broker/supertonic untouched (serve :7788 used solely
+as a warm engine client). Report: `~/.dan/migration/release1-voice-acceptance.json`
+(mode live-audio, ok=true, dan/danusia/jarvis all `done` with
 `playback_confirmed=1`).
 
-Dowody z kolejki (RenderSnapshot per request): `dan → M3/raw/1.28`,
-`danusia → F4/clean/1.28`, `jarvis → M1/clean/1.35` (pierwszy live dowód
-castingu M1 w nowym torze), `zaneta (live fallback) → F2/raw/1.15 +
-dsp asetrate=44100*0.93,aresample=44100,atempo=1.075` — wszystko 1:1 z
-zaakceptowanymi trasami tej matrycy. Żaneta offline V3 pozostaje pre-renderem
-poza daemonem (jak udokumentowano wyżej — nie przechodzi przez `dan speak`).
+Queue evidence (RenderSnapshot per request): `dan → M3/raw/1.28`,
+`danusia → F4/clean/1.28`, `jarvis → M1/clean/1.35` (the first live proof of
+the M1 casting in the new path), `zaneta (live fallback) → F2/raw/1.15 +
+dsp asetrate=44100*0.93,aresample=44100,atempo=1.075` — everything 1:1 with
+the accepted routes of this matrix. Żaneta offline V3 remains a pre-render
+outside the daemon (as documented above — it does not go through `dan speak`).
 
-Właściwości kolejki dowiedzione na żywo: dwaj producenci zgłoszeni w odstępie
-<1 s grali ściśle sekwencyjnie (okna playbacku rozłączne); cancel w syntezie
-zatrzymał request przed startem audio; cancel w trakcie mówienia uciął dźwięk
-w 0,17 s bez ogona. Frazy krótkie i długa meldunkowa bez połkniętych końcówek;
-diakrytyka („zażółć gęślą jaźń", „źdźbło i łąka", „pchnąć w tę łódź jeża")
-poprawna w odsłuchu operatora.
+Queue properties proven live: two producers submitting <1 s apart played
+strictly sequentially (disjoint playback windows); a cancel during synthesis
+stopped the request before audio started; a cancel mid-speech cut the sound
+in 0.17 s with no tail. Short phrases and a long report-style one with no
+swallowed endings; diacritics („zażółć gęślą jaźń", „źdźbło i łąka",
+„pchnąć w tę łódź jeża") correct in the operator's listening check.
 
-Znaleziony i naprawiony na gałęzi release realny bug pierwszego żywego
-odsłuchu: `CoreAudioPlayer` łączył node→mixer w formacie domyślnym (stereo
-urządzenia) i schedulował bufory Int16 mono — CoreAudio przerywał playback
-(`_outputFormat.channelCount == buffer.format.channelCount`). Fix: leniwe
-połączenie w formacie bufora (Float32, mono; mixer miksuje do urządzenia)
-z reconnectem przy zmianie formatu. Pierwszy failed request tego biegu w
-kolejce live-gates to właśnie ten bug (zachowany jako dowód).
+A real bug from the first live listening was found and fixed on the release
+branch: `CoreAudioPlayer` connected node→mixer in the default format (the
+device's stereo) and scheduled Int16 mono buffers — CoreAudio kept aborting
+playback (`_outputFormat.channelCount == buffer.format.channelCount`). Fix:
+a lazy connection in the buffer's format (Float32, mono; the mixer mixes down
+to the device) with a reconnect on format change. The first failed request of
+that run in the live-gates queue is precisely this bug (kept as evidence).
 
-**Werdykt operatora (2026-07-18, po powtórce matrycy):** Ozzy odsłuchał pełną
-matrycę live z nowego danda dwukrotnie (pierwszy bieg + powtórka na żądanie:
-dan, danusia, jarvis/M1, zaneta — 4/4 done, playback potwierdzony) i klepnął
-wszystkie trasy głosowe („Klepnięte") — zero tras odrzuconych, cutover ma
-zielone światło. Wcześniejsza wiadomość „jarvis nieakceptuje tego testu"
-pochodziła z innego okna i została jawnie wycofana przez Ozzy'ego.
+**Operator verdict (2026-07-18, after the matrix re-run):** Ozzy listened to
+the full live matrix from the new dand twice (first run + a re-run on demand:
+dan, danusia, jarvis/M1, zaneta — 4/4 done, playback confirmed) and approved
+all voice routes („Klepnięte" — approved) — zero routes rejected, the cutover
+has a green light. The earlier message „jarvis nieakceptuje tego testu"
+("jarvis does not accept this test") came from a different window and was
+explicitly retracted by Ozzy.

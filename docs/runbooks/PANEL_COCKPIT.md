@@ -57,12 +57,12 @@ not start, stop, supervise, or clean up any process.
   time (Chat / Approvals / Memory / System) switched by a bottom tab bar;
   views scroll internally. The chat view holds the conversation dropdown,
   "+ new", the daemon state pill, the chat log, and the composer. Tools,
-  events, and the "Zaawansowane" group (settings, API base, health, runtime)
+  events, and the "Advanced" group (settings, API base, health, runtime)
   are native `<details>` sections inside the System view, collapsed by
   default. System state is quiet structure: the state pill (red when
   offline), the offline hero in the chat log, and the approvals signals —
   no decorative frames or ambient animation.
-- Voice: the composer has a PTT | Nasłuch segmented MODE switch (lock =
+- Voice: the composer has a PTT | Listening segmented MODE switch (lock =
   `POST /voice/listen/lock`, back to PTT = `POST /voice/listen/unlock`).
   Normal hold-to-talk lives on the global hotkey in `menubar_app`, not in the
   web view. Any development-only PTT test action that exercises
@@ -71,7 +71,7 @@ not start, stop, supervise, or clean up any process.
   waveform that animates only while the daemon is actually listening (driven by
   `listening.*` stream events).
 - Approvals signals: a pulsing count on the Approvals tab plus an amber
-  nudge bar inside the chat view ("N zgód czeka — pokaż") that switches to
+  nudge bar inside the chat view ("N approvals waiting — show") that switches to
   the Approvals view; both come from `renderApprovals` and from
   `pending_approval_count` on the `/health` heartbeat — when the two
   disagree (stream down, missed event), the cockpit re-fetches approvals.
@@ -79,14 +79,14 @@ not start, stop, supervise, or clean up any process.
   `voice_enabled` when the daemon exposes them.
 - Input: the composer sends typed text through `POST /input/text`; the sent
   message appears immediately as an optimistic user bubble and the reply
-  lands in the chat via the post-send history refresh. "+ Nowa" starts a
+  lands in the chat via the post-send history refresh. "+ New" starts a
   fresh conversation (the next send omits `conversation_id`).
 - History: lists conversations from `GET /conversations` (titled from the
   first turn's `input_text`, fetched once per conversation with
   `GET /turns?...&limit=1` and cached) and renders the selected conversation
   as a chat: user bubbles from `input_text`, DAN bubbles from `final_text`,
   source/status/relative-time meta per turn. Timestamps render as relative
-  labels ("2 min temu") with the full date in the tooltip.
+  labels ("2 min ago") with the full date in the tooltip.
 - Memory: lists active blocks from `GET /memory?active_only=true`, creates a
   block with `POST /memory`, edits a block's priority with
   `PATCH /memory/{id}`, and soft-disables with `DELETE /memory/{id}`. Rows

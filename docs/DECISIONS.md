@@ -1,5 +1,8 @@
 # Jarvis v4.1 — Architecture Decision Records (FROZEN)
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 > **Status:** FROZEN (Prompt 00A). These twelve ADRs are the binding
 > architectural decisions of Jarvis v4.1. Each is **Accepted**. Changing one
 > requires superseding it with a new ADR, not editing it away.

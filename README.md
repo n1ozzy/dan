@@ -1,41 +1,41 @@
 # DAN
 
-Jeden lokalny runtime głosowo-tekstowy: daemon `dand` (jedyny właściciel
-audio, hotkeya i kolejki głosu), CLI `dan` i panel w pasku menu.
+One local voice-and-text runtime: the `dand` daemon (sole owner of audio,
+the hotkey and the voice queue), the `dan` CLI and a menu bar panel.
 
-Zasady runtime'u:
+Runtime rules:
 
-- Jedna rozmowa DAN. Mózg to jeden trwały proces `claude_cli` (stream-json).
-- Tożsamość DAN-a pochodzi wyłącznie z `config/persona/DAN.md` (kanon w tym
-  repo), ładowanego świeżo i fail-loud. Historia rozmowy i pamięć to dane
-  kontekstowe, nigdy instrukcje persony.
-- TTS to Supertonic; testy zawsze mockują warstwę TTS.
-- Szczegóły własności: `docs/adr/001-dand-single-owner.md` i
+- One DAN conversation. The brain is a single persistent `claude_cli` process (stream-json).
+- DAN's identity comes exclusively from `config/persona/DAN.md` (the canon in
+  this repo), loaded fresh and fail-loud. Conversation history and memory are
+  context data, never persona instructions.
+- TTS is Supertonic; tests always mock the TTS layer.
+- Ownership details: `docs/adr/001-dand-single-owner.md` and
   `docs/CO-JEST-GDZIE.md`.
 
-## Instalacja
+## Installation
 
 ```bash
 git clone <repo> DAN && cd DAN
 bash scripts/install.sh --no-launchd
 ```
 
-Instalator jest backup-first: tworzy `~/.dan/venv`, wrappery `~/.dan/bin/dan`
-i `~/.dan/bin/dand`, a każdą podmienioną ścieżkę odkłada do
-`~/.dan/backups/`. Nie dotyka `~/.dan/dan.db` ani archiwów. Autostart przez
-launchd to osobny, świadomy krok:
+The installer is backup-first: it creates `~/.dan/venv` and the `~/.dan/bin/dan`
+and `~/.dan/bin/dand` wrappers, and stashes every path it replaces into
+`~/.dan/backups/`. It does not touch `~/.dan/dan.db` or the archives. Autostart
+via launchd is a separate, deliberate step:
 
 ```bash
 bash scripts/install-launchd.sh --yes
 ```
 
-## Pierwszy start
+## First start
 
-1. Skopiuj `config/dan.example.toml` do `~/.dan/config.toml` i przejrzyj
-   (ścieżki, port, mózg, głos).
-2. Uruchom daemona: przez launchd (po `install-launchd.sh`) albo ręcznie
-   `~/.dan/bin/dand`.
-3. Sprawdź zdrowie:
+1. Copy `config/dan.example.toml` to `~/.dan/config.toml` and review it
+   (paths, port, brain, voice).
+2. Start the daemon: via launchd (after `install-launchd.sh`) or manually
+   with `~/.dan/bin/dand`.
+3. Check health:
 
 ```bash
 dan doctor --json
@@ -43,12 +43,12 @@ dan doctor --json
 
 ## Panel
 
-Panel w pasku menu pokazuje stan daemona, brokera głosu, kolejki i aktualnej
-wypowiedzi; daje pauzę, wznowienie, pominięcie i bezpieczny restart. Panel
-niczego nie wskrzesza — gdy `dand` leży, panel pokazuje „offline" i czeka.
-Start: `scripts/dan-panel`. Szczegóły: `docs/PANEL.md`.
+The menu bar panel shows the state of the daemon, the voice broker, the queue
+and the current utterance; it provides pause, resume, skip and a safe restart.
+The panel resurrects nothing — when `dand` is down, the panel shows "offline"
+and waits. Start: `scripts/dan-panel`. Details: `docs/PANEL.md`.
 
-## Trzy pierwsze komendy
+## Your first three commands
 
 ```bash
 dan config explain
@@ -56,15 +56,15 @@ dan speak --as dan "Cześć, żyję i mówię po polsku."
 dan queue list --json
 ```
 
-## Dokumentacja operatora
+## Operator documentation
 
-- `docs/CO-JEST-GDZIE.md` — co gdzie leży i kto jest właścicielem;
-- `docs/GLOS-I-KOLEJKA.md` — głos, kolejka, statusy i przykłady CLI;
-- `docs/PANEL.md` — stany i przyciski panelu;
-- `docs/RADIO-DAN.md` — status Radia (Wydanie 2);
-- `docs/PRZENOSZENIE.md` — przenosiny na inny komputer, Git vs prywatne;
-- `docs/ODZYSKIWANIE.md` — diagnostyka i rollback.
+- `docs/CO-JEST-GDZIE.md` — what lives where and who owns it;
+- `docs/GLOS-I-KOLEJKA.md` — voice, queue, statuses and CLI examples;
+- `docs/PANEL.md` — panel states and buttons;
+- `docs/RADIO-DAN.md` — Radio status (Release 2);
+- `docs/PRZENOSZENIE.md` — moving to another computer, Git vs private;
+- `docs/ODZYSKIWANIE.md` — diagnostics and rollback.
 
-Runbooki smoke (dla deweloperów):
+Smoke runbooks (for developers):
 `docs/runbooks/TEXT_RUNTIME_SMOKE.md`, `docs/runbooks/PROVIDER_SMOKE.md`,
 `docs/runbooks/TOOLS_AND_APPROVALS.md`, `docs/runbooks/MEMORY_API.md`.

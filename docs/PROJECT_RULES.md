@@ -1,5 +1,8 @@
 # Project Rules
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 Classification: authoritative.
 
 This file is the repo-level guardrail contract for Jarvis maintenance. It is

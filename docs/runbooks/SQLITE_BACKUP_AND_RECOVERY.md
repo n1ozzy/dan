@@ -1,24 +1,24 @@
-# SQLite Backup i Recovery Runbook
+# SQLite Backup and Recovery Runbook
 
 Classification: runbook.
 
-Ten runbook opisuje backup i odtworzenie `dan.db` w środowisku produkcyjnym DANa.
+This runbook describes backup and restore of `dan.db` in DAN's production environment.
 
-## Dlaczego to robimy
+## Why we do this
 
-`~/.dan/dan.db` jest source of truth dla:
+`~/.dan/dan.db` is the source of truth for:
 
-- historii konwersacji i tur,
-- zdarzeń audytowych i narzędzi,
-- ustawień runtime i decyzji aprobaty,
-- pamięci i jej pipeline.
+- conversation and turn history,
+- audit and tool events,
+- runtime settings and approval decisions,
+- memory and its pipeline.
 
-Awaria DB musi mieć prostą, odtwarzalną ścieżkę powrotu.
+A DB failure must have a simple, repeatable recovery path.
 
-## Backup operacyjny (ręczny, zalecany)
+## Operational backup (manual, recommended)
 
-1. Zatrzymaj pracę z daemonem (`dand`) i upewnij się, że żaden proces nie modyfikuje DB.
-2. Wykonaj `backup` z `sqlite3`:
+1. Stop working with the daemon (`dand`) and make sure no process is modifying the DB.
+2. Run a `backup` with `sqlite3`:
 
 ```bash
 DB="${HOME}/.dan/dan.db"
@@ -27,17 +27,17 @@ sqlite3 "$DB" ".backup '${HOME}/.dan/backups/dan-$(date +%F-%H%M%S).db'"
 sqlite3 "$DB" "PRAGMA quick_check;"
 ```
 
-3. Zachowaj również skompresowaną kopię pliku jako punkt kontrolny.
+3. Also keep a compressed copy of the file as a checkpoint.
 
-## Backup cykliczny (opcjonalnie)
+## Periodic backup (optional)
 
-Jeśli potrzebujesz automatyki, uruchom planowane zadanie (np. launchd launchctl start/cron):
+If you need automation, run a scheduled job (e.g. launchd launchctl start/cron):
 
 ```bash
 sqlite3 "$HOME/.dan/dan.db" ".backup '$HOME/.dan/backups/dan-auto.db'"
 ```
 
-Przykład z limitem czasu:
+Example with a time limit:
 
 ```bash
 for i in {1..30}; do
@@ -47,48 +47,48 @@ for i in {1..30}; do
 done
 ```
 
-## Człon od weryfikacji
+## Verification step
 
-Po backupie wykonaj:
+After the backup, run:
 
-- `sqlite3 <backup>.db "PRAGMA integrity_check;"` (powinno zwrócić `ok`)
-- `sqlite3 <backup>.db "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"` (podstawowa zgodność schematu)
+- `sqlite3 <backup>.db "PRAGMA integrity_check;"` (should return `ok`)
+- `sqlite3 <backup>.db "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"` (basic schema conformance)
 
-## Odtwarzanie z backupu
+## Restoring from a backup
 
-1. Zatrzymaj daemon i upewnij się, że żaden proces nie trzyma otwartego `dan.db`.
-2. Wykonaj kopię obecnego pliku (na wypadek analizy po-incydentowej):
+1. Stop the daemon and make sure no process is holding `dan.db` open.
+2. Make a copy of the current file (for potential post-incident analysis):
 
 ```bash
 cp "$HOME/.dan/dan.db" "$HOME/.dan/dan.db.corrupt-$(date +%F-%H%M%S)"
 ```
 
-3. Podmień bazę:
+3. Swap in the database:
 
 ```bash
-cp "<path-do-backupu>/dan-YYYY-MM-DD-HHMMSS.db" "$HOME/.dan/dan.db"
+cp "<path-to-backup>/dan-YYYY-MM-DD-HHMMSS.db" "$HOME/.dan/dan.db"
 ```
 
-4. Zweryfikuj:
+4. Verify:
 
 ```bash
 sqlite3 "$HOME/.dan/dan.db" "PRAGMA integrity_check;"
 sqlite3 "$HOME/.dan/dan.db" "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations';"
 ```
 
-5. Uruchom ponownie daemona i sprawdź podstawowe health:
+5. Restart the daemon and check basic health:
 
 ```bash
 curl -sS http://127.0.0.1:41741/health
 ```
 
-## Co robić przy uszkodzeniu DB
+## What to do when the DB is corrupted
 
-Jeśli `PRAGMA integrity_check` daje błąd:
+If `PRAGMA integrity_check` reports an error:
 
-1. zatrzymaj aktywne procesy daemona,
-2. przywróć backup,
-3. sprawdź integralność (ponownie),
-4. jeśli nadal nieok, zgłoś incydent i odtwórz z najstarszego spójnego backupu.
+1. stop the active daemon processes,
+2. restore a backup,
+3. check integrity (again),
+4. if it is still not ok, report an incident and restore from the oldest consistent backup.
 
-Nie ma automatycznego schematycznego „repair mode” bez ryzyka utraty danych — backup/restore jest zalecanym, kontrolowanym wariantem odzysku.
+There is no automatic, formulaic "repair mode" without the risk of data loss — backup/restore is the recommended, controlled recovery variant.

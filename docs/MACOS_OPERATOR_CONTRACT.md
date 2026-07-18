@@ -1,5 +1,8 @@
 # macOS Operator Contract
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 ## Purpose
 
 This document defines Jarvis as a local macOS operator. The operator layer is

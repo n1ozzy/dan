@@ -1,5 +1,8 @@
 # Jarvis v4.1 — Launch & Supervision (FROZEN)
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 > **Status:** FROZEN (Prompt 00A). Defines launch identity, the
 > `RuntimeSupervisor`'s observation duties, and the strict "detect, never kill"
 > rule. **This build does not install launchd and does not start anything.**

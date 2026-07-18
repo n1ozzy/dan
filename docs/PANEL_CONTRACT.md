@@ -1,5 +1,8 @@
 # Jarvis v4.1 — Panel Contract (FROZEN)
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 > **Status:** FROZEN (Prompt 00A). Defines the boundary between the macOS panel
 > and `jarvisd`. The panel is a **thin client** ([ADR-002](DECISIONS.md#adr-002)):
 > it renders daemon state and sends intents. It owns no canonical state.

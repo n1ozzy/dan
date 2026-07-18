@@ -6,14 +6,9 @@ This index explains which docs are current sources, runbooks, or legacy
 evidence. If docs conflict, AGENTS.md + docs/PROJECT_RULES.md + docs/STATUS.md
 win over old handoffs/roadmaps.
 
-> **Naming note (Release 1, 2026-07-18):** the daemon formerly named `jarvisd`
-> is now **`dand`** (launchd label `com.dan.dand`); the product/repo renamed
-> Jarvis → DAN. Architecture docs below (CONTRACTS, DECISIONS, PRODUCT,
-> PROJECT_RULES, PANEL_CONTRACT, SECURITY_MODEL, MACOS_*, LAUNCH_SUPERVISION)
-> still say `jarvisd`/`com.ozzy.jarvisd` — read those names as `dand`/
-> `com.dan.dand`; the contracts themselves remain in force. `JARVIS_*` and
-> `*HANDOFF*` files are historical evidence, not active instructions.
-> Operator docs written post-rename: CO-JEST-GDZIE, GLOS-I-KOLEJKA, ODZYSKIWANIE.
+> **Naming note — Release 1 cutover (2026-07-18):** wherever a doc still says
+> `jarvisd`/`com.ozzy.jarvisd`, read `dand`/`com.dan.dand` — the daemon and the
+> product/repo were renamed Jarvis → DAN; the contracts themselves remain in force.
 
 ## Authoritative Docs
 
@@ -48,6 +43,7 @@ win over old handoffs/roadmaps.
 - `docs/runbooks/G4_LIVE_GATE.md`
 - `docs/runbooks/SCREEN_RECORDING_TCC.md`
 - `docs/runbooks/TERMINAL_AUTOMATION_TCC.md`
+- `docs/ODZYSKIWANIE.md` - operator diagnosis and journaled rollback (post-rename).
 
 Runbooks are operational instructions. They do not override authoritative docs.
 Provider, launchd, and live voice runbooks are manual unless a later scoped task
@@ -55,6 +51,8 @@ explicitly changes that status.
 
 ## Current Reference Docs
 
+- `docs/CO-JEST-GDZIE.md` - ownership table, post-rename source for "what lives where".
+- `docs/GLOS-I-KOLEJKA.md` - voice pipeline, queue statuses and personas (post-rename).
 - `docs/PRODUCT.md`
 - `docs/TURN_PIPELINE.md`
 - `docs/AUDIO_RUNTIME.md`
@@ -69,6 +67,7 @@ win.
 
 ## Historical/Legacy Docs
 
+- `docs/DAN_CURRENT_STATE.md` - handoff superseded 2026-07-18 by Release 1 (see STATUS.md).
 - `docs/REVIEW_HANDOFF.md`
 - `docs/JARVIS_FIX_TASKS_HANDOFF.md`
 - `docs/MASTER_PLAN.md`

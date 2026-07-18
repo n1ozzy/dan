@@ -1,10 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# SŁOWNIK WYMOWY — angielskie słowo = polska fonetyka. Wspólny dla WSZYSTKICH
-# systemów: Jarvis daemon, DAN, skille (standup). Sąsiad: personas.toml (głosy).
+# PRONUNCIATION DICTIONARY — English word = Polish phonetics. Shared by ALL
+# systems: Jarvis daemon, DAN, skills (standup). Neighbor: personas.toml (voices).
 #
-# Klucz case-insensitive, dopasowanie po rdzeniu (końcówka PL zostaje). Dłuższe
-# klucze dopasowują się pierwsze, więc odmiany (committed) wygrywają z rdzeniem.
-# Dokładaj gdy coś kłuje w uchu — w tym jednym miejscu, gada wszędzie.
+# Keys are case-insensitive, matched on the stem (the PL inflection ending stays).
+# Longer keys match first, so inflected forms (committed) beat the bare stem.
+# Add an entry whenever something grates on the ear — one place, spoken everywhere.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # — dev / git —
@@ -121,7 +121,7 @@ lock = "lok"
 flush = "flusz"
 fallbackiem = "falbakiem"
 
-# — narzędzia / TTS —
+# — tools / TTS —
 markdown = "markdałn"
 compileall = "kompajl-ol"
 python = "pajton"
@@ -154,7 +154,7 @@ pronunciation = "pronałsinejszyn"
 roast = "rołst"
 battle = "batle"
 
-# — literowane skróty —
+# — spelled-out abbreviations —
 url = "u er el"
 api = "epejaj"
 ai = "a-i"
@@ -174,5 +174,5 @@ chatgpt = "czat dżi pi ti"
 gpt = "dżi pi ti"
 sha = "es ha a"
 
-# — imie wlasciciela —
+# — owner's name —
 ozzy = "ozi"

@@ -1,25 +1,26 @@
-# Co jest gdzie
+# What is where
 
-Jedna tabela własności. Zasada: jedna wartość — jeden właściciel; wszystko,
-co dotyczy audio, hotkeya i kolejki głosu, należy do `dand`
+One ownership table. The rule: one value — one owner; everything that touches
+audio, the hotkey and the voice queue belongs to `dand`
 (`docs/adr/001-dand-single-owner.md`).
 
-| Element | Właściciel | Ścieżka |
+| Element | Owner | Path |
 |---|---|---|
-| Daemon `dand` (audio, hotkey, kolejka, mózg) | launchd (`KeepAlive`) | `~/.dan/bin/dand` (wrapper na `python -m dan.cli daemon run`) |
-| Baza produktu (rozmowa, pamięć, kolejka głosu, eventy) | `dand` (jedyny writer) | `~/.dan/dan.db` |
-| Konfiguracja runtime | operator (edycja), `dand` (odczyt) | `~/.dan/config.toml` (wzór: `config/dan.example.toml` w repo) |
-| Logi daemona | `dand` (rotacja własna) | `~/.dan/logs/` |
-| Plist launchd | instalator (`scripts/install-launchd.sh`) | `~/Library/LaunchAgents/com.dan.dand.plist` (wzór: `launchd/com.dan.dand.plist.example`) |
-| Panel (pasek menu) | operator; tylko klient HTTP daemona | start: `scripts/dan-panel`; kod: `dan/panel/` |
-| CLI `dan` | operator | `~/.dan/bin/dan` (wrapper na `python -m dan.cli`) |
-| Venv produktu | instalator (`scripts/install.sh`) | `~/.dan/venv/` |
-| Kanon persony DAN | repo (wersjonowany) | `config/persona/DAN.md` |
-| Assety głosu (persony, wymowa, style) | repo (wersjonowane) | `config/voice/` |
-| Katalog runtime (pid, locki, np. `hotkey.lock`) | `dand` | `~/.dan/runtime/` |
-| Backupy instalatora i manifest | instalator | `~/.dan/backups/`, `~/.dan/install-manifest.json` |
-| Journal cutovera/rollbacku | `scripts/dan-cutover` / `scripts/dan-rollback` | `~/.dan/migration/` |
+| `dand` daemon (audio, hotkey, queue, brain) | launchd (`KeepAlive`) | `~/.dan/bin/dand` (wrapper around `python -m dan.cli daemon run`) |
+| TTS engine (`supertonic serve`, `127.0.0.1:7788`) | `dand` (supervised child — never a separate plist/serve) | binary per `~/.dan/config.toml` |
+| Product database (conversation, memory, voice queue, events) | `dand` (sole writer) | `~/.dan/dan.db` |
+| Runtime configuration | operator (edits), `dand` (reads) | `~/.dan/config.toml` (template: `config/dan.example.toml` in the repo) |
+| Daemon logs | `dand` (rotates them itself) | `~/.dan/logs/` |
+| launchd plist | installer (`scripts/install-launchd.sh`) | `~/Library/LaunchAgents/com.dan.dand.plist` (template: `launchd/com.dan.dand.plist.example`) |
+| Panel (menu bar) | operator; only an HTTP client of the daemon | start: `scripts/dan-panel`; code: `dan/panel/` |
+| `dan` CLI | operator | `~/.dan/bin/dan` (wrapper around `python -m dan.cli`) |
+| Product venv | installer (`scripts/install.sh`) | `~/.dan/venv/` |
+| DAN persona canon | repo (versioned) | `config/persona/DAN.md` |
+| Voice assets (personas, pronunciation, styles) | repo (versioned) | `config/voice/` |
+| Runtime directory (pid, locks, e.g. `hotkey.lock`) | `dand` | `~/.dan/runtime/` |
+| Installer backups and manifest | installer | `~/.dan/backups/`, `~/.dan/install-manifest.json` |
+| Cutover/rollback journal | `scripts/dan-cutover` / `scripts/dan-rollback` | `~/.dan/migration/` |
 
-Czego tu **nie ma** (celowo): osobnego brokera głosu poza `dand`, plików
-requestów w katalogach tymczasowych, drugiego odtwarzacza audio, feedera
-czytającego pliki playlist. Stare tory zostały zamknięte w Wydaniu 1.
+What is deliberately **not** here: a voice broker separate from `dand`, request
+files in temporary directories, a second audio player, a feeder reading playlist
+files. The old paths were shut down in Release 1.

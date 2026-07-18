@@ -1,5 +1,8 @@
 # Jarvis v4.1 — Runtime Contracts (FROZEN)
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 > **ACTIVE OWNER OVERRIDE (2026-07-13):** approval tables/routes and legacy
 > lifecycle fields remain compatibility surfaces, but model-originated tool
 > calls execute directly and finish the turn. The `awaiting_approval` sections

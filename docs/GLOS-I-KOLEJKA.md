@@ -1,79 +1,81 @@
-# Głos i kolejka
+# Voice and queue
 
 ## Broker
 
-Broker głosu działa **wewnątrz `dand`** i jest jedynym właścicielem syntezy
-i odtwarzania. Każdy producent (CLI, panel, hook, skill, inne agenty) mówi
-przez API/CLI — nikt nie odtwarza WAV-ów bezpośrednio i nikt nie uruchamia
-własnego brokera. Silnikiem live jest Supertonic; brak silnika, głosu lub
-assetu kończy request jawnym błędem — nie ma cichego fallbacku.
+The voice broker runs **inside `dand`** and is the sole owner of synthesis
+and playback. Every producer (the CLI, the panel, a hook, a skill, other
+agents) speaks through the API/CLI — nobody plays WAV files directly and
+nobody starts a broker of their own. The live engine is Supertonic; a missing
+engine, voice or asset ends the request with an explicit error — there is no
+silent fallback.
 
-## Statusy kolejki
+## Queue statuses
 
-Kolejka jest trwała w SQLite (`~/.dan/dan.db`, tabela `voice_queue`). Request
-przechodzi przez:
+The queue is persistent in SQLite (`~/.dan/dan.db`, table `voice_queue`). A
+request moves through:
 
-| Status | Znaczenie |
+| Status | Meaning |
 |---|---|
-| `queued` | przyjęty, snapshot renderu kompletny, czeka na syntezę |
-| `synthesizing` | broker generuje audio |
-| `speaking` | audio faktycznie leci z głośnika |
-| `done` | odtworzone i potwierdzone (`playback_confirmed`) |
-| `cancelled` | anulowany (pojedynczo lub flushem sesji) |
-| `failed` | jawny błąd syntezy/odtwarzania, z opisem w polu `error` |
+| `queued` | accepted, render snapshot complete, waiting for synthesis |
+| `synthesizing` | the broker is generating audio |
+| `speaking` | audio is actually playing from the speaker |
+| `done` | played and confirmed (`playback_confirmed`) |
+| `cancelled` | cancelled (individually or by a session flush) |
+| `failed` | explicit synthesis/playback error, described in the `error` field |
 
-Broker bierze dokładnie jeden element do playbacku naraz.
+The broker takes exactly one item for playback at a time.
 
-## Snapshot renderu
+## Render snapshot
 
-Intencja (tekst + persona) i rekord kolejki to dwa kontrakty. Zanim request
-dostanie `queued`, `dand` rozwiązuje **niezmienny snapshot renderu**: silnik
-i jego wersję, głos/styl, tempo, mastering, DSP, wymowę, gain oraz SHA-256
-użytych assetów. Niekompletny snapshot = błąd przed zapisem, nie częściowy
-rekord. Dzięki temu wiadomo dokładnie, czym została wyrenderowana każda
-wypowiedź, nawet po zmianie konfiguracji.
+The intent (text + persona) and the queue record are two contracts. Before a
+request gets `queued`, `dand` resolves an **immutable render snapshot**: the
+engine and its version, voice/style, tempo, mastering, DSP, pronunciation,
+gain and the SHA-256 of the assets used. An incomplete snapshot = an error
+before the write, not a partial record. This makes it known exactly what every
+utterance was rendered with, even after the configuration changes.
 
-## Stary feeder vs zachowanie w Wydaniu 1
+## The old feeder vs Release 1 behavior
 
-Stary tor: feeder-bash pilnował rosnącego pliku playlisty i każda dopisana
-linia natychmiast zaczynała grać; DSP jechało przemyconym polem `profile`.
-W Wydaniu 1 tego toru nie ma: playlista jest importowana transakcyjnie jako
-segmenty sesji, dopisanie czegoś do starego pliku po imporcie **niczego nie
-uruchamia**, postęp siedzi w bazie (restart nie dubluje i nie gubi), a treść
-live wchodzi tym samym API jako kolejny segment — nie ma drugiej kolejki.
+The old path: a bash feeder watched a growing playlist file and every appended
+line started playing immediately; DSP was driven by a smuggled-in `profile`
+field. Release 1 has no such path: a playlist is imported transactionally as
+session segments, appending anything to the old file after the import
+**triggers nothing**, progress lives in the database (a restart neither
+duplicates nor loses anything), and live content enters through the same API
+as just another segment — there is no second queue.
 
-## Render offline
+## Offline render
 
-Przygotowane kwestie (pipeline Chatterbox V3 dla Żanety) to jawny pipeline
-**offline** — renderuje pliki poza żywą kolejką i nigdy nie jest automatycznym
-silnikiem live. Wejście przez katalog głosów (`dan/voice/pipelines/`),
-trasa `offline_pipeline` w katalogu person.
+Prepared lines (the Chatterbox V3 pipeline for Żaneta) are an explicit
+**offline** pipeline — it renders files outside the live queue and is never an
+automatic live engine. Entry via the voice directory (`dan/voice/pipelines/`),
+the `offline_pipeline` route in the persona catalog.
 
-## Przykłady CLI (copy/paste)
+## CLI examples (copy/paste)
 
 ```bash
-# Podstawowa wypowiedź z polskimi znakami:
+# Basic utterance with Polish characters:
 dan speak --as dan "Zażółć gęślą jaźń — to jest test dykcji, chłopie."
 
-# Druga persona:
+# Second persona:
 dan speak --as danusia "Dobra, moja kolej. Posłuchaj uważnie."
 
-# JSON przez stdin (wynik też w JSON):
+# JSON via stdin (result also in JSON):
 dan speak --as danusia --json --stdin <<< "Święta prawda, mówię to z pliku."
 
-# Co siedzi w kolejce:
+# What is in the queue:
 dan queue list --json --limit 10
 
-# Anuluj jeden request (id z queue list):
+# Cancel a single request (id from queue list):
 dan queue cancel 42
 
-# Wyczyść całą sesję (np. radiową):
+# Flush an entire session (e.g. the radio one):
 dan queue flush --session radio
 
-# Skąd wzięła się aktualna konfiguracja (plik, env, default):
+# Where the current configuration came from (file, env, default):
 dan config explain --json
 
-# Przełącznik hooka głosowego:
+# Voice hook switch:
 dan voice hook off
 dan voice hook on
 dan voice hook status

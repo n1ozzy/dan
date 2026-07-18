@@ -1,18 +1,18 @@
-/* DAN Cockpit — aplikacja jednowidokowa w popoverze, w stylistyce
-   HUD-u DAN-a ze Starka: głęboka czerń-granat, holograficzny arc-reactor
-   blue, złoto Starka dla uwagi, czerwień Iron Mana dla alarmów; cienkie
-   świecące linie. Jeden widok naraz (Czat / Pamięć / Logi / System) +
-   dolny pasek zakładek; zero scrolla strony, widoki przewijają się
-   wewnętrznie. Sygnatura: animowana ramka wokół karty niosąca stan (holo-
-   błękit online, jasny błękit podczas pracy, czerwień offline). */
+/* DAN Cockpit — single-view app in a popover, styled after DAN's Stark
+   HUD: deep black-navy, holographic arc-reactor blue, Stark gold for
+   attention, Iron Man red for alarms; thin glowing lines. One view at a
+   time (Chat / Memory / Logs / System) + bottom tab bar; zero page
+   scroll, views scroll internally. Signature: an animated frame around
+   the card carrying the state (holo-blue online, bright blue while
+   working, red offline). */
 
 :root {
   color-scheme: dark;
 
-  /* Paleta „DAN / Stark HUD”: głęboka czerń-granat jak wnętrze hełmu,
-     holograficzny arc-reactor blue jako główny akcent, złoto Starka dla
-     rzeczy wymagających uwagi, czerwień Iron Mana dla alarmów. Tekst
-     chromowo-srebrny. Cienkie świecące linie, techniczny sznyt. */
+  /* "DAN / Stark HUD" palette: deep black-navy like the inside of the
+     helmet, holographic arc-reactor blue as the main accent, Stark gold
+     for things needing attention, Iron Man red for alarms. Chrome-silver
+     text. Thin glowing lines, technical cut. */
   --bg: #080b12;
   --panel: #0e1420;
   --panel-2: #0a0f18;
@@ -22,21 +22,21 @@
   --text-dim: #8fa4c0;
   --text-faint: #6d829e;
 
-  /* Holo-błękit HUD (arc reactor) — akcent podstawowy. */
+  /* HUD holo-blue (arc reactor) — primary accent. */
   --accent: #45b6ff;
   --accent-soft: rgba(69, 182, 255, 0.14);
   --accent-line: #2e9de8;
-  /* Złoto Starka — uwaga (nazwa --amber została). */
+  /* Stark gold — attention (the --amber name stayed). */
   --amber: #f0b445;
   --amber-deep: #8a6118;
-  /* Czerwień Iron Mana — offline / destrukcyjne. */
+  /* Iron Man red — offline / destructive. */
   --red: #ff5555;
 
   --user-bubble: #133150;
   --dan-bubble: #0f1a2a;
 
-  /* Żywa ramka stanu: obrys bazowy (przygaszony, zawsze) + gorący punkt,
-     który obiega, gdy DAN pracuje. Barwa = stan; ruch = trwający proces. */
+  /* Live state frame: base outline (dimmed, always) + a hot spot that
+     orbits while DAN works. Color = state; motion = ongoing process. */
   --frame-base: rgba(69, 182, 255, 0.5);
   --frame-hot: transparent;
   --frame-glow: transparent;
@@ -54,15 +54,15 @@
   box-sizing: border-box;
 }
 
-/* --- Żywa ramka stanu --------------------------------------------------------
-   Neon na krawędzi karty: bazowy obrys barwi się stanem, a gorący punkt
-   obiega dookoła, gdy DAN myśli/mówi/słucha. Technika,
-   która działa w WebKit (animacja kąta conic-gradientu przez @property NIE
-   repaintuje): stały obrys to tło .state-frame, a obiegające światło to
-   OBRACANY kwadrat z conic-gradientem w ::before — maska rodzica przycina go
-   do samego 2px obrysu, więc jasny sektor wędruje po krawędzi. drop-shadow
-   dokłada poświatę tylko przy pracy. JS: body[data-state] —
-   offline > busy > online. */
+/* --- Live state frame --------------------------------------------------------
+   Neon on the card edge: the base outline takes the state color and a hot
+   spot orbits while DAN thinks/speaks/listens. A technique that works in
+   WebKit (animating a conic-gradient angle via @property does NOT
+   repaint): the steady outline is the .state-frame background, and the
+   orbiting light is a ROTATED square with a conic gradient in ::before —
+   the parent's mask clips it to the bare 2px outline, so the bright
+   sector travels along the edge. drop-shadow adds the glow only while
+   working. JS: body[data-state] — offline > busy > online. */
 .state-frame {
   position: fixed;
   inset: 0;
@@ -72,7 +72,7 @@
   pointer-events: none;
   overflow: hidden;
   background: var(--frame-base);
-  /* Pokaż tylko obrys (obszar paddingu): wytnij content-box z pełnego boxa. */
+  /* Show only the outline (padding area): cut the content box out of the full box. */
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
@@ -81,13 +81,14 @@
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);
   mask-composite: exclude;
-  /* Holo-poświata ramki — wyraźniejsza przy pracy (glow ≠ 0). */
+  /* Holo glow of the frame — stronger while working (glow ≠ 0). */
   filter: drop-shadow(0 0 5px var(--frame-glow));
   transition: filter 0.4s ease;
 }
 
-/* Obiegające światło: kwadrat większy niż przekątna karty, wyśrodkowany,
-   z jednym jasnym sektorem conic. Obrót przenosi sektor po całym obwodzie. */
+/* Orbiting light: a square larger than the card diagonal, centered,
+   with one bright conic sector. Rotation carries the sector around the
+   whole perimeter. */
 .state-frame::before {
   content: "";
   position: absolute;
@@ -111,7 +112,7 @@
   }
 }
 
-/* Ruch tylko dla rzeczy, które trwają: praca daemona. */
+/* Motion only for things in progress: daemon work. */
 body[data-state="busy"] .state-frame::before {
   animation: state-frame-spin 2.6s linear infinite;
 }
@@ -152,10 +153,10 @@ dl {
   margin: 0;
 }
 
-/* --- Szkielet aplikacji -----------------------------------------------------
-   Stan systemu bez ozdób: pill stanu w toolbarze (czerwony offline), hero
-   offline w czacie. Ruch jest zarezerwowany dla
-   rzeczy, które naprawdę trwają (fala słuchającego mikrofonu, puls badge). */
+/* --- App skeleton -----------------------------------------------------
+   System state without ornaments: a state pill in the toolbar (red
+   offline), an offline hero in the chat. Motion is reserved for things
+   that are really in progress (the listening-mic wave, the badge pulse). */
 
 .cockpit {
   display: flex;
@@ -166,7 +167,7 @@ dl {
   overflow: hidden;
 }
 
-/* Szersze okno przeglądarki: panel trzyma proporcje apki, wycentrowany. */
+/* Wider browser window: the panel keeps app proportions, centered. */
 @media (min-width: 760px) {
   .cockpit {
     width: 100%;
@@ -194,7 +195,7 @@ dl {
   display: flex;
 }
 
-/* Widoki listowe przewijają się wewnętrznie; czat zarządza scrollem sam. */
+/* List views scroll internally; the chat manages its own scroll. */
 #view-memory.view,
 #view-logs.view,
 #view-system.view {
@@ -208,7 +209,7 @@ dl {
   --system-row-border: rgba(71, 92, 119, 0.52);
 }
 
-/* --- Pasek zakładek ---------------------------------------------------------- */
+/* --- Tab bar ---------------------------------------------------------- */
 
 .tabbar {
   flex-shrink: 0;
@@ -245,7 +246,7 @@ dl {
 .tab-button.active {
   background: var(--accent-soft);
   color: var(--accent);
-  /* Holo-świecenie aktywnej zakładki — subtelny HUD-owy blask. */
+  /* Holo glow of the active tab — a subtle HUD shine. */
   text-shadow: 0 0 10px rgba(69, 182, 255, 0.55);
 }
 
@@ -261,8 +262,8 @@ input,
 select,
 textarea {
   font: inherit;
-  /* Jedna skala kontrolek (13px) — mniejsza niż treść czatu (13.5px), ale
-     spójna między polami, selectami i przyciskami akcji. */
+  /* One control scale (13px) — smaller than chat content (13.5px), but
+     consistent across fields, selects and action buttons. */
   font-size: 13px;
 }
 
@@ -287,7 +288,7 @@ button:disabled {
   opacity: 0.45;
 }
 
-/* Widoczny fokus z klawiatury — zmiana obrysu przycisku to za mało. */
+/* Visible keyboard focus — changing the button outline alone is not enough. */
 button:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--accent-line);
@@ -316,7 +317,7 @@ button.primary {
   background: #0c2a45;
   color: #a5d8ff;
   font-weight: 650;
-  /* Holo-kontur: cienki błękitny blask jak podświetlony przycisk HUD. */
+  /* Holo contour: a thin blue glow like a lit-up HUD button. */
   box-shadow: 0 0 12px rgba(69, 182, 255, 0.16);
 }
 
@@ -498,7 +499,7 @@ body.offline .state-pill {
   color: var(--accent);
 }
 
-/* Jawne display na .hud-item nadpisuje user-agentowe [hidden] — przywróć. */
+/* Explicit display on .hud-item overrides the user-agent [hidden] — restore it. */
 .hud-item[hidden] {
   display: none;
 }
@@ -516,8 +517,8 @@ body.offline .state-pill {
   background: var(--panel-2);
 }
 
-/* Kotwica dołu: gdy przebieg nie wypełnia logu, dosuwa rozmowę do dołu jak
-   w komunikatorze; przy przepełnieniu normalny scroll. */
+/* Bottom anchor: when the feed does not fill the log, it pushes the
+   conversation to the bottom like a messenger; on overflow, normal scroll. */
 .chat-log > :first-child {
   margin-top: auto;
 }
@@ -549,7 +550,7 @@ body.offline .state-pill {
   align-self: flex-start;
   border-bottom-left-radius: 4px;
   border: 1px solid var(--line);
-  /* Kręgosłup w kolorze DANa: dymki asystenta mają jego barwę. */
+  /* Spine in DAN's color: assistant bubbles carry his hue. */
   border-left: 2px solid rgba(69, 182, 255, 0.4);
   background: var(--dan-bubble);
   color: #d9e2ee;
@@ -583,7 +584,7 @@ body.offline .state-pill {
   gap: 6px;
 }
 
-/* Rząd komunikatorowy: pole rośnie, „Wyślij” po prawej na pełną wysokość pola. */
+/* Messenger row: the field grows, "Send" on the right at full field height. */
 .composer-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -598,7 +599,7 @@ body.offline .state-pill {
   resize: none;
 }
 
-/* Status mikrofonu i wybór trybu jako dyskretna linijka pod polem, z lewej. */
+/* Microphone status and mode picker as a discreet line under the field, left. */
 .composer-status {
   display: flex;
   align-items: center;
@@ -607,8 +608,8 @@ body.offline .state-pill {
   padding: 0 2px;
 }
 
-/* Tryb słuchania: segmenty PTT | Nasłuch obok siebie — przełącznik trybu,
-   nie przycisk do trzymania (PTT trzyma się globalnym hotkeyem). */
+/* Listening mode: PTT | Listening segments side by side — a mode switch,
+   not a hold button (PTT is held via the global hotkey). */
 .voice-mode {
   display: inline-flex;
   border: 1px solid var(--line-strong);
@@ -660,7 +661,7 @@ body.offline .state-pill {
   to { box-shadow: 0 0 20px var(--accent), 0 0 30px var(--accent); }
 }
 
-/* Fala głosu przy statusie: słupki ożywają tylko, gdy mikrofon zbiera. */
+/* Voice wave next to the status: bars come alive only while the mic captures. */
 .hud-item .wave {
   display: inline-flex;
   align-items: center;
@@ -703,12 +704,12 @@ body.offline .state-pill {
   }
 }
 
-/* Offline: kompozytor wyraźnie wygaszony — kontrolki i tak są disabled. */
+/* Offline: the composer clearly dimmed — the controls are disabled anyway. */
 body.offline .composer {
   opacity: 0.55;
 }
 
-/* Jeden komunikat offline z akcją, wycentrowany w pustym logu czatu. */
+/* One offline message with an action, centered in the empty chat log. */
 .offline-hero {
   margin: auto;
   display: grid;
@@ -727,7 +728,7 @@ body.offline .composer {
   color: var(--red);
 }
 
-/* --- Nagłówki i sekcje ------------------------------------------------------------ */
+/* --- Headings and sections ------------------------------------------------------------ */
 
 h2 {
   font-family: var(--font-mono);
@@ -748,7 +749,7 @@ h4 {
   color: var(--text-dim);
 }
 
-/* Ludzki stan daemona: etykieta + wartość, czytelniej niż mono kv. */
+/* Human-readable daemon state: label + value, clearer than mono kv. */
 .health-human {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -796,7 +797,7 @@ h4 {
   background: var(--panel);
 }
 
-/* Zwijane sekcje (widok System): natywne <details>, domyślnie zwinięte. */
+/* Collapsible sections (System view): native <details>, collapsed by default. */
 details.card.collapsible summary {
   display: flex;
   align-items: center;
@@ -813,8 +814,8 @@ details.card.collapsible summary::-webkit-details-marker {
 }
 
 details.card.collapsible summary::after {
-  /* \203A = › ; escape zamiast surowego znaku, bo statyczny serwer potrafi
-     podać CSS bez charsetu i chevron zmienia się w mojibake. */
+  /* \203A = › ; escape instead of the raw character, because a static server
+     can serve CSS without a charset and the chevron turns into mojibake. */
   content: "\203A";
   color: var(--text-faint);
   font-size: 16px;
@@ -830,8 +831,8 @@ details.card.collapsible[open] summary::after {
   margin-left: auto;
 }
 
-/* Karty-akordeony w zakładce System: cała karta jest <details>, nagłówek to <summary>.
-   Chevron = statyczny wskaźnik stanu (bez animacji dekoracyjnej); ruch tylko dla procesów. */
+/* Accordion cards in the System tab: the whole card is <details>, the header is <summary>.
+   Chevron = a static state indicator (no decorative animation); motion only for processes. */
 .sys-section.collapsible-card > summary {
   display: flex;
   align-items: center;
@@ -968,7 +969,7 @@ details.card.collapsible[open] summary::after {
   overflow-wrap: anywhere;
 }
 
-/* Chip ryzyka barwiony wagą: odczyt spokojny, zapis uważny, destructive alarm. */
+/* Risk chip colored by weight: read calm, write watchful, destructive alarm. */
 .risk-chip {
   flex-shrink: 0;
   padding: 2px 8px;
@@ -1004,7 +1005,7 @@ details.card.collapsible[open] summary::after {
   color: var(--text-faint);
 }
 
-/* Filtr dziennika: label „Pokaż” + select w jednej wąskiej linijce. */
+/* Log filter: the "Show" label + select in one narrow line. */
 .log-filter {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
@@ -1015,7 +1016,7 @@ details.card.collapsible[open] summary::after {
   width: auto;
 }
 
-/* Sekcja System (płaska): nagłówek + treść jak karta, bez zwijania. */
+/* System section (flat): header + content like a card, no collapsing. */
 .sys-section {
   display: grid;
   gap: 7px;
@@ -1433,7 +1434,7 @@ details.card.collapsible[open] summary::after {
   color: #ffb4b4;
 }
 
-/* Odrzuć: czerwony outline (waga niższa niż pełny akcent Zatwierdź). */
+/* Reject: red outline (lower weight than the full Approve accent). */
 .small-button.reject {
   border-color: #6a3038;
   background: transparent;
@@ -1512,8 +1513,8 @@ details.card.collapsible[open] summary::after {
   white-space: nowrap;
 }
 
-/* Nowa notatka schowana za rozwijanym „+ Nowa notatka”; lista + przycisk
-   widoczne od razu, formularz na żądanie. */
+/* New note hidden behind the expandable "+ New note"; list + button
+   visible right away, the form on demand. */
 .memory-new {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1545,7 +1546,7 @@ details.card.collapsible[open] summary::after {
   padding: 12px;
 }
 
-/* Pola z widocznymi labelami nad inputem — nie gołe placeholdery. */
+/* Fields with visible labels above the input — not bare placeholders. */
 .field-label {
   display: grid;
   gap: 4px;
@@ -1561,8 +1562,8 @@ details.card.collapsible[open] summary::after {
   color: var(--text-faint);
 }
 
-/* Opcjonalny wpis ręczny obok selecta (model, effort, głos, model/język STT).
-   Wpisana wartość nadpisuje wybór z listy i trafia do tego samego draftu. */
+/* Optional manual entry next to the select (model, effort, voice, STT model/language).
+   A typed value overrides the list choice and lands in the same draft. */
 .manual-input {
   font-size: 12px;
 }
@@ -1571,8 +1572,8 @@ details.card.collapsible[open] summary::after {
   color: var(--text-faint);
 }
 
-/* Jawne display:grid na .field-label nadpisuje user-agentowe [hidden] — przywróć
-   ukrywanie, gdy JS chowa jednoopcyjne/niedostępne pole. */
+/* Explicit display:grid on .field-label overrides the user-agent [hidden] — restore
+   hiding when JS hides a single-option/unavailable field. */
 .field-label[hidden] {
   display: none;
 }
@@ -1711,7 +1712,7 @@ details.card.collapsible[open] summary::after {
   opacity: 0.58;
 }
 
-/* Chipy bloku pamięci: rodzaj + priorytet, spokojna szarość. */
+/* Memory block chips: kind + priority, calm gray. */
 .mem-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1853,7 +1854,7 @@ details.card.collapsible[open] summary::after {
   font-variant-numeric: tabular-nums;
 }
 
-/* Dyskretne scrollbary wewnętrznych stref. */
+/* Discreet scrollbars of the internal zones. */
 .chat-log::-webkit-scrollbar,
 .view::-webkit-scrollbar,
 .compact-list::-webkit-scrollbar {
@@ -1873,16 +1874,16 @@ details.card.collapsible[open] summary::after {
   background: transparent;
 }
 
-/* --- Ruch i wąskie okna ------------------------------------------------------------------ */
+/* --- Motion and narrow windows ------------------------------------------------------------------ */
 
 @media (prefers-reduced-motion: reduce) {
   .hud-item.live .wave i {
     animation: none;
   }
 
-  /* Bez obiegania: ramka nie kręci się, tylko barwi. Gorący punkt gaśnie
-     (zamrożony sektor wyglądałby jak wgniecenie), a obrys jaśnieje, więc
-     „pracuje” dalej czytać na kolor i poświatę. */
+  /* No orbiting: the frame does not spin, it only takes color. The hot spot
+     goes out (a frozen sector would look like a dent) and the outline
+     brightens, so "working" still reads from color and glow. */
   body[data-state="busy"] .state-frame::before {
     animation: none;
   }
@@ -1901,7 +1902,7 @@ details.card.collapsible[open] summary::after {
   }
 }
 
-/* Menubar popover (~420×620/760) i wąskie okna: ciaśniejsze odstępy. */
+/* Menubar popover (~420×620/760) and narrow windows: tighter spacing. */
 @media (max-width: 480px) {
   .cockpit {
     padding: 9px;
@@ -1926,8 +1927,8 @@ details.card.collapsible[open] summary::after {
   }
 }
 
-/* Task 10: one-shot pasek dostępności daemona ("DAN padł" / "DAN znów działa").
-   Zapala się tylko na zmianę stanu; kolor mówi kierunek przejścia. */
+/* Task 10: one-shot daemon availability bar ("DAN went down" / "DAN is back up").
+   Lights up only on a state change; the color tells the direction of the transition. */
 .daemon-availability-notice {
   position: absolute;
   top: 6px;

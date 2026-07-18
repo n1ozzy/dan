@@ -11,9 +11,10 @@ Classification: current.
 - Persona canon: `config/persona/DAN.md` IN THIS REPO; voice canon:
   `config/voice/personas.toml` (old `~/.config/voice` bridge retired).
 - Old stack (jarvisd/screen, voice_broker, dev/dan feeder) stopped and parked in
-  `~/Documents/DAN-migration-backups/`; any `dev/dan` paths below are historical.
+  `~/Documents/DAN-migration-backups/`.
 - 7-day observation window in progress (until ~2026-07-25); donor deletion only
-  after operator sign-off. Sections below are older snapshots.
+  after operator sign-off.
+- Sections below are older snapshots; `dev/dan` paths in them are historical.
 
 ## Owner runtime override — 2026-07-13
 
@@ -27,7 +28,7 @@ Classification: current.
 - The older approval sections below are historical snapshot evidence, not the
   active branch contract.
 
-## Git Snapshot
+## Git Snapshot (superseded 2026-07-18 — see "Release 1 cutover" above)
 
 - Branch: `spike/jarvis-local-runtime-check`
 - HEAD before this docs refresh: `80dcbb5 Stabilize runtime settings panel and PTT contracts`
@@ -35,7 +36,7 @@ Classification: current.
   and PTT contracts. No runtime, code, config, schema, API, panel, provider,
   voice, or env behavior changes.
 
-## Current Status
+## Current Status (superseded 2026-07-18 — see "Release 1 cutover" above)
 
 - Historical baseline labels from the earlier rescue checkpoint were: core
   tests green, tools/approvals green, daemon/security/db green, and voice

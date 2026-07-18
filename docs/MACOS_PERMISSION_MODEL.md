@@ -1,5 +1,8 @@
 # Jarvis v4.2 — Source-Sensitive Permission Model
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 > **Status:** DESIGN (FAZA B2, [MASTER_PLAN.md](MASTER_PLAN.md)). This document
 > designs the extension of the permission policy with **request source** as a
 > first-class dimension, the operator permission classes, the user-presence

@@ -74,20 +74,21 @@ COCKPIT_TOKEN_STORAGE_KEY = "dan-api-token"
 # Menu-bar display height in points; the PNG carries 2x pixels for retina.
 STATUS_ICON_HEIGHT = 40.0
 
-# --- Karta widżetu ----------------------------------------------------------
-# Karta to własny borderless NSPanel: przezroczyste okno z systemowym cieniem,
-# którego warstwa webview robi zaokrąglony clip (JEDNA geometria, bez
-# systemowego bąbla popovera — druga krawędź, strzałka, szczelina). Żywą
-# ramkę stanu — neon, który OBIEGA dookoła, gdy DAN myśli/pracuje, i barwi
-# się stanem — rysuje CSS w webview, sterowany realnym stanem z JS (cockpit
-# i tak pobiera /health, /state, /voice, /stream). Płaski CALayer.border nie
-# potrafiłby ani biegnącego światła, ani gradientu; powłoka nie maluje koloru.
+# --- Widget card ------------------------------------------------------------
+# The card is its own borderless NSPanel: a transparent window with the system
+# shadow, whose webview layer does the rounded clip (ONE geometry, no system
+# popover bubble — a second edge, an arrow, a gap). The live state frame —
+# the neon that RUNS AROUND while DAN thinks/works, and takes on the state
+# color — is drawn by CSS in the webview, driven by the real state from JS
+# (the cockpit fetches /health, /state, /voice, /stream anyway). A flat
+# CALayer.border could do neither the running light nor the gradient; the
+# shell paints no color.
 PANEL_CORNER_RADIUS = 12.0
-# Odstęp karty od dołu paska menu, w punktach.
+# Gap between the card and the bottom of the menu bar, in points.
 PANEL_TOP_GAP = 6.0
-# Klik w ikonę przy otwartym panelu: mousedown potrafi najpierw zdjąć key
-# z panelu (chowamy), a mouseup odpala togglePanel — bez tego okna czasowego
-# panel zamykałby się i natychmiast otwierał z powrotem.
+# A click on the icon while the panel is open: mousedown can first take key
+# status away from the panel (we hide it), and mouseup fires togglePanel —
+# without this time window the panel would close and immediately reopen.
 PANEL_REOPEN_SUPPRESS_SECONDS = 0.3
 
 
@@ -223,40 +224,40 @@ class MenuBarApp:
                 self._settings.api_base_url, self._settings.api_token
             )
             or self._settings.ptt_hotkey
-            or "(brak)"
+            or "(none)"
         )
         trust = accessibility_trust_state()
         print(
-            f"panel: globalny PTT hotkey ({spec}) obsluguje demon dand — panel "
-            f"tylko wyswietla stan (Dostepnosc: {trust}). Przycisk PRZYTRZYMAJ "
-            "w panelu dziala niezaleznie od uprawnien.",
+            f"panel: the global PTT hotkey ({spec}) is handled by the dand daemon — "
+            f"the panel only displays its state (Accessibility: {trust}). The HOLD "
+            "button in the panel works regardless of permissions.",
             file=sys.stderr,
         )
 
     def _install_edit_menu(self, AppKit, app):  # noqa: N803 - ObjC module name
-        """Standardowe skróty edycji (⌘A/⌘C/⌘V/⌘X/⌘Z) w polach webview.
+        """Standard edit shortcuts (⌘A/⌘C/⌘V/⌘X/⌘Z) in webview fields.
 
-        Bez menu głównego z pozycją Edit macOS nie routuje tych keyEquivalentów
-        do first respondera (textarea kompozytora), więc kopiuj/wklej/zaznacz
-        nie działają. Accessory app nie pokazuje paska menu, ale mainMenu i tak
-        przetwarza skróty, gdy karta ma fokus — akcje trafiają do WKWebView,
-        który implementuje copy:/paste:/selectAll:. """
+        Without a main menu carrying an Edit item, macOS does not route these
+        keyEquivalents to the first responder (the composer textarea), so
+        copy/paste/select-all do not work. An accessory app shows no menu bar,
+        but mainMenu still processes shortcuts while the card has focus — the
+        actions land in WKWebView, which implements copy:/paste:/selectAll:. """
 
         main_menu = AppKit.NSMenu.alloc().init()
         edit_container = AppKit.NSMenuItem.alloc().init()
         main_menu.addItem_(edit_container)
-        edit_menu = AppKit.NSMenu.alloc().initWithTitle_("Edytuj")
+        edit_menu = AppKit.NSMenu.alloc().initWithTitle_("Edit")
         edit_container.setSubmenu_(edit_menu)
 
-        # (tytuł, selektor, klawisz) — wielka litera implikuje ⇧ (Redo).
+        # (title, selector, key) — an uppercase letter implies ⇧ (Redo).
         entries = [
-            ("Cofnij", "undo:", "z"),
-            ("Ponów", "redo:", "Z"),
+            ("Undo", "undo:", "z"),
+            ("Redo", "redo:", "Z"),
             (None, None, None),
-            ("Wytnij", "cut:", "x"),
-            ("Kopiuj", "copy:", "c"),
-            ("Wklej", "paste:", "v"),
-            ("Zaznacz wszystko", "selectAll:", "a"),
+            ("Cut", "cut:", "x"),
+            ("Copy", "copy:", "c"),
+            ("Paste", "paste:", "v"),
+            ("Select All", "selectAll:", "a"),
         ]
         for title, action, key in entries:
             if title is None:
@@ -298,9 +299,10 @@ class MenuBarApp:
         index_url = AppKit.NSURL.URLWithString_(panel_index_url(self._settings.api_base_url))
         webview.loadRequest_(AppKit.NSURLRequest.requestWithURL_(index_url))
 
-        # Warstwa webview robi tylko zaokrąglony clip karty (żeby okno miało
-        # miękkie rogi i pasujący cień). Ramkę stanu — kolor i animację —
-        # rysuje CSS w webview, nie ta warstwa: jedna geometria, jedno źródło.
+        # The webview layer only does the rounded card clip (so the window has
+        # soft corners and a matching shadow). The state frame — color and
+        # animation — is drawn by CSS in the webview, not this layer: one
+        # geometry, one source.
         webview.setWantsLayer_(True)
         layer = webview.layer()
         if layer is not None:
@@ -312,8 +314,8 @@ class MenuBarApp:
 
         class DANWidgetPanel(AppKit.NSPanel):
             def canBecomeKeyWindow(self):  # noqa: N802 - ObjC selector
-                # Borderless okna domyślnie odmawiają key — bez tego textarea
-                # kompozytora nie przyjmie ani jednego znaku.
+                # Borderless windows refuse key status by default — without
+                # this the composer textarea would not accept a single character.
                 return True
 
             def windowDidResignKey_(self, _notification):  # noqa: N802
@@ -326,8 +328,8 @@ class MenuBarApp:
             AppKit.NSBackingStoreBuffered,
             False,
         )
-        # Okno jest przezroczyste: promień i ramkę rysuje wyłącznie warstwa
-        # webview (jedna geometria), okno dokłada tylko systemowy cień.
+        # The window is transparent: the radius and the frame are drawn solely
+        # by the webview layer (one geometry), the window adds only the system shadow.
         panel.setOpaque_(False)
         panel.setBackgroundColor_(AppKit.NSColor.clearColor())
         panel.setHasShadow_(True)
@@ -396,14 +398,14 @@ class MenuBarApp:
             self._hide_panel()
             return
         if time.monotonic() - self._hidden_at < PANEL_REOPEN_SUPPRESS_SECONDS:
-            # Ten sam klik, który właśnie schował panel (resignKey na
-            # mousedown) — nie otwieraj go z powrotem na mouseup.
+            # The same click that just hid the panel (resignKey on
+            # mousedown) — do not reopen it on mouseup.
             return
         self._show_panel(AppKit)
 
     def _show_panel(self, AppKit):  # noqa: N803
-        """Karta ląduje wycentrowana pod ikoną menubara, przypięta pod
-        paskiem menu, przycięta do widocznej krawędzi ekranu."""
+        """The card lands centered under the menubar icon, pinned below the
+        menu bar, clamped to the visible screen edge."""
 
         button = self._status_item.button()
         button_window = button.window()
@@ -424,9 +426,10 @@ class MenuBarApp:
         self._panel.setFrame_display_(
             AppKit.NSMakeRect(x, y, width, height), True
         )
-        # Accessory + nonactivating panel nie dostaje sam fokusu klawiatury,
-        # a bez key-window textarea kompozytora nie przyjmie znaku. Aktywujemy
-        # apkę (bez Docka/menu — jesteśmy accessory), potem czynimy panel key.
+        # An accessory + nonactivating panel does not get keyboard focus on
+        # its own, and without a key window the composer textarea accepts no
+        # character. We activate the app (no Dock/menu — we are an accessory),
+        # then make the panel key.
         self._shown_at = time.monotonic()
         AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         self._panel.makeKeyAndOrderFront_(None)
@@ -437,9 +440,9 @@ class MenuBarApp:
         self._panel.orderOut_(None)
 
     def _note_resign_key(self) -> None:
-        # Utrata key-window chowa kartę (klik w inną apkę). Ale świeżo pokazany
-        # panel potrafi raz zrezygnować z key, zanim aktywacja się ustabilizuje
-        # — bez tego okna karta zamykałaby się natychmiast po otwarciu.
+        # Losing the key window hides the card (a click into another app). But
+        # a freshly shown panel can resign key once before activation stabilizes
+        # — without this window the card would close immediately after opening.
         if self._panel is None or not self._panel.isVisible():
             return
         if time.monotonic() - self._shown_at < PANEL_REOPEN_SUPPRESS_SECONDS:

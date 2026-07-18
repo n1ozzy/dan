@@ -1,5 +1,8 @@
 # Jarvis v4.1 — Product Definition
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 > **Status:** FROZEN (Prompt 00A — architecture & contract freeze).
 > This document describes *what* Jarvis v4.1 is and *why*. The binding data
 > shapes live in [CONTRACTS.md](CONTRACTS.md); the binding decisions live in

@@ -1,5 +1,8 @@
 # Jarvis v4.1 — Security Model (FROZEN)
 
+> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
+> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+
 > **SUPERSEDED FOR THE ACTIVE OWNER RUNTIME (2026-07-13):** this document
 > describes the older restrictive approval architecture. Model-originated tools
 > now execute directly through the registry and are recorded once; they do not

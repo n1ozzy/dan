@@ -6,7 +6,7 @@ Two layers under test:
   vm sandbox, same idiom as ``test_panel_assets.py``): every operator control
   maps to exactly one daemon route, an offline daemon blocks mutations, the
   voice stage labels distinguish accepted/synthesizing/played, and the
-  "DAN padł"/"DAN znów działa" notifications fire exactly once per edge;
+  "DAN went down"/"DAN is back up" notifications fire exactly once per edge;
 * the daemon endpoints backing those intents: ``POST
   /voice/queue/current/cancel`` (skip the claimed row, 404 when nothing is
   playing) and ``GET /sessions`` (truthful session/model usage — unknown is
@@ -133,13 +133,13 @@ def test_panel_distinguishes_accepted_synthesized_and_played(tmp_path: Path) -> 
         """
         const label = context.voiceStageLabel;
 
-        assert.strictEqual(label({ status: "queued", playback_confirmed: false }), "przyjęto");
-        assert.strictEqual(label({ status: "synthesizing", playback_confirmed: false }), "syntetyzowanie");
+        assert.strictEqual(label({ status: "queued", playback_confirmed: false }), "accepted");
+        assert.strictEqual(label({ status: "synthesizing", playback_confirmed: false }), "synthesizing");
         // Synthesis done but playback telemetry not confirmed => still not "played".
-        assert.strictEqual(label({ status: "done", playback_confirmed: false }), "syntetyzowanie");
-        assert.strictEqual(label({ status: "done", playback_confirmed: true }), "odtworzono");
-        assert.strictEqual(label({ status: "cancelled", playback_confirmed: false }), "anulowano");
-        assert.strictEqual(label({ status: "failed", playback_confirmed: false }), "błąd");
+        assert.strictEqual(label({ status: "done", playback_confirmed: false }), "synthesizing");
+        assert.strictEqual(label({ status: "done", playback_confirmed: true }), "played");
+        assert.strictEqual(label({ status: "cancelled", playback_confirmed: false }), "cancelled");
+        assert.strictEqual(label({ status: "failed", playback_confirmed: false }), "error");
         """,
     )
 
@@ -156,11 +156,11 @@ def test_down_and_recovered_notify_once(tmp_path: Path) -> None:
         tracker.poll(false);
         tracker.poll(true);
         tracker.poll(true);
-        assert.deepStrictEqual(messages, ["DAN padł", "DAN znów działa"]);
+        assert.deepStrictEqual(messages, ["DAN went down", "DAN is back up"]);
 
         tracker.poll(false);
         tracker.poll(false);
-        assert.deepStrictEqual(messages, ["DAN padł", "DAN znów działa", "DAN padł"]);
+        assert.deepStrictEqual(messages, ["DAN went down", "DAN is back up", "DAN went down"]);
 
         // A healthy first observation is not news.
         const quiet = [];
