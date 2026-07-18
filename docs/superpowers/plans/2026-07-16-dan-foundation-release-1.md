@@ -1614,8 +1614,15 @@ git commit -m "docs: add DAN operator and transfer guide"
 
 - [ ] **Step 1: Freeze the accepted branch and run automated gates**
 
+> **Korekta 2026-07-18:** prawdziwa linia integracyjna Release 1 to branch
+> `agent/dan-release1-integration` (worktree `DAN-task2-wt`); stary
+> `feat/dan-foundation-release1` w `DAN-release1-wt` kończy się na Tasku 1
+> i jest brudnym zlepkiem — nie wolno go commitować ani wdrażać. Wszystkie
+> odwołania do `DAN-release1-wt`/`feat/dan-foundation-release1` w Task 14
+> czytaj jako `DAN-task2-wt`/`agent/dan-release1-integration`.
+
 ```bash
-cd /Users/n1_ozzy/Documents/dev/DAN-release1-wt
+cd /Users/n1_ozzy/Documents/dev/DAN-task2-wt
 git status --short --branch
 python scripts/dan-test-baseline --compare ~/.dan/migration/test-baseline.json
 pytest -q -m 'not live_manual'
@@ -1667,9 +1674,9 @@ Before touching the original path, stop any runtime consuming it. Then:
 ```bash
 cd /Users/n1_ozzy/Documents/dev/jarvis
 git status --short --branch
-git merge --ff-only feat/dan-foundation-release1
+git merge --ff-only agent/dan-release1-integration
 git rev-parse HEAD
-git worktree remove /Users/n1_ozzy/Documents/dev/DAN-release1-wt
+git worktree remove /Users/n1_ozzy/Documents/dev/DAN-task2-wt
 ```
 
 If the original tree has unrelated dirty changes, stop and preserve them explicitly; never stash or overwrite. The commit SHA must equal the fully verified feature head.
