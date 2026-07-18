@@ -193,13 +193,17 @@ class _AVFoundationBackend:
         self._engine = AVFoundation.AVAudioEngine.alloc().init()
         self._node = AVFoundation.AVAudioPlayerNode.alloc().init()
         self._engine.attachNode_(self._node)
-        self._engine.connect_to_format_(
-            self._node,
-            self._engine.mainMixerNode(),
-            None,
-        )
+        # The node is connected lazily, per buffer format: CoreAudio aborts a
+        # schedule whose channel count differs from the node's output
+        # connection ("_outputFormat.channelCount == buffer.format.channelCount"),
+        # and the engine-default connection is the stereo device format while
+        # synthesized WAVs are mono. The mixer upmixes/resamples to the device.
+        self._connected_format = None
 
     def start(self) -> None:
+        # Touching mainMixerNode materializes the mixer -> output path so the
+        # engine can start before the first player-node connection exists.
+        self._engine.mainMixerNode()
         result = self._engine.startAndReturnError_(None)
         success = result[0] if isinstance(result, tuple) else result
         if not success:
@@ -222,7 +226,7 @@ class _AVFoundationBackend:
         audio_format = (
             self._av.AVAudioFormat.alloc()
             .initWithCommonFormat_sampleRate_channels_interleaved_(
-                self._av.AVAudioPCMFormatInt16,
+                self._av.AVAudioPCMFormatFloat32,
                 float(sample_rate),
                 channels,
                 False,
@@ -235,14 +239,34 @@ class _AVFoundationBackend:
         buffer.setFrameLength_(frame_count)
         samples = array("h")
         samples.frombytes(pcm)
-        channel_data = buffer.int16ChannelData()
+        scale = 1.0 / 32768.0
+        channel_data = buffer.floatChannelData()
         for channel_index in range(channels):
+            mono = array("f", (value * scale for value in samples[channel_index::channels]))
             channel = channel_data[channel_index]
-            for frame_index, value in enumerate(samples[channel_index::channels]):
-                channel[frame_index] = value
+            try:
+                view = memoryview(channel.as_buffer(len(mono) * 4)).cast("B")
+                view[: len(mono) * 4] = memoryview(mono.tobytes())
+            except (AttributeError, TypeError, ValueError):
+                for frame_index, value in enumerate(mono):
+                    channel[frame_index] = value
         return buffer
 
+    def _ensure_connected(self, audio_format: Any) -> None:
+        current = self._connected_format
+        if current is not None and current.isEqual_(audio_format):
+            return
+        if current is not None:
+            self._engine.disconnectNodeOutput_(self._node)
+        self._engine.connect_to_format_(
+            self._node,
+            self._engine.mainMixerNode(),
+            audio_format,
+        )
+        self._connected_format = audio_format
+
     def play(self, buffer: Any, completion: Callable[[], None]) -> None:
+        self._ensure_connected(buffer.format())
         self._node.scheduleBuffer_completionHandler_(buffer, completion)
         if not self._node.isPlaying():
             self._node.play()

@@ -97,3 +97,34 @@ rozróżnia ich mastering (clean vs raport) i tempo (1.35 vs 1.18). Wpisane do
 `~/.config/voice/personas.toml` (backup `personas.toml.bak-2026-07-18-jarvis-m1`),
 regresja voice stacku po zmianie czysta. Dowody: verdicts.jsonl i
 det-takes/chosen.json w katalogu konsoli odsłuchowej.
+
+## Live voice gates 2026-07-18 (Task 14 Step 3)
+
+Izolowany `dand` (port 41999, osobny HOME/DB/venv, kod z gałęzi release,
+katalog głosów z wersjonowanego `config/voice/`) grał NA ŻYWO przy operatorze;
+stary broker/supertonic nietknięte (serve :7788 użyty wyłącznie jako ciepły
+engine-klient). Raport: `~/.dan/migration/release1-voice-acceptance.json`
+(mode live-audio, ok=true, dan/danusia/jarvis wszystkie `done` z
+`playback_confirmed=1`).
+
+Dowody z kolejki (RenderSnapshot per request): `dan → M3/raw/1.28`,
+`danusia → F4/clean/1.28`, `jarvis → M1/clean/1.35` (pierwszy live dowód
+castingu M1 w nowym torze), `zaneta (live fallback) → F2/raw/1.15 +
+dsp asetrate=44100*0.93,aresample=44100,atempo=1.075` — wszystko 1:1 z
+zaakceptowanymi trasami tej matrycy. Żaneta offline V3 pozostaje pre-renderem
+poza daemonem (jak udokumentowano wyżej — nie przechodzi przez `dan speak`).
+
+Właściwości kolejki dowiedzione na żywo: dwaj producenci zgłoszeni w odstępie
+<1 s grali ściśle sekwencyjnie (okna playbacku rozłączne); cancel w syntezie
+zatrzymał request przed startem audio; cancel w trakcie mówienia uciął dźwięk
+w 0,17 s bez ogona. Frazy krótkie i długa meldunkowa bez połkniętych końcówek;
+diakrytyka („zażółć gęślą jaźń", „źdźbło i łąka", „pchnąć w tę łódź jeża")
+poprawna w odsłuchu operatora.
+
+Znaleziony i naprawiony na gałęzi release realny bug pierwszego żywego
+odsłuchu: `CoreAudioPlayer` łączył node→mixer w formacie domyślnym (stereo
+urządzenia) i schedulował bufory Int16 mono — CoreAudio przerywał playback
+(`_outputFormat.channelCount == buffer.format.channelCount`). Fix: leniwe
+połączenie w formacie bufora (Float32, mono; mixer miksuje do urządzenia)
+z reconnectem przy zmianie formatu. Pierwszy failed request tego biegu w
+kolejce live-gates to właśnie ten bug (zachowany jako dowód).

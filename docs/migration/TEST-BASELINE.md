@@ -71,3 +71,13 @@ without re-running the suite:
 ```bash
 python3 scripts/dan-test-baseline --verify-report ~/.dan/migration/test-baseline.json
 ```
+
+## Task 14 Step 1 gate run (2026-07-18)
+
+The frozen release branch (post Jarvis-M1 recast) collected `2621` tests:
+`268` failed and `2353` passed in `393.61` seconds; the canonical comparison
+against the preserved report found `0` new and `0` removed IDs
+(`{"new": [], "removed": []}`), so the known-failure contract holds unchanged.
+The `-m 'not live_manual'` verification pass on the same tree reported `267`
+failed / `2354` passed — the same known set with one known-flaky ID passing in
+that run; no new failures in either pass.
