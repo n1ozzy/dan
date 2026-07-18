@@ -24,7 +24,7 @@ gain keeps the existing loudness fallback
 
 | Key | Sources | Reader | Effective old value | Final route | Asset | Audio evidence | Decision |
 |---|---|---|---|---|---|---|---|
-| `persona:jarvis` | active personas, Jarvis TOML, overrides, panel | VoiceResolver | conflicting M3 clean 1.35 and override M2 1.4 | supertonic M3 clean 1.35 DSP none | pinned base M3 | active shared bridge; old override rejected | versioned-final |
+| `persona:jarvis` | active personas, Jarvis TOML, overrides, panel | VoiceResolver | conflicting M3 clean 1.35 and override M2 1.4 | supertonic M1 clean 1.35 DSP none (casting 2026-07-18; wcześniej M3 — kolidował z DAN-em) | pinned base M1 | Ozzy: casting konsoli odsłuchowej 2026-07-18, kandydaci M2/M4/M1, wybrany M1; akceptacja słowna po odsłuchu det-takes | versioned-final |
 | `persona:dan` | active personas plus six backups, say.py, voice turns | VoiceResolver | M3 raw 1.28 active; older 1.25 | supertonic M3 raw 1.28 DSP none | pinned base M3 | active accepted route; raw won mastering audit | versioned-final |
 | `persona:danusia` | active personas plus backups, radio scenarios | VoiceResolver | F4 clean 1.28 active; older 1.25 | supertonic F4 clean 1.28 DSP none | pinned base F4 | active accepted route | versioned-final |
 | `persona:zaneta` | active personas, PERSONA-ZANETA, V3 generators | VoiceResolver plus offline pipeline | live F2 raw 1.15; offline Lily V3 | offline Chatterbox V3 explicit; live fallback supertonic F2 raw 1.15 | local-only reference hash 06f54e0f; no WAV versioned | V3 accepted 0.95 to 1.00; better than V2 | versioned-final-local-only |
@@ -84,3 +84,16 @@ pipeline requires explicit local paths, verifies the Chatterbox source commit
 `65b18437192794391a0308a8f705b1e33e633948` and model snapshot
 `5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18`, disables network fallback, and only
 publishes mono PCM16 candidates scoring at least `0.9`.
+
+## Korekta 2026-07-18: casting głosu Jarvisa
+
+Podczas odsłuchu akceptacyjnego (Task 14) Ozzy odrzucił trasę `persona:jarvis`
+na M3 („Jarvis musi mieć inny głos niż M3" — kolizja barwy z DAN-em, clean vs
+raw nie wystarcza do rozróżnienia). Casting na konsoli odsłuchowej
+(deterministyczne take'y, mastering i tempo produkcyjne, różny tylko kod
+głosu): kandydaci M2 (Jarvis sprzed 2026-07-09), M4 (wolny kod), M1 (barwa
+Maksa/Codexa). **Wybrany: M1** — świadoma kolizja z Maksem ([M1] raport 1.18);
+rozróżnia ich mastering (clean vs raport) i tempo (1.35 vs 1.18). Wpisane do
+`~/.config/voice/personas.toml` (backup `personas.toml.bak-2026-07-18-jarvis-m1`),
+regresja voice stacku po zmianie czysta. Dowody: verdicts.jsonl i
+det-takes/chosen.json w katalogu konsoli odsłuchowej.
