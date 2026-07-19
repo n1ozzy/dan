@@ -1,11 +1,36 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from dan.daemon.intake import IntakeClosedError, IntakeGate, IntakeGateError
 from dan.store.db import close_quietly, initialize_database
+
+
+class RecordingConnection:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        self.statements: list[str] = []
+        self.fail_lease_delete = False
+
+    @property
+    def in_transaction(self) -> bool:
+        return self.connection.in_transaction
+
+    def execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
+        self.statements.append(sql)
+        if self.fail_lease_delete and sql.lstrip().startswith("DELETE FROM intake_leases"):
+            raise sqlite3.OperationalError("simulated lease cleanup failure")
+        return self.connection.execute(sql, parameters)
+
+    def commit(self) -> None:
+        self.connection.commit()
+
+    def rollback(self) -> None:
+        self.connection.rollback()
 
 
 def test_close_blocks_new_admission_but_drains_existing_lease(tmp_path: Path) -> None:
@@ -73,6 +98,30 @@ def test_close_runs_before_close_hook_before_durable_state_change(
     close_quietly(connection)
 
 
+def test_repeated_close_for_same_operation_is_idempotent(tmp_path: Path) -> None:
+    connection = initialize_database(tmp_path / "dan.db")
+    gate = IntakeGate(connection)
+    observed: list[str] = []
+
+    first = gate.close(
+        operation_id="cutover-2",
+        reason="cutover",
+        before_close=lambda prior: observed.append(prior.state),
+    )
+    second = gate.close(
+        operation_id="cutover-2",
+        reason="replacement reason must be ignored",
+        reopen_policy="external",
+        before_close=lambda prior: observed.append(f"duplicate:{prior.state}"),
+    )
+
+    assert second == first
+    assert observed == ["open"]
+    assert second.reason == "cutover"
+    assert second.reopen_policy == "daemon"
+    close_quietly(connection)
+
+
 def test_close_rolls_back_when_before_close_hook_fails(tmp_path: Path) -> None:
     connection = initialize_database(tmp_path / "dan.db")
     gate = IntakeGate(connection)
@@ -89,4 +138,40 @@ def test_close_rolls_back_when_before_close_hook_fails(tmp_path: Path) -> None:
         )
 
     assert gate.snapshot().state == "open"
+    close_quietly(connection)
+
+
+def test_failed_lease_cleanup_does_not_leave_reentrant_bypass(tmp_path: Path) -> None:
+    connection = initialize_database(tmp_path / "dan.db")
+    proxy = RecordingConnection(connection)
+    gate = IntakeGate(proxy)
+
+    with pytest.raises(sqlite3.OperationalError, match="lease cleanup failure"):
+        with gate.admit("text:api"):
+            proxy.fail_lease_delete = True
+
+    proxy.fail_lease_delete = False
+    gate.close(operation_id="restart-after-cleanup-error", reason="restart")
+
+    with pytest.raises(IntakeClosedError):
+        with gate.admit("text:api"):
+            pass
+
+    assert gate.snapshot().active_leases == 1
+    connection.execute("DELETE FROM intake_leases")
+    connection.commit()
+    close_quietly(connection)
+
+
+def test_snapshot_reads_gate_and_lease_count_in_one_statement(tmp_path: Path) -> None:
+    connection = initialize_database(tmp_path / "dan.db")
+    proxy = RecordingConnection(connection)
+    gate = IntakeGate(proxy)
+
+    snapshot = gate.snapshot()
+
+    selects = [statement for statement in proxy.statements if statement.lstrip().startswith("SELECT")]
+    assert snapshot.state == "open"
+    assert snapshot.active_leases == 0
+    assert len(selects) == 1
     close_quietly(connection)
