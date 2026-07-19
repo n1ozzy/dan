@@ -42,3 +42,16 @@ jobs:
         run: |
           cat /tmp/pytest.txt
           test "$(cat /tmp/pytest-status.txt)" = "0"
+      - name: Capture repository Ruff debt
+        run: |
+          set +e
+          ruff check dan tests --output-format=concise > /tmp/ruff-all.txt 2>&1
+          status=$?
+          printf '%s\n' "$status" > /tmp/ruff-all-status.txt
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repository-ruff
+          path: |
+            /tmp/ruff-all.txt
+            /tmp/ruff-all-status.txt
