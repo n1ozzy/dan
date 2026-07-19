@@ -116,8 +116,7 @@ def _call_name(node: ast.Call) -> str | None:
 
 def _is_live_marker(node: ast.AST) -> bool:
     return any(
-        isinstance(item, ast.Attribute) and item.attr == "live_manual"
-        for item in ast.walk(node)
+        isinstance(item, ast.Attribute) and item.attr == "live_manual" for item in ast.walk(node)
     )
 
 
@@ -126,8 +125,7 @@ def _explicit_manual(tree: ast.Module, node_id: str) -> bool:
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
             if any(
-                isinstance(target, ast.Name) and target.id == "pytestmark"
-                for target in targets
+                isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets
             ):
                 if statement.value is not None and _is_live_marker(statement.value):
                     return True
@@ -239,8 +237,7 @@ def _pytest_plugins(tree: ast.Module) -> tuple[tuple[str, ...], bool]:
             continue
         targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
         if not any(
-            isinstance(target, ast.Name) and target.id == "pytest_plugins"
-            for target in targets
+            isinstance(target, ast.Name) and target.id == "pytest_plugins" for target in targets
         ):
             continue
         try:
@@ -467,8 +464,7 @@ def _local_dependency_scope(
                 if resolution_reason is None:
                     continue
                 if (
-                    resolution_reason
-                    == "unresolved repository-local import dependency"
+                    resolution_reason == "unresolved repository-local import dependency"
                     and load_namespace_members(
                         module_name,
                         import_node.names,
@@ -587,9 +583,7 @@ def _live_reasons(
                 continue
             scanned.add(name)
             scope.extend(fixture.body)  # type: ignore[union-attr]
-            fixture_source = next(
-                source for source in sources if fixture in source.tree.body
-            )
+            fixture_source = next(source for source in sources if fixture in source.tree.body)
             dependency_roots.append(
                 (fixture_source, fixture.body)  # type: ignore[union-attr]
             )
@@ -619,9 +613,13 @@ def _live_reasons(
                     "create_subprocess_exec",
                     "create_subprocess_shell",
                 }:
-                    argument = node.args[0] if node.args else next(
-                        (keyword.value for keyword in node.keywords if keyword.arg == "args"),
-                        None,
+                    argument = (
+                        node.args[0]
+                        if node.args
+                        else next(
+                            (keyword.value for keyword in node.keywords if keyword.arg == "args"),
+                            None,
+                        )
                     )
                     if argument is not None:
                         command = _literal_command(argument)
@@ -648,20 +646,29 @@ def _live_reasons(
 
 def _controlled_python_paths() -> tuple[str, ...]:
     paths = {
-        path
-        for key in ("purelib", "platlib")
-        if (path := sysconfig.get_path(key)) is not None
+        path for key in ("purelib", "platlib") if (path := sysconfig.get_path(key)) is not None
     }
     return tuple(sorted(paths))
 
 
-def _pytest_command(*arguments: str) -> list[str]:
-    bootstrap = (
-        "import sys; "
-        f"sys.path.extend({list(_controlled_python_paths())!r}); "
-        "import pytest; raise SystemExit(pytest.main(sys.argv[1:]))"
-    )
-    return [sys.executable, "-I", "-S", "-c", bootstrap, *arguments]
+def _pytest_command(*arguments: str, pytest_plugin: str | None = None) -> list[str]:
+    command = [str(sys.executable), "-I", "-S"]
+    if os.environ.get("DAN_TEST_NO_MODULE_RUNNER") == "1":
+        command.extend(["-m", "pytest"])
+    else:
+        command.extend(
+            [
+                "-c",
+                (
+                    "import sys; "
+                    f"sys.path.extend({list(_controlled_python_paths())!r}); "
+                    "import pytest; raise SystemExit(pytest.main(sys.argv[1:]))"
+                ),
+            ]
+        )
+    if pytest_plugin is not None:
+        command.extend(["-p", pytest_plugin])
+    return command + [*arguments]
 
 
 def _collection_environment(env: Mapping[str, str] | None) -> dict[str, str]:
@@ -674,9 +681,14 @@ def _collection_environment(env: Mapping[str, str] | None) -> dict[str, str]:
     }
 
 
-def collect_node_ids(repo_root: Path, *, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
+def collect_node_ids(
+    repo_root: Path,
+    *,
+    env: Mapping[str, str] | None = None,
+    pytest_plugin: str | None = None,
+) -> tuple[str, ...]:
     completed = subprocess.run(
-        _pytest_command("--collect-only", "-q"),
+        _pytest_command("--collect-only", "-q", pytest_plugin=pytest_plugin),
         cwd=repo_root,
         env=_collection_environment(env),
         check=False,
@@ -685,9 +697,7 @@ def collect_node_ids(repo_root: Path, *, env: Mapping[str, str] | None = None) -
     )
     if completed.returncode != 0:
         raise RuntimeError(
-            completed.stderr.strip()
-            or completed.stdout.strip()
-            or "pytest collection failed"
+            completed.stderr.strip() or completed.stdout.strip() or "pytest collection failed"
         )
     nodes: list[str] = []
     for line in completed.stdout.splitlines():
