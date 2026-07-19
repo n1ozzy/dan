@@ -23,4 +23,20 @@ jobs:
           path: /tmp/ruff-fix.patch
       - run: ruff check dan/daemon/intake.py tests/test_intake_gate.py
       - run: python -m compileall dan/daemon/intake.py tests/test_intake_gate.py
-      - run: python -m pytest -q tests/test_intake_gate.py
+      - name: Capture focused pytest
+        run: |
+          set +e
+          python -m pytest -q tests/test_intake_gate.py > /tmp/pytest.txt 2>&1
+          status=$?
+          printf '%s\n' "$status" > /tmp/pytest-status.txt
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intake-pytest
+          path: |
+            /tmp/pytest.txt
+            /tmp/pytest-status.txt
+      - name: Enforce focused pytest
+        run: |
+          cat /tmp/pytest.txt
+          test "$(cat /tmp/pytest-status.txt)" = "0"
