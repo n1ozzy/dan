@@ -170,7 +170,11 @@ def test_snapshot_reads_gate_and_lease_count_in_one_statement(tmp_path: Path) ->
 
     snapshot = gate.snapshot()
 
-    selects = [statement for statement in proxy.statements if statement.lstrip().startswith("SELECT")]
+    selects = [
+        statement
+        for statement in proxy.statements
+        if statement.lstrip().startswith("SELECT")
+    ]
     assert snapshot.state == "open"
     assert snapshot.active_leases == 0
     assert len(selects) == 1
