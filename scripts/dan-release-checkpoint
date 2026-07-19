@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Create one immutable Release 1 checkpoint evidence envelope."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from dan.release.checkpoint import (  # noqa: E402
+    capture_release_checkpoint,
+    write_checkpoint_exclusive,
+)
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Write an immutable DAN Release 1 checkpoint"
+    )
+    parser.add_argument("--repo", required=True, type=Path)
+    parser.add_argument("--candidate-tag", required=True)
+    parser.add_argument(
+        "--phase", required=True, choices=("precommit-delta", "final-clean")
+    )
+    parser.add_argument("--expected-head", required=True)
+    parser.add_argument("--scope-manifest", required=True, type=Path)
+    parser.add_argument("--scope-sha256", required=True)
+    parser.add_argument("--output", required=True, type=Path)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    checkpoint = capture_release_checkpoint(
+        repo=args.repo,
+        candidate_tag=args.candidate_tag,
+        phase=args.phase,
+        expected_head=args.expected_head,
+        scope_manifest=args.scope_manifest,
+        scope_sha256=args.scope_sha256,
+    )
+    write_checkpoint_exclusive(args.output.expanduser().absolute(), checkpoint)
+    print(
+        f"checkpoint written: {args.output.expanduser().absolute()} "
+        f"phase={checkpoint.phase} subject_sha={checkpoint.head}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
