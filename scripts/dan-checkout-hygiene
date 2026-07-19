@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Plan or apply literal cache-only cleanup of a legacy checkout namespace."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from dan.release.checkout_hygiene import (  # noqa: E402
+    UnsafeCleanupPlan,
+    UnsafeCleanupTarget,
+    UnsafeReportOutput,
+    run_checkout_hygiene,
+)
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Inspect or safely remove caches from the exact repo/jarvis root"
+    )
+    parser.add_argument("--repo", required=True, type=Path)
+    parser.add_argument("--legacy-root", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--apply-safe-cache",
+        action="store_true",
+        help="remove only the exact cache entries in an eligible plan",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    try:
+        report = run_checkout_hygiene(
+            repo=args.repo,
+            legacy_root=args.legacy_root,
+            output=args.output.expanduser().absolute(),
+            apply_safe_cache=args.apply_safe_cache,
+        )
+    except (
+        FileExistsError,
+        OSError,
+        UnsafeCleanupPlan,
+        UnsafeCleanupTarget,
+        UnsafeReportOutput,
+    ) as exc:
+        print(f"checkout hygiene refused: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"checkout hygiene report: {args.output.expanduser().absolute()} "
+        f"mode={report.mode} status={report.status}"
+    )
+    if args.apply_safe_cache and report.status != "applied":
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

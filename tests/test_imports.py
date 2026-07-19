@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-from importlib.machinery import PathFinder
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tomllib
+from importlib.machinery import PathFinder
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 
 MODULES = (
     "dan",
@@ -106,11 +105,16 @@ def project_scripts(path: Path) -> dict[str, str]:
 
 
 def test_final_python_package_is_dan() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    assert not os.path.lexists(repo / "jarvis"), (
+        "physical repo/jarvis namespace remains; run the reviewed checkout-hygiene "
+        "plan and remove only explicitly permitted cache entries"
+    )
     original_meta_path = sys.meta_path[:]
     original_path = sys.path[:]
     try:
         sys.meta_path[:] = [PathFinder]
-        sys.path[:] = [str(Path(__file__).resolve().parents[1])]
+        sys.path[:] = [str(repo)]
         assert importlib.util.find_spec("dan") is not None
         assert importlib.util.find_spec("jarvis") is None
     finally:
