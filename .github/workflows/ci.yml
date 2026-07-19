@@ -13,6 +13,14 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install -e ".[dev]"
+      - name: Capture Ruff autofix
+        run: |
+          ruff check dan/daemon/intake.py tests/test_intake_gate.py --fix || true
+          git diff -- dan/daemon/intake.py tests/test_intake_gate.py > /tmp/ruff-fix.patch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ruff-fix
+          path: /tmp/ruff-fix.patch
       - run: ruff check dan/daemon/intake.py tests/test_intake_gate.py
       - run: python -m compileall dan/daemon/intake.py tests/test_intake_gate.py
       - run: python -m pytest -q tests/test_intake_gate.py
