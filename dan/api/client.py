@@ -110,10 +110,32 @@ class DaemonClient:
     def put(self, path: str, payload: Any) -> dict[str, Any]:
         return self.request("PUT", path, payload=payload)
 
-    # --- typed voice/config surface -----------------------------------------
-
     def health(self) -> dict[str, Any]:
         return self.get("/health")
+
+    def intake_state(self) -> dict[str, Any]:
+        return self.get("/runtime/intake")
+
+    def close_intake(
+        self,
+        operation_id: str,
+        reason: str,
+        *,
+        reopen_policy: str = "daemon",
+        timeout_seconds: float = 30.0,
+    ) -> dict[str, Any]:
+        return self.post(
+            "/runtime/intake/close",
+            {
+                "operation_id": operation_id,
+                "reason": reason,
+                "reopen_policy": reopen_policy,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+
+    def open_intake(self, operation_id: str) -> dict[str, Any]:
+        return self.post("/runtime/intake/open", {"operation_id": operation_id})
 
     def speak(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.post("/voice/speak", payload)
