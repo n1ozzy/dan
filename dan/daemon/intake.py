@@ -6,10 +6,10 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any
 
 from dan.events.models import utc_now_iso
 
@@ -71,11 +71,16 @@ class IntakeGate:
         finally:
             self._local.depth -= 1
             if self._local.depth == 0:
-                with self._write():
-                    self._conn.execute(
-                        "DELETE FROM intake_leases WHERE token = ?", (token,)
-                    )
-                self._local.token = None
+                try:
+                    with self._write():
+                        self._conn.execute(
+                            "DELETE FROM intake_leases WHERE token = ?", (token,)
+                        )
+                finally:
+                    # A failed durable cleanup must not leave this thread looking
+                    # re-entrant: that would let its next request bypass a closed gate.
+                    self._local.token = None
+                    self._local.depth = 0
 
     def close(
         self,
@@ -90,10 +95,12 @@ class IntakeGate:
         reopen_policy = _reopen_policy(reopen_policy)
         with self._write():
             current = self.snapshot()
-            if current.state == "closed" and current.operation_id != operation_id:
-                raise IntakeGateError(
-                    f"Intake is already closed by {current.operation_id or 'unknown'}."
-                )
+            if current.state == "closed":
+                if current.operation_id != operation_id:
+                    raise IntakeGateError(
+                        f"Intake is already closed by {current.operation_id or 'unknown'}."
+                    )
+                return current
             if before_close is not None:
                 before_close(current)
             self._conn.execute(
@@ -137,13 +144,19 @@ class IntakeGate:
 
     def snapshot(self) -> IntakeState:
         row = self._conn.execute(
-            "SELECT state, operation_id, reason, reopen_policy "
-            "FROM intake_gate WHERE singleton = 1"
+            """
+            SELECT gate.state, gate.operation_id, gate.reason, gate.reopen_policy,
+                   COUNT(leases.token)
+            FROM intake_gate AS gate
+            LEFT JOIN intake_leases AS leases ON 1 = 1
+            WHERE gate.singleton = 1
+            GROUP BY gate.singleton, gate.state, gate.operation_id, gate.reason,
+                     gate.reopen_policy
+            """
         ).fetchone()
         if row is None:
             raise IntakeGateError("Durable intake gate row is missing.")
-        leases = int(self._conn.execute("SELECT COUNT(*) FROM intake_leases").fetchone()[0])
-        return IntakeState(str(row[0]), row[1], row[2], str(row[3]), leases)
+        return IntakeState(str(row[0]), row[1], row[2], str(row[3]), int(row[4]))
 
     @contextmanager
     def _write(self) -> Iterator[None]:
