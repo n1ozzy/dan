@@ -38,11 +38,6 @@ stream_args = [
 model = "claude-sonnet-5"
 timeout_seconds = 180
 
-[brain.groq]
-api_key = ""
-model = "llama-3.3-70b-versatile"
-timeout_seconds = 60
-
 [memory]
 enabled = true
 max_active_blocks = 50

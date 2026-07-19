@@ -31,7 +31,7 @@ def test_fresh_install_defaults_to_the_single_persistent_claude_adapter() -> Non
     brain = BrainConfig()
 
     assert brain.default_adapter == "claude_cli"
-    assert brain.groq.api_key == ""  # secrets belong in ~/.dan/config.toml
+    assert not hasattr(brain, "groq")
     assert brain.provider_sessions_are_memory is False
     assert not hasattr(brain, "claude_cli_warm")
     assert brain.context_window_tokens == 200_000
@@ -611,7 +611,6 @@ def test_secret_redaction_redacts_api_key_like_values() -> None:
     original = (
         "OPENAI_API_KEY=sk-proj-abc123 "
         "ANTHROPIC_API_KEY=sk-ant-secret "
-        "GROQ_API_KEY=gsk_secret "
         "xi-api-key: xi_12345 "
         "Authorization: Bearer secret-token"
     )
@@ -620,10 +619,9 @@ def test_secret_redaction_redacts_api_key_like_values() -> None:
 
     assert "sk-proj-abc123" not in redacted
     assert "sk-ant-secret" not in redacted
-    assert "gsk_secret" not in redacted
     assert "xi_12345" not in redacted
     assert "secret-token" not in redacted
-    assert redacted.count("[REDACTED]") >= 5
+    assert redacted.count("[REDACTED]") >= 4
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:

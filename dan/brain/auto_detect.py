@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from dan.brain.claude_cli_contract import ClaudeCliEffortLevel
-from dan.brain.groq_adapter import GROQ_MODELS
 
 _CLAUDE_CLI_EFFORTS = [e.value for e in ClaudeCliEffortLevel]
 _CODEX_CLI_EFFORTS = [e.value for e in ClaudeCliEffortLevel if e != ClaudeCliEffortLevel.MAX]
@@ -116,38 +114,11 @@ def detect_codex_cli() -> ProviderInfo:
     )
 
 
-def detect_groq() -> ProviderInfo:
-    """Detect Groq API availability via API key."""
-    api_key = os.environ.get("GROQ_API_KEY", "").strip()
-    if not api_key:
-        return ProviderInfo(
-            name="groq",
-            display_name="Groq API",
-            available=False,
-            models=[],
-            efforts=[],
-            streaming=True,
-            tools=False,
-            config_hint="Set GROQ_API_KEY environment variable",
-        )
-
-    return ProviderInfo(
-        name="groq",
-        display_name="Groq API",
-        available=True,
-        models=list(GROQ_MODELS),
-        efforts=[],
-        streaming=True,
-        tools=False,
-    )
-
-
 def detect_all_providers() -> dict[str, ProviderInfo]:
     """Detect all available providers on the system."""
     return {
         "claude_cli": detect_claude_cli(),
         "codex_cli": detect_codex_cli(),
-        "groq": detect_groq(),
     }
 
 

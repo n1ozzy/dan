@@ -127,9 +127,6 @@ brain.test.mcp_config_path
 brain.test.strict_mcp_config
 brain.test.timeout_seconds
 brain.test.stream_args
-brain.groq.api_key
-brain.groq.model
-brain.groq.timeout_seconds
 memory.enabled
 memory.max_active_blocks
 memory.max_context_chars
@@ -316,7 +313,7 @@ REJECTED_KEYS: Mapping[str, str] = {
     "brain.code_effort": "provider-specific donor override",
     "brain.code_model": "provider-specific donor override",
     "elevenlabs.model": "unsupported provider override",
-    "groq.model": "unsupported provider override",
+    "groq.model": "removed provider override",
     "net.block_private": "dead donor override",
     "net.enabled": "dead donor override",
     "persona.frequency_penalty": "persona behavior is versioned canon",
@@ -733,7 +730,6 @@ def discovered_runtime_config_keys() -> set[str]:
         BrainConfig,
         DaemonConfig,
         DatabaseConfig,
-        GroqConfig,
         LaunchdConfig,
         MemoryConfig,
         PanelConfig,
@@ -759,7 +755,6 @@ def discovered_runtime_config_keys() -> set[str]:
             "claude_cli": BrainCliAdapterConfig,
             "codex_cli": BrainCliAdapterConfig,
             "test": BrainCliAdapterConfig,
-            "groq": GroqConfig,
         }
     }
 

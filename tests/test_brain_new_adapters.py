@@ -1,46 +1,29 @@
-"""Tests for new brain adapters: Groq, Qwen, Ollama, Eco Brain."""
+"""Tests for the retained experimental brain adapters and Claude-only runtime."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from dan.brain import (
     BrainManager,
     EcoBrainAdapter,
-    GroqAdapter,
     OllamaAdapter,
     QwenAdapter,
 )
 
 
-class TestGroqAdapter:
-    """Tests for Groq API adapter."""
+def test_public_brain_surface_excludes_groq() -> None:
+    import dan.brain as brain
 
-    @pytest.fixture
-    def groq_adapter(self):
-        with patch("httpx.AsyncClient"):
-            adapter = GroqAdapter(
-                api_key="test-key",
-                model="llama-3.3-70b-versatile",
-                timeout_seconds=30.0,
-            )
-            yield adapter
+    assert not hasattr(brain, "GroqAdapter")
 
-    def test_available_models_returns_groq_models(self, groq_adapter):
-        models = groq_adapter.available_models()
-        assert "llama-3.3-70b-versatile" in models
-        assert "llama-3.1-8b-instant" in models
-        assert isinstance(models, list)
 
-    def test_default_model_is_first_available(self, groq_adapter):
-        assert groq_adapter.default_model == "llama-3.3-70b-versatile"
+def test_provider_auto_detection_excludes_groq() -> None:
+    from dan.brain.auto_detect import detect_all_providers
 
-    def test_invalid_model_defaults_to_first(self):
-        with patch("httpx.AsyncClient"):
-            adapter = GroqAdapter(api_key="test", model="invalid-model")
-            assert adapter.default_model == "llama-3.3-70b-versatile"
+    assert "groq" not in detect_all_providers()
 
 
 class TestQwenAdapter:
@@ -149,7 +132,7 @@ class TestBrainManagerRegistration:
         # Code only), even if the binary is installed.
         assert "codex_cli" not in names
 
-    def test_manager_does_not_restore_configured_provider_maze(self):
+    def test_manager_ignores_stale_provider_attributes(self):
         """Owner contract: even stale provider config resolves to cold Claude only."""
         from types import SimpleNamespace
 
@@ -170,16 +153,10 @@ class TestBrainManagerRegistration:
         )
         config.brain.codex_cli = SimpleNamespace(enabled=False, command="codex", args=[], model="", timeout_seconds=120)
 
-        with patch("dan.brain.groq_adapter.create_groq_adapter") as mock_create:
-            mock_adapter = MagicMock()
-            mock_adapter.name = "groq"
-            mock_create.return_value = mock_adapter
-
-            manager = BrainManager.from_config(config)
-            names = manager.adapter_names()
-            assert names == ["claude_cli"]
-            assert manager.current_adapter_name == "claude_cli"
-            mock_create.assert_not_called()
+        manager = BrainManager.from_config(config)
+        names = manager.adapter_names()
+        assert names == ["claude_cli"]
+        assert manager.current_adapter_name == "claude_cli"
 
 
 if __name__ == "__main__":

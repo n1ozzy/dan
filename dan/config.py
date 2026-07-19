@@ -146,13 +146,6 @@ class BrainCliAdapterConfig:
 
 
 @dataclass(frozen=True)
-class GroqConfig:
-    api_key: str = ""
-    model: str = "llama-3.3-70b-versatile"
-    timeout_seconds: int = 60
-
-
-@dataclass(frozen=True)
 class BrainConfig:
     default_adapter: str = "claude_cli"
     default_model: str = "claude-sonnet-5"
@@ -172,7 +165,6 @@ class BrainConfig:
     test: BrainCliAdapterConfig = field(
         default_factory=lambda: BrainCliAdapterConfig(command="test", args=[], enabled=False)
     )
-    groq: GroqConfig = field(default_factory=GroqConfig)
 
 
 @dataclass(frozen=True)
@@ -722,24 +714,9 @@ def _build_brain_config(raw: dict[str, Any]) -> BrainConfig:
                 default_command="test",
                 default_args=[],
             ),
-            groq=_build_groq_config(raw.get("groq")),
         )
     except TypeError as exc:
         raise ConfigError(f"Invalid config section BrainConfig: {exc}") from exc
-
-
-def _build_groq_config(raw: Any) -> GroqConfig:
-    if raw is None:
-        raw = {}
-    if not isinstance(raw, dict):
-        raise ConfigError("brain.groq must be a table")
-    allowed = {field.name for field in fields(GroqConfig)}
-    selected = {key: value for key, value in raw.items() if key in allowed}
-    try:
-        return GroqConfig(**selected)
-    except TypeError as exc:
-        raise ConfigError(f"Invalid config section brain.groq: {exc}") from exc
-
 
 def _build_brain_cli_config(
     section_name: str,

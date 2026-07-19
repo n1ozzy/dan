@@ -1009,7 +1009,6 @@ def test_context_builder_has_no_provider_network_or_subprocess_dependencies() ->
         "claude_cli_adapter",
         "codex_cli_adapter",
         "openai_adapter",
-        "groq",
         "ollama",
     )
 

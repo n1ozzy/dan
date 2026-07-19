@@ -4243,8 +4243,8 @@ def test_model_effort_support_maps_efforts_per_model() -> None:
 def test_model_effort_support_intersects_with_empty_provider_ladder() -> None:
     from dan.api.routes_runtime import _model_effort_support
 
-    # A provider that reports no effort ladder (e.g. groq) yields [] for every
-    # model, regardless of what the model itself would otherwise accept.
+    # A provider that reports no effort ladder yields [] for every model,
+    # regardless of what the model itself would otherwise accept.
     support = _model_effort_support(["claude-opus-4-8", "claude-haiku-4-5"], [])
     assert support == {"claude-opus-4-8": [], "claude-haiku-4-5": []}
     # Blank ids are skipped entirely.

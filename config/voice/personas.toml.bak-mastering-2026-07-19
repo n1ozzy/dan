@@ -1,0 +1,164 @@
+# Versioned voice routes. Every route is complete for Task 5's strict resolver.
+# DSP is resolver-owned render data and must remain identical through playback.
+
+[jarvis]
+engine = "supertonic"
+voice = "M1"  # casting 2026-07-18: Ozzy rejected M3 (timbre collision with DAN), picked M1 from the candidates M2/M4/M1
+mastering = "clean"
+speed = 1.35
+dsp = "none"
+
+[dan]
+engine = "supertonic"
+voice = "M3"
+mastering = "raw"
+speed = 1.28
+dsp = "none"
+
+[danusia]
+engine = "supertonic"
+voice = "F4"
+mastering = "clean"
+speed = 1.28
+dsp = "none"
+
+[zdzicho]
+engine = "supertonic"
+voice = "M5"
+mastering = "raw"
+speed = 0.95
+dsp = "asetrate=44100*0.9,aresample=44100,atempo=1.111"
+
+[krysia]
+engine = "supertonic"
+voice = "F1"
+mastering = "raw"
+speed = 0.95
+dsp = "none"
+
+[komentator]
+engine = "supertonic"
+voice = "M2M1"
+mastering = "raw"
+speed = 1.45
+dsp = "none"
+
+[spiker]
+engine = "supertonic"
+voice = "ROBOT"
+mastering = "raw"
+speed = 1.2
+dsp = "none"
+
+[ksiadz]
+engine = "supertonic"
+voice = "M1"
+mastering = "raw"
+speed = 1.05
+dsp = "none"
+
+[typ_z_telefonu]
+engine = "supertonic"
+voice = "M1M3"
+mastering = "raw"
+speed = 1.1
+dsp = "highpass=f=500,lowpass=f=2800"
+
+[blondyna]
+engine = "supertonic"
+voice = "F2"
+mastering = "raw"
+speed = 1.15
+dsp = "asetrate=44100*0.95,aresample=44100,atempo=1.053"
+
+[zagadka]
+engine = "supertonic"
+voice = "F1M1"
+mastering = "raw"
+speed = 1.1
+dsp = "none"
+
+[radiowiec]
+engine = "supertonic"
+voice = "M1M3"
+mastering = "raw"
+speed = 1.15
+dsp = "highpass=f=400,lowpass=f=3000,tremolo=f=5:d=0.2"
+
+[zaneta]
+engine = "supertonic"
+voice = "F2"
+mastering = "raw"
+speed = 1.15
+dsp = "asetrate=44100*0.93,aresample=44100,atempo=1.075"
+offline_pipeline = "chatterbox-v3-zaneta"
+
+[M1]
+engine = "supertonic"
+voice = "M1"
+mastering = "raport"
+speed = 1.18
+dsp = "none"
+
+[M2]
+engine = "supertonic"
+voice = "M2"
+mastering = "raw"
+speed = 1.2
+dsp = "none"
+
+[M3]
+engine = "supertonic"
+voice = "M3"
+mastering = "raw"
+speed = 1.25
+dsp = "none"
+
+[M4]
+engine = "supertonic"
+voice = "M4"
+mastering = "raw"
+speed = 1.15
+dsp = "none"
+
+[M5]
+engine = "supertonic"
+voice = "M5"
+mastering = "raw"
+speed = 1.1
+dsp = "none"
+
+[F1]
+engine = "supertonic"
+voice = "F1"
+mastering = "clean"
+speed = 1.15
+dsp = "none"
+
+[F2]
+engine = "supertonic"
+voice = "F2"
+mastering = "raw"
+speed = 1.25
+dsp = "none"
+
+[F3]
+engine = "supertonic"
+voice = "F3"
+mastering = "raw"
+speed = 1.25
+dsp = "none"
+
+[F4]
+engine = "supertonic"
+voice = "F4"
+mastering = "clean"
+speed = 1.25
+dsp = "none"
+
+[F5]
+engine = "supertonic"
+voice = "F5"
+mastering = "raw"
+speed = 1.25
+dsp = "none"

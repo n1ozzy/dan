@@ -125,7 +125,7 @@ def _model_effort_support(
     """Map each model id -> the effort levels that model actually accepts.
 
     Intersected with the provider's own effort ladder (so a provider that
-    reports no efforts, e.g. groq, yields [] for every model). Unknown models
+    reports no efforts yields [] for every model). Unknown models
     get the full ladder.
 
     NOTE (known altitude debt): capability is matched by substring on the model

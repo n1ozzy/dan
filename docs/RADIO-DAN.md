@@ -20,7 +20,7 @@ Radio will be a tab of the same product, on the same contracts:
 - **the Chatterbox V3 offline pipeline** — prepared lines rendered outside the
   live queue;
 - **brain adapters** (participant = an explicit `identity + brain + voice`):
-  `claude_cli`, `codex_cli`, `groq`, `openai`, `ollama`, `qwen`, `eco`
+  `claude_cli`, `codex_cli`, `openai`, `ollama`, `qwen`, `eco`
   plus `mock`/`test` for testing — all behind the common `BrainAdapter`
   contract (`dan/brain/`);
 - **the panel + event stream** — the future "what's playing / what's waiting"

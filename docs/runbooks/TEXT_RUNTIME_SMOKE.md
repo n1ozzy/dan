@@ -31,7 +31,7 @@ SMOKE_KEEP_ARTIFACTS=1 scripts/smoke-text-runtime.sh
 - This smoke does not use tools.
 - This smoke does not use workers.
 - This smoke does not use real providers.
-- It does not start the panel, audio runtime, TTS/STT, Claude, Codex, Groq, OpenAI, Ollama, or any provider subprocess.
+- It does not start the panel, audio runtime, TTS/STT, Claude, Codex, OpenAI, Ollama, or any provider subprocess.
 - It does not test WebSocket, SSE, launch installation, migrations, or schema changes.
 
 ## Kept Artifacts

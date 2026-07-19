@@ -8,7 +8,6 @@ from typing import Any
 
 from dan.brain.base import BrainAdapter, BrainRequest, BrainResponse
 from dan.brain.claude_cli_adapter import ClaudeCliAdapter
-from dan.brain.groq_adapter import GroqAdapter, create_groq_adapter
 
 
 class BrainManagerError(Exception):
@@ -88,13 +87,6 @@ class BrainManager:
                 recycle_percent=getattr(brain_config, "context_recycle_percent", 90.0),
             )
         )
-
-        # Groq adapter (streaming, fast)
-        groq_config = getattr(brain_config, "groq", None)
-        if groq_config is not None:
-            adapters.append(
-                create_groq_adapter(config, generation_registry=generation_registry)
-            )
 
         return cls(adapters, default_adapter="claude_cli")
 
