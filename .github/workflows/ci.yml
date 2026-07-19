@@ -1,6 +1,7 @@
 name: Intake gate validation
 
 on:
+  pull_request:
   push:
 
 jobs:
