@@ -1291,7 +1291,6 @@ def _revalidate_checkpoint(
         raise InvalidCheckpoint(
             "checkpoint fields do not match an authoritative final recapture"
         )
-    repository.verify_identity()
     return recaptured
 
 

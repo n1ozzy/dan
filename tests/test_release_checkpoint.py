@@ -772,8 +772,6 @@ def test_inventory_hash_and_validation_use_the_same_bytes(
     assert read_injection_fired
     assert reference.sha256 == hashlib.sha256(b"{}\n").hexdigest()
     assert unknown_evidence == ("TASK1_INVENTORY_INVALID",)
-
-
 def test_checkpoint_publication_rolls_back_repository_swap_at_final_link(
     checkpoint_fixture: CheckpointFixture,
     monkeypatch: pytest.MonkeyPatch,
