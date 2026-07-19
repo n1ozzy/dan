@@ -855,6 +855,77 @@ def test_writer_rejects_unrelated_final_swapped_after_actual_link(
     ) == _envelope()
 
 
+def test_writer_rejects_unrelated_final_swapped_by_final_guard(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o700)
+    validated = validate_evidence_root(root, active_roots=_active_roots(tmp_path))
+    output = root / "guard-swapped-final.json"
+    displaced = root / "owned-displaced.json"
+    replacement = tmp_path / "unrelated-replacement.json"
+    replacement_bytes = b"unrelated replacement\n"
+    replacement.write_bytes(replacement_bytes)
+    os.chmod(replacement, 0o600)
+    replacement_identity = (replacement.stat().st_dev, replacement.stat().st_ino)
+    guard_calls = 0
+
+    def swap_final_before_return() -> None:
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls == 2:
+            output.rename(displaced)
+            os.link(replacement, output)
+
+    with pytest.raises(
+        UnsafeEvidenceRoot,
+        match="published evidence identity changed before commit",
+    ):
+        write_evidence_envelope_exclusive(
+            output,
+            _envelope(),
+            evidence_root=validated,
+            transaction_guard=swap_final_before_return,
+        )
+
+    assert guard_calls == 2
+    assert (output.stat().st_dev, output.stat().st_ino) == replacement_identity
+    assert output.read_bytes() == replacement_bytes
+    assert displaced.is_file()
+
+
+def test_writer_rejects_a_side_hardlink_added_by_the_final_guard(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o700)
+    validated = validate_evidence_root(root, active_roots=_active_roots(tmp_path))
+    output = root / "guard-linked-final.json"
+    side_link = root / "late-side-link"
+    guard_calls = 0
+
+    def add_side_link_before_return() -> None:
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls == 2:
+            os.link(output, side_link)
+
+    with pytest.raises(
+        UnsafeEvidenceRoot,
+        match="published evidence has unexpected hard links before commit",
+    ):
+        write_evidence_envelope_exclusive(
+            output,
+            _envelope(),
+            evidence_root=validated,
+            transaction_guard=add_side_link_before_return,
+        )
+
+    assert guard_calls == 2
+    assert not output.exists()
+    assert side_link.is_file()
+
+
 def test_writer_rejects_a_side_hardlink_added_by_the_first_guard(
     tmp_path: Path,
 ) -> None:

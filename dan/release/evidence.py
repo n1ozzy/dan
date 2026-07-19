@@ -658,6 +658,24 @@ def write_evidence_envelope_exclusive(
         os.fsync(parent_descriptor)
         if guard is not None:
             guard.before_commit()
+        try:
+            committed_details = os.stat(
+                name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise UnsafeEvidenceRoot(
+                "published evidence identity changed before commit"
+            ) from exc
+        if _inode_identity(committed_details) != temporary_identity:
+            raise UnsafeEvidenceRoot(
+                "published evidence identity changed before commit"
+            )
+        if committed_details.st_nlink != 1:
+            raise UnsafeEvidenceRoot(
+                "published evidence has unexpected hard links before commit"
+            )
         descriptor_to_close = parent_descriptor
         parent_descriptor = None
         os.close(descriptor_to_close)
