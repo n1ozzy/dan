@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -401,16 +402,62 @@ def test_writer_publishes_only_after_private_temp_is_complete(
     root.mkdir(mode=0o700)
     validated = validate_evidence_root(root, active_roots=_active_roots(tmp_path))
     output = root / "report.json"
+    original_open = os.open
+    original_write = os.write
+    original_fchmod = os.fchmod
     original_link = os.link
     original_fsync = os.fsync
-    fsync_events: list[str] = []
+    original_close = os.close
+    events: list[str] = []
     publish_calls = 0
+    temporary_descriptor: int | None = None
+
+    def recording_open(
+        path: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal temporary_descriptor
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if (
+            isinstance(path, str)
+            and path.startswith(".dan-evidence-")
+            and path.endswith(".tmp")
+            and flags & os.O_CREAT
+        ):
+            temporary_descriptor = descriptor
+            events.append(f"temp-open:{mode:04o}")
+        return descriptor
+
+    def recording_write(descriptor: int, payload: bytes) -> int:
+        if descriptor == temporary_descriptor:
+            events.append("write")
+        return original_write(descriptor, payload)
+
+    def recording_fchmod(descriptor: int, mode: int) -> None:
+        if descriptor == temporary_descriptor:
+            events.append(f"fchmod:{mode:04o}")
+        original_fchmod(descriptor, mode)
 
     def recording_fsync(descriptor: int) -> None:
         mode = os.fstat(descriptor).st_mode
-        kind = "directory" if stat.S_ISDIR(mode) else "file"
-        fsync_events.append(kind)
+        if descriptor == temporary_descriptor:
+            events.append("file-fsync")
+        elif stat.S_ISDIR(mode):
+            events.append("directory-fsync")
         original_fsync(descriptor)
+
+    def recording_close(descriptor: int) -> None:
+        if descriptor == temporary_descriptor:
+            events.append("temp-close")
+        original_close(descriptor)
+
+    def recording_guard() -> None:
+        events.append(
+            "guard-before-commit" if output.exists() else "guard-before-link"
+        )
 
     def observing_link(
         source: str | bytes,
@@ -424,10 +471,20 @@ def test_writer_publishes_only_after_private_temp_is_complete(
         publish_calls += 1
         assert destination == output.name
         assert not output.exists()
-        assert fsync_events == ["file"]
+        assert events == [
+            "temp-open:0000",
+            "write",
+            "fchmod:0600",
+            "file-fsync",
+            "temp-close",
+            "guard-before-link",
+        ]
         details = os.stat(source, dir_fd=src_dir_fd, follow_symlinks=False)
         assert stat.S_ISREG(details.st_mode)
         assert stat.S_IMODE(details.st_mode) == 0o600
+        assert details.st_nlink == 1
+        assert source != output.name
+        events.append("link")
         original_link(
             source,
             destination,
@@ -436,12 +493,31 @@ def test_writer_publishes_only_after_private_temp_is_complete(
             follow_symlinks=follow_symlinks,
         )
 
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(os, "write", recording_write)
+    monkeypatch.setattr(os, "fchmod", recording_fchmod)
     monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "close", recording_close)
     monkeypatch.setattr(os, "link", observing_link)
-    write_evidence_envelope_exclusive(output, _envelope(), evidence_root=validated)
+    write_evidence_envelope_exclusive(
+        output,
+        _envelope(),
+        evidence_root=validated,
+        transaction_guard=recording_guard,
+    )
 
     assert publish_calls == 1
-    assert fsync_events == ["file", "directory"]
+    assert events == [
+        "temp-open:0000",
+        "write",
+        "fchmod:0600",
+        "file-fsync",
+        "temp-close",
+        "guard-before-link",
+        "link",
+        "directory-fsync",
+        "guard-before-commit",
+    ]
     assert [entry.name for entry in root.iterdir()] == [output.name]
 
 
@@ -679,6 +755,7 @@ def test_writer_preserves_preexisting_final_and_removes_private_temp(
     output = root / "historical.json"
     historical = b"historical evidence\n"
     output.write_bytes(historical)
+    historical_identity = (output.stat().st_dev, output.stat().st_ino)
     original_link = os.link
     publish_calls = 0
 
@@ -702,7 +779,7 @@ def test_writer_preserves_preexisting_final_and_removes_private_temp(
         )
 
     monkeypatch.setattr(os, "link", observing_link)
-    with pytest.raises(FileExistsError):
+    with pytest.raises(FileExistsError) as captured:
         write_evidence_envelope_exclusive(
             output,
             _envelope(),
@@ -710,8 +787,233 @@ def test_writer_preserves_preexisting_final_and_removes_private_temp(
         )
 
     assert publish_calls == 1
+    assert captured.value.errno == errno.EEXIST
+    assert (output.stat().st_dev, output.stat().st_ino) == historical_identity
     assert output.read_bytes() == historical
     assert [entry.name for entry in root.iterdir()] == [output.name]
+
+
+def test_writer_rejects_unrelated_final_swapped_after_actual_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o700)
+    validated = validate_evidence_root(root, active_roots=_active_roots(tmp_path))
+    output = root / "swapped-final.json"
+    replacement = tmp_path / "unrelated-replacement.json"
+    replacement_bytes = b"unrelated replacement\n"
+    replacement.write_bytes(replacement_bytes)
+    os.chmod(replacement, 0o600)
+    replacement_identity = (replacement.stat().st_dev, replacement.stat().st_ino)
+    original_link = os.link
+    injection_fired = False
+
+    def swap_after_real_link(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        nonlocal injection_fired
+        original_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+        if destination == output.name and not injection_fired:
+            os.unlink(output)
+            original_link(replacement, output)
+            injection_fired = True
+
+    monkeypatch.setattr(os, "link", swap_after_real_link)
+    with pytest.raises(
+        UnsafeEvidenceRoot,
+        match="published evidence identity changed before commit",
+    ):
+        write_evidence_envelope_exclusive(
+            output,
+            _envelope(),
+            evidence_root=validated,
+        )
+
+    assert injection_fired
+    assert (output.stat().st_dev, output.stat().st_ino) == replacement_identity
+    assert output.read_bytes() == replacement_bytes
+    assert [entry.name for entry in root.iterdir()] == [output.name]
+
+    output.unlink()
+    write_evidence_envelope_exclusive(output, _envelope(), evidence_root=validated)
+    assert read_evidence_envelope(
+        output,
+        evidence_root=validated,
+        expected_kind="fixture",
+    ) == _envelope()
+
+
+def test_writer_rejects_a_side_hardlink_added_by_the_first_guard(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o700)
+    validated = validate_evidence_root(root, active_roots=_active_roots(tmp_path))
+    output = root / "guard-hardlink.json"
+    side_link = root / "hostile-side-link"
+    guard_calls = 0
+
+    def add_side_link_before_publication() -> None:
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls == 1:
+            temporary_paths = sorted(root.glob(".dan-evidence-*.tmp"))
+            assert len(temporary_paths) == 1
+            os.link(temporary_paths[0], side_link)
+
+    with pytest.raises(
+        UnsafeEvidenceRoot,
+        match="unexpected hard links before publication",
+    ):
+        write_evidence_envelope_exclusive(
+            output,
+            _envelope(),
+            evidence_root=validated,
+            transaction_guard=add_side_link_before_publication,
+        )
+
+    assert guard_calls == 1
+    assert not output.exists()
+    assert side_link.exists()
+    assert stat.S_IMODE(side_link.stat().st_mode) == 0o600
+    assert [entry.name for entry in root.iterdir()] == [side_link.name]
+
+    side_link.unlink()
+    write_evidence_envelope_exclusive(output, _envelope(), evidence_root=validated)
+    assert output.exists()
+
+
+def test_writer_rolls_back_hostile_final_at_the_actual_link_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o700)
+    validated = validate_evidence_root(root, active_roots=_active_roots(tmp_path))
+    output = root / "hostile-final.json"
+    sentinel = root / "sentinel"
+    sentinel.write_bytes(b"sentinel\n")
+    sentinel_identity = (sentinel.stat().st_dev, sentinel.stat().st_ino)
+    root_details = root.stat()
+    root_identity = (root_details.st_dev, root_details.st_ino)
+    original_open = os.open
+    original_dup = os.dup
+    original_close = os.close
+    original_fstat = os.fstat
+    original_fsync = os.fsync
+    original_link = os.link
+    tracked_descriptors: dict[int, str] = {}
+    close_attempts: list[str] = []
+    directory_fsync_visibility: list[bool] = []
+    injection_fired = False
+
+    def recording_open(
+        path: os.PathLike[str] | str,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        descriptor = original_open(path, flags, mode, dir_fd=dir_fd)
+        if (
+            isinstance(path, str)
+            and path.startswith(".dan-evidence-")
+            and path.endswith(".tmp")
+            and flags & os.O_CREAT
+        ):
+            tracked_descriptors[descriptor] = "temp"
+        return descriptor
+
+    def recording_dup(descriptor: int) -> int:
+        duplicate = original_dup(descriptor)
+        details = original_fstat(descriptor)
+        if (details.st_dev, details.st_ino) == root_identity:
+            tracked_descriptors[descriptor] = "parent"
+            tracked_descriptors[duplicate] = "rollback"
+        return duplicate
+
+    def recording_close(descriptor: int) -> None:
+        label = tracked_descriptors.pop(descriptor, None)
+        if label is not None:
+            close_attempts.append(label)
+        original_close(descriptor)
+
+    def recording_fsync(descriptor: int) -> None:
+        details = original_fstat(descriptor)
+        if stat.S_ISDIR(details.st_mode) and (
+            details.st_dev,
+            details.st_ino,
+        ) == root_identity:
+            directory_fsync_visibility.append(output.exists())
+        original_fsync(descriptor)
+
+    def hostile_link_then_real_link(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        nonlocal injection_fired
+        if destination == output.name and not injection_fired:
+            original_link(
+                source,
+                destination,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
+            injection_fired = True
+        original_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(os, "dup", recording_dup)
+    monkeypatch.setattr(os, "close", recording_close)
+    monkeypatch.setattr(os, "fsync", recording_fsync)
+    monkeypatch.setattr(os, "link", hostile_link_then_real_link)
+    with pytest.raises(FileExistsError) as captured:
+        write_evidence_envelope_exclusive(
+            output,
+            _envelope(),
+            evidence_root=validated,
+        )
+
+    assert injection_fired
+    assert captured.value.errno == errno.EEXIST
+    assert not output.exists()
+    assert (sentinel.stat().st_dev, sentinel.stat().st_ino) == sentinel_identity
+    assert sentinel.read_bytes() == b"sentinel\n"
+    assert [entry.name for entry in root.iterdir()] == [sentinel.name]
+    assert directory_fsync_visibility == [False]
+    assert close_attempts == ["temp", "parent", "rollback"]
+    assert tracked_descriptors == {}
+
+    close_attempts.clear()
+    directory_fsync_visibility.clear()
+    write_evidence_envelope_exclusive(output, _envelope(), evidence_root=validated)
+    assert output.exists()
+    assert directory_fsync_visibility == [True]
+    assert close_attempts == ["temp", "parent", "rollback"]
+    assert tracked_descriptors == {}
 
 
 def test_writer_cleans_private_temp_when_initial_fstat_fails(

@@ -312,7 +312,7 @@ def _open_absolute_directory_nofollow(path: Path) -> int:
 class _RepositoryAnchor:
     def __init__(self, path: Path, descriptor: int, details: os.stat_result) -> None:
         self.path = path
-        self.descriptor = descriptor
+        self.descriptor: int | None = descriptor
         self.device = details.st_dev
         self.inode = details.st_ino
 
@@ -337,30 +337,44 @@ class _RepositoryAnchor:
         exc_type: object,
         exc_value: object,
         traceback: object,
-    ) -> None:
-        descriptor = self.descriptor
-        self.descriptor = -1
+    ) -> bool:
         try:
-            os.close(descriptor)
-        except OSError as close_error:
+            self.close_once()
+        except BaseException as close_error:
             if isinstance(exc_value, BaseException):
                 exc_value.add_note(f"repository descriptor close failed: {close_error}")
-                return
+                return False
             raise
+        return False
+
+    def _require_descriptor(self) -> int:
+        descriptor = self.descriptor
+        if descriptor is None:
+            raise InvalidCheckpoint("anchored repository descriptor became invalid")
+        return descriptor
+
+    def close_once(self) -> None:
+        descriptor = self.descriptor
+        if descriptor is None:
+            return
+        self.descriptor = None
+        os.close(descriptor)
 
     @property
     def identity(self) -> tuple[int, int]:
         return self.device, self.inode
 
     def duplicate_descriptor(self) -> int:
-        details = os.fstat(self.descriptor)
+        descriptor = self._require_descriptor()
+        details = os.fstat(descriptor)
         if (details.st_dev, details.st_ino) != self.identity:
             raise InvalidCheckpoint("anchored repository identity changed")
-        return os.dup(self.descriptor)
+        return os.dup(descriptor)
 
     def verify_identity(self) -> None:
+        descriptor = self._require_descriptor()
         try:
-            anchored = os.fstat(self.descriptor)
+            anchored = os.fstat(descriptor)
         except OSError as exc:
             raise InvalidCheckpoint("anchored repository descriptor became invalid") from exc
         if (anchored.st_dev, anchored.st_ino) != self.identity:
@@ -377,7 +391,34 @@ class _RepositoryAnchor:
             raise InvalidCheckpoint("repository identity changed at supplied path")
 
     def enter_git_process(self) -> None:
-        os.fchdir(self.descriptor)
+        os.fchdir(self._require_descriptor())
+
+
+class _RepositoryPublicationGuard:
+    def __init__(self, repository: _RepositoryAnchor) -> None:
+        self.repository = repository
+
+    def before_link(self) -> None:
+        self.repository.verify_identity()
+
+    def before_commit(self) -> None:
+        primary_error: BaseException | None = None
+        primary_traceback = None
+        try:
+            self.repository.verify_identity()
+        except BaseException as error:
+            primary_error = error
+            primary_traceback = error.__traceback__
+        try:
+            self.repository.close_once()
+        except BaseException as close_error:
+            if primary_error is None:
+                raise
+            primary_error.add_note(
+                f"repository descriptor close failed: {close_error}"
+            )
+        if primary_error is not None:
+            raise primary_error.with_traceback(primary_traceback)
 
 
 def _read_repository_file_nofollow(
@@ -724,13 +765,14 @@ def _git_bytes(repo: Path | _RepositoryAnchor, *args: str) -> bytes:
         *args,
     ]
     repo.verify_identity()
+    repository_descriptor = repo._require_descriptor()
     try:
         try:
             return subprocess.check_output(
                 command,
                 env=environment,
                 stderr=subprocess.PIPE,
-                pass_fds=(repo.descriptor,),
+                pass_fds=(repository_descriptor,),
                 preexec_fn=repo.enter_git_process,
             )
         except (OSError, subprocess.CalledProcessError) as exc:
@@ -1267,10 +1309,9 @@ def write_checkpoint_exclusive(path: Path, checkpoint: ReleaseCheckpoint) -> Non
         if not root_value:
             raise InvalidCheckpoint("DAN_RELEASE_EVIDENCE_ROOT must be set")
         root = validate_evidence_root(Path(root_value), active_roots=active_roots)
-        repository.verify_identity()
         write_evidence_envelope_exclusive(
             path,
             envelope,
             evidence_root=root,
-            transaction_guard=repository.verify_identity,
+            publication_guard=_RepositoryPublicationGuard(repository),
         )

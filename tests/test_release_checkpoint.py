@@ -858,6 +858,60 @@ def test_checkpoint_publication_rolls_back_repository_swap_at_final_link(
     assert output.exists()
 
 
+def test_checkpoint_closes_repository_anchor_inside_publication_completion(
+    checkpoint_fixture: CheckpointFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_fixture.create_exact_scope_delta()
+    final_head = checkpoint_fixture.commit_scope_delta()
+    report = checkpoint_fixture.capture("final-clean", expected_head=final_head)
+    output = checkpoint_fixture.evidence / "completion-close.json"
+    evidence_details = checkpoint_fixture.evidence.stat()
+    evidence_identity = (evidence_details.st_dev, evidence_details.st_ino)
+    original_anchor_open = checkpoint_module._RepositoryAnchor.open
+    original_close = os.close
+    original_fstat = os.fstat
+    anchor_descriptor: int | None = None
+    events: list[str] = []
+
+    def recording_anchor_open(
+        cls: type[checkpoint_module._RepositoryAnchor],
+        path: Path,
+    ) -> checkpoint_module._RepositoryAnchor:
+        nonlocal anchor_descriptor
+        repository = original_anchor_open(path)
+        anchor_descriptor = repository.descriptor
+        return repository
+
+    def recording_close(descriptor: int) -> None:
+        if descriptor == anchor_descriptor:
+            events.append("repository-close")
+        else:
+            details = original_fstat(descriptor)
+            if (
+                output.exists()
+                and (details.st_dev, details.st_ino) == evidence_identity
+            ):
+                events.append("evidence-parent-close")
+                assert anchor_descriptor is not None
+                with pytest.raises(OSError):
+                    original_fstat(anchor_descriptor)
+        original_close(descriptor)
+
+    monkeypatch.setattr(
+        checkpoint_module._RepositoryAnchor,
+        "open",
+        classmethod(recording_anchor_open),
+    )
+    monkeypatch.setattr(os, "close", recording_close)
+
+    write_checkpoint_exclusive(output, report)
+
+    assert anchor_descriptor is not None
+    assert events[0:2] == ["repository-close", "evidence-parent-close"]
+    assert output.exists()
+
+
 def test_repository_anchor_open_closes_exact_descriptor_when_fstat_fails(
     checkpoint_fixture: CheckpointFixture,
     monkeypatch: pytest.MonkeyPatch,

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, TypeAlias, cast
+from typing import Literal, Protocol, TypeAlias, cast
 
 JsonScalar: TypeAlias = str | int | bool | None
 JsonValue: TypeAlias = (
@@ -47,6 +47,23 @@ class UnsafeEvidenceRoot(ValueError):
 
 class InvalidEvidenceEnvelope(ValueError):
     """Evidence bytes do not satisfy the strict versioned contract."""
+
+
+class _PublicationGuard(Protocol):
+    def before_link(self) -> None: ...
+
+    def before_commit(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class _CallablePublicationGuard:
+    callback: Callable[[], None]
+
+    def before_link(self) -> None:
+        self.callback()
+
+    def before_commit(self) -> None:
+        self.callback()
 
 
 @dataclass(frozen=True)
@@ -418,7 +435,7 @@ def _open_private_temp(parent_descriptor: int) -> tuple[str, int, tuple[int, int
     for _ in range(_PRIVATE_TEMP_ATTEMPTS):
         name = f"{_PRIVATE_TEMP_PREFIX}{secrets.token_hex(16)}.tmp"
         try:
-            descriptor = os.open(name, flags, 0o600, dir_fd=parent_descriptor)
+            descriptor = os.open(name, flags, 0o000, dir_fd=parent_descriptor)
         except FileExistsError:
             continue
         try:
@@ -514,13 +531,20 @@ def write_evidence_envelope_exclusive(
     *,
     evidence_root: ValidatedEvidenceRoot,
     transaction_guard: Callable[[], None] | None = None,
+    publication_guard: _PublicationGuard | None = None,
 ) -> None:
     """Create one canonical mode-0600 envelope and never overwrite history.
 
-    When supplied, ``transaction_guard`` runs immediately before publication and
-    again after the durable directory sync. A guard failure remains inside the
-    rollback boundary, so an owned final name is removed before the error escapes.
+    A publication guard runs immediately before the link and after the durable
+    directory sync. ``transaction_guard`` retains the original callable API and
+    is adapted to those same two phases.
     """
+
+    if transaction_guard is not None and publication_guard is not None:
+        raise TypeError("transaction_guard and publication_guard are mutually exclusive")
+    guard: _PublicationGuard | None = publication_guard
+    if transaction_guard is not None:
+        guard = _CallablePublicationGuard(transaction_guard)
 
     _validate_envelope(envelope)
     payload = _envelope_payload(envelope, include_report_sha256=True)
@@ -538,6 +562,7 @@ def write_evidence_envelope_exclusive(
     temporary_descriptor: int | None = None
     temporary_name: str | None = None
     temporary_identity: tuple[int, int] | None = None
+    namespace_mutation_attempted = False
     primary_error: BaseException | None = None
     primary_traceback = None
     cleanup_errors: list[str] = []
@@ -545,31 +570,94 @@ def write_evidence_envelope_exclusive(
         temporary_name, temporary_descriptor, temporary_identity = (
             _open_private_temp(parent_descriptor)
         )
-        os.fchmod(temporary_descriptor, 0o600)
-        if not stat.S_ISREG(os.fstat(temporary_descriptor).st_mode):
-            raise UnsafeEvidenceRoot("evidence output must be a regular file")
+        namespace_mutation_attempted = True
         _write_all(temporary_descriptor, encoded)
+        os.fchmod(temporary_descriptor, 0o600)
         os.fsync(temporary_descriptor)
+        completed_details = os.fstat(temporary_descriptor)
+        if not stat.S_ISREG(completed_details.st_mode):
+            raise UnsafeEvidenceRoot("evidence output must be a regular file")
+        if stat.S_IMODE(completed_details.st_mode) != 0o600:
+            raise UnsafeEvidenceRoot("evidence output mode changed before publication")
+        if _inode_identity(completed_details) != temporary_identity:
+            raise UnsafeEvidenceRoot("temporary evidence identity changed during write")
         descriptor_to_close = temporary_descriptor
         temporary_descriptor = None
         os.close(descriptor_to_close)
-        if transaction_guard is not None:
-            transaction_guard()
-        os.link(
+        if guard is not None:
+            guard.before_link()
+        temporary_details = os.stat(
             temporary_name,
-            name,
-            src_dir_fd=parent_descriptor,
-            dst_dir_fd=parent_descriptor,
+            dir_fd=parent_descriptor,
             follow_symlinks=False,
         )
+        if _inode_identity(temporary_details) != temporary_identity:
+            raise UnsafeEvidenceRoot(
+                "temporary evidence identity changed before publication"
+            )
+        if not stat.S_ISREG(temporary_details.st_mode):
+            raise UnsafeEvidenceRoot("evidence output must be a regular file")
+        if stat.S_IMODE(temporary_details.st_mode) != 0o600:
+            raise UnsafeEvidenceRoot("evidence output mode changed before publication")
+        if temporary_details.st_nlink != 1:
+            raise UnsafeEvidenceRoot(
+                "temporary evidence has unexpected hard links before publication"
+            )
+
+        link_error: BaseException | None = None
+        link_traceback = None
+        try:
+            os.link(
+                temporary_name,
+                name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except BaseException as error:
+            link_error = error
+            link_traceback = error.__traceback__
+
+        final_details: os.stat_result | None
+        try:
+            final_details = os.stat(
+                name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            final_details = None
+        except BaseException as reconciliation_error:
+            if link_error is not None:
+                link_error.add_note(
+                    "final identity reconciliation failed: "
+                    f"{reconciliation_error}"
+                )
+                raise link_error.with_traceback(link_traceback) from None
+            raise UnsafeEvidenceRoot(
+                "could not verify published evidence identity"
+            ) from reconciliation_error
+
+        final_is_owned = (
+            final_details is not None
+            and _inode_identity(final_details) == temporary_identity
+        )
+        if link_error is not None:
+            raise link_error.with_traceback(link_traceback)
+        if not final_is_owned:
+            raise UnsafeEvidenceRoot(
+                "published evidence identity changed before commit"
+            )
+
         _unlink_owned_name(
             parent_descriptor,
             temporary_name,
             temporary_identity,
         )
+        temporary_name = None
         os.fsync(parent_descriptor)
-        if transaction_guard is not None:
-            transaction_guard()
+        if guard is not None:
+            guard.before_commit()
         descriptor_to_close = parent_descriptor
         parent_descriptor = None
         os.close(descriptor_to_close)
@@ -595,29 +683,35 @@ def write_evidence_envelope_exclusive(
                 )
             except (OSError, UnsafeEvidenceRoot) as exc:
                 cleanup_errors.append(f"temporary cleanup failed: {exc}")
-        if removed:
+        if removed or namespace_mutation_attempted:
             try:
                 os.fsync(rollback_descriptor)
-            except OSError as exc:
+            except BaseException as exc:
                 cleanup_errors.append(f"cleanup directory fsync failed: {exc}")
     finally:
         if temporary_descriptor is not None:
+            descriptor_to_close = temporary_descriptor
+            temporary_descriptor = None
             try:
-                os.close(temporary_descriptor)
-            except OSError as exc:
+                os.close(descriptor_to_close)
+            except BaseException as exc:
                 cleanup_errors.append(f"temporary descriptor close failed: {exc}")
         if parent_descriptor is not None:
+            descriptor_to_close = parent_descriptor
+            parent_descriptor = None
             try:
-                os.close(parent_descriptor)
-            except OSError as exc:
+                os.close(descriptor_to_close)
+            except BaseException as exc:
                 cleanup_errors.append(f"parent descriptor close failed: {exc}")
+        descriptor_to_close = rollback_descriptor
+        rollback_descriptor = None
         try:
-            os.close(rollback_descriptor)
-        except OSError as exc:
+            os.close(descriptor_to_close)
+        except BaseException as exc:
             cleanup_errors.append(f"rollback descriptor close failed: {exc}")
     if primary_error is not None:
-        if cleanup_errors:
-            primary_error.add_note("; ".join(cleanup_errors))
+        for cleanup_error in cleanup_errors:
+            primary_error.add_note(cleanup_error)
         raise primary_error.with_traceback(primary_traceback)
     if cleanup_errors:
         raise OSError(
