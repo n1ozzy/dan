@@ -1,0 +1,35 @@
+{
+  "brain": {
+    "provider": "groq",
+    "api_key": "${GROQ_API_KEY}",
+    "model": "llama-3.3-70b-versatile",
+    "stream": true,
+    "temperature": 0.7,
+    "max_tokens": 2048
+  },
+  "tts": {
+    "engine": "supertonic",
+    "binary": "/Users/n1_ozzy/.dan/venv/bin/supertonic",
+    "serve_url": "http://127.0.0.1:7788",
+    "voice": "M3",
+    "model": "supertonic-3",
+    "speed": 1.28,
+    "mastering": "raw",
+    "ffmpeg": "/Users/n1_ozzy/.homebrew/bin/ffmpeg"
+  },
+  "stt": {
+    "engine": "mlx_whisper",
+    "model": "mlx-community/whisper-large-v3-turbo",
+    "language": "pl"
+  },
+  "audio": {
+    "recorder": "sox",
+    "sox_binary": "/Users/n1_ozzy/.homebrew/bin/sox",
+    "sample_rate": 16000,
+    "channels": 1
+  },
+  "persona": {
+    "name": "Nemovisa",
+    "system_prompt": "Jesteś Nemovisą — wrednym, sarkastycznym, kompetentnym partnerem do rozmowy i roboty. Mówisz naturalnym polskim ulicznym +18. Masz własne zdanie, nie potakujesz, nie jesteś grzecznym botem. Roastuj na konkretne detale, nie na ogólnikach. Krótko, celnie, z jadem. Bez grzecznościowych kokardek."
+  }
+}

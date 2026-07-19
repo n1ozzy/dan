@@ -1,8 +1,7 @@
-"""FAZA C4: file_write and whitelisted shell_read tool tests.
+"""file_write and whitelisted shell_read tool tests.
 
-Both classes are approval-required for every source (matrix §3), so the
-integration paths assert the full request -> approval -> explicit execute
-lifecycle, and that nothing runs before approval.
+Model-originated calls execute directly on the active branch. The tool layer
+still enforces approved-root containment and the exact shell allowlist.
 """
 
 from __future__ import annotations
@@ -302,7 +301,7 @@ def test_default_whitelist_contains_no_mutating_commands() -> None:
         assert entry.split()[0] not in forbidden_binaries, entry
 
 
-# --- daemon integration: approval lifecycle for both tools ---
+# --- daemon integration: direct execution with tool-layer guards ---
 
 
 @pytest.fixture
@@ -324,77 +323,75 @@ def test_daemon_registers_write_and_shell_tools(app: DaemonApp) -> None:
     assert specs["shell_read"].risk == "shell_read"
 
 
-def test_file_write_full_approval_lifecycle(app: DaemonApp) -> None:
+def test_file_write_executes_directly_without_approval_row(app: DaemonApp) -> None:
     target = Path(app.paths.home) / "written-by-dan.txt"
 
     requested = app.request_tool(
         tool_name="file_write",
-        arguments={"path": str(target), "content": "approved write"},
-        requested_by="cli",
-        source=RequestSource.DIRECT_USER_COMMAND,
+        arguments={"path": str(target), "content": "direct write"},
+        requested_by="model",
+        source=RequestSource.MODEL_ORIGINATED,
     )
-    assert requested.status == "approval_required"
-    assert not target.exists()
-
-    app.approve(str(requested.approval_id), reason="ok")
-    assert not target.exists()  # approve alone never executes
-
-    response = app.execute_approved_tool(str(requested.approval_id))
-
-    assert response["ok"] is True
-    assert target.read_text(encoding="utf-8") == "approved write"
+    assert requested.status == "finished"
+    assert requested.approval_id is None
+    assert requested.output is not None
+    assert requested.output["ok"] is True
+    assert target.read_text(encoding="utf-8") == "direct write"
+    assert app.conn is not None
+    assert int(app.conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0]) == 0
 
 
-def test_shell_read_full_approval_lifecycle(app: DaemonApp) -> None:
+def test_shell_read_executes_directly_without_approval_row(app: DaemonApp) -> None:
     requested = app.request_tool(
         tool_name="shell_read",
         arguments={"command": "pwd"},
-        requested_by="cli",
-        source=RequestSource.DIRECT_USER_COMMAND,
+        requested_by="model",
+        source=RequestSource.MODEL_ORIGINATED,
     )
-    assert requested.status == "approval_required"
+    assert requested.status == "finished"
+    assert requested.approval_id is None
+    assert requested.output is not None
+    assert requested.output["returncode"] == 0
+    assert requested.output["stdout"].strip() == str(Path(app.paths.home).resolve())
+    assert app.conn is not None
+    assert int(app.conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0]) == 0
 
-    app.approve(str(requested.approval_id), reason="ok")
-    response = app.execute_approved_tool(str(requested.approval_id))
 
-    assert response["ok"] is True
-    assert response["result"]["returncode"] == 0
-    assert response["result"]["stdout"].strip() == str(Path(app.paths.home).resolve())
-
-
-def test_rejected_file_write_never_touches_disk(app: DaemonApp) -> None:
-    target = Path(app.paths.home) / "never-written.txt"
+def test_out_of_root_file_write_fails_without_touching_disk(
+    app: DaemonApp, tmp_path: Path
+) -> None:
+    target = tmp_path / "outside.txt"
 
     requested = app.request_tool(
         tool_name="file_write",
         arguments={"path": str(target), "content": "nope"},
-        requested_by="cli",
-        source=RequestSource.DIRECT_USER_COMMAND,
+        requested_by="model",
+        source=RequestSource.MODEL_ORIGINATED,
     )
-    app.reject(str(requested.approval_id), reason="no")
-
+    assert requested.status == "failed"
+    assert requested.approval_id is None
+    assert requested.error is not None
+    assert "outside approved roots" in requested.error
     assert not target.exists()
     assert app.conn is not None
-    run_count = int(app.conn.execute("SELECT COUNT(*) FROM tool_runs").fetchone()[0])
-    assert run_count == 0
+    assert int(app.conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0]) == 0
 
 
-def test_non_whitelisted_shell_command_fails_at_execute_without_side_effects(
-    app: DaemonApp,
+def test_non_whitelisted_shell_command_fails_directly_without_side_effects(
+    app: DaemonApp, tmp_path: Path
 ) -> None:
+    sentinel = tmp_path / "must-not-exist"
     requested = app.request_tool(
         tool_name="shell_read",
-        arguments={"command": "rm -rf /"},
-        requested_by="cli",
-        source=RequestSource.DIRECT_USER_COMMAND,
+        arguments={"command": f"touch {sentinel}"},
+        requested_by="model",
+        source=RequestSource.MODEL_ORIGINATED,
     )
-    assert requested.status == "approval_required"
-
-    app.approve(str(requested.approval_id), reason="testing the guard")
-    response = app.execute_approved_tool(str(requested.approval_id))
-
-    assert response["ok"] is False
-    assert "not whitelisted" in response["tool_run"]["error"]
+    assert requested.status == "failed"
+    assert requested.approval_id is None
+    assert requested.error is not None
+    assert "not whitelisted" in requested.error
+    assert not sentinel.exists()
 
 
 def test_schema_and_migrations_unchanged() -> None:

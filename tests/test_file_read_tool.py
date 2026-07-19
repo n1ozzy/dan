@@ -1,9 +1,9 @@
 """FAZA C3: real read-only file tool tests.
 
 Covers the execution-time containment re-check (defense in depth), size
-limits, binary/UTF-8 handling, and the end-to-end daemon paths: direct user
-requests execute immediately, model-originated requests stay approval-gated,
-and secret-looking file content never persists raw in tool_runs.
+limits, binary/UTF-8 handling, and the end-to-end daemon paths: user and model
+requests execute directly, tool-layer guards fail safely, and secret-looking
+file content never persists raw in tool_runs.
 """
 
 from __future__ import annotations
@@ -195,7 +195,7 @@ def test_direct_user_request_reads_file_immediately(app: DaemonApp) -> None:
     assert run_count == 1
 
 
-def test_model_originated_request_stays_approval_gated(app: DaemonApp) -> None:
+def test_model_originated_request_executes_directly(app: DaemonApp) -> None:
     target = home_file(app, "gated.txt", "gated")
 
     result = app.request_tool(
@@ -205,14 +205,17 @@ def test_model_originated_request_stays_approval_gated(app: DaemonApp) -> None:
         source=RequestSource.MODEL_ORIGINATED,
     )
 
-    assert result.status == "approval_required"
-    assert result.approval_id is not None
+    assert result.status == "finished"
+    assert result.approval_id is None
+    assert result.output is not None
+    assert result.output["content"] == "gated"
     assert app.conn is not None
     run_count = int(app.conn.execute("SELECT COUNT(*) FROM tool_runs").fetchone()[0])
-    assert run_count == 0
+    assert run_count == 1
+    assert int(app.conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0]) == 0
 
 
-def test_direct_request_outside_roots_is_blocked_without_execution(
+def test_direct_request_outside_roots_fails_at_tool_guard(
     app: DaemonApp, tmp_path: Path
 ) -> None:
     outside = tmp_path / "outside.txt"
@@ -225,10 +228,13 @@ def test_direct_request_outside_roots_is_blocked_without_execution(
         source=RequestSource.DIRECT_USER_COMMAND,
     )
 
-    assert result.status == "blocked"
+    assert result.status == "failed"
+    assert result.error is not None
+    assert "outside approved roots" in result.error
     assert app.conn is not None
     run_count = int(app.conn.execute("SELECT COUNT(*) FROM tool_runs").fetchone()[0])
-    assert run_count == 0
+    assert run_count == 1
+    assert int(app.conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0]) == 0
 
 
 def test_secretlike_file_content_is_redacted_in_tool_runs_and_events(app: DaemonApp) -> None:
@@ -284,13 +290,15 @@ def test_config_approved_roots_override_default_home(tmp_path: Path) -> None:
 
         home_target = Path(app.paths.home) / "not-approved.txt"
         home_target.write_text("home is not a root anymore", encoding="utf-8")
-        blocked = app.request_tool(
+        failed = app.request_tool(
             tool_name="file_read",
             arguments={"path": str(home_target)},
             requested_by="cli",
             source=RequestSource.DIRECT_USER_COMMAND,
         )
-        assert blocked.status == "blocked"
+        assert failed.status == "failed"
+        assert failed.error is not None
+        assert "outside approved roots" in failed.error
     finally:
         app.stop(reason="test teardown")
         app.close()

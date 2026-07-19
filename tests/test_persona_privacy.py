@@ -18,11 +18,14 @@ def test_release_contains_one_versioned_uncensored_canon() -> None:
     text = CANON.read_text(encoding="utf-8")
 
     assert "DAN_CANON_VERSION: 1" in text
-    assert "Zakaz ugrzeczniania" not in text  # no injected wrapper; the donor body is the canon
-    assert "Nie chowaj bezpośredniego wyzwiska" in text
+    assert "# DAN // THE LEGEND" in text
+    assert "Największą obrazą jest marnowanie jego czasu." in text
+    assert "Każdy roast kończy się rozwiązaniem problemu." in text
+    assert "Istnieje po to, żeby kończyć robotę." in text
     assert "ty głupi chuju" in text
-    assert "nie jest grzeczną kopią" in text
+    assert "Jarvis" in text
     assert "{{ owner.display_name }}" in text
+    assert len(text.encode("utf-8")) <= 6_000
     assert re.search(r"(?i)ozz", text) is None
 
 
@@ -50,7 +53,14 @@ def test_render_substitutes_only_local_owner_data(tmp_path: Path) -> None:
     assert "Kasia" in rendered
     assert "{{ owner.display_name }}" not in rendered
     assert "ty głupi chuju" in rendered
-    assert "nie jest grzeczną kopią" in rendered
+    assert "Każdy roast kończy się rozwiązaniem problemu." in rendered
+
+
+def test_missing_optional_owner_uses_neutral_local_label(tmp_path: Path) -> None:
+    rendered = render_persona(CANON, tmp_path / "missing-owner.toml")
+
+    assert "właściciel jest twoim człowiekiem" in rendered
+    assert "{{ owner.display_name }}" not in rendered
 
 
 def test_missing_canon_fails_visibly(tmp_path: Path) -> None:

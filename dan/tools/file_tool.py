@@ -52,6 +52,10 @@ class FileReadTool(Tool):
         max_bytes = _max_bytes_argument(arguments)
 
         resolved = _normalize_path(path)
+        if not self._is_within_approved_roots(resolved):
+            raise ToolExecutionError(
+                f"file_read target is outside approved roots: {resolved}"
+            )
 
         if not os.path.isfile(resolved):
             raise ToolExecutionError(f"file_read target is not a regular file: {resolved}")
@@ -120,6 +124,10 @@ class FileWriteTool(Tool):
             )
 
         resolved = _normalize_path(path)
+        if not self._is_within_approved_roots(resolved):
+            raise ToolExecutionError(
+                f"file_write target is outside approved roots: {resolved}"
+            )
 
         parent = os.path.dirname(resolved)
         if not os.path.isdir(parent):

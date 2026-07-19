@@ -21,10 +21,8 @@ from urllib.request import Request, urlopen
 import pytest
 
 from dan.security.redaction import REDACTION_PLACEHOLDER
-from dan.tools.permissions import RequestSource
-
 from tests.git_guards import assert_schema_and_migrations_unchanged
-from dan.brain import BrainManager, BrainRequest
+from dan.brain import BrainManager, BrainMessage, BrainRequest
 from dan.brain.claude_cli_adapter import ClaudeCliAdapter, apply_claude_system_prompt
 from dan.brain.claude_cli_contract import build_claude_cli_command
 from dan.brain.test_adapter import TestBrainAdapter as HermeticBrainAdapter
@@ -445,16 +443,6 @@ def insert_runtime_memory_item(
         ),
     )
     app.conn.commit()
-
-
-def tool_run_count_for_approval(app: DaemonApp, approval_id: object) -> int:
-    assert app.conn is not None
-    return int(
-        app.conn.execute(
-            "SELECT COUNT(*) FROM tool_runs WHERE approval_id = ?",
-            (approval_id,),
-        ).fetchone()[0]
-    )
 
 
 class ApiFakeTool(Tool):
@@ -1844,8 +1832,7 @@ def test_get_tools_returns_default_tools(app: DaemonApp) -> None:
     tools = {tool["name"]: tool for tool in payload["tools"]}
     assert tools["echo"]["risk"] == "safe_read"
     assert tools["system_status"]["risk"] == "safe_status"
-    assert tools["approval_probe"]["risk"] == "shell_read"
-    assert "Approval-required demo tool" in tools["approval_probe"]["description"]
+    assert "approval_probe" not in tools
     assert tools["ui_active_app"]["risk"] == "ui_read"
     assert tools["ui_read_window"]["risk"] == "ui_read"
     assert tools["ui_click"]["risk"] == "ui_act"
@@ -1892,10 +1879,12 @@ def test_post_tools_request_unknown_tool_returns_404_json(app: DaemonApp) -> Non
     assert table_count(app, "tool_runs") == 0
 
 
-def test_post_tools_request_approval_required_creates_approval_without_execution(
+@pytest.mark.parametrize("risk", ["shell_read", "file_write", "network", "destructive"])
+def test_post_tools_request_executes_directly_without_approval_rows(
     app: DaemonApp,
+    risk: str,
 ) -> None:
-    fake = ApiFakeTool(name="needs_approval", risk="shell_read")
+    fake = ApiFakeTool(name=f"direct_{risk}", risk=risk)
     app.tool_registry.register(fake)
     app.start()
 
@@ -1904,343 +1893,37 @@ def test_post_tools_request_approval_required_creates_approval_without_execution
             "POST",
             f"{base_url}/tools/request",
             {
-                "tool_name": "needs_approval",
-                "arguments": {"command": "status"},
+                "tool_name": fake.name,
+                "arguments": {"risk": risk},
                 "requested_by": "api",
             },
         )
 
     assert status == 200
-    assert payload["status"] == "approval_required"
-    assert isinstance(payload["approval_id"], str)
-    assert fake.calls == []
-    assert table_count(app, "approvals") == 1
-    assert table_count(app, "tool_runs") == 0
+    assert payload["status"] == "finished"
+    assert payload["output"] == {"received": {"risk": risk}}
+    assert "approval_id" not in payload
+    assert fake.calls == [{"risk": risk}]
+    assert table_count(app, "approvals") == 0
+    assert table_count(app, "tool_runs") == 1
     assert table_count(app, "voice_queue") == 0
     assert table_count(app, "worker_jobs") == 0
 
 
-def test_post_tools_request_default_approval_probe_creates_approval_without_replay(
-    app: DaemonApp,
-) -> None:
+def test_approval_routes_are_not_exposed(app: DaemonApp) -> None:
     app.start()
 
     with running_server(app) as base_url:
-        request_status, requested = request_json(
-            "POST",
-            f"{base_url}/tools/request",
-            {
-                "tool_name": "approval_probe",
-                "arguments": {"purpose": "smoke"},
-                "requested_by": "api",
-            },
-        )
-        approve_status, approved = request_json(
-            "POST",
-            f"{base_url}/approvals/{requested['approval_id']}/approve",
-            {"reason": "manual smoke approval endpoint check"},
-        )
-
-    assert request_status == 200
-    assert requested["status"] == "approval_required"
-    assert isinstance(requested["approval_id"], str)
-    assert requested["output"] is None
-    assert approve_status == 200
-    assert approved["approval"]["status"] == "approved"
-    assert table_count(app, "approvals") == 1
-    assert table_count(app, "tool_runs") == 0
-    assert table_count(app, "voice_queue") == 0
-    assert table_count(app, "worker_jobs") == 0
-
-
-def test_post_approval_execute_requires_started_app(app: DaemonApp) -> None:
-    with running_server(app) as base_url:
-        status, payload = request_json("POST", f"{base_url}/approvals/missing/execute")
-
-    assert status == 503
-    assert payload["status"] == 503
-
-
-def test_post_approval_execute_runs_approved_tool_once_and_records_events(
-    app: DaemonApp,
-) -> None:
-    fake = ApiFakeTool(name="execute_approved", risk="shell_read")
-    app.tool_registry.register(fake)
-    app.start()
-
-    with running_server(app) as base_url:
-        request_status, requested = request_json(
-            "POST",
-            f"{base_url}/tools/request",
-            {
-                "tool_name": "execute_approved",
-                "arguments": {"command": "status"},
-                "requested_by": "api",
-                "turn_id": "turn-execute",
-            },
-        )
-        approve_status, approved = request_json(
-            "POST",
-            f"{base_url}/approvals/{requested['approval_id']}/approve",
-            {"reason": "ok"},
-        )
+        list_status, listed = request_json("GET", f"{base_url}/approvals")
         execute_status, executed = request_json(
             "POST",
-            f"{base_url}/approvals/{requested['approval_id']}/execute",
+            f"{base_url}/approvals/missing/execute",
         )
 
-    assert request_status == 200
-    assert approve_status == 200
-    assert approved["approval"]["status"] == "approved"
-    assert execute_status == 200
-    assert executed["ok"] is True
-    assert executed["approval_id"] == requested["approval_id"]
-    assert executed["result"] == {"received": {"command": "status"}}
-    assert executed["tool_run"]["approval_id"] == requested["approval_id"]
-    assert executed["tool_run"]["status"] == "finished"
-    assert executed["tool_run"]["turn_id"] == "turn-execute"
-    assert fake.calls == [{"command": "status"}]
-    assert tool_run_count_for_approval(app, requested["approval_id"]) == 1
-    assert table_count(app, "voice_queue") == 0
-    assert table_count(app, "worker_jobs") == 0
-    assert "tool.started" in event_types(app)
-    assert "tool.finished" in event_types(app)
-
-
-def test_post_approval_execute_approval_probe_returns_harmless_result(app: DaemonApp) -> None:
-    app.start()
-
-    with running_server(app) as base_url:
-        _, requested = request_json(
-            "POST",
-            f"{base_url}/tools/request",
-            {
-                "tool_name": "approval_probe",
-                "arguments": {"purpose": "smoke"},
-                "requested_by": "api",
-            },
-        )
-        request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/approve")
-        status, payload = request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/execute")
-
-    assert status == 200
-    assert payload["ok"] is True
-    assert payload["result"] == {
-        "ok": True,
-        "message": "approval_probe executed safely",
-    }
-    assert tool_run_count_for_approval(app, requested["approval_id"]) == 1
-    assert table_count(app, "voice_queue") == 0
-    assert table_count(app, "worker_jobs") == 0
-
-
-def test_post_approval_execute_pending_rejected_and_missing_approvals_do_not_execute(
-    app: DaemonApp,
-) -> None:
-    fake = ApiFakeTool(name="execute_guarded", risk="shell_read")
-    app.tool_registry.register(fake)
-    app.start()
-
-    with running_server(app) as base_url:
-        _, pending = request_json(
-            "POST",
-            f"{base_url}/tools/request",
-            {"tool_name": "execute_guarded", "arguments": {"n": 1}, "requested_by": "api"},
-        )
-        _, rejectable = request_json(
-            "POST",
-            f"{base_url}/tools/request",
-            {"tool_name": "execute_guarded", "arguments": {"n": 2}, "requested_by": "api"},
-        )
-        request_json("POST", f"{base_url}/approvals/{rejectable['approval_id']}/reject")
-        pending_status, pending_payload = request_json(
-            "POST",
-            f"{base_url}/approvals/{pending['approval_id']}/execute",
-        )
-        rejected_status, rejected_payload = request_json(
-            "POST",
-            f"{base_url}/approvals/{rejectable['approval_id']}/execute",
-        )
-        missing_status, missing_payload = request_json("POST", f"{base_url}/approvals/missing/execute")
-
-    assert pending_status == 409
-    assert "not approved" in pending_payload["error"]
-    assert rejected_status == 409
-    assert "not approved" in rejected_payload["error"]
-    assert missing_status == 404
-    assert missing_payload["status"] == 404
-    assert fake.calls == []
-    assert table_count(app, "tool_runs") == 0
-
-
-def test_post_approval_execute_unknown_tool_payload_does_not_record_run(app: DaemonApp) -> None:
-    app.start()
-    assert app.approval_gate is not None
-    approval = app.approval_gate.create_approval(
-        risk="shell_read",
-        requested_by="api",
-        action_type="tool:missing",
-        payload={
-            "tool_name": "missing",
-            "arguments": {},
-            "requested_by": "api",
-            "source": str(RequestSource.DIRECT_USER_COMMAND),
-        },
-    )
-    app.approve(str(approval["id"]))
-
-    with running_server(app) as base_url:
-        status, payload = request_json("POST", f"{base_url}/approvals/{approval['id']}/execute")
-
-    assert status == 404
-    assert payload["status"] == 404
-    assert table_count(app, "tool_runs") == 0
-
-
-def test_post_approval_execute_duplicate_returns_409_without_second_run(
-    app: DaemonApp,
-) -> None:
-    fake = ApiFakeTool(name="execute_once", risk="shell_read")
-    app.tool_registry.register(fake)
-    app.start()
-
-    with running_server(app) as base_url:
-        _, requested = request_json(
-            "POST",
-            f"{base_url}/tools/request",
-            {"tool_name": "execute_once", "arguments": {"n": 1}, "requested_by": "api"},
-        )
-        request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/approve")
-        first_status, first = request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/execute")
-        second_status, second = request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/execute")
-
-    assert first_status == 200
-    assert first["ok"] is True
-    assert second_status == 409
-    assert "already executed" in second["error"]
-    assert fake.calls == [{"n": 1}]
-    assert tool_run_count_for_approval(app, requested["approval_id"]) == 1
-
-
-def test_post_approval_execute_blocks_destructive_when_disabled(app: DaemonApp) -> None:
-    fake = ApiFakeTool(name="destructive_execute", risk="destructive")
-    app.tool_registry.register(fake)
-    app.start()
-    assert app.approval_gate is not None
-    approval = app.approval_gate.create_approval(
-        risk="destructive",
-        requested_by="api",
-        action_type="tool:destructive_execute",
-        payload={
-            "tool_name": "destructive_execute",
-            "arguments": {},
-            "requested_by": "api",
-            "source": str(RequestSource.DIRECT_USER_COMMAND),
-        },
-    )
-    app.approve(str(approval["id"]))
-
-    with running_server(app) as base_url:
-        status, payload = request_json("POST", f"{base_url}/approvals/{approval['id']}/execute")
-
-    assert status == 200
-    assert payload["ok"] is False
-    assert payload["status"] == "blocked"
-    assert "destructive tools are disabled" in payload["error"]
-    assert fake.calls == []
-    assert table_count(app, "tool_runs") == 0
-    assert table_count(app, "voice_queue") == 0
-    assert table_count(app, "worker_jobs") == 0
-
-
-def test_post_tools_request_blocked_tool_does_not_execute(app: DaemonApp) -> None:
-    fake = ApiFakeTool(name="blocked_api", risk="destructive")
-    app.tool_registry.register(fake)
-    app.start()
-
-    with running_server(app) as base_url:
-        status, payload = request_json(
-            "POST",
-            f"{base_url}/tools/request",
-            {"tool_name": "blocked_api", "arguments": {}, "requested_by": "api"},
-        )
-
-    assert status == 200
-    assert payload["status"] == "blocked"
-    assert fake.calls == []
-    assert table_count(app, "approvals") == 0
-    assert table_count(app, "tool_runs") == 0
-    assert table_count(app, "voice_queue") == 0
-    assert table_count(app, "worker_jobs") == 0
-
-
-def test_get_approvals_lists_pending(app: DaemonApp) -> None:
-    fake = ApiFakeTool(name="approval_listed", risk="file_write")
-    app.tool_registry.register(fake)
-    app.start()
-
-    with running_server(app) as base_url:
-        request_json(
-            "POST",
-            f"{base_url}/tools/request",
-            {
-                "tool_name": "approval_listed",
-                "arguments": {"path": "x"},
-                "requested_by": "api",
-            },
-        )
-        status, payload = request_json("GET", f"{base_url}/approvals")
-
-    assert status == 200
-    assert len(payload["approvals"]) == 1
-    assert payload["approvals"][0]["status"] == "pending"
-    assert payload["approvals"][0]["risk"] == "file_write"
-
-
-def test_approve_and_reject_endpoints_update_pending_approval_status(
-    app: DaemonApp,
-) -> None:
-    fake = ApiFakeTool(name="approval_decision", risk="network")
-    app.tool_registry.register(fake)
-    app.start()
-
-    with running_server(app) as base_url:
-        first_status, first = request_json(
-            "POST",
-            f"{base_url}/tools/request",
-            {"tool_name": "approval_decision", "arguments": {}, "requested_by": "api"},
-        )
-        second_status, second = request_json(
-            "POST",
-            f"{base_url}/tools/request",
-            {"tool_name": "approval_decision", "arguments": {}, "requested_by": "api"},
-        )
-        approve_status, approved = request_json(
-            "POST",
-            f"{base_url}/approvals/{first['approval_id']}/approve",
-            {"reason": "ok"},
-        )
-        reject_status, rejected = request_json(
-            "POST",
-            f"{base_url}/approvals/{second['approval_id']}/reject",
-            {"reason": "no"},
-        )
-
-    assert first_status == 200
-    assert second_status == 200
-    assert approve_status == 200
-    assert reject_status == 200
-    assert approved["approval"]["status"] == "approved"
-    assert rejected["approval"]["status"] == "rejected"
-    assert fake.calls == []
-
-
-def test_approval_endpoints_require_started_app(app: DaemonApp) -> None:
-    with running_server(app) as base_url:
-        status, payload = request_json("GET", f"{base_url}/approvals")
-
-    assert status == 503
-    assert payload["status"] == 503
+    assert list_status == 404
+    assert listed == {"error": "Not found", "status": 404}
+    assert execute_status == 404
+    assert executed == {"error": "Not found", "status": 404}
 
 
 def test_unknown_route_returns_404_json(app: DaemonApp) -> None:
@@ -2390,7 +2073,19 @@ def test_get_runtime_settings_returns_typed_projection_groups_and_fields(app: Da
 
     for group_name in projection_groups:
         group = payload[group_name]
-        for field in group.values():
+        for field_name, field in group.items():
+            if group_name == "voice" and field_name == "turn_detection":
+                assert isinstance(field, dict)
+                for nested_field in field.values():
+                    assert set(nested_field.keys()) == {
+                        "value",
+                        "effective_value",
+                        "source",
+                        "status",
+                        "editable_later",
+                        "warning",
+                    }
+                continue
             assert set(field.keys()) == {
                 "value",
                 "effective_value",
@@ -2610,9 +2305,12 @@ def test_runtime_settings_structured_warnings_cover_invalid_preview_fixtures(
     warnings = payload["compatibility_warnings"]
     warning_ids = {warning["id"] for warning in warnings}
     # The test config triggers these specific warnings
-    assert {"brain_model_missing", "voice_enabled_tts_missing", "voice_enabled_stt_missing"}.issubset(
-        warning_ids
-    )
+    assert {
+        "voice_enabled_tts_missing",
+        "speak_responses_tts_missing",
+        "voice_enabled_stt_missing",
+        "barge_in_cancel_unavailable",
+    }.issubset(warning_ids)
     for warning in warnings:
         assert set(warning) == {
             "id",
@@ -3071,10 +2769,10 @@ def test_get_runtime_settings_does_not_apply_stale_barge_in_to_later_text_turn(
     assert production_calls == []
 
 
-def test_get_runtime_settings_counts_turn_approvals_and_tool_attempts(
+def test_get_runtime_settings_counts_direct_tool_attempts_without_approvals(
     app: DaemonApp,
 ) -> None:
-    fake = ApiFakeTool(name="needs_approval", risk="shell_read")
+    fake = ApiFakeTool(name="direct_trace", risk="shell_read")
     app.tool_registry.register(fake)
     app.start()
 
@@ -3087,31 +2785,30 @@ def test_get_runtime_settings_counts_turn_approvals_and_tool_attempts(
         assert status == 200
         turn_id = input_payload["turn_id"]
 
-        _, requested = request_json(
+        request_status, requested = request_json(
             "POST",
             f"{base_url}/tools/request",
             {
-                "tool_name": "needs_approval",
+                "tool_name": "direct_trace",
                 "arguments": {"command": "status"},
                 "requested_by": "api",
                 "turn_id": turn_id,
             },
         )
-        request_json(
-            "POST",
-            f"{base_url}/approvals/{requested['approval_id']}/approve",
-        )
-        request_json("POST", f"{base_url}/approvals/{requested['approval_id']}/execute")
+        assert request_status == 200
+        assert requested["status"] == "finished"
+        assert "approval_id" not in requested
 
         status, payload = request_json("GET", f"{base_url}/runtime/settings")
 
     assert status == 200
     trace = payload["latest_turn_trace"]
     assert trace["turn_id"]["value"] == turn_id
-    assert trace["approvals_requested_count"]["value"] == 1
-    assert trace["approvals_executed_count"]["value"] == 1
+    assert trace["approvals_requested_count"]["value"] == 0
+    assert trace["approvals_executed_count"]["value"] == 0
     assert trace["tools_attempted_count"]["value"] == 1
     assert trace["latest_safe_error"]["value"] is None
+    assert fake.calls == [{"command": "status"}]
 
 
 def test_runtime_settings_warnings_include_tts_unavailable_when_voice_enabled(
@@ -3308,12 +3005,11 @@ def test_runtime_settings_warns_supertonic_voice_requires_manual_diagnostic(
 ) -> None:
     import dan.api.routes_runtime as routes_runtime
 
-    called = False
+    calls: list[list[str]] = []
 
     def fake_run(command, **_: object) -> object:
-        nonlocal called
-        called = True
-        raise AssertionError(f"unexpected subprocess probe: {command}")
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="probe unavailable")
 
     monkeypatch.setattr(routes_runtime.subprocess, "run", fake_run)
 
@@ -3340,30 +3036,16 @@ def test_runtime_settings_warns_supertonic_voice_requires_manual_diagnostic(
         app.close()
 
     assert status == 200
-    assert called is False
+    assert ["/bin/echo", "list-voices"] not in calls
     warnings = _runtime_warning_messages(payload)
     assert any("voice list requires manual diagnostic" in message for message in warnings)
 
 
 def test_runtime_settings_warnings_when_tools_are_shown_but_provider_does_not_support_tools(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    app: DaemonApp,
 ) -> None:
-    config_path = rewrite_voice_section(
-        write_config(
-            tmp_path / "dan.toml",
-            tmp_path / "home" / "dan.db",
-            extra_toml="\n",
-        ),
-        "enabled = true\n",
-    )
-    app = create_daemon_app(config_path)
-    monkeypatch.setattr(app.tool_registry, "list_specs", lambda: [type("ToolSpec", (), {"name": "demo", "risk": "low", "description": "demo"})])
-    try:
-        with running_server(app) as base_url:
-            status, payload = request_json("GET", f"{base_url}/runtime/settings")
-    finally:
-        app.close()
+    with running_server(app) as base_url:
+        status, payload = request_json("GET", f"{base_url}/runtime/settings")
 
     assert status == 200
     warning_ids = {warning["id"] for warning in payload["compatibility_warnings"]}
@@ -3432,9 +3114,13 @@ def test_runtime_settings_ignores_legacy_network_approval_without_network_tool(
     assert "approval_required_surface_unavailable" not in warning_ids
 
 
-def test_get_runtime_settings_exposes_only_cold_claude_provider(app: DaemonApp) -> None:
-    with running_server(app) as base_url:
-        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+def test_get_runtime_settings_exposes_only_cold_claude_provider(config_path: Path) -> None:
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
 
     assert status == 200
     providers = payload["brain"]["providers"]["value"]
@@ -4350,6 +4036,13 @@ def test_claude_cli_adapter_argv_uses_selected_model_from_command_contract() -> 
         turn_id="turn-claude-contract",
         conversation_id="conversation-claude-contract",
         input_text="hello",
+        context_messages=[
+            BrainMessage(
+                role="system",
+                content="Canonical DAN persona for adapter contract test.",
+                metadata={"kind": "persona"},
+            )
+        ],
         settings={
             "model": "claude-sonnet-4",
             "model_source": "settings",
@@ -4476,7 +4169,11 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 
 def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
-    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {
+        ("dan/voice/shared_broker.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "afplay"),
+    }
     forbidden = (
         "/Users/" "n1_ozzy" "/Documents/dev/dan",
         "/tmp/dan",
@@ -4556,9 +4253,13 @@ def test_model_effort_support_intersects_with_empty_provider_ladder() -> None:
     }
 
 
-def test_brain_capabilities_expose_model_effort_support(app: DaemonApp) -> None:
-    with running_server(app) as base_url:
-        status, payload = request_json("GET", f"{base_url}/runtime/settings")
+def test_brain_capabilities_expose_model_effort_support(config_path: Path) -> None:
+    app = create_daemon_app(config_path)
+    try:
+        with running_server(app) as base_url:
+            status, payload = request_json("GET", f"{base_url}/runtime/settings")
+    finally:
+        app.close()
 
     assert status == 200
     providers = payload["capability_graph"]["brain_capabilities"]["providers"]
@@ -4577,12 +4278,11 @@ def test_voice_capabilities_expose_whisper_languages_and_models(app: DaemonApp) 
     assert status == 200
     voice = payload["capability_graph"]["voice_capabilities"]
 
-    # STT language list is the real Whisper contract (~99 codes), not a single
-    # echoed value.
+    # The picker intentionally exposes only the two languages DAN actually
+    # uses, while model validation can still accept Whisper's larger contract.
     languages = voice["stt_languages"]
     assert isinstance(languages, list)
-    assert {"pl", "en", "de", "fr"}.issubset(set(languages))
-    assert len(languages) > 50
+    assert languages == ["pl", "en"]
 
     # The mlx_whisper provider offers genuine Whisper model ids plus its own
     # language list (not a lone configured-model echo).

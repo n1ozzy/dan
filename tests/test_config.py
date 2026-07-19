@@ -31,6 +31,7 @@ def test_fresh_install_defaults_to_the_single_persistent_claude_adapter() -> Non
     brain = BrainConfig()
 
     assert brain.default_adapter == "claude_cli"
+    assert brain.groq.api_key == ""  # secrets belong in ~/.dan/config.toml
     assert brain.provider_sessions_are_memory is False
     assert not hasattr(brain, "claude_cli_warm")
     assert brain.context_window_tokens == 200_000

@@ -43,6 +43,12 @@ SHARED_SKILLS = (
     "screen-control",
 )
 
+PERSONA_ADAPTERS = (
+    INTEGRATIONS / "codex" / "skills" / "dan-persona" / "SKILL.md",
+    INTEGRATIONS / "claude" / "skills" / "dan-persona" / "SKILL.md",
+    INTEGRATIONS / "openclaw" / "skills" / "dan" / "SKILL.md",
+)
+
 
 @pytest.fixture
 def installed_adapter():
@@ -116,6 +122,16 @@ def test_adapter_templates_carry_no_legacy_paths() -> None:
             for token in LEGACY_TOKENS:
                 assert token not in text, (path, token)
     assert scanned >= 12
+
+
+def test_persona_adapters_load_once_per_session_and_reload_only_at_boundaries() -> None:
+    for path in PERSONA_ADAPTERS:
+        text = path.read_text(encoding="utf-8")
+        assert "once at the start of the host session" in text, path
+        assert "Do not rerun it on every turn" in text, path
+        for boundary in ("restart", "compaction", "handoff", "model change"):
+            assert boundary in text, (path, boundary)
+        assert "canon hash changes" in text, path
 
 
 def test_adapter_manifest_accounts_for_every_inventory_producer(manifest, inventory) -> None:

@@ -99,6 +99,10 @@ class ShellReadTool(Tool):
     def run(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         command = _required_command_argument(arguments)
         normalized = _normalize_command(command)
+        if normalized not in self.whitelist:
+            raise ToolExecutionError(
+                f"shell_read command is not whitelisted: {normalized}"
+            )
 
         cwd = self._resolve_cwd(arguments)
         env = dict(_SCRUBBED_ENV)
@@ -141,13 +145,21 @@ class ShellReadTool(Tool):
     def _resolve_cwd(self, arguments: Mapping[str, Any]) -> str:
         raw_cwd = arguments.get("cwd")
         if raw_cwd is None:
-            return os.getcwd()
+            if not self.approved_roots:
+                raise ToolExecutionError(
+                    "shell_read cannot run because no approved roots are configured."
+                )
+            return self.approved_roots[0]
         if not isinstance(raw_cwd, str) or not raw_cwd.strip():
             raise ToolExecutionError("shell_read cwd must be a non-empty string.")
 
         resolved = _normalize_path(raw_cwd.strip())
         if not os.path.isdir(resolved):
             raise ToolExecutionError(f"shell_read cwd is not a directory: {resolved}")
+        if not any(_is_within_root(resolved, root) for root in self.approved_roots):
+            raise ToolExecutionError(
+                f"shell_read cwd is outside approved roots: {resolved}"
+            )
         return resolved
 
 

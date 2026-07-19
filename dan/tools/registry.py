@@ -1,4 +1,4 @@
-"""Safe tool registry, approval gate and tool run recorder."""
+"""Direct tool registry and durable tool-run recorder."""
 
 from __future__ import annotations
 
@@ -13,12 +13,6 @@ from dan.events.models import utc_now_iso
 from dan.events.types import EventType
 from dan.security.redaction import redact_secrets
 from dan.store.event_store import EventStore
-from dan.tools.permissions import (
-    RequestSource,
-    ToolDecision,
-    ToolPermissionPolicy,
-    ToolPermissionResult,
-)
 
 
 class ToolRegistryError(Exception):
@@ -57,16 +51,6 @@ class ToolResult:
     approval_id: str | None = None
 
 
-@dataclass(frozen=True)
-class ToolPermissionEvaluation:
-    tool_name: str
-    risk: str
-    decision: str
-    reason: str
-    approval_required: bool = False
-    blocked: bool = False
-
-
 class Tool:
     name: str
     description: str
@@ -88,16 +72,15 @@ class EchoTool(Tool):
 
 
 class ApprovalProbeTool(Tool):
+    """Legacy compatibility probe; direct execution never creates approvals."""
+
     name = "approval_probe"
     description = "Demo tool that executes immediately and returns a recorded result."
     risk = "shell_read"
     input_schema = {"type": "object"}
 
     def run(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
-        return {
-            "ok": True,
-            "message": "approval_probe executed safely",
-        }
+        return {"ok": True, "message": "approval_probe executed safely"}
 
 
 class ToolRegistry:
@@ -120,33 +103,15 @@ class ToolRegistry:
     def list_specs(self) -> list[ToolSpec]:
         return [_spec_from_tool(self._tools[name]) for name in sorted(self._tools)]
 
-    def evaluate_permission(
-        self,
-        request: ToolRequest,
-        *,
-        permission_policy: ToolPermissionPolicy,
-        source: RequestSource | str,
-    ) -> ToolPermissionEvaluation:
-        tool = self.get(request.tool_name)
-        permission = permission_policy.decide(
-            tool.risk,
-            source=source,
-            tool_name=tool.name,
-            payload=request.arguments,
-        )
-        return _permission_evaluation(tool.name, permission)
-
     def request_tool(
         self,
         request: ToolRequest,
         *,
-        permission_policy: ToolPermissionPolicy,
-        source: RequestSource | str,
+        permission_policy: Any | None = None,
+        source: Any = None,
         approval_gate: ApprovalGate | None = None,
     ) -> ToolResult:
-        # Runtime-lab branch: request means execute. ApprovalGate is ignored so
-        # model/voice/panel tool calls are not stranded as pending approvals.
-        self.get(request.tool_name)
+        """Execute immediately; legacy policy arguments are intentionally ignored."""
         return self.execute_tool(request)
 
     def execute_tool(self, request: ToolRequest, *, approval_id: str | None = None) -> ToolResult:
@@ -173,6 +138,13 @@ class ToolRegistry:
 
 
 class ApprovalGate:
+    """Compatibility store for legacy approval records.
+
+    Release 1 tool execution does not call this gate. It remains available for
+    persisted historical records and memory-save proposal compatibility while
+    those consumers are migrated away from the old approval API.
+    """
+
     def __init__(
         self,
         conn: sqlite3.Connection,
@@ -246,14 +218,11 @@ class ApprovalGate:
             """
             SELECT id, created_at, decided_at, status, risk, requested_by,
                    action_type, payload_json, decision_reason, metadata_json
-            FROM approvals
-            WHERE id = ?
+            FROM approvals WHERE id = ?
             """,
             (_required_text(approval_id, "approval_id"),),
         ).fetchone()
-        if row is None:
-            return None
-        return _approval_from_row(row)
+        return None if row is None else _approval_from_row(row)
 
     def decide(
         self,
@@ -265,7 +234,6 @@ class ApprovalGate:
         normalized_decision = _required_text(decision, "decision")
         if normalized_decision not in {"approved", "rejected"}:
             raise ToolRegistryError("Approval decision must be approved or rejected.")
-
         approval = self.get_approval(approval_id)
         if approval is None:
             raise ToolRegistryError(f"Unknown approval: {approval_id}")
@@ -276,8 +244,7 @@ class ApprovalGate:
         with self._conn:
             cursor = self._conn.execute(
                 """
-                UPDATE approvals
-                SET status = ?, decided_at = ?, decision_reason = ?
+                UPDATE approvals SET status = ?, decided_at = ?, decision_reason = ?
                 WHERE id = ? AND status = 'pending'
                 """,
                 (normalized_decision, decided_at, reason, approval_id),
@@ -308,37 +275,22 @@ class ApprovalGate:
         return decided
 
     def list_pending(self, limit: int = 50) -> list[dict[str, Any]]:
-        bounded_limit = _bounded_limit(limit)
-        rows = self._conn.execute(
-            """
-            SELECT id, created_at, decided_at, status, risk, requested_by,
-                   action_type, payload_json, decision_reason, metadata_json
-            FROM approvals
-            WHERE status = 'pending'
-            ORDER BY created_at ASC, id ASC
-            LIMIT ?
-            """,
-            (bounded_limit,),
-        ).fetchall()
-        return [_approval_from_row(row) for row in rows]
+        return self._list_by_status(("pending",), limit)
 
     def list_pending_and_approved(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Both still-open decisions AND already-approved-but-not-yet-executed
-        approvals. The daemon drops the ones that already ran; keeping approved
-        rows here is what stops an approved-but-unexecuted approval from
-        vanishing (server truth, not client memory)."""
+        return self._list_by_status(("pending", "approved"), limit)
 
+    def _list_by_status(self, statuses: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
         bounded_limit = _bounded_limit(limit)
+        placeholders = ", ".join("?" for _ in statuses)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT id, created_at, decided_at, status, risk, requested_by,
                    action_type, payload_json, decision_reason, metadata_json
-            FROM approvals
-            WHERE status IN ('pending', 'approved')
-            ORDER BY created_at ASC, id ASC
-            LIMIT ?
+            FROM approvals WHERE status IN ({placeholders})
+            ORDER BY created_at ASC, id ASC LIMIT ?
             """,
-            (bounded_limit,),
+            (*statuses, bounded_limit),
         ).fetchall()
         return [_approval_from_row(row) for row in rows]
 
@@ -554,9 +506,7 @@ class ToolRunRecorder:
             """,
             (_required_text(approval_id, "approval_id"),),
         ).fetchone()
-        if row is None:
-            return None
-        return _tool_run_from_row(row)
+        return None if row is None else _tool_run_from_row(row)
 
     def get(self, run_id: str) -> dict[str, Any] | None:
         row = self._conn.execute(
@@ -612,20 +562,6 @@ def _spec_from_tool(tool: Tool) -> ToolSpec:
     if not isinstance(input_schema, dict):
         raise ToolRegistryError(f"{name} input_schema must be a dict.")
     return ToolSpec(name=name, description=description, input_schema=dict(input_schema), risk=risk)
-
-
-def _permission_evaluation(
-    tool_name: str,
-    permission: ToolPermissionResult,
-) -> ToolPermissionEvaluation:
-    return ToolPermissionEvaluation(
-        tool_name=tool_name,
-        risk=permission.risk,
-        decision=permission.decision,
-        reason=permission.reason,
-        approval_required=permission.approval_required,
-        blocked=permission.blocked,
-    )
 
 
 def _required_text(value: Any, label: str) -> str:
@@ -850,7 +786,6 @@ __all__ = [
     "EchoTool",
     "Tool",
     "ToolExecutionError",
-    "ToolPermissionEvaluation",
     "ToolRegistry",
     "ToolRegistryError",
     "ToolRequest",

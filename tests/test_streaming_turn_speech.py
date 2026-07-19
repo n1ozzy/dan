@@ -206,7 +206,6 @@ def make_orchestrator(
         brain_manager=BrainManager([adapter], default_adapter=adapter.name),
         context_builder=context_builder or ContextBuilder(conn),
         speech_pipeline=SpeechPipeline(
-            lambda: connect(db_path),
             config=voice_config(),
             voice_service=voice_service,
         ),

@@ -1826,7 +1826,6 @@ class DaemonApp:
             from dan.voice.speech import SpeechPipeline
 
             speech_pipeline = SpeechPipeline(
-                self._connect_existing,
                 config=self.config.voice,
                 voice_service=self.voice_service,
             )
@@ -2067,18 +2066,6 @@ def create_daemon_app(
     )
 
 
-def _setting_bool(settings: Mapping[str, Any], key: str, default: bool) -> bool:
-    value = settings.get(key)
-    return value if isinstance(value, bool) else default
-
-
-def _setting_text(settings: Mapping[str, Any], key: str, default: str) -> str:
-    value = settings.get(key)
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return default
-
-
 def _setting_list(settings: Mapping[str, Any], key: str, default: Iterable[str]) -> tuple[str, ...]:
     value = settings.get(key)
     if isinstance(value, (list, tuple)):
@@ -2108,27 +2095,6 @@ def _policy_with_settings_overlay(
         require_approval_for_terminal=False,
         require_approval_for_memory=False,
     )
-
-
-_AUTO_APPROVE_MODES = frozenset({"off", "model", "voice", "all"})
-
-
-def _setting_auto_approve_mode(
-    settings: Mapping[str, Any], key: str, default: str
-) -> str:
-    """Overlay the auto-approve mode only when it is a known value.
-
-    An unrecognized string must not silently half-work as "off" — it is
-    rejected here with a log and the base/config mode stays in force."""
-
-    value = _setting_text(settings, key, default)
-    if value in _AUTO_APPROVE_MODES:
-        return value
-    get_logger(__name__).warning(
-        "Ignoring unknown %s value %r; keeping %r.", key, value, default
-    )
-    return default
-
 
 def create_daemon_app_from_config(
     config: DANConfig,

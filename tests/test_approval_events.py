@@ -10,18 +10,16 @@ from typing import Any
 
 import pytest
 
-from dan.daemon.app import DaemonApp, DaemonAppConflictError, create_daemon_app
+from dan.daemon.app import DaemonApp, create_daemon_app
 from dan.events.types import EventType
 from dan.security.redaction import REDACTION_PLACEHOLDER
 from dan.store.db import close_quietly, initialize_database
 from dan.store.event_store import EventStore, create_event_store
-from dan.tools.permissions import RequestSource, ToolPermissionPolicy
+from dan.tools.permissions import RequestSource
 from dan.tools.registry import (
     ApprovalGate,
     Tool,
-    ToolRegistry,
     ToolRegistryError,
-    ToolRequest,
 )
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import write_config
@@ -158,23 +156,13 @@ def test_decision_event_preserves_turn_id_and_correlation_id_from_approval_reque
     conn: sqlite3.Connection,
     event_store: EventStore,
 ) -> None:
-    registry = ToolRegistry()
-    registry.register(RecordingApprovalTool())
     gate = ApprovalGate(conn, event_store=event_store, now=lambda: "2026-07-01T12:00:00Z")
-    result = registry.request_tool(
-        ToolRequest(
-            id="run-correlated",
-            tool_name="approval_event_tool",
-            arguments={"command": "status"},
-            requested_by="tests",
-            turn_id="turn-approval-events",
-        ),
-        permission_policy=ToolPermissionPolicy(),
-        source=RequestSource.DIRECT_USER_COMMAND,
-        approval_gate=gate,
+    approval = create_tool_approval(
+        gate,
+        turn_id="turn-approval-events",
     )
 
-    gate.decide(str(result.approval_id), "approved")
+    gate.decide(str(approval["id"]), "approved")
 
     event = decision_events(event_store, EventType.APPROVAL_APPROVED)[0]
     assert event.turn_id == "turn-approval-events"
@@ -241,7 +229,7 @@ def test_reject_after_approve_fails_without_rejected_event(
     assert len(decision_events(event_store, EventType.APPROVAL_APPROVED)) == 1
 
 
-def test_approve_does_not_execute_tool(app: DaemonApp) -> None:
+def test_app_tool_request_executes_once_without_approval_events(app: DaemonApp) -> None:
     tool = RecordingApprovalTool()
     app.tool_registry.register(tool)
     app.start()
@@ -251,58 +239,19 @@ def test_approve_does_not_execute_tool(app: DaemonApp) -> None:
         arguments={"command": "status"},
         requested_by="api",
         source=RequestSource.DIRECT_USER_COMMAND,
+        turn_id="turn-direct",
     )
-    approved = app.approve(str(requested.approval_id), reason="ok")
-
-    assert approved["status"] == "approved"
-    assert tool.calls == []
-    assert table_count(app, "tool_runs") == 0
-
-
-def test_rejection_does_not_execute_tool(app: DaemonApp) -> None:
-    tool = RecordingApprovalTool()
-    app.tool_registry.register(tool)
-    app.start()
-
-    requested = app.request_tool(
-        tool_name=tool.name,
-        arguments={"command": "status"},
-        requested_by="api",
-        source=RequestSource.DIRECT_USER_COMMAND,
-    )
-    rejected = app.reject(str(requested.approval_id), reason="no")
-
-    assert rejected["status"] == "rejected"
-    assert tool.calls == []
-    assert table_count(app, "tool_runs") == 0
-
-
-def test_execute_approved_behavior_remains_explicit_and_duplicate_execute_conflicts(
-    app: DaemonApp,
-) -> None:
-    tool = RecordingApprovalTool()
-    app.tool_registry.register(tool)
-    app.start()
-
-    requested = app.request_tool(
-        tool_name=tool.name,
-        arguments={"command": "status"},
-        requested_by="api",
-        source=RequestSource.DIRECT_USER_COMMAND,
-        turn_id="turn-execute-approved",
-    )
-    app.approve(str(requested.approval_id), reason="ok")
-
-    executed = app.execute_approved_tool(str(requested.approval_id))
-    with pytest.raises(DaemonAppConflictError):
-        app.execute_approved_tool(str(requested.approval_id))
-
-    assert executed["ok"] is True
-    assert executed["result"] == {"received": {"command": "status"}}
+    assert requested.status == "finished"
+    assert requested.output == {"received": {"command": "status"}}
+    assert requested.approval_id is None
     assert tool.calls == [{"command": "status"}]
     assert table_count(app, "tool_runs") == 1
-    assert event_types(app).count(EventType.TOOL_STARTED) == 1
+    assert table_count(app, "approvals") == 0
+    assert event_types(app).count(EventType.TOOL_REQUESTED) == 1
     assert event_types(app).count(EventType.TOOL_FINISHED) == 1
+    assert EventType.APPROVAL_CREATED not in event_types(app)
+    assert EventType.APPROVAL_APPROVED not in event_types(app)
+    assert EventType.APPROVAL_REJECTED not in event_types(app)
 
 
 def test_decision_event_payload_is_redacted_by_event_store(
@@ -326,7 +275,11 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 
 def test_runtime_code_and_scripts_do_not_contain_forbidden_legacy_strings() -> None:
-    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {
+        ("dan/voice/shared_broker.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "afplay"),
+    }
     findings: list[str] = []
     for root_name in ("dan", "scripts"):
         for path in (ROOT / root_name).rglob("*"):

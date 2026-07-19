@@ -1,8 +1,7 @@
-"""Live tool-permission policy: panel settings overlaid on config defaults.
+"""Release 1 direct-execution tool policy.
 
-The panel writes to the settings table; each turn rebuilds the policy from
-config (TOML seed) overlaid with those settings, so what the operator sets in
-the panel is what the engine enforces on the next turn — no restart.
+Legacy panel approval settings may still exist in persisted state, but they
+must not reintroduce an approval row or awaiting-approval turn.
 """
 
 from __future__ import annotations
@@ -30,22 +29,22 @@ def test_panel_setting_disables_shell_approval_over_config_default() -> None:
     assert _decide_shell(live) == ToolDecision.ALLOW
 
 
-def test_panel_absent_setting_keeps_config_default() -> None:
+def test_panel_absent_setting_does_not_restore_config_approval_gate() -> None:
     base = ToolPermissionPolicy(require_approval_for_shell=True)
 
     live = _policy_with_settings_overlay(base, {})
 
-    assert _decide_shell(live) == ToolDecision.APPROVAL_REQUIRED
+    assert _decide_shell(live) == ToolDecision.ALLOW
 
 
-def test_malformed_setting_falls_back_to_config_default_fail_closed() -> None:
+def test_malformed_legacy_setting_does_not_restore_approval_gate() -> None:
     base = ToolPermissionPolicy(require_approval_for_shell=True)
 
     live = _policy_with_settings_overlay(
         base, {"security.require_approval_for_shell": "nope"}
     )
 
-    assert _decide_shell(live) == ToolDecision.APPROVAL_REQUIRED
+    assert _decide_shell(live) == ToolDecision.ALLOW
 
 
 def test_master_auto_run_switch_allows_mutation_via_settings() -> None:
@@ -87,23 +86,20 @@ def test_panel_settings_disable_ui_terminal_and_memory_approval() -> None:
     assert _decide(live, "ui_act") == ToolDecision.ALLOW
     assert _decide(live, "terminal_write") == ToolDecision.ALLOW
     assert _decide(live, "memory_write") == ToolDecision.ALLOW
-    # The switches are independent — shell was not touched and still gates.
-    assert _decide(live, "shell_read") == ToolDecision.APPROVAL_REQUIRED
+    assert _decide(live, "shell_read") == ToolDecision.ALLOW
 
 
-def test_ui_terminal_memory_default_to_requiring_approval() -> None:
+def test_ui_terminal_memory_execute_without_approval_by_default() -> None:
     base = ToolPermissionPolicy()
 
     live = _policy_with_settings_overlay(base, {})
 
-    assert _decide(live, "ui_act") == ToolDecision.APPROVAL_REQUIRED
-    assert _decide(live, "terminal_write") == ToolDecision.APPROVAL_REQUIRED
-    assert _decide(live, "memory_write") == ToolDecision.APPROVAL_REQUIRED
+    assert _decide(live, "ui_act") == ToolDecision.ALLOW
+    assert _decide(live, "terminal_write") == ToolDecision.ALLOW
+    assert _decide(live, "memory_write") == ToolDecision.ALLOW
 
 
-def test_unattended_sources_stay_blocked_even_with_every_grant_on() -> None:
-    """Grants apply to attended sources only: an unattended scheduled job may
-    not mutate anything no matter what the panel says."""
+def test_permission_policy_does_not_add_source_specific_gates() -> None:
 
     base = ToolPermissionPolicy()
 
@@ -126,12 +122,10 @@ def test_unattended_sources_stay_blocked_even_with_every_grant_on() -> None:
             tool_name=f"probe.{risk}",
             payload={},
         )
-        assert result.decision == ToolDecision.BLOCKED, risk
+        assert result.decision == ToolDecision.ALLOW, risk
 
 
-def test_unknown_auto_approve_mode_falls_back_to_off() -> None:
-    """An unrecognized mode string must not silently half-work: it is rejected
-    at overlay time and the base mode stays in force (fail-closed)."""
+def test_unknown_legacy_auto_approve_mode_cannot_disable_direct_execution() -> None:
 
     base = ToolPermissionPolicy(auto_approve_mode="off")
 
@@ -139,8 +133,8 @@ def test_unknown_auto_approve_mode_falls_back_to_off() -> None:
         base, {"security.auto_approve_mode": "yolo-everything"}
     )
 
-    assert live.auto_approve_mode == "off"
-    assert _decide_shell(live) == ToolDecision.APPROVAL_REQUIRED
+    assert live.auto_approve_mode == "all"
+    assert _decide_shell(live) == ToolDecision.ALLOW
 
 
 def test_overlay_preserves_approved_roots_from_base(tmp_path) -> None:

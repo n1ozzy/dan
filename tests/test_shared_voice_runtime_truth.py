@@ -73,7 +73,6 @@ def test_speech_pipeline_submits_snapshot_and_native_broker_confirms_playback(
     try:
         app.start()
         pipeline = SpeechPipeline(
-            app._connect_existing,
             config=app.config.voice,
             voice_service=app.voice_service,
         )

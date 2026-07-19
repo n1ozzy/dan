@@ -124,7 +124,6 @@ class SpeechStreamSession:
 class SpeechPipeline:
     def __init__(
         self,
-        connection_factory: Callable[[], Any],
         *,
         config: Any,
         voice_service: Any | None = None,

@@ -71,7 +71,6 @@ class PersistingVoiceService:
 
 def pipeline_for(db_path: Path, **overrides) -> SpeechPipeline:
     return SpeechPipeline(
-        lambda: connect(db_path),
         config=voice_config(**overrides),
         voice_service=PersistingVoiceService(db_path),
     )
@@ -150,7 +149,6 @@ def test_broker_flag_does_not_change_the_native_snapshot_stream_path(
     db_path: Path,
 ) -> None:
     pipeline = SpeechPipeline(
-        lambda: connect(db_path),
         config=voice_config(broker_enabled=True),
         voice_service=PersistingVoiceService(db_path),
     )
@@ -179,7 +177,6 @@ def test_native_filler_is_enqueued_as_interruptible_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pipeline = SpeechPipeline(
-        lambda: connect(db_path),
         config=voice_config(broker_enabled=True),
         voice_service=PersistingVoiceService(db_path),
     )
@@ -286,7 +283,6 @@ def test_feed_survives_a_broken_queue_and_never_raises(tmp_path: Path) -> None:
             raise sqlite3.OperationalError("db is gone")
 
     pipeline = SpeechPipeline(
-        lambda: connect(tmp_path / "unused.db"),
         config=voice_config(),
         voice_service=BrokenService(),
     )

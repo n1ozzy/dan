@@ -148,7 +148,11 @@ def test_schema_and_migrations_are_unchanged() -> None:
 
 
 def test_runtime_code_avoids_forbidden_legacy_strings() -> None:
-    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {
+        ("dan/voice/shared_broker.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "afplay"),
+    }
     text_suffixes = {".py", ".sql", ".toml", ".md", ".sh", ".example", ".html", ".js", ".css", ""}
     offenders: list[tuple[str, str]] = []
 

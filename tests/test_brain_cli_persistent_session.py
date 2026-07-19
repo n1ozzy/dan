@@ -170,7 +170,7 @@ def request(
     )
 
 
-def test_initial_and_durable_resume_system_prompts_start_with_exact_fresh_canon(
+def test_initial_and_restored_hash_change_system_prompts_start_with_fresh_canon(
     tmp_path: Path,
 ) -> None:
     state_path = tmp_path / "fresh-canon.json"
@@ -185,7 +185,12 @@ def test_initial_and_durable_resume_system_prompts_start_with_exact_fresh_canon(
     initial_adapter.generate(request("first", turn_id="turn-first", persona=old_canon))
     initial_adapter.close()
 
-    resumed_process = FakePersistentProcess([[result_line("second")]])
+    resumed_process = FakePersistentProcess(
+        [
+            [result_line("checkpoint przyjęty")],
+            [result_line("second")],
+        ]
+    )
     resumed_factory = RecordingFactory(resumed_process)
     resumed_adapter = ClaudeCliAdapter(
         process_factory=resumed_factory,
@@ -201,14 +206,22 @@ def test_initial_and_durable_resume_system_prompts_start_with_exact_fresh_canon(
     initial_command = initial_factory.commands[0]
     initial_prompt = initial_command[initial_command.index("--system-prompt") + 1]
     resumed_command = resumed_factory.commands[0]
-    resumed_prompt = resumed_command[
-        resumed_command.index("--append-system-prompt") + 1
-    ]
+    resumed_prompt = resumed_command[resumed_command.index("--system-prompt") + 1]
     assert initial_prompt.startswith(old_canon)
     assert resumed_prompt.startswith(new_canon)
     assert old_canon not in resumed_prompt
     assert resumed_prompt.index(new_canon) == 0
     assert resumed_prompt.index("Runtime rules:") > len(new_canon)
+    assert "--resume" not in resumed_command
+    assert "--append-system-prompt" not in resumed_command
+    old_session_id = initial_command[initial_command.index("--session-id") + 1]
+    new_session_id = resumed_command[resumed_command.index("--session-id") + 1]
+    assert new_session_id != old_session_id
+    assert len(resumed_process.stdin.writes) == 2
+    checkpoint = json.loads(resumed_process.stdin.writes[0])
+    assert old_canon not in checkpoint["message"]["content"][0]["text"]
+    current = json.loads(resumed_process.stdin.writes[1])
+    assert current["message"]["content"][0]["text"] == "second"
 
 
 def test_persistent_adapter_spawns_once_and_sends_only_incremental_second_turn(
@@ -248,6 +261,62 @@ def test_persistent_adapter_spawns_once_and_sends_only_incremental_second_turn(
     assert "pierwsza wiadomość" in bootstrap_text
     assert incremental_text == "druga wiadomość"
     assert "KANONICZNY DAN" not in incremental_text
+
+
+def test_live_persistent_session_rebuilds_when_persona_hash_changes(
+    tmp_path: Path,
+) -> None:
+    old_canon = "DAN_CANON_VERSION: 1\nSTARY KANON"
+    new_canon = "DAN_CANON_VERSION: 1\nNOWY KANON OZZY'EGO"
+    old_process = FakePersistentProcess(
+        [
+            [result_line("pierwsza")],
+            [result_line("stara sesja nie może odpowiedzieć")],
+        ]
+    )
+    rebuilt_process = FakePersistentProcess(
+        [
+            [result_line("checkpoint przyjęty")],
+            [result_line("odpowiedź z nowego kanonu")],
+        ]
+    )
+    factory = RecordingFactory(old_process, rebuilt_process)
+    adapter = ClaudeCliAdapter(
+        command="claude",
+        process_factory=factory,
+        state_path=tmp_path / "brain-session.json",
+        context_window_tokens=1000,
+    )
+
+    first = adapter.generate(
+        request("pierwsza wiadomość", turn_id="turn-1", persona=old_canon)
+    )
+    second = adapter.generate(
+        request("druga wiadomość", turn_id="turn-2", persona=new_canon)
+    )
+
+    assert first.text == "pierwsza"
+    assert second.text == "odpowiedź z nowego kanonu"
+    assert len(factory.commands) == 2
+    first_command, rebuilt_command = factory.commands
+    old_session_id = first_command[first_command.index("--session-id") + 1]
+    new_session_id = rebuilt_command[rebuilt_command.index("--session-id") + 1]
+    assert new_session_id != old_session_id
+    assert "--resume" not in rebuilt_command
+    assert "--append-system-prompt" not in rebuilt_command
+    rebuilt_system = rebuilt_command[rebuilt_command.index("--system-prompt") + 1]
+    assert rebuilt_system.startswith(new_canon)
+    assert old_canon not in rebuilt_system
+    assert old_process.terminated == 1
+    assert len(old_process.stdin.writes) == 1
+    assert len(rebuilt_process.stdin.writes) == 2
+    checkpoint = json.loads(rebuilt_process.stdin.writes[0])
+    checkpoint_text = checkpoint["message"]["content"][0]["text"]
+    assert old_canon not in checkpoint_text
+    current = json.loads(rebuilt_process.stdin.writes[1])
+    assert current["message"]["content"][0]["text"] == "druga wiadomość"
+
+    adapter.close()
 
 
 def test_process_eof_resumes_same_session_and_retries_current_message_once(

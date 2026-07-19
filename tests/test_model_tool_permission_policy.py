@@ -683,7 +683,11 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 def test_runtime_code_and_scripts_do_not_contain_forbidden_legacy_strings() -> None:
     findings: list[str] = []
-    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {
+        ("dan/voice/shared_broker.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "afplay"),
+    }
     for root_name in ("dan", "scripts"):
         for path in (ROOT / root_name).rglob("*"):
             if not path.is_file() or "__pycache__" in path.parts:

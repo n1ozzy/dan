@@ -127,6 +127,9 @@ brain.test.mcp_config_path
 brain.test.strict_mcp_config
 brain.test.timeout_seconds
 brain.test.stream_args
+brain.groq.api_key
+brain.groq.model
+brain.groq.timeout_seconds
 memory.enabled
 memory.max_active_blocks
 memory.max_context_chars
@@ -730,6 +733,7 @@ def discovered_runtime_config_keys() -> set[str]:
         BrainConfig,
         DaemonConfig,
         DatabaseConfig,
+        GroqConfig,
         LaunchdConfig,
         MemoryConfig,
         PanelConfig,
@@ -755,6 +759,7 @@ def discovered_runtime_config_keys() -> set[str]:
             "claude_cli": BrainCliAdapterConfig,
             "codex_cli": BrainCliAdapterConfig,
             "test": BrainCliAdapterConfig,
+            "groq": GroqConfig,
         }
     }
 

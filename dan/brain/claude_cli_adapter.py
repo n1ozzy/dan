@@ -873,53 +873,73 @@ class ClaudeCliAdapter:
         with self._lock:
             if self._closed:
                 raise BrainAdapterError("claude_cli adapter is closed")
+            current_persona_hash = _request_persona_hash(request)
+            persona_changed = bool(
+                self._persona_hash
+                and self._persona_hash != current_persona_hash
+                and self._conversation_id == request.conversation_id
+            )
             resumed_generation = False
-            if self._force_recycle_pending:
+            if persona_changed:
+                # A provider process keeps its original system prompt for its
+                # whole lifetime. Rebuild the execution session so a canon
+                # change takes effect immediately, while rehydrating only the
+                # prior execution checkpoint (which never contains persona).
+                self._resume_pending = False
+                self._force_recycle_pending = False
+                response = self._rebuild_generation(request, on_delta)
+            elif self._force_recycle_pending:
                 self._start_process(request, resume=True)
                 self._force_recycle_pending = False
                 self._last_action = "recycled"
                 resumed_generation = True
-            durable_resume = bool(
-                self._process is None
-                and self._resume_pending
-                and self._conversation_id == request.conversation_id
-            )
-            bootstrap = self._process is None or self._conversation_id != request.conversation_id
-            if durable_resume:
-                self._start_process(request, resume=True)
-                self._resume_pending = False
-                resumed_generation = True
-            elif bootstrap:
-                self._start_process(request)
-            payload_text = (
-                format_cli_user_prompt(request)
-                if bootstrap and not durable_resume
-                else request.input_text
-            )
-            try:
-                response = self._send_generation(request, payload_text, on_delta)
-            except BrainGenerationCancelled:
-                raise
-            except _PersistentTransportFailure:
-                if resumed_generation:
-                    response = self._rebuild_generation(request, on_delta)
-                else:
-                    self._last_action = "resume"
+            if not persona_changed:
+                durable_resume = bool(
+                    self._process is None
+                    and self._resume_pending
+                    and self._conversation_id == request.conversation_id
+                )
+                bootstrap = (
+                    self._process is None
+                    or self._conversation_id != request.conversation_id
+                )
+                if durable_resume:
                     self._start_process(request, resume=True)
-                    try:
-                        response = self._send_generation(request, payload_text, on_delta)
-                    except BrainGenerationCancelled:
-                        raise
-                    except BrainAdapterError:
-                        response = self._rebuild_generation(request, on_delta)
-            except BrainAdapterError:
-                if not resumed_generation:
+                    self._resume_pending = False
+                    resumed_generation = True
+                elif bootstrap:
+                    self._start_process(request)
+                payload_text = (
+                    format_cli_user_prompt(request)
+                    if bootstrap and not durable_resume
+                    else request.input_text
+                )
+                try:
+                    response = self._send_generation(request, payload_text, on_delta)
+                except BrainGenerationCancelled:
                     raise
-                response = self._rebuild_generation(request, on_delta)
+                except _PersistentTransportFailure:
+                    if resumed_generation:
+                        response = self._rebuild_generation(request, on_delta)
+                    else:
+                        self._last_action = "resume"
+                        self._start_process(request, resume=True)
+                        try:
+                            response = self._send_generation(
+                                request, payload_text, on_delta
+                            )
+                        except BrainGenerationCancelled:
+                            raise
+                        except BrainAdapterError:
+                            response = self._rebuild_generation(request, on_delta)
+                except BrainAdapterError:
+                    if not resumed_generation:
+                        raise
+                    response = self._rebuild_generation(request, on_delta)
             self._conversation_id = request.conversation_id
             self._generation += 1
             self._checkpoint_prompt = _format_completed_checkpoint(request, response)
-            self._persona_hash = _request_persona_hash(request)
+            self._persona_hash = current_persona_hash
             self._update_usage(response)
             self._apply_context_policy(request)
             self._persist_state()

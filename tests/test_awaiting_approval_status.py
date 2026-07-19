@@ -1,13 +1,12 @@
-"""Prompt 19C awaiting-approval turn status tests."""
+"""Direct model-tool execution must never create an awaiting-approval turn."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from dan.brain import BrainManager, BrainResponse, BrainToolCall, MockBrainAdapter
-from dan.daemon.app import DaemonApp, DaemonAppConflictError, create_daemon_app
-from dan.events.types import EventType
+from dan.brain import BrainManager, BrainToolCall, MockBrainAdapter
+from dan.daemon.app import DaemonApp, create_daemon_app
 from tests.git_guards import assert_schema_and_migrations_unchanged
 from tests.test_api_smoke import write_config
 from tests.test_cli_history import config_args, history_server, run_cli
@@ -34,12 +33,18 @@ def make_app(tmp_path: Path) -> DaemonApp:
     return create_daemon_app(config_path)
 
 
-def test_model_originated_approval_marks_turn_awaiting_approval(tmp_path: Path) -> None:
+def test_model_originated_tool_finishes_without_approval_state(tmp_path: Path) -> None:
     app = make_app(tmp_path)
     try:
+        recording = RecordingTool(name="direct_probe", risk="file_write")
+        app.tool_registry.register(recording)
         set_model_tool_response(
             app,
-            BrainToolCall(id="call-probe", name="approval_probe", arguments={"purpose": "19c"}),
+            BrainToolCall(
+                id="call-direct",
+                name="direct_probe",
+                arguments={"purpose": "direct"},
+            ),
         )
         app.start()
 
@@ -48,31 +53,35 @@ def test_model_originated_approval_marks_turn_awaiting_approval(tmp_path: Path) 
             state_status, state_payload = request_json("GET", f"{base_url}/state")
 
         assert status == 200
-        assert payload["turn"]["status"] == "awaiting_approval"
-        assert payload["turn"]["error"] is None
-        assert payload["approvals"][0]["status"] == "pending"
-        assert payload["state"] == "IDLE"
+        assert payload["turn"]["status"] == "finished"
+        assert payload["tool_calls"][0]["status"] == "finished"
+        assert payload["tool_calls"][0]["output"] == {"received": {"purpose": "direct"}}
+        assert "approval_id" not in payload["tool_calls"][0]
+        assert "approvals" not in payload
+        assert recording.calls == [{"purpose": "direct"}]
+        assert table_count(app, "approvals") == 0
+        assert table_count(app, "tool_runs") == 1
         assert state_status == 200
         assert state_payload["state"] == "IDLE"
-        assert state_payload["pending_approval_count"] == 1
+        assert "pending_approval_count" not in state_payload
 
         turn = app.conn.execute(  # type: ignore[union-attr]
-            "SELECT status, final_text, error FROM turns WHERE id = ?",
+            "SELECT status, error FROM turns WHERE id = ?",
             (payload["turn_id"],),
         ).fetchone()
-        assert turn[0] == "awaiting_approval"
-        assert "approval_probe requires approval" in turn[1]
-        assert turn[2] is None
+        assert turn == ("finished", None)
     finally:
         app.close()
 
 
-def test_history_api_shows_awaiting_approval_turn(tmp_path: Path) -> None:
+def test_history_api_shows_direct_tool_turn_as_finished(tmp_path: Path) -> None:
     app = make_app(tmp_path)
     try:
+        recording = RecordingTool(name="history_probe", risk="shell_read")
+        app.tool_registry.register(recording)
         set_model_tool_response(
             app,
-            BrainToolCall(id="call-history", name="approval_probe", arguments={}),
+            BrainToolCall(id="call-history", name="history_probe", arguments={}),
         )
         app.start()
 
@@ -86,17 +95,16 @@ def test_history_api_shows_awaiting_approval_turn(tmp_path: Path) -> None:
 
         assert turns_status == 200
         assert turns_payload["turns"][0]["id"] == created["turn_id"]
-        assert turns_payload["turns"][0]["status"] == "awaiting_approval"
+        assert turns_payload["turns"][0]["status"] == "finished"
+        assert table_count(app, "approvals") == 0
     finally:
         app.close()
 
 
-def test_cli_history_prints_awaiting_approval_turn_json(
-    capsys,
-) -> None:
+def test_cli_history_prints_finished_turn_json(capsys) -> None:
     response = {
         "conversation_id": "conversation-cli",
-        "turns": [{"id": "turn-cli", "status": "awaiting_approval"}],
+        "turns": [{"id": "turn-cli", "status": "finished"}],
         "limit": 50,
         "newest_first": False,
     }
@@ -115,10 +123,10 @@ def test_cli_history_prints_awaiting_approval_turn_json(
 
     assert rc == 0
     assert err == ""
-    assert json.loads(out)["turns"][0]["status"] == "awaiting_approval"
+    assert json.loads(out)["turns"][0]["status"] == "finished"
 
 
-def test_unknown_model_tool_does_not_mark_turn_awaiting_approval(tmp_path: Path) -> None:
+def test_unknown_model_tool_fails_without_approval_state(tmp_path: Path) -> None:
     app = make_app(tmp_path)
     try:
         set_model_tool_response(
@@ -131,15 +139,18 @@ def test_unknown_model_tool_does_not_mark_turn_awaiting_approval(tmp_path: Path)
             status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Missing"})
 
         assert status == 200
-        assert payload["tool_calls"][0]["status"] == "unknown"
-        assert payload["approvals"] == []
+        assert payload["tool_calls"][0]["status"] == "failed"
+        assert "Unknown tool: missing_tool" in payload["tool_calls"][0]["error"]
+        assert "approval_id" not in payload["tool_calls"][0]
+        assert "approvals" not in payload
         assert payload["turn"]["status"] == "finished"
-        assert "missing_tool unknown" in payload["final_text"]
+        assert table_count(app, "approvals") == 0
+        assert table_count(app, "tool_runs") == 0
     finally:
         app.close()
 
 
-def test_blocked_model_tool_does_not_mark_turn_awaiting_approval(tmp_path: Path) -> None:
+def test_destructive_risk_model_tool_executes_directly(tmp_path: Path) -> None:
     app = make_app(tmp_path)
     try:
         destructive = RecordingTool(name="dangerous_tool", risk="destructive")
@@ -154,11 +165,13 @@ def test_blocked_model_tool_does_not_mark_turn_awaiting_approval(tmp_path: Path)
             status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Danger"})
 
         assert status == 200
-        assert payload["tool_calls"][0]["status"] == "blocked"
-        assert payload["approvals"] == []
+        assert payload["tool_calls"][0]["status"] == "finished"
         assert payload["turn"]["status"] == "finished"
-        assert destructive.calls == []
+        assert "approval_id" not in payload["tool_calls"][0]
+        assert "approvals" not in payload
+        assert destructive.calls == [{"confirm": True}]
         assert table_count(app, "approvals") == 0
+        assert table_count(app, "tool_runs") == 1
     finally:
         app.close()
 
@@ -166,6 +179,7 @@ def test_blocked_model_tool_does_not_mark_turn_awaiting_approval(tmp_path: Path)
 def test_text_only_response_remains_finished(tmp_path: Path) -> None:
     app = make_app(tmp_path)
     try:
+        set_model_tool_response(app, text="Plain response.")
         app.start()
 
         with running_server(app) as base_url:
@@ -174,22 +188,24 @@ def test_text_only_response_remains_finished(tmp_path: Path) -> None:
         assert status == 200
         assert payload["turn"]["status"] == "finished"
         assert payload["tool_calls"] == []
-        assert payload["approvals"] == []
+        assert "approvals" not in payload
     finally:
         app.close()
 
 
-def test_new_input_after_pending_approval_is_allowed(tmp_path: Path) -> None:
+def test_new_input_after_direct_tool_turn_is_allowed(tmp_path: Path) -> None:
     app = make_app(tmp_path)
     try:
+        recording = RecordingTool(name="followup_probe", risk="network")
+        app.tool_registry.register(recording)
         set_model_tool_response(
             app,
-            BrainToolCall(id="call-pending", name="approval_probe", arguments={}),
+            BrainToolCall(id="call-first", name="followup_probe", arguments={}),
         )
         app.start()
 
         with running_server(app) as base_url:
-            first_status, first = request_json("POST", f"{base_url}/input/text", {"text": "Needs tool"})
+            first_status, first = request_json("POST", f"{base_url}/input/text", {"text": "Use tool"})
             app.brain_manager = BrainManager([MockBrainAdapter()], default_adapter="mock")
             second_status, second = request_json(
                 "POST",
@@ -201,126 +217,13 @@ def test_new_input_after_pending_approval_is_allowed(tmp_path: Path) -> None:
             )
 
         assert first_status == 200
-        assert first["turn"]["status"] == "awaiting_approval"
+        assert first["turn"]["status"] == "finished"
         assert second_status == 200
         assert second["turn"]["status"] == "finished"
         assert second["final_text"] == "DAN mock response: Plain follow-up"
         assert app.state_machine is not None
         assert app.state_machine.state.value == "IDLE"
-    finally:
-        app.close()
-
-
-def test_approve_and_reject_do_not_execute_tools(tmp_path: Path) -> None:
-    app = make_app(tmp_path)
-    try:
-        set_model_tool_response(
-            app,
-            BrainToolCall(id="call-approve", name="approval_probe", arguments={"decision": "approve"}),
-        )
-        app.start()
-        with running_server(app) as base_url:
-            first_status, first = request_json("POST", f"{base_url}/input/text", {"text": "Approve"})
-            assert first_status == 200
-            set_model_tool_response(
-                app,
-                BrainToolCall(
-                    id="call-reject",
-                    name="approval_probe",
-                    arguments={"decision": "reject"},
-                ),
-            )
-            second_status, second = request_json("POST", f"{base_url}/input/text", {"text": "Reject"})
-            assert second_status == 200
-
-        app.approve(str(first["tool_calls"][0]["approval_id"]), reason="ok")
-        app.reject(str(second["tool_calls"][0]["approval_id"]), reason="no")
-
-        assert table_count(app, "tool_runs") == 0
-    finally:
-        app.close()
-
-
-def test_execute_approved_remains_explicit_and_duplicate_execution_conflicts(
-    tmp_path: Path,
-) -> None:
-    app = make_app(tmp_path)
-    try:
-        set_model_tool_response(
-            app,
-            BrainToolCall(id="call-execute", name="approval_probe", arguments={"purpose": "execute"}),
-        )
-        app.start()
-        with running_server(app) as base_url:
-            status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Execute"})
-
-        assert status == 200
-        approval_id = str(payload["tool_calls"][0]["approval_id"])
-        app.approve(approval_id, reason="ok")
-        assert table_count(app, "tool_runs") == 0
-
-        executed = app.execute_approved_tool(approval_id)
-
-        assert executed["ok"] is True
-        assert table_count(app, "tool_runs") == 1
-        try:
-            app.execute_approved_tool(approval_id)
-        except DaemonAppConflictError as exc:
-            assert "already executed" in str(exc)
-        else:
-            raise AssertionError("duplicate execute should conflict")
-    finally:
-        app.close()
-
-
-def test_decision_events_still_work_for_awaiting_approval_turn(tmp_path: Path) -> None:
-    app = make_app(tmp_path)
-    try:
-        set_model_tool_response(
-            app,
-            BrainToolCall(id="call-decision", name="approval_probe", arguments={}),
-        )
-        app.start()
-        with running_server(app) as base_url:
-            status, payload = request_json("POST", f"{base_url}/input/text", {"text": "Decide"})
-
-        assert status == 200
-        turn_id = str(payload["turn_id"])
-        approval_id = str(payload["tool_calls"][0]["approval_id"])
-        app.approve(approval_id, reason="ok")
-
-        assert app.event_store is not None
-        approved_events = [
-            event
-            for event in app.event_store.list_by_turn_id(turn_id, limit=100)
-            if event.type == EventType.APPROVAL_APPROVED
-        ]
-        assert len(approved_events) == 1
-        assert approved_events[0].correlation_id == turn_id
-        assert approved_events[0].payload["approval_id"] == approval_id
-    finally:
-        app.close()
-
-
-def test_runtime_state_remains_idle_after_awaiting_approval_turn(tmp_path: Path) -> None:
-    app = make_app(tmp_path)
-    try:
-        set_model_tool_response(
-            app,
-            BrainToolCall(id="call-state", name="approval_probe", arguments={}),
-        )
-        app.start()
-
-        with running_server(app) as base_url:
-            status, payload = request_json("POST", f"{base_url}/input/text", {"text": "State"})
-            state_status, state_payload = request_json("GET", f"{base_url}/state")
-
-        assert status == 200
-        assert payload["turn"]["status"] == "awaiting_approval"
-        assert state_status == 200
-        assert state_payload["state"] == "IDLE"
-        assert state_payload["pending_approval_count"] == 1
-        assert "WAITING_APPROVAL" not in state_payload["allowed_state_targets"]
+        assert table_count(app, "approvals") == 0
     finally:
         app.close()
 
@@ -330,7 +233,11 @@ def test_sqlite_schema_and_migrations_are_not_modified() -> None:
 
 
 def test_runtime_code_and_scripts_do_not_contain_forbidden_legacy_strings() -> None:
-    allowed_contracts = {("dan/voice/shared_broker.py", "/tmp/dan")}
+    allowed_contracts = {
+        ("dan/voice/shared_broker.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "/tmp/dan"),
+        ("dan/migration/test_safety.py", "afplay"),
+    }
     findings: list[str] = []
     for root_name in ("dan", "scripts"):
         for path in (ROOT / root_name).rglob("*"):

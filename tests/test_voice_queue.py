@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
 
-from dan.store.db import close_quietly, initialize_database
+from dan.store.db import close_quietly, connect_db, initialize_database
+from dan.store.event_store import create_event_store
 from dan.voice.queue import VoiceQueue, VoiceQueueCancelledError
 from tests.voice_helpers import enqueue_voice
 
@@ -128,6 +130,52 @@ def test_no_duplicate_claim_and_restart_requeues_synthesis(conn) -> None:
 
     assert queue.recover_orphans() == 1
     assert queue.claim_next().id == request.id
+
+
+def test_concurrent_consumers_claim_each_request_once(tmp_path: Path) -> None:
+    db_path = tmp_path / "concurrent-queue.db"
+    setup = initialize_database(db_path)
+    expected = [
+        enqueue_voice(
+            VoiceQueue(setup),
+            f"request-{index}",
+            session=f"session-{index}",
+        ).id
+        for index in range(24)
+    ]
+    close_quietly(setup)
+
+    barrier = threading.Barrier(4)
+    claimed: list[str] = []
+    errors: list[BaseException] = []
+    claimed_lock = threading.Lock()
+
+    def consume() -> None:
+        connection = connect_db(db_path)
+        try:
+            queue = VoiceQueue(
+                connection,
+                event_store=create_event_store(connection),
+            )
+            barrier.wait(timeout=5)
+            while request := queue.claim_next():
+                with claimed_lock:
+                    claimed.append(request.id)
+        except BaseException as exc:  # noqa: BLE001 - surfaced in main thread
+            errors.append(exc)
+        finally:
+            close_quietly(connection)
+
+    threads = [threading.Thread(target=consume) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert len(claimed) == len(expected)
+    assert set(claimed) == set(expected)
 
 
 def test_tombstone_is_idempotent_and_rejects_late_snapshot(conn) -> None:

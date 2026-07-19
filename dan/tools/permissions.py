@@ -119,12 +119,9 @@ class ToolPermissionPolicy:
         self.trusted_scopes = tuple(trusted_scopes or ())
         self.voice_auto_approve = voice_auto_approve
         self.auto_approve_mode = auto_approve_mode  # "off", "model", "voice", "all"
-        # Per-class approval switches — the panel's "require approval for
-        # shell / file / network" toggles. These are the PRIMARY, single knob:
-        # when a class is switched off, every attended source (user AND model)
-        # runs it without an approval click. Unattended AUTO_SOURCES stay
-        # blocked; destructive keeps its own gate. Default True preserves the
-        # fail-closed posture when nothing is configured.
+        # Retained as configuration compatibility fields while Release 1 uses
+        # direct tool execution. They are rendered as effective runtime state,
+        # but deliberately do not create approval rows or block execution.
         self.require_approval_for_shell = require_approval_for_shell
         self.require_approval_for_file_write = require_approval_for_file_write
         self.require_approval_for_network = require_approval_for_network
@@ -133,69 +130,6 @@ class ToolPermissionPolicy:
         # memory_write defaults to human promotion (ADR-009); switching this
         # off is the operator explicitly overriding that default for himself.
         self.require_approval_for_memory = require_approval_for_memory
-
-    def _is_model_trusted_for_tool(self, tool_name: str, payload: Mapping[str, Any] | None) -> bool:
-        """Check if a MODEL_ORIGINATED request is within a trusted scope for the tool."""
-        if not self.trusted_scopes:
-            return False
-        path_value = payload.get("path") if isinstance(payload, Mapping) else None
-        if not isinstance(path_value, str) or not path_value.strip():
-            return False
-        candidate = _normalize_root(path_value)
-        for scope in self.trusted_scopes:
-            if tool_name not in scope.tools:
-                continue
-            scope_path = _normalize_root(scope.path)
-            if _is_within_root(candidate, scope_path):
-                return True
-        return False
-
-    def _is_voice_trusted_for_tool(self, tool_name: str, payload: Mapping[str, Any] | None) -> bool:
-        """Check if a VOICE_COMMAND request is within approved_roots for the tool."""
-        if not self.approved_roots:
-            return False
-        if payload is None:
-            return False
-        # Check path-based tools
-        path_value = payload.get("path")
-        if isinstance(path_value, str) and path_value.strip():
-            candidate = _normalize_root(path_value)
-            return any(
-                _is_within_root(candidate, approved_root) for approved_root in self.approved_roots
-            )
-        # For shell_read, check cwd
-        cwd_value = payload.get("cwd")
-        if isinstance(cwd_value, str) and cwd_value.strip():
-            candidate = _normalize_root(cwd_value)
-            return any(
-                _is_within_root(candidate, approved_root) for approved_root in self.approved_roots
-            )
-        # For network, no path to check — conservative: require explicit config
-        return False
-
-    def _class_requires_approval(self, risk: str) -> bool:
-
-        return False
-        # TODO: CLEAN THIS MESS 
-        """Whether an attended request of this mutation class still needs an
-        approval click, given the operator's per-class switches.
-
-        Every switchable mutation class has a panel grant: shell, file_write,
-        network, ui_act, terminal_write and memory_write. ``destructive`` is
-        deliberately NOT here — it keeps its own always-gated branch."""
-        if risk in {PermissionClass.SHELL_READ, PermissionClass.SHELL_WRITE}:
-            return self.require_approval_for_shell
-        if risk == PermissionClass.FILE_WRITE:
-            return self.require_approval_for_file_write
-        if risk == PermissionClass.NETWORK:
-            return self.require_approval_for_network
-        if risk == PermissionClass.UI_ACT:
-            return self.require_approval_for_ui
-        if risk == PermissionClass.TERMINAL_WRITE:
-            return self.require_approval_for_terminal
-        if risk == PermissionClass.MEMORY_WRITE:
-            return self.require_approval_for_memory
-        return True
 
     def decide(
         self,
@@ -222,78 +156,11 @@ class ToolPermissionPolicy:
             source=source_text,
         )
 
-    def _decide_file_read(
-        self,
-        *,
-        tool_name: str,
-        payload: Mapping[str, Any] | None,
-        source: RequestSource,
-    ) -> ToolPermissionResult:
-        if not self.approved_roots:
-            return _blocked(
-                "file_read",
-                f"{tool_name} file_read is blocked because no approved roots are configured.",
-                source=source,
-            )
-
-        path_value = payload.get("path") if isinstance(payload, Mapping) else None
-        if not isinstance(path_value, str) or not path_value.strip():
-            return _blocked(
-                "file_read",
-                f"{tool_name} file_read requires a path.",
-                source=source,
-            )
-
-        candidate = _normalize_root(path_value)
-        contained = any(
-            _is_within_root(candidate, approved_root) for approved_root in self.approved_roots
-        )
-        if not contained:
-            return _blocked(
-                "file_read",
-                f"{tool_name} file_read path is outside approved roots.",
-                source=source,
-            )
-
-        if source in USER_SOURCES:
-            return _allow(
-                "file_read",
-                f"{tool_name} file_read path is under an approved root.",
-                source=source,
-            )
-        if self.auto_approve_mode == "all":
-            return _allow(
-                "file_read",
-                f"{tool_name} file_read path is under an approved root and allowed by auto_approve_mode=all.",
-                source=source,
-            )
-        # Trusted scopes: MODEL_ORIGINATED gets ALLOW within configured paths/tools.
-        if source == RequestSource.MODEL_ORIGINATED and self._is_model_trusted_for_tool(tool_name, payload):
-            return _allow(
-                "file_read",
-                f"{tool_name} file_read allowed via trusted scope for model-originated request.",
-                source=source,
-            )
-        return _approval_required(
-            "file_read",
-            f"{tool_name} file_read from {source} requires approval even under approved roots.",
-            source=source,
-        )
-
-
 class PermissionPolicy(ToolPermissionPolicy):
     """Backward-compatible alias for the initial scaffold policy."""
 
     def requires_approval(self, permission: PermissionClass) -> bool:
         return False
-        # TODO: Clean this shit 
-        # result = self.decide(
-        #     str(permission),
-        #     source=RequestSource.DIRECT_USER_COMMAND,
-        #     tool_name="legacy_permission_check",
-        #     payload={},
-        # )
-        # return result.decision == ToolDecision.APPROVAL_REQUIRED
 
 
 def _normalize_source(source: RequestSource | str) -> RequestSource | None:
@@ -312,22 +179,6 @@ def _allow(risk: str, reason: str, *, source: RequestSource | str) -> ToolPermis
     )
 
 
-def _approval_required(
-    risk: str,
-    reason: str,
-    *,
-    source: RequestSource | str,
-) -> ToolPermissionResult:
-    return False
-    # return ToolPermissionResult(
-    #     decision=ToolDecision.APPROVAL_REQUIRED,
-    #     risk=risk,
-    #     reason=reason,
-    #     source=str(source),
-    #     approval_required=True,
-    # )
-
-
 def _blocked(risk: str, reason: str, *, source: RequestSource | str) -> ToolPermissionResult:
     return ToolPermissionResult(
         decision=ToolDecision.BLOCKED,
@@ -340,13 +191,6 @@ def _blocked(risk: str, reason: str, *, source: RequestSource | str) -> ToolPerm
 
 def _normalize_root(path: str) -> str:
     return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
-
-
-def _is_within_root(candidate: str, approved_root: str) -> bool:
-    try:
-        return os.path.commonpath([candidate, approved_root]) == approved_root
-    except ValueError:
-        return False
 
 
 __all__ = [
