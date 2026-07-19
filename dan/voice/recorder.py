@@ -21,8 +21,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from dan.audio.execution import assert_microphone_execution_allowed
 from dan.voice.capture_policy import min_capture_ms
-
 
 logger = logging.getLogger(__name__)
 
@@ -116,22 +116,25 @@ class SoxRecorder:
 
     def start(self) -> None:
         detached = None
-        with self._lock:
-            if self._proc is not None:
-                if self._proc.poll() is None:
-                    return
-                # The previous session died on its own (device yanked, sox
-                # crash): detach what it captured (deliver below, off-lock, so
-                # whisper does not run under the lock), then start fresh.
-                detached = self._detach_current_locked()
-            self._start_locked()
-            self._active = True
-        if detached is not None:
-            proc, path, discard = detached
-            self._deliver_segment(proc, path, discard=discard)
+        try:
+            with self._lock:
+                if self._proc is not None:
+                    if self._proc.poll() is None:
+                        return
+                    # The previous session died on its own (device yanked, sox
+                    # crash): detach what it captured (deliver below, off-lock, so
+                    # whisper does not run under the lock), then start fresh.
+                    detached = self._detach_current_locked()
+                self._start_locked()
+                self._active = True
+        finally:
+            if detached is not None:
+                proc, path, discard = detached
+                self._deliver_segment(proc, path, discard=discard)
         self._arm_rotation()
 
     def _start_locked(self) -> None:
+        assert_microphone_execution_allowed(operation="sox capture")
         device = self._device_provider()
         if not device:
             # Policy said "no usable input": recording from a disallowed
@@ -182,21 +185,23 @@ class SoxRecorder:
         if self._segment_seconds <= 0:
             return
         detached = None
-        with self._lock:
-            proc, path = self._proc, self._capture_path
-            if proc is not None or path is not None:
-                # Healthy or dead capture with bytes to salvage — detach it for
-                # delivery below (off-lock). A None proc with a set path means a
-                # crashed sox; either way we hand its bytes to on_capture.
-                detached = self._detach_current_locked()
-            # (Re)start within an active session only: a healthy rotation, a
-            # crashed sox, or a prior device-flap that couldn't spawn. On a
-            # stopped/never-started recorder rotate stays a no-op.
-            if detached is not None or self._active:
-                self._start_locked()
-        if detached is not None:
-            proc, path, discard = detached
-            self._deliver_segment(proc, path, discard=discard)
+        try:
+            with self._lock:
+                proc, path = self._proc, self._capture_path
+                if proc is not None or path is not None:
+                    # Healthy or dead capture with bytes to salvage — detach it for
+                    # delivery below (off-lock). A None proc with a set path means a
+                    # crashed sox; either way we hand its bytes to on_capture.
+                    detached = self._detach_current_locked()
+                # (Re)start within an active session only: a healthy rotation, a
+                # crashed sox, or a prior device-flap that couldn't spawn. On a
+                # stopped/never-started recorder rotate stays a no-op.
+                if detached is not None or self._active:
+                    self._start_locked()
+        finally:
+            if detached is not None:
+                proc, path, discard = detached
+                self._deliver_segment(proc, path, discard=discard)
 
     def stop(self) -> None:
         self._disarm_rotation()
@@ -293,7 +298,11 @@ class SoxRecorder:
             path.unlink(missing_ok=True)
         if len(audio) < MIN_CAPTURE_BYTES or self._on_capture is None:
             return
-        if discard and _capture_duration_ms(audio, sample_rate=self._sample_rate) < self._min_capture_ms:
+        if (
+            discard
+            and _capture_duration_ms(audio, sample_rate=self._sample_rate)
+            < self._min_capture_ms
+        ):
             return
         try:
             self._on_capture(audio)

@@ -155,6 +155,146 @@ def test_unresolved_explicit_plugin_fails_closed(tmp_path: Path) -> None:
     ]
 
 
+def test_imported_local_audio_helper_is_manual_and_reported(tmp_path: Path) -> None:
+    from dan.migration.test_safety import classify_node_ids, scan_node_ids
+
+    _write_source(
+        tmp_path,
+        "tests/helpers/live_audio.py",
+        "import subprocess\n\n"
+        "def play_clip():\n"
+        "    subprocess.run(['afplay', 'x.wav'])\n",
+    )
+    node_id = _write_test_file(
+        tmp_path,
+        "def test_hardware():\n"
+        "    from tests.helpers.live_audio import play_clip\n"
+        "    play_clip()\n",
+    )
+
+    row = classify_node_ids(tmp_path, (node_id,))[node_id]
+    reasons = " ".join(row.reasons)
+    assert row.safety == "live-manual"
+    assert "afplay" in reasons
+    assert "audio" in " ".join(scan_node_ids(tmp_path, (node_id,)))
+
+
+def test_recursive_imported_local_audio_helper_is_manual(tmp_path: Path) -> None:
+    from dan.migration.test_safety import classify_node_ids
+
+    _write_source(
+        tmp_path,
+        "tests/helpers/live_audio.py",
+        "import subprocess\n\n"
+        "def play_clip():\n"
+        "    subprocess.run(['/usr/bin/afplay', 'x.wav'])\n",
+    )
+    _write_source(
+        tmp_path,
+        "tests/helpers/audio_wrapper.py",
+        "from tests.helpers.live_audio import play_clip\n\n"
+        "def run_audio():\n"
+        "    play_clip()\n",
+    )
+    node_id = _write_test_file(
+        tmp_path,
+        "from tests.helpers.audio_wrapper import run_audio\n\n"
+        "def test_hardware():\n"
+        "    run_audio()\n",
+    )
+
+    row = classify_node_ids(tmp_path, (node_id,))[node_id]
+    assert row.safety == "live-manual"
+    assert "afplay" in " ".join(row.reasons)
+
+
+def test_safe_imported_local_helper_stays_isolated(tmp_path: Path) -> None:
+    from dan.migration.test_safety import classify_node_ids, scan_node_ids
+
+    _write_source(
+        tmp_path,
+        "tests/helpers/safe_math.py",
+        "def add(left, right):\n"
+        "    return left + right\n",
+    )
+    node_id = _write_test_file(
+        tmp_path,
+        "from tests.helpers.safe_math import add\n\n"
+        "def test_hardware():\n"
+        "    assert add(2, 3) == 5\n",
+    )
+
+    row = classify_node_ids(tmp_path, (node_id,))[node_id]
+    assert row.safety == "isolated"
+    assert row.reasons == ()
+    assert scan_node_ids(tmp_path, (node_id,)) == []
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        (
+            "from tests.helpers.missing import play_clip\n\n"
+            "def test_hardware():\n"
+            "    play_clip()\n",
+            "unresolved repository-local import dependency",
+        ),
+        (
+            "from tests.helpers.ambiguous import play_clip\n\n"
+            "def test_hardware():\n"
+            "    play_clip()\n",
+            "ambiguous repository-local import dependency",
+        ),
+    ],
+)
+def test_unresolved_or_ambiguous_local_helper_fails_closed(
+    tmp_path: Path,
+    source: str,
+    reason: str,
+) -> None:
+    from dan.migration.test_safety import classify_node_ids
+
+    if "ambiguous" in source:
+        _write_source(
+            tmp_path,
+            "tests/helpers/ambiguous.py",
+            "def play_clip():\n    pass\n",
+        )
+        _write_source(
+            tmp_path,
+            "tests/helpers/ambiguous/__init__.py",
+            "def play_clip():\n    pass\n",
+        )
+    node_id = _write_test_file(tmp_path, source)
+
+    row = classify_node_ids(tmp_path, (node_id,))[node_id]
+    assert row.safety == "live-manual"
+    assert reason in " ".join(row.reasons)
+
+
+def test_imported_local_module_side_effect_is_manual(tmp_path: Path) -> None:
+    from dan.migration.test_safety import classify_node_ids
+
+    _write_source(
+        tmp_path,
+        "tests/helpers/live_module.py",
+        "import subprocess\n"
+        "subprocess.run(['afplay', 'module.wav'])\n\n"
+        "def helper():\n"
+        "    return None\n",
+    )
+    node_id = _write_test_file(
+        tmp_path,
+        "import tests.helpers.live_module as helper_module\n\n"
+        "def test_hardware():\n"
+        "    helper_module.helper()\n",
+    )
+
+    row = classify_node_ids(tmp_path, (node_id,))[node_id]
+    assert row.safety == "live-manual"
+    assert "afplay" in " ".join(row.reasons)
+
+
 @pytest.mark.parametrize(
     "source",
     [

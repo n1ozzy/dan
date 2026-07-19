@@ -15,15 +15,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from dan.audio.execution import AUDIO_EXECUTABLE_NAMES
 
 Safety = Literal["isolated", "live-manual"]
 _TEST_PATH = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py$")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _MODULE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _SANITIZED_PARAM = re.compile(r"^param-[0-9a-f]{16}$")
-_AUDIO_COMMANDS = frozenset(
-    {"afplay", "aplay", "arecord", "ffmpeg", "ffplay", "parec", "play", "pw-record", "rec", "sox"}
-)
 _TMP_DAN = re.compile(r"/tmp/dan-[A-Za-z0-9_.-]*")
 _LIVE_PORT = re.compile(r"(?:localhost|127\.0\.0\.1|0\.0\.0\.0):7788\b|\bport\s*=\s*7788\b")
 
@@ -117,14 +115,20 @@ def _call_name(node: ast.Call) -> str | None:
 
 
 def _is_live_marker(node: ast.AST) -> bool:
-    return any(isinstance(item, ast.Attribute) and item.attr == "live_manual" for item in ast.walk(node))
+    return any(
+        isinstance(item, ast.Attribute) and item.attr == "live_manual"
+        for item in ast.walk(node)
+    )
 
 
 def _explicit_manual(tree: ast.Module, node_id: str) -> bool:
     for statement in tree.body:
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
             targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-            if any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets):
+            if any(
+                isinstance(target, ast.Name) and target.id == "pytestmark"
+                for target in targets
+            ):
                 if statement.value is not None and _is_live_marker(statement.value):
                     return True
     _, parts = _node_parts(node_id)
@@ -218,7 +222,11 @@ def _fixture_arguments(definition: ast.AST) -> set[str]:
         return set()
     return {
         argument.arg
-        for argument in (*definition.args.posonlyargs, *definition.args.args, *definition.args.kwonlyargs)
+        for argument in (
+            *definition.args.posonlyargs,
+            *definition.args.args,
+            *definition.args.kwonlyargs,
+        )
         if argument.arg not in {"self", "cls"}
     }
 
@@ -230,7 +238,10 @@ def _pytest_plugins(tree: ast.Module) -> tuple[tuple[str, ...], bool]:
         if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
             continue
         targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-        if not any(isinstance(target, ast.Name) and target.id == "pytest_plugins" for target in targets):
+        if not any(
+            isinstance(target, ast.Name) and target.id == "pytest_plugins"
+            for target in targets
+        ):
             continue
         try:
             value = ast.literal_eval(statement.value)
@@ -238,7 +249,9 @@ def _pytest_plugins(tree: ast.Module) -> tuple[tuple[str, ...], bool]:
             unresolved = True
             continue
         candidates = (value,) if isinstance(value, str) else value
-        if not isinstance(candidates, (tuple, list)) or not all(isinstance(name, str) for name in candidates):
+        if not isinstance(candidates, (tuple, list)) or not all(
+            isinstance(name, str) for name in candidates
+        ):
             unresolved = True
             continue
         names.extend(candidates)
@@ -262,6 +275,243 @@ def _load_module(path: Path, cache: dict[Path, SourceModule]) -> SourceModule:
             ast.parse(resolved.read_text(encoding="utf-8"), filename=str(resolved)),
         )
     return cache[resolved]
+
+
+def _module_name(repo_root: Path, path: Path) -> str | None:
+    try:
+        relative = path.resolve().relative_to(repo_root.resolve())
+    except ValueError:
+        return None
+    if relative.name == "__init__.py":
+        parts = relative.parent.parts
+    elif relative.suffix == ".py":
+        parts = (*relative.parent.parts, relative.stem)
+    else:
+        return None
+    name = ".".join(parts)
+    return name if _MODULE_NAME.fullmatch(name) else None
+
+
+def _absolute_import_name(
+    source: SourceModule,
+    node: ast.ImportFrom,
+    repo_root: Path,
+) -> str | None:
+    if node.level == 0:
+        return node.module
+    current = _module_name(repo_root, source.path)
+    if current is None:
+        return None
+    package = current.split(".")
+    if source.path.name != "__init__.py":
+        package.pop()
+    parents = node.level - 1
+    if parents > len(package):
+        return None
+    if parents:
+        package = package[:-parents]
+    if node.module:
+        package.extend(node.module.split("."))
+    return ".".join(package)
+
+
+def _local_test_module_path(
+    repo_root: Path,
+    module_name: str,
+) -> tuple[Path | None, str | None]:
+    if module_name != "tests" and not module_name.startswith("tests."):
+        return None, None
+    if not _MODULE_NAME.fullmatch(module_name):
+        return None, "unresolved repository-local import dependency"
+    root = repo_root.resolve()
+    tests_root = (root / "tests").resolve()
+    stem = root.joinpath(*module_name.split("."))
+    candidates = (stem.with_suffix(".py"), stem / "__init__.py")
+    matches: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if tests_root != resolved and tests_root not in resolved.parents:
+            continue
+        if resolved.is_file():
+            matches.append(resolved)
+    if len(matches) > 1:
+        return None, "ambiguous repository-local import dependency"
+    if not matches:
+        return None, "unresolved repository-local import dependency"
+    return matches[0], None
+
+
+def _named_definition(tree: ast.Module, name: str) -> ast.AST | None:
+    return next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == name
+        ),
+        None,
+    )
+
+
+def _local_dependency_scope(
+    repo_root: Path,
+    roots: Sequence[tuple[SourceModule, Sequence[ast.AST]]],
+    cache: dict[Path, SourceModule],
+) -> tuple[tuple[ast.AST, ...], tuple[str, ...]]:
+    """Resolve referenced test helpers without importing or executing them."""
+
+    collected: list[ast.AST] = []
+    reasons: set[str] = set()
+    scanned_definitions: set[tuple[Path, str]] = set()
+    scanned_module_scopes = {source.path for source, _ in roots}
+
+    def resolve(module_name: str) -> tuple[SourceModule | None, str | None]:
+        path, reason = _local_test_module_path(repo_root, module_name)
+        if reason or path is None:
+            return None, reason
+        try:
+            return _load_module(path, cache), None
+        except (OSError, SyntaxError, UnicodeError):
+            return None, "unresolved repository-local import dependency"
+
+    def load(module_name: str) -> SourceModule | None:
+        source, reason = resolve(module_name)
+        if reason is not None:
+            reasons.add(reason)
+        return source
+
+    def is_namespace(module_name: str) -> bool:
+        if module_name != "tests" and not module_name.startswith("tests."):
+            return False
+        if not _MODULE_NAME.fullmatch(module_name):
+            return False
+        tests_root = (repo_root.resolve() / "tests").resolve()
+        candidate = repo_root.resolve().joinpath(*module_name.split(".")).resolve()
+        if tests_root != candidate and tests_root not in candidate.parents:
+            return False
+        return candidate.is_dir()
+
+    def load_namespace_members(
+        module_name: str,
+        aliases: Sequence[ast.alias],
+        module_imports: dict[str, SourceModule],
+    ) -> bool:
+        if not is_namespace(module_name):
+            return False
+        resolved_any = False
+        for alias in aliases:
+            if alias.name == "*":
+                reasons.add("unresolved repository-local import dependency")
+                continue
+            imported, reason = resolve(f"{module_name}.{alias.name}")
+            if imported is None:
+                if reason is not None:
+                    reasons.add(reason)
+                continue
+            resolved_any = True
+            scan_module_scope(imported)
+            module_imports[alias.asname or alias.name] = imported
+        return resolved_any
+
+    def scan_module_scope(source: SourceModule) -> None:
+        if source.path in scanned_module_scopes:
+            return
+        scanned_module_scopes.add(source.path)
+        nodes = _module_scope(source.tree)
+        collected.extend(nodes)
+        scan_nodes(source, nodes)
+
+    def scan_definition(source: SourceModule, name: str) -> None:
+        key = (source.path, name)
+        if key in scanned_definitions:
+            return
+        definition = _named_definition(source.tree, name)
+        if definition is None:
+            return
+        scanned_definitions.add(key)
+        body = definition.body  # type: ignore[union-attr]
+        collected.extend(body)
+        scan_nodes(source, body)
+
+    def scan_nodes(source: SourceModule, nodes: Sequence[ast.AST]) -> None:
+        symbol_imports: dict[str, tuple[SourceModule, str]] = {}
+        module_imports: dict[str, SourceModule] = {}
+        import_nodes = [
+            node
+            for statement in (
+                *(
+                    item
+                    for item in source.tree.body
+                    if isinstance(item, (ast.Import, ast.ImportFrom))
+                ),
+                *nodes,
+            )
+            for node in ast.walk(statement)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        ]
+        for import_node in import_nodes:
+            if isinstance(import_node, ast.Import):
+                for alias in import_node.names:
+                    imported = load(alias.name)
+                    if imported is None:
+                        continue
+                    scan_module_scope(imported)
+                    binding = alias.asname or alias.name.split(".", 1)[0]
+                    module_imports[binding] = imported
+                continue
+            module_name = _absolute_import_name(source, import_node, repo_root)
+            if module_name is None:
+                continue
+            imported, resolution_reason = resolve(module_name)
+            if imported is None:
+                if resolution_reason is None:
+                    continue
+                if (
+                    resolution_reason
+                    == "unresolved repository-local import dependency"
+                    and load_namespace_members(
+                        module_name,
+                        import_node.names,
+                        module_imports,
+                    )
+                ):
+                    continue
+                reasons.add(resolution_reason)
+                continue
+            scan_module_scope(imported)
+            for alias in import_node.names:
+                if alias.name == "*":
+                    for statement in imported.tree.body:
+                        if isinstance(
+                            statement,
+                            (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+                        ):
+                            scan_definition(imported, statement.name)
+                    continue
+                symbol_imports[alias.asname or alias.name] = (imported, alias.name)
+
+        for root in nodes:
+            for node in ast.walk(root):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                    imported_symbol = symbol_imports.get(node.id)
+                    if imported_symbol is not None:
+                        scan_definition(*imported_symbol)
+                if not isinstance(node, ast.Call):
+                    continue
+                if isinstance(node.func, ast.Name):
+                    scan_definition(source, node.func.id)
+                elif isinstance(node.func, ast.Attribute):
+                    owner = node.func.value
+                    while isinstance(owner, ast.Attribute):
+                        owner = owner.value
+                    if isinstance(owner, ast.Name):
+                        imported_module = module_imports.get(owner.id)
+                        if imported_module is not None:
+                            scan_definition(imported_module, node.func.attr)
+
+    for source, nodes in roots:
+        scan_nodes(source, nodes)
+    return tuple(collected), tuple(sorted(reasons))
 
 
 def _source_modules(
@@ -317,10 +567,16 @@ def _live_reasons(
 ) -> tuple[str, ...]:
     sources, unresolved = _source_modules(repo_root, test_path, cache)
     definition = _definition(test_tree, node_id)
-    scope = [node for source in sources for node in _module_scope(source.tree)]
+    module_scopes = [(source, _module_scope(source.tree)) for source in sources]
+    scope = [node for _, nodes in module_scopes for node in nodes]
+    dependency_roots: list[tuple[SourceModule, Sequence[ast.AST]]] = [
+        (source, nodes) for source, nodes in module_scopes
+    ]
     reasons: set[str] = set(unresolved)
     if isinstance(definition, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
         scope.extend(definition.body)
+        test_source = next(source for source in sources if source.tree is test_tree)
+        dependency_roots.append((test_source, definition.body))
         fixtures, pending = _fixture_definitions(sources)
         pending.update(_fixture_arguments(definition))
         scanned: set[str] = set()
@@ -331,7 +587,20 @@ def _live_reasons(
                 continue
             scanned.add(name)
             scope.extend(fixture.body)  # type: ignore[union-attr]
+            fixture_source = next(
+                source for source in sources if fixture in source.tree.body
+            )
+            dependency_roots.append(
+                (fixture_source, fixture.body)  # type: ignore[union-attr]
+            )
             pending.update(_fixture_arguments(fixture))
+    dependency_scope, dependency_reasons = _local_dependency_scope(
+        repo_root,
+        dependency_roots,
+        cache,
+    )
+    scope.extend(dependency_scope)
+    reasons.update(dependency_reasons)
     for root in scope:
         for node in ast.walk(root):
             if isinstance(node, ast.Call):
@@ -361,11 +630,15 @@ def _live_reasons(
                                 executable = Path(shlex.split(command)[0]).name
                             except (IndexError, ValueError):
                                 executable = ""
-                            if executable in _AUDIO_COMMANDS:
+                            if executable.casefold() in AUDIO_EXECUTABLE_NAMES:
                                 reasons.add(f"unmocked audio or microphone binary: {executable}")
                             if executable == "launchctl":
                                 reasons.add("unmocked launchctl invocation")
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and "\n" not in node.value:
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and "\n" not in node.value
+            ):
                 if _TMP_DAN.search(node.value):
                     reasons.add("legacy /tmp/dan-* runtime path")
                 if _LIVE_PORT.search(node.value):
@@ -411,7 +684,11 @@ def collect_node_ids(repo_root: Path, *, env: Mapping[str, str] | None = None) -
         text=True,
     )
     if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "pytest collection failed")
+        raise RuntimeError(
+            completed.stderr.strip()
+            or completed.stdout.strip()
+            or "pytest collection failed"
+        )
     nodes: list[str] = []
     for line in completed.stdout.splitlines():
         node_id = line.strip()

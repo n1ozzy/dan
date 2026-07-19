@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from dan.audio.execution import AudioExecutionDisabled, assert_audio_execution_allowed
 from dan.voice.assets import (
     AssetVerificationError,
     VoiceAsset,
@@ -240,11 +241,14 @@ class SupertonicEngine:
         """`supertonic version` -> cached semver; any probe failure is loud."""
         if self._engine_semver is not None:
             return self._engine_semver
+        assert_audio_execution_allowed(operation="supertonic version probe")
         try:
             proc = subprocess.run(
                 [self._binary, "version"],
                 capture_output=True, text=True, timeout=10, check=False,
             )
+        except AudioExecutionDisabled:
+            raise
         except Exception as exc:
             raise TTSEngineError(f"supertonic version probe failed: {exc}") from exc
         if proc.returncode != 0:
@@ -282,6 +286,7 @@ class SupertonicEngine:
 
     def _ensure_serve(self) -> None:
         """Reuse a running server, else (autostart) spawn one, else stay CLI."""
+        assert_audio_execution_allowed(operation="supertonic warm-server initialization")
         if self._serve_alive():
             self._serve = self._serve_url
             _LOGGER.info("supertonic serve: reusing %s (warm model)", self._serve_url)
@@ -307,12 +312,15 @@ class SupertonicEngine:
                     return
                 time.sleep(0.5)
             _LOGGER.warning("supertonic serve did not come up in 20s; using CLI.")
+        except AudioExecutionDisabled:
+            raise
         except Exception:
             _LOGGER.exception("supertonic serve failed to start; using CLI.")
 
     def _synth_serve(self, clean: str, speed: float, voice: str) -> bytes:
         """POST to the warm server -> WAV bytes. Field is `lang` NOT `language`
         (the server's pydantic model silently ignores unknown fields)."""
+        assert_audio_execution_allowed(operation="supertonic warm-server synthesis")
         body = json.dumps({
             "text": clean,
             "voice": voice,
@@ -364,6 +372,7 @@ class SupertonicEngine:
         """Run the required mastering chain or fail without raw fallback."""
         if not filter_chain:
             return audio
+        assert_audio_execution_allowed(operation="audio mastering")
         if not self._mastering_enabled:
             raise TTSEngineError(
                 f"mastering requires executable {self._mastering_binary!r}"
@@ -381,7 +390,7 @@ class SupertonicEngine:
             if proc.returncode == 0 and dst.is_file() and dst.stat().st_size > 44:
                 return dst.read_bytes()
             raise TTSEngineError(f"mastering failed with exit code {proc.returncode}")
-        except TTSEngineError:
+        except (AudioExecutionDisabled, TTSEngineError):
             raise
         except Exception as exc:
             raise TTSEngineError(f"mastering failed: {exc}") from exc
@@ -396,6 +405,7 @@ class SupertonicEngine:
         voice: str,
         custom_style_path: str | None = None,
     ) -> bytes:
+        assert_audio_execution_allowed(operation="supertonic CLI synthesis")
         out = Path(self.workdir) / f"tts-{uuid.uuid4().hex}.wav"
         cmd = [
             self._binary, "tts", clean, "-o", str(out),
@@ -421,6 +431,7 @@ class SupertonicEngine:
             out.unlink(missing_ok=True)
 
     def synthesize(self, text: str, snapshot: RenderSnapshot) -> SynthesizedChunk:
+        assert_audio_execution_allowed(operation="supertonic synthesis")
         snapshot.validate_complete()
         if snapshot.engine != self.name:
             raise TTSEngineError(
@@ -446,6 +457,8 @@ class SupertonicEngine:
         if self._serve and custom_style_path is None:
             try:
                 audio = self._synth_serve(clean, speed, voice)
+            except AudioExecutionDisabled:
+                raise
             except Exception:
                 _LOGGER.warning("supertonic serve synth failed; CLI fallback.", exc_info=True)
                 if not self._serve_alive():

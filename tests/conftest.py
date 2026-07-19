@@ -2,10 +2,73 @@
 
 from __future__ import annotations
 
-import pytest
+import importlib
+import os
 from collections.abc import Generator
+from pathlib import Path
+
+import pytest
 
 import dan.brain.auto_detect as auto_detect
+
+_EXECUTION_KILL_SWITCHES = ("DAN_DISABLE_AUDIO", "DAN_DISABLE_MIC")
+_INJECTED_AUDIO_REGRESSION_MODULES = {
+    "test_audio_player.py": (
+        "dan.voice.player",
+        "assert_audio_execution_allowed",
+    ),
+    "test_voice_recorder.py": (
+        "dan.voice.recorder",
+        "assert_microphone_execution_allowed",
+    ),
+    "test_voice_tts_supertonic.py": (
+        "dan.voice.tts",
+        "assert_audio_execution_allowed",
+    ),
+}
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Require the process-level guard before test-module collection begins."""
+
+    if not any(os.environ.get(name) == "1" for name in _EXECUTION_KILL_SWITCHES):
+        return
+    config = session.config
+    plugin = config.pluginmanager.get_plugin("tests.audio_guard_plugin")
+    marker = getattr(plugin, "PLUGIN_LOADED_MARKER", None)
+    marker_attribute = getattr(plugin, "CONFIG_MARKER_ATTRIBUTE", "")
+    if (
+        plugin is None
+        or not marker_attribute
+        or getattr(config, marker_attribute, None) is not marker
+    ):
+        raise pytest.UsageError(
+            "tests.audio_guard_plugin must be loaded when audio or microphone "
+            "execution is disabled"
+        )
+
+
+@pytest.fixture(autouse=True)
+def allow_injected_audio_regression_edges(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Opt the three legacy fake-edge suites into their injected boundaries."""
+
+    test_path = Path(str(request.node.path)).resolve()
+    tests_root = Path(__file__).resolve().parent
+    target = _INJECTED_AUDIO_REGRESSION_MODULES.get(test_path.name)
+    if test_path.parent != tests_root or target is None:
+        return
+    module_name, guard_name = target
+    module = importlib.import_module(module_name)
+    real_guard = getattr(module, guard_name)
+
+    def allow_injected_boundary(*, operation: str) -> None:
+        if module_name == "dan.voice.player" and operation != "coreaudio playback":
+            real_guard(operation=operation)
+
+    monkeypatch.setattr(module, guard_name, allow_injected_boundary)
 
 
 @pytest.fixture(autouse=True)

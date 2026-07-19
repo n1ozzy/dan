@@ -11,6 +11,7 @@ from collections.abc import Callable
 from io import BytesIO
 from typing import Any, Protocol
 
+from dan.audio.execution import assert_audio_execution_allowed
 from dan.voice.tts import PlaybackCancelled, SynthesizedChunk
 
 
@@ -101,7 +102,10 @@ class CoreAudioPlayer:
         completion_waiter: Callable[[threading.Event, float], bool] = wait_for_event,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._backend = backend or _AVFoundationBackend()
+        if backend is None:
+            assert_audio_execution_allowed(operation="native backend construction")
+            backend = _AVFoundationBackend()
+        self._backend = backend
         self._deadline_for_audio = deadline_for_audio
         self._completion_waiter = completion_waiter
         self._monotonic = monotonic
@@ -127,6 +131,7 @@ class CoreAudioPlayer:
         should_play: Callable[[], bool],
         on_started: Callable[[], None],
     ) -> None:
+        assert_audio_execution_allowed(operation="coreaudio playback")
         try:
             deadline = float(self._deadline_for_audio(chunk.audio))
         except CoreAudioPlayerError:
@@ -372,6 +377,7 @@ class _AVFoundationBackend:
     """Thin PyObjC boundary; imported lazily so non-audio tests stay hermetic."""
 
     def __init__(self) -> None:
+        assert_audio_execution_allowed(operation="native backend initialization")
         try:
             import AVFoundation
         except ImportError as exc:
@@ -385,6 +391,7 @@ class _AVFoundationBackend:
         self._build_graph()
 
     def _build_graph(self) -> None:
+        assert_audio_execution_allowed(operation="native graph initialization")
         engine = self._av.AVAudioEngine.alloc().init()
         node = self._av.AVAudioPlayerNode.alloc().init()
         engine.attachNode_(node)
@@ -398,6 +405,7 @@ class _AVFoundationBackend:
         self._connected_format = None
 
     def start(self) -> None:
+        assert_audio_execution_allowed(operation="native route start")
         try:
             if self._engine is None:
                 raise RuntimeError("native audio graph is unavailable")
@@ -484,6 +492,7 @@ class _AVFoundationBackend:
         self._connected_format = audio_format
 
     def play(self, buffer: Any, completion: Callable[[], None]) -> None:
+        assert_audio_execution_allowed(operation="native buffer scheduling")
         try:
             if self._node is None:
                 raise RuntimeError("native audio node is unavailable")
