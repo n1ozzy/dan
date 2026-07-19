@@ -319,7 +319,14 @@ class _RepositoryAnchor:
     @classmethod
     def open(cls, path: Path) -> _RepositoryAnchor:
         descriptor = _open_absolute_directory_nofollow(path)
-        details = os.fstat(descriptor)
+        try:
+            details = os.fstat(descriptor)
+        except BaseException as error:
+            try:
+                os.close(descriptor)
+            except OSError as close_error:
+                error.add_note(f"repository descriptor close failed: {close_error}")
+            raise
         return cls(path, descriptor, details)
 
     def __enter__(self) -> _RepositoryAnchor:
@@ -331,7 +338,15 @@ class _RepositoryAnchor:
         exc_value: object,
         traceback: object,
     ) -> None:
-        os.close(self.descriptor)
+        descriptor = self.descriptor
+        self.descriptor = -1
+        try:
+            os.close(descriptor)
+        except OSError as close_error:
+            if isinstance(exc_value, BaseException):
+                exc_value.add_note(f"repository descriptor close failed: {close_error}")
+                return
+            raise
 
     @property
     def identity(self) -> tuple[int, int]:
@@ -1253,4 +1268,9 @@ def write_checkpoint_exclusive(path: Path, checkpoint: ReleaseCheckpoint) -> Non
             raise InvalidCheckpoint("DAN_RELEASE_EVIDENCE_ROOT must be set")
         root = validate_evidence_root(Path(root_value), active_roots=active_roots)
         repository.verify_identity()
-        write_evidence_envelope_exclusive(path, envelope, evidence_root=root)
+        write_evidence_envelope_exclusive(
+            path,
+            envelope,
+            evidence_root=root,
+            transaction_guard=repository.verify_identity,
+        )

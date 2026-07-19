@@ -7,7 +7,7 @@ import json
 import os
 import secrets
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -148,13 +148,31 @@ def _open_absolute_directory_nofollow(path: Path) -> int:
 
 def _open_validated_root(root: ValidatedEvidenceRoot) -> int:
     descriptor = _open_absolute_directory_nofollow(root.path)
-    details = os.fstat(descriptor)
+    try:
+        details = os.fstat(descriptor)
+    except BaseException as error:
+        _close_preserving_primary(
+            descriptor,
+            error,
+            context="validated evidence root descriptor close failed",
+        )
+        raise
     if (details.st_dev, details.st_ino) != (root.device, root.inode):
-        os.close(descriptor)
-        raise UnsafeEvidenceRoot("validated evidence root identity changed")
+        error = UnsafeEvidenceRoot("validated evidence root identity changed")
+        _close_preserving_primary(
+            descriptor,
+            error,
+            context="validated evidence root descriptor close failed",
+        )
+        raise error
     if stat.S_IMODE(details.st_mode) != 0o700:
-        os.close(descriptor)
-        raise UnsafeEvidenceRoot("validated evidence root mode changed")
+        error = UnsafeEvidenceRoot("validated evidence root mode changed")
+        _close_preserving_primary(
+            descriptor,
+            error,
+            context="validated evidence root descriptor close failed",
+        )
+        raise error
     return descriptor
 
 
@@ -382,6 +400,18 @@ def _inode_identity(details: os.stat_result) -> tuple[int, int]:
     return details.st_dev, details.st_ino
 
 
+def _close_preserving_primary(
+    descriptor: int,
+    primary_error: BaseException,
+    *,
+    context: str,
+) -> None:
+    try:
+        os.close(descriptor)
+    except OSError as close_error:
+        primary_error.add_note(f"{context}: {close_error}")
+
+
 def _open_private_temp(parent_descriptor: int) -> tuple[str, int, tuple[int, int]]:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -460,22 +490,54 @@ def _unlink_owned_name(
     return True
 
 
+def _unlink_name_if_owned(
+    parent_descriptor: int,
+    name: str,
+    identity: tuple[int, int],
+) -> bool:
+    try:
+        details = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return False
+    if _inode_identity(details) != identity:
+        return False
+    return _unlink_owned_name(parent_descriptor, name, identity)
+
+
 def write_evidence_envelope_exclusive(
     path: Path,
     envelope: ReleaseEvidenceEnvelope,
     *,
     evidence_root: ValidatedEvidenceRoot,
+    transaction_guard: Callable[[], None] | None = None,
 ) -> None:
-    """Create one canonical mode-0600 envelope and never overwrite history."""
+    """Create one canonical mode-0600 envelope and never overwrite history.
+
+    When supplied, ``transaction_guard`` runs immediately before publication and
+    again after the durable directory sync. A guard failure remains inside the
+    rollback boundary, so an owned final name is removed before the error escapes.
+    """
 
     _validate_envelope(envelope)
     payload = _envelope_payload(envelope, include_report_sha256=True)
     encoded = _canonical_json_bytes(payload) + b"\n"
     parent_descriptor, name = _open_evidence_parent(path, evidence_root)
+    try:
+        rollback_descriptor = os.dup(parent_descriptor)
+    except BaseException as error:
+        _close_preserving_primary(
+            parent_descriptor,
+            error,
+            context="parent descriptor close failed",
+        )
+        raise
     temporary_descriptor: int | None = None
     temporary_name: str | None = None
     temporary_identity: tuple[int, int] | None = None
-    published = False
     primary_error: BaseException | None = None
     primary_traceback = None
     cleanup_errors: list[str] = []
@@ -491,6 +553,8 @@ def write_evidence_envelope_exclusive(
         descriptor_to_close = temporary_descriptor
         temporary_descriptor = None
         os.close(descriptor_to_close)
+        if transaction_guard is not None:
+            transaction_guard()
         os.link(
             temporary_name,
             name,
@@ -498,21 +562,25 @@ def write_evidence_envelope_exclusive(
             dst_dir_fd=parent_descriptor,
             follow_symlinks=False,
         )
-        published = True
         _unlink_owned_name(
             parent_descriptor,
             temporary_name,
             temporary_identity,
         )
         os.fsync(parent_descriptor)
+        if transaction_guard is not None:
+            transaction_guard()
+        descriptor_to_close = parent_descriptor
+        parent_descriptor = None
+        os.close(descriptor_to_close)
     except BaseException as error:
         primary_error = error
         primary_traceback = error.__traceback__
         removed = False
-        if published and temporary_identity is not None:
+        if temporary_identity is not None:
             try:
-                removed |= _unlink_owned_name(
-                    parent_descriptor,
+                removed |= _unlink_name_if_owned(
+                    rollback_descriptor,
                     name,
                     temporary_identity,
                 )
@@ -520,8 +588,8 @@ def write_evidence_envelope_exclusive(
                 cleanup_errors.append(f"final cleanup failed: {exc}")
         if temporary_name is not None and temporary_identity is not None:
             try:
-                removed |= _unlink_owned_name(
-                    parent_descriptor,
+                removed |= _unlink_name_if_owned(
+                    rollback_descriptor,
                     temporary_name,
                     temporary_identity,
                 )
@@ -529,7 +597,7 @@ def write_evidence_envelope_exclusive(
                 cleanup_errors.append(f"temporary cleanup failed: {exc}")
         if removed:
             try:
-                os.fsync(parent_descriptor)
+                os.fsync(rollback_descriptor)
             except OSError as exc:
                 cleanup_errors.append(f"cleanup directory fsync failed: {exc}")
     finally:
@@ -538,14 +606,24 @@ def write_evidence_envelope_exclusive(
                 os.close(temporary_descriptor)
             except OSError as exc:
                 cleanup_errors.append(f"temporary descriptor close failed: {exc}")
+        if parent_descriptor is not None:
+            try:
+                os.close(parent_descriptor)
+            except OSError as exc:
+                cleanup_errors.append(f"parent descriptor close failed: {exc}")
         try:
-            os.close(parent_descriptor)
+            os.close(rollback_descriptor)
         except OSError as exc:
-            cleanup_errors.append(f"parent descriptor close failed: {exc}")
+            cleanup_errors.append(f"rollback descriptor close failed: {exc}")
     if primary_error is not None:
         if cleanup_errors:
             primary_error.add_note("; ".join(cleanup_errors))
         raise primary_error.with_traceback(primary_traceback)
+    if cleanup_errors:
+        raise OSError(
+            "evidence publication committed; post-commit cleanup failed: "
+            + "; ".join(cleanup_errors)
+        )
 
 
 def _object_without_duplicates(pairs: Sequence[tuple[str, object]]) -> dict[str, object]:

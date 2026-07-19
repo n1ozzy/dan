@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+import dan.release.evidence as evidence_module
 from dan.release.evidence import (
     ActiveEvidenceRoots,
     EvidenceInput,
@@ -814,3 +815,169 @@ def test_inode_safe_cleanup_preserves_a_replacement_at_the_rename_boundary(
     assert replacement_name is not None
     assert (root / replacement_name).read_bytes() == b"attacker replacement\n"
     assert not output.exists()
+
+
+def test_writer_rolls_back_when_final_parent_close_fails_and_retry_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o700)
+    validated = validate_evidence_root(root, active_roots=_active_roots(tmp_path))
+    output = root / "parent-close.json"
+    root_details = root.stat()
+    root_identity = (root_details.st_dev, root_details.st_ino)
+    original_close = os.close
+    original_fstat = os.fstat
+    close_failure_fired = False
+
+    def one_shot_final_parent_close_failure(descriptor: int) -> None:
+        nonlocal close_failure_fired
+        details = original_fstat(descriptor)
+        identity = (details.st_dev, details.st_ino)
+        if output.exists() and identity == root_identity and not close_failure_fired:
+            close_failure_fired = True
+            original_close(descriptor)
+            raise OSError("forced final parent close failure")
+        original_close(descriptor)
+
+    monkeypatch.setattr(os, "close", one_shot_final_parent_close_failure)
+    with pytest.raises(OSError, match="final parent close failure"):
+        write_evidence_envelope_exclusive(
+            output,
+            _envelope(),
+            evidence_root=validated,
+        )
+
+    assert close_failure_fired
+    assert not output.exists()
+    assert list(root.iterdir()) == []
+
+    write_evidence_envelope_exclusive(output, _envelope(), evidence_root=validated)
+    assert read_evidence_envelope(
+        output,
+        evidence_root=validated,
+        expected_kind="fixture",
+    ) == _envelope()
+    assert [entry.name for entry in root.iterdir()] == [output.name]
+
+
+@pytest.mark.parametrize("failure", ("zero", "raise"))
+def test_writer_rolls_back_owned_final_hardlinked_during_actual_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o700)
+    validated = validate_evidence_root(root, active_roots=_active_roots(tmp_path))
+    output = root / "linked-during-write.json"
+    original_write = os.write
+    injection_fired = False
+
+    def hardlink_then_fail(descriptor: int, payload: bytes) -> int:
+        nonlocal injection_fired
+        if not injection_fired:
+            temporary_paths = sorted(root.glob(".dan-evidence-*.tmp"))
+            assert len(temporary_paths) == 1
+            os.link(temporary_paths[0], output)
+            injection_fired = True
+            if failure == "zero":
+                return 0
+            raise OSError("forced linked write failure")
+        return original_write(descriptor, payload)
+
+    monkeypatch.setattr(os, "write", hardlink_then_fail)
+    message = "no progress" if failure == "zero" else "linked write failure"
+    with pytest.raises(OSError, match=message):
+        write_evidence_envelope_exclusive(
+            output,
+            _envelope(),
+            evidence_root=validated,
+        )
+
+    assert injection_fired
+    assert not output.exists()
+    assert list(root.iterdir()) == []
+
+    write_evidence_envelope_exclusive(output, _envelope(), evidence_root=validated)
+    assert read_evidence_envelope(
+        output,
+        evidence_root=validated,
+        expected_kind="fixture",
+    ) == _envelope()
+    assert [entry.name for entry in root.iterdir()] == [output.name]
+
+
+def test_open_validated_root_closes_exact_descriptor_when_fstat_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o700)
+    validated = validate_evidence_root(root, active_roots=_active_roots(tmp_path))
+    root_details = root.stat()
+    root_identity = (root_details.st_dev, root_details.st_ino)
+    original_fstat = os.fstat
+    failed_descriptor: int | None = None
+
+    def one_shot_root_fstat(descriptor: int) -> os.stat_result:
+        nonlocal failed_descriptor
+        details = original_fstat(descriptor)
+        if failed_descriptor is None and (details.st_dev, details.st_ino) == root_identity:
+            failed_descriptor = descriptor
+            raise OSError("forced evidence root fstat failure")
+        return details
+
+    monkeypatch.setattr(evidence_module.os, "fstat", one_shot_root_fstat)
+    with pytest.raises(OSError, match="evidence root fstat failure"):
+        evidence_module._open_validated_root(validated)
+
+    assert failed_descriptor is not None
+    with pytest.raises(OSError):
+        original_fstat(failed_descriptor)
+
+
+def test_open_validated_root_preserves_fstat_failure_when_close_also_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "evidence"
+    root.mkdir(mode=0o700)
+    validated = validate_evidence_root(root, active_roots=_active_roots(tmp_path))
+    root_details = root.stat()
+    root_identity = (root_details.st_dev, root_details.st_ino)
+    original_fstat = os.fstat
+    original_close = os.close
+    failed_descriptor: int | None = None
+    close_failure_fired = False
+
+    def one_shot_root_fstat(descriptor: int) -> os.stat_result:
+        nonlocal failed_descriptor
+        details = original_fstat(descriptor)
+        if failed_descriptor is None and (details.st_dev, details.st_ino) == root_identity:
+            failed_descriptor = descriptor
+            raise OSError("primary evidence fstat failure")
+        return details
+
+    def one_shot_cleanup_close(descriptor: int) -> None:
+        nonlocal close_failure_fired
+        if descriptor == failed_descriptor and not close_failure_fired:
+            close_failure_fired = True
+            original_close(descriptor)
+            raise OSError("secondary evidence close failure")
+        original_close(descriptor)
+
+    monkeypatch.setattr(evidence_module.os, "fstat", one_shot_root_fstat)
+    monkeypatch.setattr(evidence_module.os, "close", one_shot_cleanup_close)
+    with pytest.raises(OSError, match="primary evidence fstat failure") as captured:
+        evidence_module._open_validated_root(validated)
+
+    assert close_failure_fired
+    assert any(
+        "secondary evidence close failure" in note
+        for note in getattr(captured.value, "__notes__", ())
+    )
+    assert failed_descriptor is not None
+    with pytest.raises(OSError):
+        original_fstat(failed_descriptor)

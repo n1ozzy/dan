@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import dan.release.checkpoint as checkpoint_module
+import dan.release.evidence as evidence_module
 from dan.migration.inventory import InventoryRoots, build_inventory, write_manifest_atomic
 from dan.release.checkpoint import (
     CandidateRef,
@@ -771,3 +772,144 @@ def test_inventory_hash_and_validation_use_the_same_bytes(
     assert read_injection_fired
     assert reference.sha256 == hashlib.sha256(b"{}\n").hexdigest()
     assert unknown_evidence == ("TASK1_INVENTORY_INVALID",)
+
+
+def test_checkpoint_publication_rolls_back_repository_swap_at_final_link(
+    checkpoint_fixture: CheckpointFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_fixture.create_exact_scope_delta()
+    final_head = checkpoint_fixture.commit_scope_delta()
+    report = checkpoint_fixture.capture("final-clean", expected_head=final_head)
+    output = checkpoint_fixture.evidence / "publish-race.json"
+    displaced = checkpoint_fixture.repo.with_name("publish-race-original")
+    replacement = checkpoint_fixture.repo.with_name("publish-race-replacement")
+    original_identity = os.stat(checkpoint_fixture.repo)
+    original_link = os.link
+    injection_fired = False
+    replacement_identity: tuple[int, int] | None = None
+
+    def swap_at_final_link(
+        source: os.PathLike[str] | str,
+        destination: os.PathLike[str] | str,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        nonlocal injection_fired, replacement_identity
+        if destination == output.name and not injection_fired:
+            original_link(
+                source,
+                destination,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
+            checkpoint_fixture.repo.rename(displaced)
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "-q",
+                    "--no-local",
+                    str(displaced),
+                    str(checkpoint_fixture.repo),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            replacement_details = os.stat(checkpoint_fixture.repo)
+            replacement_identity = (
+                replacement_details.st_dev,
+                replacement_details.st_ino,
+            )
+            injection_fired = True
+            return
+        original_link(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(evidence_module.os, "link", swap_at_final_link)
+    failure: InvalidCheckpoint | None = None
+    try:
+        write_checkpoint_exclusive(output, report)
+    except InvalidCheckpoint as exc:
+        failure = exc
+    finally:
+        if injection_fired:
+            checkpoint_fixture.repo.rename(replacement)
+            displaced.rename(checkpoint_fixture.repo)
+
+    assert injection_fired
+    assert replacement_identity != (original_identity.st_dev, original_identity.st_ino)
+    assert _git(replacement, "rev-parse", "HEAD") == final_head
+    assert _git(replacement, "status", "--porcelain=v1") == ""
+    assert failure is not None, "repository substitution must invalidate publication"
+    assert "repository identity changed" in str(failure)
+    assert not output.exists()
+    assert list(checkpoint_fixture.evidence.glob(".dan-evidence-*")) == []
+
+    write_checkpoint_exclusive(output, report)
+    assert output.exists()
+
+
+def test_repository_anchor_open_closes_exact_descriptor_when_fstat_fails(
+    checkpoint_fixture: CheckpointFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_details = checkpoint_fixture.repo.stat()
+    repo_identity = (repo_details.st_dev, repo_details.st_ino)
+    original_fstat = os.fstat
+    failed_descriptor: int | None = None
+
+    def one_shot_repository_fstat(descriptor: int) -> os.stat_result:
+        nonlocal failed_descriptor
+        details = original_fstat(descriptor)
+        if failed_descriptor is None and (details.st_dev, details.st_ino) == repo_identity:
+            failed_descriptor = descriptor
+            raise OSError("forced repository fstat failure")
+        return details
+
+    monkeypatch.setattr(checkpoint_module.os, "fstat", one_shot_repository_fstat)
+    with pytest.raises(OSError, match="repository fstat failure"):
+        checkpoint_module._RepositoryAnchor.open(checkpoint_fixture.repo)
+
+    assert failed_descriptor is not None
+    with pytest.raises(OSError):
+        original_fstat(failed_descriptor)
+
+
+def test_repository_anchor_exit_preserves_primary_when_close_also_fails(
+    checkpoint_fixture: CheckpointFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = checkpoint_module._RepositoryAnchor.open(checkpoint_fixture.repo)
+    descriptor = repository.descriptor
+    original_close = os.close
+    close_failure_fired = False
+
+    def one_shot_repository_close(candidate: int) -> None:
+        nonlocal close_failure_fired
+        if candidate == descriptor and not close_failure_fired:
+            close_failure_fired = True
+            original_close(candidate)
+            raise OSError("secondary repository close failure")
+        original_close(candidate)
+
+    monkeypatch.setattr(checkpoint_module.os, "close", one_shot_repository_close)
+    with pytest.raises(InvalidCheckpoint, match="primary capture failure") as captured:
+        with repository:
+            raise InvalidCheckpoint("primary capture failure")
+
+    assert close_failure_fired
+    assert any(
+        "secondary repository close failure" in note
+        for note in getattr(captured.value, "__notes__", ())
+    )
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
