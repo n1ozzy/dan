@@ -16,8 +16,6 @@
   var turnId = null;
   var el = null, mine = null, endTimer = null;
 
-  /* ---------- bubble ---------- */
-
   function bubbles() {
     var all = document.querySelectorAll('#turnList .chat-bubble.dan');
     var out = [];
@@ -59,7 +57,7 @@
   function paint(text) {
     var b = findBubble();
     if (!b) return;
-    b.classList.remove('placeholder');   // drop the faint italic look
+    b.classList.remove('placeholder');
     if (!b.classList.contains('dan')) b.classList.add('dan');
     b.textContent = text;
     var list = document.getElementById('turnList');
@@ -73,17 +71,17 @@
     mine = null; el = null;
   }
 
-  /* ---------- meta line: human status + clock ---------- */
+  /* ---------- meta line: status (English, matches panel) + clock ---------- */
 
   var STATUS = [
-    [/error|failed|cancel/i, 'sypie bledem'],
-    [/tool_(requested|started)|tool\./i, 'szuka'],
-    [/tool_(finished|completed)/i, 'znalazl'],
-    [/speak|voice|spoken/i, 'gada'],
-    [/brain_requested|thinking/i, 'mysli'],
-    [/brain_responded|responded|delivered/i, 'odpowiada'],
-    [/listen|heard|transcri/i, 'slucha'],
-    [/queued|pending/i, 'czeka']
+    [/error|failed|cancel/i, 'error'],
+    [/tool_(requested|started)|tool\./i, 'searching'],
+    [/tool_(finished|completed)/i, 'found'],
+    [/speak|voice|spoken/i, 'speaking'],
+    [/brain_requested|thinking/i, 'thinking'],
+    [/brain_responded|responded|delivered/i, 'responding'],
+    [/listen|heard|transcri/i, 'listening'],
+    [/queued|pending/i, 'waiting']
   ];
 
   function statusFor(raw) {
@@ -103,7 +101,7 @@
     var metas = document.querySelectorAll('#turnList .chat-meta');
     for (var i = 0; i < metas.length; i++) {
       var m = metas[i];
-      if (m.getAttribute('data-dan-meta') === '1') continue;   // ours, handled below
+      if (m.getAttribute('data-dan-meta') === '1') continue;
       var raw = m.getAttribute('data-dan-raw');
       if (raw === null) {
         raw = m.textContent || '';
@@ -118,10 +116,40 @@
     if (mine && mine.isConnected) {
       var own = mine.querySelector('.chat-meta');
       if (own) {
-        var w = (live ? 'gada' : 'skonczyl') + ' \u00b7 ' + clock(Date.now());
-        if (own.textContent !== w) own.textContent = w;
+        var sEl = document.getElementById('stateLabel');
+        var gEl = document.getElementById('activityStage');
+        var sTxt = sEl ? (sEl.textContent || '').trim() : '';
+        var gTxt = gEl ? (gEl.textContent || '').trim() : '';
+        var parts = [];
+        if (sTxt && sTxt !== '\u2026' && sTxt.toLowerCase() !== 'unknown') parts.push(sTxt);
+        if (gTxt && gTxt !== sTxt && gTxt.toLowerCase().indexOf('connecting') !== 0) parts.push(gTxt);
+        var label = parts.length ? parts.join(' \u00b7 ') : (live ? 'speaking' : 'done');
+        var w = label + ' \u00b7 ' + clock(Date.now());
+        if (own.textContent !== w) {
+          own.textContent = w;
+          own.classList.add('dan-pulse');
+          window.setTimeout(function () { own.classList.remove('dan-pulse'); }, 250);
+        }
       }
     }
+  }
+
+  /* ---------- collapse the duplicate top state/stage row into the bubble meta ---------- */
+
+  function hideChrome() {
+    var tb = document.querySelector('.chat-toolbar.single-dan-toolbar');
+    if (tb && tb.style.display !== 'none') tb.style.display = 'none';
+    var strip = document.getElementById('activityStrip');
+    if (strip && strip.style.display !== 'none') strip.style.display = 'none';
+  }
+
+  var pulseStyleAdded = false;
+  function ensurePulseStyle() {
+    if (pulseStyleAdded) return;
+    pulseStyleAdded = true;
+    var sty = document.createElement('style');
+    sty.textContent = '.dan-pulse{transition:opacity .25s ease;opacity:.55}';
+    document.head.appendChild(sty);
   }
 
   /* ---------- typing ---------- */
@@ -208,6 +236,7 @@
   }, TICK);
 
   window.setInterval(rewriteMeta, META_TICK);
+  window.setInterval(hideChrome, META_TICK);
 
   /* ---------- daemon ---------- */
 
@@ -259,8 +288,10 @@
 
   window.setInterval(pollEvents, EVT_POLL);
   window.setInterval(pollQueue, Q_POLL);
+  ensurePulseStyle();
+  hideChrome();
   rewriteMeta();
   pollQueue();
   pollEvents();
-  try { console.log('[dan-typewriter] v8 dan-class + meta'); } catch (e) {}
+  try { console.log('[dan-typewriter] v10 english-only + collapsed chrome'); } catch (e) {}
 })();

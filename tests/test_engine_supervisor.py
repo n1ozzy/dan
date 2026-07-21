@@ -22,6 +22,7 @@ from dan.daemon.supervisor import (
     ChildSupervisorError,
     ForeignPortOwnerError,
     _default_listener_released,
+    _is_own_orphan,
 )
 
 SUPERTONIC_SPEC = ChildSpec(
@@ -159,6 +160,145 @@ def test_foreign_port_owner_is_rejected_not_adopted_or_killed() -> None:
 
     assert factory.starts == 0  # never spawned over the stranger
     assert killpg.calls == []  # and never killed it either
+
+
+def test_own_orphan_is_recognised_only_by_exact_argv_under_init() -> None:
+    """The two facts together are what make adoption safe.
+
+    argv identical to the spec says it is the same program we launch; a parent
+    of init says the dand that launched it is gone. Either one alone describes
+    a process someone else may legitimately own.
+    """
+
+    ours = " ".join(SUPERTONIC_SPEC.argv)
+
+    assert _is_own_orphan(SUPERTONIC_SPEC, ppid=1, command=ours) is True
+    # Someone else is supervising it — not ours to kill.
+    assert _is_own_orphan(SUPERTONIC_SPEC, ppid=4242, command=ours) is False
+    # Same program, different port: a second instance we did not configure.
+    assert (
+        _is_own_orphan(
+            SUPERTONIC_SPEC,
+            ppid=1,
+            command=ours.replace("7797", "7798"),
+        )
+        is False
+    )
+    # A stranger that merely mentions our binary in its arguments.
+    assert (
+        _is_own_orphan(SUPERTONIC_SPEC, ppid=1, command=f"/bin/sh -c '{ours}'")
+        is False
+    )
+    assert _is_own_orphan(SUPERTONIC_SPEC, ppid=1, command="") is False
+    # An unparsable command line (stray quote) must not be forced to match.
+    assert _is_own_orphan(SUPERTONIC_SPEC, ppid=1, command=ours + " \"") is False
+
+
+class OrphanOnThePort:
+    """A previous incarnation's child: still listening, reparented to init.
+
+    Acts as both the orphan probe and the port state, so killing it actually
+    frees the port for the observing supervisor.
+    """
+
+    def __init__(self, pid: int = 9100, *, found: bool = True) -> None:
+        self.pid = pid
+        self.alive = True
+        self.found = found
+
+    def probe(self, spec: ChildSpec) -> int | None:
+        if self.found and self.alive:
+            return self.pid
+        return None
+
+    def holds_port(self) -> bool:
+        return self.alive
+
+    def kill(self, pgid: int, signum: int) -> None:
+        if pgid == self.pid:
+            self.alive = False
+
+
+def build_supervisor_with_orphan(orphan: OrphanOnThePort):
+    factory = FakeProcessFactory()
+    kills: list[tuple[int, int]] = []
+
+    def killpg(pgid: int, signum: int) -> None:
+        kills.append((pgid, signum))
+        orphan.kill(pgid, signum)
+
+    supervisor = ChildSupervisor(
+        [SUPERTONIC_SPEC],
+        process_factory=factory,
+        health_probe=lambda _url: orphan.holds_port()
+        or any(process.returncode is None for process in factory.processes),
+        killpg=killpg,
+        process_group_alive=lambda pgid: any(
+            process.pid == pgid and process.returncode is None
+            for process in factory.processes
+        ),
+        listener_released_probe=lambda _url: not orphan.holds_port()
+        and not any(process.returncode is None for process in factory.processes),
+        orphan_probe=orphan.probe,
+        sleep=lambda seconds: None,
+    )
+    return supervisor, factory, kills
+
+
+def test_own_orphan_holding_the_port_is_reclaimed_so_the_daemon_can_start() -> None:
+    """A hard `kickstart -k` leaves the child listening under init.
+
+    The next dand refused to start because the port answered, and only a
+    manual kill got it back — fail-safe had turned into fail-dead.
+    """
+
+    orphan = OrphanOnThePort()
+    supervisor, factory, kills = build_supervisor_with_orphan(orphan)
+
+    child = supervisor.ensure_running("supertonic")
+
+    assert kills[0] == (orphan.pid, signal.SIGTERM)
+    assert orphan.alive is False
+    assert factory.starts == 1
+    assert child.pid == factory.processes[0].pid
+
+
+def test_unrecognised_port_owner_is_still_refused() -> None:
+    """Reclaiming is narrow: anything the probe does not vouch for stays sacred."""
+
+    orphan = OrphanOnThePort(found=False)
+    supervisor, factory, kills = build_supervisor_with_orphan(orphan)
+
+    with pytest.raises(ForeignPortOwnerError):
+        supervisor.ensure_running("supertonic")
+
+    assert factory.starts == 0
+    assert kills == []
+
+
+def test_orphan_surviving_sigterm_is_escalated_to_sigkill() -> None:
+    orphan = OrphanOnThePort()
+    ignore_sigterm = orphan.kill
+    orphan.kill = lambda pgid, signum: (  # type: ignore[method-assign]
+        ignore_sigterm(pgid, signum) if signum == signal.SIGKILL else None
+    )
+    supervisor, factory, kills = build_supervisor_with_orphan(orphan)
+
+    supervisor.ensure_running("supertonic")
+
+    assert [signum for _pid, signum in kills] == [signal.SIGTERM, signal.SIGKILL]
+    assert factory.starts == 1
+
+
+def test_orphan_that_refuses_to_die_is_reported_not_spawned_over() -> None:
+    orphan = OrphanOnThePort()
+    orphan.kill = lambda pgid, signum: None  # type: ignore[method-assign]
+    supervisor, factory, _kills = build_supervisor_with_orphan(orphan)
+
+    with pytest.raises(ForeignPortOwnerError):
+        supervisor.ensure_running("supertonic")
+
+    assert factory.starts == 0
 
 
 def test_stop_terminates_the_whole_process_group() -> None:
@@ -584,6 +724,7 @@ class FailingDrainApp:
         self.child_supervisor = supervisor
         self.stop_calls = 0
         self.lifecycle_calls: list[str] = []
+        self.failures: list[str] = []
 
     def close_intake(self, *, reason: str) -> str:
         self.lifecycle_calls.append(f"close:{reason}")
@@ -593,6 +734,9 @@ class FailingDrainApp:
         self.stop_calls += 1
         self.lifecycle_calls.append(f"stop:{reason}")
         raise RuntimeError("drain failed")
+
+    def mark_failed(self, *, reason: str, errors: tuple[str, ...] = ()) -> None:
+        self.failures.append(reason)
 
 
 class BlockingCloseRestartApp:
@@ -658,8 +802,18 @@ def test_duplicate_restart_waits_for_close_and_reuses_operation_id() -> None:
     assert {response["reason"] for response in responses} == {"first"}
 
 
-def test_failed_drain_contains_children_and_blocks_exit_86() -> None:
-    from dan.daemon.restart import RestartCoordinator
+def test_failed_drain_with_contained_children_exits_so_launchd_can_recover() -> None:
+    """Containment proven complete means exiting is the safe move, not the risky one.
+
+    The exit block exists to stop launchd starting a second daemon beside a
+    live supertonic. Once every supervised child is dead that danger is gone,
+    and staying alive is strictly worse: stop() tears down broker, engine and
+    player before it raises, so this process can no longer speak, and it goes
+    on holding the hotkey flock the next daemon needs for PTT. Blocking here
+    left a mute daemon squatting the lock while `dan state` still said ok.
+    """
+
+    from dan.daemon.restart import RESTART_EXIT_CODE, RestartCoordinator
 
     supervisor, factory, killpg = build_supervisor()
     child = supervisor.ensure_running("supertonic")
@@ -680,8 +834,9 @@ def test_failed_drain_contains_children_and_blocks_exit_86() -> None:
     assert factory.processes[0].wait_calls >= 1
     assert supervisor.watchdog_alive is False
     assert supervisor.child_pids() == []
-    assert exits == []
-    assert coordinator.restarting is False
+    assert exits == [RESTART_EXIT_CODE]
+    # Nothing to report as broken: launchd gets a clean start from here.
+    assert app.failures == []
 
 
 def test_failed_containment_blocks_exit_86() -> None:
@@ -714,6 +869,11 @@ def test_failed_containment_blocks_exit_86() -> None:
     assert exits == []
     assert supervisor.child_pids() == [stubborn.pid]
     assert coordinator.restarting is False
+    # A blocked exit must be loud. ADR-001 accepts a daemon failure stopping
+    # voice, but only as one *visible* missing owner: the process survives with
+    # intake closed and voice torn down, so unless it reports itself failed the
+    # panel keeps showing green and the owner debugs PTT instead of the daemon.
+    assert app.failures == ["restart drain failed: failed containment"]
 
 
 def test_daemon_shutdown_reaps_player_engine_and_hotkey(tmp_path: Path) -> None:

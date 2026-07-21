@@ -22,7 +22,7 @@ the queue contents (source, session, status — see `docs/GLOS-I-KOLEJKA.md`).
 |---|---|---|
 | "Pause voice" | `POST /voice/pause` | the broker stops taking new items; the queue stays |
 | "Resume voice" | `POST /voice/resume` | the broker goes back to consuming the queue |
-| "Skip current" | `POST /voice/queue/current/cancel` | cuts only the current utterance; the rest of the queue keeps playing (skip, not flush) |
+| "Skip current" | `POST /voice/queue/current/cancel` | cuts only the current utterance; the rest of the queue keeps playing, and the session stays speakable (skip, not flush) |
 | "Safe DAN restart" | `POST /runtime/restart` | the daemon wraps up its current work, exits with code 86, launchd (`KeepAlive`) brings it back up |
 | "Send" / memory / events | conversation and memory API | normal text work |
 

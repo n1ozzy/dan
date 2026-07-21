@@ -1465,6 +1465,31 @@ def test_snapshot_state_returns_required_keys(app: DaemonApp) -> None:
     assert snapshot["session_tokens_out"] == 0
 
 
+def test_mark_failed_makes_a_blocked_restart_visible_in_health(app: DaemonApp) -> None:
+    """A surviving-but-broken daemon must stop advertising itself as ok.
+
+    After a restart whose exit was blocked, the process is alive with intake
+    closed and the voice layer torn down. snapshot_state feeds /health and the
+    panel, so while it kept answering ok/IDLE the failure was invisible and the
+    owner chased a dead PTT instead of a dead daemon.
+    """
+
+    app.start()
+
+    app.mark_failed(reason="restart drain failed: api restart", errors=("supertonic alive",))
+
+    snapshot = app.snapshot_state()
+    assert snapshot["ok"] is False
+    assert snapshot["state"] == "ERROR"
+    assert app.state_machine is not None
+    assert app.state_machine.state is RuntimeState.ERROR
+
+    # Reporting the same failure twice must not raise: a same-state transition
+    # is rejected by the machine, so the guard belongs here, not in the caller.
+    app.mark_failed(reason="restart drain failed: api restart")
+    assert app.snapshot_state()["state"] == "ERROR"
+
+
 def test_app_stop_transitions_to_stopping_and_appends_daemon_stopped(app: DaemonApp) -> None:
     app.start()
 
@@ -4173,6 +4198,9 @@ def test_runtime_files_do_not_contain_forbidden_legacy_strings() -> None:
         ("dan/voice/shared_broker.py", "/tmp/dan"),
         ("dan/migration/test_safety.py", "/tmp/dan"),
         ("dan/migration/test_safety.py", "afplay"),
+        # The fail-closed audio guard has to name the binaries it refuses to
+        # execute, so the name appearing there is the rule, not a violation.
+        ("dan/audio/execution.py", "afplay"),
     }
     forbidden = (
         "/Users/" "n1_ozzy" "/Documents/dev/dan",

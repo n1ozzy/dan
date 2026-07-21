@@ -9,6 +9,11 @@ Contract:
    launchd (KeepAlive) resurrects dand; in tests the exit function is
    injected. The coordinator NEVER calls launchctl or pkill — process
    resurrection is the platform's job, not ours.
+3. If the drain raises, containment decides. Supervised children proven dead
+   means exiting is still safe and still necessary — a mute survivor would
+   only squat the hotkey lock. Children left alive is the one case that keeps
+   the process here, and then it reports itself failed so the outage is
+   visible instead of green (ADR-001).
 """
 
 from __future__ import annotations
@@ -113,22 +118,47 @@ class RestartCoordinator:
         except Exception:  # noqa: BLE001 - containment decides whether exit is safe
             logger.exception("Restart drain failed; proving emergency containment.")
             containment = self._emergency_containment()
-            if containment is None or not containment.complete:
-                errors = getattr(containment, "errors", ("containment unavailable",))
+            if containment is not None and containment.complete:
+                # Every supervised child is proven dead, so launchd cannot end
+                # up running a second daemon beside a live one — the only thing
+                # blocking the exit protects against. Staying alive is strictly
+                # worse: stop() drops broker, engine and player before it
+                # raises, so this process can no longer speak, and it keeps
+                # holding the hotkey flock that the next daemon needs for PTT.
                 logger.critical(
-                    "Restart exit blocked because owner containment is incomplete: %s",
-                    "; ".join(errors),
+                    "Restart drain failed but every supervised child is contained; "
+                    "exiting %s so launchd can start a clean owner.",
+                    RESTART_EXIT_CODE,
                 )
-            else:
-                logger.critical(
-                    "Restart exit blocked because daemon drain failed despite "
-                    "complete child containment."
-                )
+                self._exit(RESTART_EXIT_CODE)
+                return
+            errors = getattr(containment, "errors", ("containment unavailable",))
+            logger.critical(
+                "Restart exit blocked because owner containment is incomplete: %s",
+                "; ".join(errors),
+            )
+            self._report_failure(reason, errors)
             with self._lock:
                 self._restarting = False
             return
         logger.info("Exiting with restart code %s (%s).", RESTART_EXIT_CODE, reason)
         self._exit(RESTART_EXIT_CODE)
+
+    def _report_failure(self, reason: str, errors) -> None:
+        """Make a blocked exit visible rather than let it read as healthy.
+
+        The process outlives the restart with intake closed and voice gone, so
+        without this it keeps answering ok and the outage looks like anything
+        but the daemon.
+        """
+
+        mark = getattr(self._app, "mark_failed", None)
+        if not callable(mark):
+            return
+        try:
+            mark(reason=f"restart drain failed: {reason}", errors=tuple(errors))
+        except Exception:
+            logger.exception("Could not mark the daemon failed after a blocked restart.")
 
     def _emergency_containment(self):
         from dan.daemon.supervisor import ChildContainmentResult

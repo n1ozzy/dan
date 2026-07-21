@@ -44,9 +44,13 @@ class VoiceService:
         return self.queue.enqueue(intent, snapshot)
 
     def cancel_session(self, session_id: str, *, reason: str) -> list[str]:
+        """Flush one channel. The channel stays speakable afterwards."""
+
         return self.queue.cancel_session(session_id, reason=reason)
 
     def cancel_request(self, request_id: str, *, reason: str) -> bool:
+        """Skip one utterance. Siblings and later chunks are untouched."""
+
         return self.queue.cancel_request(request_id, reason=reason)
 
 

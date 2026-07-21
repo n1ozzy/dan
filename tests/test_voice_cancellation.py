@@ -264,11 +264,16 @@ def test_queue_leg_runs_before_playback_leg(db_path: Path) -> None:
     assert observed == [["cancelled", "cancelled", "cancelled"]]
 
 
-def test_cancel_active_speech_tombstones_cancelled_and_generating_turns(db_path: Path) -> None:
-    # FIX-09: after a barge-in, a late delta or FillerTimer of a cancelled turn
-    # must be refused at enqueue — for BOTH a turn that had queue rows and a
-    # generation that had none yet (registry-only), since the mic barge-in fires
-    # on active generation too.
+def test_cancel_active_speech_tombstones_the_killed_generations(db_path: Path) -> None:
+    # FIX-09: after a barge-in, a late delta or FillerTimer of a killed
+    # generation must be refused at enqueue — including a generation with no
+    # queue rows yet (registry-only), since the mic barge-in fires on active
+    # generation too. A FillerTimer submits under the turn id, and the adapter
+    # registers that same turn id, so the registry covers both.
+    #
+    # Turns whose rows are merely sitting in the queue are NOT tombstoned:
+    # nothing is producing for them anymore, and those ids double as channel
+    # names, so gagging them muted named sessions for the whole TTL.
     from dan.voice.queue import VoiceQueueCancelledError
 
     seed_queue(db_path)  # turn-a (rows), turn-b (rows)
@@ -285,14 +290,28 @@ def test_cancel_active_speech_tombstones_cancelled_and_generating_turns(db_path:
     conn = connect(db_path)
     try:
         q = VoiceQueue(conn)
-        for cancelled_turn in ("turn-a", "turn-b", "turn-generating"):
-            with pytest.raises(VoiceQueueCancelledError):
+        with pytest.raises(VoiceQueueCancelledError):
+            enqueue_voice(
+                q,
+                "Spóźniona delta.",
+                session="turn-generating",
+                utterance_index=9,
+            )
+        for emptied in ("turn-a", "turn-b"):
+            assert q.is_tombstoned(emptied) is False
+            assert (
                 enqueue_voice(
-                    q,
-                    "Spóźniona delta.",
-                    session=cancelled_turn,
-                    utterance_index=9,
-                )
+                    q, "Nowe zdanie.", session=emptied, utterance_index=9
+                ).status
+                == "queued"
+            )
+        statuses = {
+            row[0]
+            for row in conn.execute(
+                "SELECT status FROM voice_queue WHERE utterance_index != 9"
+            )
+        }
+        assert statuses == {"cancelled"}  # every seeded row is terminal
         # An unrelated live turn is unaffected.
         assert enqueue_voice(q, "Żywe zdanie.", session="turn-live").status == "queued"
     finally:

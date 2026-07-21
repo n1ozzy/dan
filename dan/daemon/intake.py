@@ -145,7 +145,8 @@ class IntakeGate:
     def snapshot(self) -> IntakeState:
         row = self._conn.execute(
             """
-            SELECT gate.state, gate.operation_id, gate.reason, gate.reopen_policy
+            SELECT gate.state, gate.operation_id, gate.reason, gate.reopen_policy,
+                   (SELECT group_concat(owner_pid) FROM intake_leases)
             FROM intake_gate AS gate
             WHERE gate.singleton = 1
             """
@@ -153,21 +154,8 @@ class IntakeGate:
         if row is None:
             raise IntakeGateError("Durable intake gate row is missing.")
         return IntakeState(
-            str(row[0]), row[1], row[2], str(row[3]), self._live_lease_count()
+            str(row[0]), row[1], row[2], str(row[3]), _live_lease_count(row[4])
         )
-
-    def _live_lease_count(self) -> int:
-        """Count only leases whose owner process is still running.
-
-        An unclean shutdown leaves rows behind. Counting those made reopen()
-        fail forever, so the daemon could never start again without editing
-        the database by hand — fail-closed turned into fail-stuck.
-        """
-
-        rows = self._conn.execute(
-            "SELECT owner_pid FROM intake_leases"
-        ).fetchall()
-        return sum(1 for row in rows if _process_alive(row[0]))
 
     @contextmanager
     def _write(self) -> Iterator[None]:
@@ -180,6 +168,19 @@ class IntakeGate:
         except BaseException:
             self._conn.rollback()
             raise
+
+
+def _live_lease_count(owner_pids: Any) -> int:
+    """Count only leases whose owning process is still running.
+
+    An unclean shutdown leaves rows behind. Counting those made reopen() fail
+    forever, so the daemon could never start again without editing the
+    database by hand — fail-closed turned into fail-stuck.
+    """
+
+    if not owner_pids:
+        return 0
+    return sum(1 for pid in str(owner_pids).split(",") if _process_alive(pid))
 
 
 def _process_alive(pid: Any) -> bool:

@@ -7,17 +7,21 @@ spawns, health-probes and reaps those children. Contracts:
   respawned (one pid, one start).
 - Before any spawn the configured health URL is probed: an answering server
   that is NOT our child is a foreign owner — a loud error, never adopted and
-  never killed.
+  never killed. The single exception is our own orphan from a previous
+  incarnation (identical argv, reparented to init after a hard restart);
+  that one is terminated and respawned, because refusing it left the daemon
+  permanently unstartable. See _is_own_orphan and ADR 001.
 - stop() terminates the whole process group (children are spawned with
   start_new_session=True, so pgid == pid) and escalates SIGTERM -> SIGKILL.
 
-Every OS touchpoint (process factory, health probe, killpg, sleep) is
-injectable so tests run without a real process or port.
+Every OS touchpoint (process factory, health probe, killpg, orphan probe,
+sleep) is injectable so tests run without a real process or port.
 """
 
 from __future__ import annotations
 
 import os
+import shlex
 import signal
 import socket
 import subprocess
@@ -167,6 +171,93 @@ def _default_process_group_alive(pgid: int) -> bool:
     return True
 
 
+def _is_own_orphan(spec: ChildSpec, *, ppid: int, command: str) -> bool:
+    """Decide whether a port owner is unmistakably our own abandoned child.
+
+    Both facts are required. Identical argv says it is the same program this
+    supervisor launches; a parent of init says the dand that launched it is
+    already gone. Either one alone describes a process somebody else may
+    legitimately own, so anything that fails this test keeps the refusal.
+
+    The command line comes back from ps as one string, so an argument
+    containing whitespace can never round-trip; that only ever costs us an
+    adoption we then refuse, which is the safe direction.
+    """
+
+    if ppid != 1 or not command.strip():
+        return False
+    try:
+        return shlex.split(command) == list(spec.argv)
+    except ValueError:  # unbalanced quoting: unparsable is not a match
+        return False
+
+
+def _default_listening_pids(port: int) -> tuple[int, ...]:
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["/usr/sbin/lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    pids: list[int] = []
+    for line in completed.stdout.split():
+        try:
+            pids.append(int(line))
+        except ValueError:
+            continue
+    return tuple(pids)
+
+
+def _default_process_identity(pid: int) -> tuple[int, str] | None:
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["/bin/ps", "-p", str(pid), "-o", "ppid=,command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    line = completed.stdout.strip()
+    if not line:
+        return None
+    head, _, command = line.partition(" ")
+    try:
+        return int(head), command.strip()
+    except ValueError:
+        return None
+
+
+def _default_find_own_orphan(spec: ChildSpec) -> int | None:
+    """Find the pid of our own orphan holding the child's port, if any.
+
+    A hard restart (`launchctl kickstart -k`) kills dand but leaves the child
+    listening, reparented to init. The next dand then saw a live port it held
+    no handle on and refused to start at all, so fail-safe turned into
+    fail-dead until someone killed the orphan by hand.
+    """
+
+    try:
+        port = urlsplit(spec.health_url).port
+    except ValueError:
+        return None
+    if port is None:
+        return None
+    for pid in _default_listening_pids(port):
+        identity = _default_process_identity(pid)
+        if identity is None:
+            continue
+        ppid, command = identity
+        if _is_own_orphan(spec, ppid=ppid, command=command):
+            return pid
+    return None
+
+
 def _default_listener_released(url: str) -> bool:
     """Prove release by binding every address represented by the health URL."""
 
@@ -208,6 +299,7 @@ class ChildSupervisor:
         killpg: Callable[[int, int], None] | None = None,
         process_group_alive: Callable[[int], bool] | None = None,
         listener_released_probe: Callable[[str], bool] | None = None,
+        orphan_probe: Callable[[ChildSpec], int | None] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         watchdog_poll_interval: float = 0.5,
@@ -225,6 +317,7 @@ class ChildSupervisor:
         self._listener_released_probe = (
             listener_released_probe or _default_listener_released
         )
+        self._orphan_probe = orphan_probe or _default_find_own_orphan
         self._sleep = sleep
         self._monotonic = monotonic
         self._watchdog_poll_interval = max(0.01, float(watchdog_poll_interval))
@@ -592,12 +685,59 @@ class ChildSupervisor:
             self._unresolved_listeners.discard(spec.name)
             return
         if self._health_probe(spec.health_url) or not self._listener_released(spec):
-            raise ForeignPortOwnerError(
-                f"{spec.name}: {spec.health_url} already answers but the server is "
-                "not a dand child; refusing to adopt or kill it. Stop the "
-                "foreign process (or change the configured port) first."
-            )
+            if not self._reclaim_own_orphan_locked(spec):
+                raise ForeignPortOwnerError(
+                    f"{spec.name}: {spec.health_url} already answers but the server "
+                    "is not a dand child; refusing to adopt or kill it. Stop the "
+                    "foreign process (or change the configured port) first."
+                )
         self._unresolved_listeners.discard(spec.name)
+
+    def _reclaim_own_orphan_locked(self, spec: ChildSpec) -> bool:
+        """Free the port when the process holding it is our own orphan.
+
+        Only a process the orphan probe positively identifies as ours is
+        touched; everything else keeps the refusal, which is what protects a
+        genuinely foreign server on a misconfigured port.
+        """
+
+        try:
+            pid = self._orphan_probe(spec)
+        except Exception:  # noqa: BLE001 - a broken probe must not mask the refusal
+            logger.exception("Orphan probe for %s failed.", spec.name)
+            return False
+        if pid is None:
+            return False
+        logger.warning(
+            "Reclaiming %s: pid %s holds %s and is this supervisor's orphan.",
+            spec.name,
+            pid,
+            spec.health_url,
+        )
+        for signum in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                self._killpg(pid, signum)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                logger.exception("Failed to signal orphan pid %s.", pid)
+                return False
+            if self._await_port_release(spec):
+                return True
+        logger.error(
+            "Orphan pid %s still holds %s after SIGKILL.", pid, spec.health_url
+        )
+        return False
+
+    def _await_port_release(self, spec: ChildSpec) -> bool:
+        for delay in (0.0, *spec.backoff_seconds):
+            if delay:
+                self._sleep(delay)
+            if self._listener_released(spec) and not self._health_probe(
+                spec.health_url
+            ):
+                return True
+        return False
 
     def _spawn_and_probe_locked(self, spec: ChildSpec) -> ChildHandle:
         process = self._process_factory(spec)

@@ -51,6 +51,44 @@ family raises `ForeignPortOwnerError` — the daemon **refuses** to start the
 service instead of killing someone else's process or silently changing the
 port.
 
+One process is exempt: a child of a **previous incarnation of this same
+daemon**. A hard restart (`launchctl kickstart -k`) kills `dand` without
+draining, and the child keeps listening, reparented to init. To the next
+`dand` that looked like a foreign owner, so it refused to start at all and
+voice stayed dead until someone killed the orphan by hand — fail-safe had
+turned into fail-dead.
+
+The supervisor therefore reclaims a port owner that satisfies **both**
+conditions: its argv is identical to the `ChildSpec` argv, and its parent is
+init. Together those say "the same program we launch, whose launcher is
+gone". It is terminated (`SIGTERM`, then `SIGKILL`) and respawned. Anything
+that fails either condition — a different port, a wrapper shell, a live
+supervisor — still gets the refusal. The rule stays "never kill someone
+else's process"; what changed is that our own orphan is no longer someone
+else.
+
+### Failed restart: containment decides whether exiting is safe
+
+`POST /runtime/restart` drains through `DaemonApp.stop()` and exits 86. When
+that drain raises, the teardown is already past the point of no return:
+`stop()` drops broker, engine and player before either of its failure paths
+raises, so the surviving process cannot speak, and intake is closed.
+
+Blocking the exit guards against exactly one thing — launchd starting a
+second daemon beside a child that is still alive. When containment is
+**proven complete**, that danger is gone and the daemon exits 86 as usual.
+Exiting is also what frees the hotkey `flock`, which the kernel releases with
+the process; the next daemon needs it for PTT.
+
+Blocking that case too is what this decision corrects. It left a mute daemon
+squatting the hotkey lock, unable to speak and unable to be resurrected,
+while `dan state` and `dan doctor` still answered ok — so a dead PTT read as
+a hotkey fault rather than a dead owner.
+
+Children left alive is the one case that keeps the process here. It then
+reports itself failed (`RuntimeState.ERROR`), which drops `ok` in
+`snapshot_state()` and therefore in `/health` and the panel.
+
 ## Consequences
 
 - The panel is a pure HTTP client: pause/resume/skip/restart are API calls;
@@ -59,4 +97,6 @@ port.
   broker, a file feeder). Contract tests enforce a single player, a single
   daemon instance and the absence of `launchctl`/`pkill` in runtime code.
 - A daemon failure stops voice entirely — deliberately: one visible missing
-  owner is better than two owners at once.
+  owner is better than two owners at once. "Visible" is enforced, not
+  assumed: a daemon that survives a failed restart moves to `ERROR` and stops
+  reporting `ok`.

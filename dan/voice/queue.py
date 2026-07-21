@@ -287,6 +287,29 @@ class VoiceQueue:
         reason: str | None = None,
         interruption_source: str | None = None,
     ) -> list[str]:
+        """Cancel everything unfinished on a channel, without gagging it.
+
+        A session id names a channel and is reused for every utterance sent to
+        it, so a tombstone here silences the whole channel for the full TTL —
+        one barge-in muted a named agent session for an hour. Tombstones
+        belong to single-use generation turn ids only; see cancel_turn.
+        """
+
+        return self._cancel_by_session(
+            session_id,
+            reason=reason,
+            interruption_source=interruption_source,
+            tombstone=False,
+        )
+
+    def _cancel_by_session(
+        self,
+        session_id: str,
+        *,
+        reason: str | None,
+        interruption_source: str | None,
+        tombstone: bool,
+    ) -> list[str]:
         self._begin_immediate()
         try:
             rows = [
@@ -301,7 +324,8 @@ class VoiceQueue:
                     (session_id,),
                 ).fetchall()
             ]
-            self._tombstone_turns_in_transaction([session_id])
+            if tombstone:
+                self._tombstone_turns_in_transaction([session_id])
             request_ids = self._cancel_rows_in_transaction(
                 rows,
                 now=self._now(),
@@ -340,10 +364,11 @@ class VoiceQueue:
                 if capture_generation_turn_ids is not None
                 else ()
             )
-            tombstoned_turn_ids = _unique_nonempty(
-                [*generation_turn_ids, *queue_turn_ids]
-            )
-            tombstoned = self._tombstone_turns_in_transaction(tombstoned_turn_ids)
+            # Only the live generations earn a tombstone: they keep emitting
+            # deltas after this transaction commits. The session ids in the
+            # queue are channel names whose rows are cancelled right here, so
+            # tombstoning them added nothing and muted the channel for the TTL.
+            tombstoned = self._tombstone_turns_in_transaction(generation_turn_ids)
             request_ids = self._cancel_rows_in_transaction(
                 rows,
                 now=self._now(),
@@ -403,10 +428,18 @@ class VoiceQueue:
         interruption_source: str | None = None,
         cancelled_request_ids: list[str] | None = None,
     ) -> int:
-        request_ids = self.cancel_session(
+        """Cancel a generation turn and tombstone it against its own late tail.
+
+        Unlike a channel name, a turn id is single-use and its producer is
+        still emitting deltas when the cancel lands, so blocking further
+        enqueues under that id costs nothing and is the whole point.
+        """
+
+        request_ids = self._cancel_by_session(
             turn_id,
             reason=reason,
             interruption_source=interruption_source,
+            tombstone=True,
         )
         if cancelled_request_ids is not None:
             cancelled_request_ids.extend(request_ids)
@@ -419,11 +452,16 @@ class VoiceQueue:
         reason: str | None = None,
         interruption_source: str | None = None,
     ) -> bool:
+        """Cancel exactly one utterance; siblings and later chunks survive.
+
+        This is a skip, not a flush: it used to tombstone the whole session,
+        so the panel's "skip current" button silenced the channel for the TTL.
+        """
+
         return self._cancel_request(
             request_id,
             reason=reason,
             interruption_source=interruption_source,
-            tombstone_session=True,
         )
 
     def cancel_superseded_request(
@@ -433,11 +471,12 @@ class VoiceQueue:
         reason: str | None = None,
         interruption_source: str | None = None,
     ) -> bool:
+        """Cancel a chunk that a newer one replaced (interruptible filler)."""
+
         return self._cancel_request(
             request_id,
             reason=reason,
             interruption_source=interruption_source,
-            tombstone_session=False,
         )
 
     def _cancel_request(
@@ -446,7 +485,6 @@ class VoiceQueue:
         *,
         reason: str | None,
         interruption_source: str | None,
-        tombstone_session: bool,
     ) -> bool:
         self._begin_immediate()
         try:
@@ -461,8 +499,6 @@ class VoiceQueue:
                 self._conn.rollback()
                 return False
             session_id = str(row[1])
-            if tombstone_session:
-                self._tombstone_turns_in_transaction([session_id])
             self._cancel_rows_in_transaction(
                 [(str(row[0]), session_id)],
                 now=self._now(),

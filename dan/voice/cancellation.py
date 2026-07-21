@@ -6,7 +6,11 @@ One idempotent operation with three legs, always in this order:
    (a streaming adapter registers its subprocess kill there; pending deltas
    were never truth, so nothing else needs cleanup).
 2. **Queue** — every unfinished VoiceRequest flips to `cancelled` with the
-   frozen `voice.speak.cancelled` event (VoiceQueue.cancel_turn).
+   frozen `voice.speak.cancelled` event (VoiceQueue.cancel_active). Only the
+   turn ids of the generations killed in step 1 are tombstoned: they are the
+   only producers that can still emit a delta after this commits. The session
+   ids found in the queue are channel names, and gagging those muted a named
+   agent session for the whole tombstone TTL after a single barge-in.
 3. **Playback** — the broker that owns the native player is stopped. Queue
    before playback on purpose: when the player dies, its row is already
    `cancelled`, so the broker's failure path is a no-op instead of marking

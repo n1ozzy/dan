@@ -228,12 +228,10 @@ def test_lease_from_a_live_process_still_blocks_reopen(tmp_path: Path) -> None:
 
 
 def _dead_pid() -> int:
-    """A pid that is certainly not running: fork a child and reap it."""
+    """A pid that is certainly not running: run a child and reap it."""
 
-    import os
+    import subprocess
 
-    pid = os.fork()
-    if pid == 0:  # pragma: no cover - child exits immediately
-        os._exit(0)
-    os.waitpid(pid, 0)
-    return pid
+    child = subprocess.Popen(["/usr/bin/true"])
+    child.wait()
+    return child.pid

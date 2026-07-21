@@ -50,6 +50,12 @@ dan-memory-mcp = "dan.mcp.memory_server:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# The audio guard blocks a test process from spawning afplay/say/supertonic.
+# It only guards a run it is actually loaded into, and nothing else registers
+# it: conftest checks for it but cannot load it, and CI runs a bare `pytest`.
+# Without this line the guard sat in the tree unarmed, its own 16 tests red,
+# and a stray test could talk out loud on the owner's speakers mid-session.
+addopts = "-p tests.audio_guard_plugin"
 markers = [
   "live_manual: requires live hardware or runtime and is refused by dan-test-baseline",
 ]

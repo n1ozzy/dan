@@ -640,6 +640,30 @@ class DaemonApp:
         gate.close(operation_id=resolved_operation_id, reason=reason)
         return resolved_operation_id
 
+    def mark_failed(self, *, reason: str, errors: tuple[str, ...] = ()) -> None:
+        """Record that this daemon is alive but no longer serving.
+
+        Used when a restart could not exit safely: the process survives with
+        intake closed and the voice layer already torn down, so snapshot_state
+        must stop reporting ok. While it stayed green, /health and the panel
+        vouched for a daemon that could not speak, and a dead PTT looked like
+        a hotkey problem instead of a dead owner.
+        """
+
+        machine = self.state_machine
+        if machine is None:
+            return
+        if machine.state is RuntimeState.ERROR:
+            return
+        try:
+            machine.transition(
+                RuntimeState.ERROR,
+                reason=reason,
+                metadata={"errors": list(errors)} if errors else None,
+            )
+        except Exception:
+            get_logger(__name__).exception("Could not record the daemon failure state.")
+
     def snapshot_state(self) -> dict[str, Any]:
         state = self.state_machine.state.value if self.state_machine is not None else RuntimeState.BOOTING.value
         schema_version, latest_event_id = self._db_snapshot()

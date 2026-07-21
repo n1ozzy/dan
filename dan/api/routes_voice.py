@@ -216,6 +216,10 @@ def post_voice_queue_current_cancel(
     'synthesizing' otherwise. Cancelling it flips the row terminal, which the
     broker's interrupt watcher observes to stop live playback — the rest of
     the queue keeps playing (skip, not flush). 404 when nothing is claimed.
+
+    "Skip, not flush" now holds end to end: cancelling the claimed row used to
+    tombstone its whole session, so one press of this button silenced the
+    channel for the tombstone TTL.
     """
 
     _require_voice_enabled(app)
@@ -256,7 +260,12 @@ def post_voice_queue_current_cancel(
 
 
 def post_voice_queue_flush(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
-    """Cancel pending speech for exactly one session (scoped flush)."""
+    """Cancel pending speech for exactly one session (scoped flush).
+
+    Empties the channel; it does not close it. The next `dan speak` on the
+    same session is accepted immediately — flushing used to tombstone the
+    session id, which left the channel mute for the whole tombstone TTL.
+    """
 
     _require_voice_enabled(app)
     service = _require_voice_service(app)

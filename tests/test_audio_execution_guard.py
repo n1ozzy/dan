@@ -390,6 +390,12 @@ def test_disable_flags_fail_closed_when_plugin_is_intentionally_omitted(
             "-m",
             "pytest",
             "-q",
+            # pyproject arms the guard for every run through addopts, and a
+            # subprocess inherits that. This case is specifically "the guard
+            # was left out", so blank addopts to reproduce the omission
+            # instead of testing an already-armed run.
+            "-o",
+            "addopts=",
             "-p",
             "no:cacheprovider",
             "--basetemp",

@@ -25,6 +25,31 @@ request moves through:
 
 The broker takes exactly one item for playback at a time.
 
+## Cancelling: what gets gagged, and what only gets emptied
+
+Cancelling always flips the affected rows to `cancelled`. Whether it *also*
+writes a tombstone into `cancelled_turns` — which rejects further enqueues
+under that id for `TOMBSTONE_TTL_SECONDS` — depends on what the id is:
+
+| Operation | Id it targets | Tombstone |
+|---|---|---|
+| `cancel_turn` (a generation failed) | generation turn id, single use | **yes** |
+| barge-in (`cancel_active`) | the turn ids of the killed generations | **yes** |
+| `cancel_session` / `dan queue flush` | channel name, e.g. `claude`, `radio` | no |
+| `cancel_request` / skip current | one row | no |
+
+The distinction is who can still produce. A killed generation keeps emitting
+deltas for a moment after the cancel commits, so its turn id has to be
+blocked — and since that id is never reused, blocking it costs nothing. A
+session id is the opposite: it is a channel name that every later utterance
+reuses. Tombstoning it silenced named agent sessions (`claude`, `standup`)
+for a full hour after a single barge-in or one press of "skip current". A
+flush now empties the channel without closing it.
+
+The trade this accepts: on a channel, a request enqueued in the same instant
+as the flush can survive it. That row is a fresh request from a caller who is
+still speaking, not a leftover from a producer that was just killed.
+
 ## Render snapshot
 
 The intent (text + persona) and the queue record are two contracts. Before a

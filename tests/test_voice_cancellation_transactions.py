@@ -57,28 +57,44 @@ def _assert_cancel_rolled_back(conn: sqlite3.Connection, request_id: str) -> Non
     )
 
 
-def test_cancel_session_rolls_back_queue_tombstone_and_events_together(
+def test_cancel_turn_rolls_back_queue_tombstone_and_events_together(
     conn: sqlite3.Connection,
 ) -> None:
+    # cancel_turn is the path that writes a tombstone, so it is the one that
+    # can leave a turn gagged while its rows stayed active if the write of the
+    # cancel event fails halfway.
     queue = VoiceQueue(conn, event_store=create_event_store(conn))
-    request = enqueue_voice(queue, "cancel session", session="turn-session")
+    request = enqueue_voice(queue, "cancel turn", session="turn-session")
     _fail_cancelled_event_inserts(conn)
 
     with pytest.raises(EventStoreError, match="forced cancelled event failure"):
-        queue.cancel_session("turn-session", reason="barge_in")
+        queue.cancel_turn("turn-session", reason="generation failed")
 
     _assert_cancel_rolled_back(conn, request.id)
 
 
-def test_cancel_request_rolls_back_queue_tombstone_and_event_together(
+def test_cancel_session_rolls_back_queue_and_events_together(
     conn: sqlite3.Connection,
 ) -> None:
     queue = VoiceQueue(conn, event_store=create_event_store(conn))
-    request = enqueue_voice(queue, "cancel request", session="turn-request")
+    request = enqueue_voice(queue, "cancel session", session="channel-session")
     _fail_cancelled_event_inserts(conn)
 
     with pytest.raises(EventStoreError, match="forced cancelled event failure"):
-        queue.cancel_request(request.id, reason="barge_in")
+        queue.cancel_session("channel-session", reason="api flush")
+
+    _assert_cancel_rolled_back(conn, request.id)
+
+
+def test_cancel_request_rolls_back_queue_and_event_together(
+    conn: sqlite3.Connection,
+) -> None:
+    queue = VoiceQueue(conn, event_store=create_event_store(conn))
+    request = enqueue_voice(queue, "cancel request", session="channel-request")
+    _fail_cancelled_event_inserts(conn)
+
+    with pytest.raises(EventStoreError, match="forced cancelled event failure"):
+        queue.cancel_request(request.id, reason="api skip current")
 
     _assert_cancel_rolled_back(conn, request.id)
 
@@ -132,21 +148,53 @@ def test_coordinator_rolls_back_all_turns_when_one_cancel_event_fails(
     assert owner.stops == 0
 
 
+def test_cancelling_a_failed_generation_tombstones_it_before_late_enqueue(
+    conn: sqlite3.Connection,
+) -> None:
+    """A dead generation still has sentences in flight; they must not be spoken.
+
+    This is the case a tombstone exists for: the turn id is single-use, and
+    the producer feeding it keeps emitting deltas after the cancel lands.
+    """
+
+    queue = VoiceQueue(conn, event_store=create_event_store(conn))
+    request = enqueue_voice(queue, "original", session="turn-generation")
+
+    assert queue.cancel_turn("turn-generation", reason="generation failed") == 1
+    assert queue.get(request.id).status == "cancelled"
+
+    with pytest.raises(VoiceQueueCancelledError):
+        enqueue_voice(queue, "late tail", session="turn-generation", utterance_index=1)
+
+
 @pytest.mark.parametrize("operation", ["session", "request"])
-def test_direct_cancellation_tombstones_the_turn_before_late_enqueue(
+def test_cancelling_on_a_named_channel_leaves_it_speakable(
     conn: sqlite3.Connection,
     operation: str,
 ) -> None:
+    """A session id is a channel name, reused for every utterance.
+
+    Tombstoning it silenced the whole channel for TOMBSTONE_TTL_SECONDS, so a
+    single barge-in muted an agent session for an hour. Only a generation turn
+    id — which is never reused — may earn a tombstone.
+    """
+
     queue = VoiceQueue(conn, event_store=create_event_store(conn))
-    request = enqueue_voice(queue, "original", session=f"turn-{operation}")
+    request = enqueue_voice(queue, "original", session=f"channel-{operation}")
 
     if operation == "session":
-        assert queue.cancel_session(request.session_id, reason="barge_in") == [request.id]
+        assert queue.cancel_session(request.session_id, reason="api flush") == [
+            request.id
+        ]
     else:
-        assert queue.cancel_request(request.id, reason="barge_in") is True
+        assert queue.cancel_request(request.id, reason="api skip current") is True
 
-    with pytest.raises(VoiceQueueCancelledError):
-        enqueue_voice(queue, "late tail", session=request.session_id, utterance_index=1)
+    assert queue.get(request.id).status == "cancelled"
+    assert queue.is_tombstoned(request.session_id) is False
+    revived = enqueue_voice(
+        queue, "next utterance", session=request.session_id, utterance_index=1
+    )
+    assert revived.status == "queued"
 
 
 @pytest.mark.parametrize("operation", ["session", "request"])
@@ -168,7 +216,8 @@ def test_plain_queue_cancellation_persists_cancel_event_in_same_database(
     assert len(events) == 1
     assert request.id in str(events[0][0])
     assert queue.get(request.id).status == "cancelled"
-    assert queue.is_tombstoned(request.session_id) is True
+    # The row is terminal, the channel is not gagged.
+    assert queue.is_tombstoned(request.session_id) is False
 
 
 def test_recancel_refreshes_stale_tombstone_before_ttl_cleanup(
@@ -195,6 +244,33 @@ def test_recancel_refreshes_stale_tombstone_before_ttl_cleanup(
         ("turn-stale",),
     ).fetchone()[0]
     assert durable == actual == 1
+
+
+def test_barge_in_tombstones_live_generations_not_the_channels_they_spoke_on(
+    conn: sqlite3.Connection,
+) -> None:
+    """Barge-in must gag the producer, not the channel it was producing into.
+
+    A live generation keeps emitting deltas after the cancel lands, so its
+    turn id earns a tombstone. The session ids sitting in the queue are just
+    channel names whose rows are already cancelled in the same transaction —
+    tombstoning those is what muted a named agent session for an hour.
+    """
+
+    queue = VoiceQueue(conn, event_store=create_event_store(conn))
+    enqueue_voice(queue, "half-spoken line", session="claude")
+
+    _request_ids, queue_turn_ids, generation_turn_ids, tombstoned = queue.cancel_active(
+        reason="barge_in",
+        capture_generation_turn_ids=lambda: ["turn-live-generation"],
+    )
+
+    assert queue_turn_ids == ["claude"]
+    assert generation_turn_ids == ["turn-live-generation"]
+    assert tombstoned == 1
+    assert queue.is_tombstoned("turn-live-generation") is True
+    assert queue.is_tombstoned("claude") is False
+    assert enqueue_voice(queue, "back on the air", session="claude").status == "queued"
 
 
 def test_cancellation_rejects_event_store_on_a_different_connection(
@@ -276,6 +352,14 @@ def test_superseded_filler_cancel_preserves_sibling_and_future_final_chunks(
 def test_enqueue_started_during_cancel_cannot_survive_as_active(
     tmp_path: Path,
 ) -> None:
+    """A delta enqueued mid-cancel must not outlive the turn it belongs to.
+
+    Scoped to generation turns, which is where the tombstone lives. The same
+    race on a named channel is accepted on purpose: there the late row is a
+    fresh request from a caller who is still speaking, not a leftover from a
+    producer that was just killed.
+    """
+
     db_path = tmp_path / "cancellation-race.db"
     conn = initialize_database(db_path)
     enqueue_voice(VoiceQueue(conn), "original", session="turn-race")
@@ -346,7 +430,7 @@ def test_enqueue_started_during_cancel_cannot_survive_as_active(
     conn.commit()
 
     try:
-        VoiceQueue(conn, event_store=RaceEventStore()).cancel_session(
+        VoiceQueue(conn, event_store=RaceEventStore()).cancel_turn(
             "turn-race", reason="barge_in"
         )
         assert enqueue_done.wait(timeout=2)
