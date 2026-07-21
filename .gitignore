@@ -222,3 +222,9 @@ __marimo__/
 
 # Local Claude Code tooling (preview launch config etc.)
 .claude/
+
+# Ozzy's scratch area for persona variants he is trying out (2026-07-21).
+# Drafts, not canon — the one authority stays config/persona/DAN.md. Ignored so
+# they neither clutter `git status` nor get swept into a commit by `git add -A`.
+# Remove this entry the moment a variant is meant to be kept.
+config/persona/kandydaci/
