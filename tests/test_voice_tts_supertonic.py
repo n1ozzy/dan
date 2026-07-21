@@ -94,7 +94,9 @@ def snapshot(
     *,
     voice: str = "M3",
     speed: float = 1.25,
-    mastering: str = "raw",
+    # "none" is the only mastering value that skips ffmpeg entirely; these
+    # tests exercise synthesis mechanics, not the loudnorm norm ("raw").
+    mastering: str = "none",
     dsp: str = "none",
     pronunciations: dict[str, str] | None = None,
     engine: str = "supertonic",
@@ -201,6 +203,20 @@ def test_mastering_and_dsp_are_taken_from_snapshot(tmp_path: Path) -> None:
     chain = args[args.index("-af") + 1]
     assert chain.startswith("highpass=f=80,")
     assert "acompressor=" in chain
+
+
+def test_raw_mastering_applies_loudnorm_only(tmp_path: Path) -> None:
+    ffmpeg, args_file = fake_ffmpeg(tmp_path)
+    engine, _ = build_engine(tmp_path, mastering_binary=str(ffmpeg))
+
+    engine.synthesize("Norma głośności.", snapshot(mastering="raw"))
+
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    chain = args[args.index("-af") + 1]
+    assert "loudnorm=" in chain
+    assert "equalizer=" not in chain
+    assert "acompressor=" not in chain
+    assert "asetrate=" not in chain
 
 
 def test_required_mastering_failure_never_returns_raw_audio(tmp_path: Path) -> None:

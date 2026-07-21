@@ -134,7 +134,8 @@ def test_every_catalog_route_executes_through_real_runtime_boundary(
             assert "--custom-style-path" not in synthesis
 
         postprocess = [command for command in external_calls if "-af" in command]
-        needs_postprocess = spec["mastering"] not in {"raw", "none"} or spec["dsp"] != "none"
+        # "raw" is loudness-normalized since 2026-07-22; only "none" skips ffmpeg.
+        needs_postprocess = spec["mastering"] != "none" or spec["dsp"] != "none"
         assert bool(postprocess) is needs_postprocess
         if spec["dsp"] != "none":
             assert spec["dsp"] in postprocess[0][postprocess[0].index("-af") + 1]

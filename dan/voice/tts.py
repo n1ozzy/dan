@@ -125,9 +125,11 @@ def apply_pronunciations(text: str, pronunciations: dict[str, str]) -> str:
 # loudnorm tail evens out loudness.
 #
 # WHO ACTUALLY USES THESE (config/voice/personas.toml, the authority): only
-# danusia -> "clean". DAN and his alias jarvis are mastering = "raw", i.e. NO
-# chain at all — "bastard" was judged over-driven and dropped on 2026-07-10.
-# Do not "restore" bastard for DAN on the strength of this table.
+# danusia -> "clean". DAN and his alias jarvis are mastering = "raw" — untouched
+# timbre, but since 2026-07-22 (Ozzy: "loudnorm to norma") raw still gets the
+# loudnorm tail, so no persona plays quieter than the mastered ones. "bastard"
+# was judged over-driven and dropped on 2026-07-10; do not "restore" it for DAN
+# on the strength of this table. "none" is the only true bypass.
 _MASTER_TAIL = ",loudnorm=I=-14:TP=-2.0:LRA=7,aresample=44100"
 _MASTER_PROFILES = {
     # DAN: slightly LESS bass (Ozzy 2026-07-08) — pitch 0.91->0.93, bass +3dB.
@@ -156,7 +158,7 @@ _MASTER_PROFILES = {
 }
 
 # Every mastering value a persona route may carry: the ffmpeg chains above
-# plus "raw" (no mastering — mastering_filter returns "" for it).
+# plus "raw" (untouched timbre, loudnorm tail only).
 MASTERING_PROFILES = frozenset(_MASTER_PROFILES) | {"raw"}
 
 _SUPERTONIC_BUILTIN_VOICES = frozenset(
@@ -166,8 +168,15 @@ _SUPERTONIC_BUILTIN_VOICES = frozenset(
 
 
 def mastering_filter(profile: str) -> str:
-    """ffmpeg -af chain for a profile, or '' when the profile is unknown/empty."""
-    chain = _MASTER_PROFILES.get(str(profile or "").strip().lower())
+    """ffmpeg -af chain for a profile, or '' when the profile is unknown/empty.
+
+    "raw" is NOT a bypass: it keeps the timbre untouched but still returns the
+    loudnorm tail, so every persona lands at the same loudness (-14 LUFS).
+    """
+    normalized = str(profile or "").strip().lower()
+    if normalized == "raw":
+        return _MASTER_TAIL.lstrip(",")
+    chain = _MASTER_PROFILES.get(normalized)
     return (chain + _MASTER_TAIL) if chain else ""
 
 
@@ -474,7 +483,7 @@ class SupertonicEngine:
         if audio is None:
             audio = self._synth_cli(clean, speed, voice, custom_style_path)
         mastering_profile = snapshot.mastering_profile.strip().lower()
-        if mastering_profile in {"raw", "none"}:
+        if mastering_profile == "none":
             filter_chain = ""
         else:
             mastering_chain = mastering_filter(mastering_profile)
