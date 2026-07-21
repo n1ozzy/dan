@@ -83,13 +83,14 @@ exists to settle.
 
 - `docs/reviews/2026-07-21-restart-orphan-shell-review.md` - **the exception to
   the "reviews are legacy evidence" rule below.** It is the live register of
-  defects that are still open in the code on this branch: the orphan reclaim that
-  never fires, `killpg` on an lsof PID, the restart backoff held under the state
-  lock, `mark_failed` swallowing its write, and the barge-in that only tombstones
-  one of two id sets. The matching functions carry `KNOWN DEFECT` blocks pointing
-  back here. One item (§4, the `[security]` type hole) is already fixed and
-  marked ZAMKNIĘTE in place — close the rest the same way rather than deleting
-  them, and do not file this under history while any are open.
+  defects on this branch, open and closed alike. Still open: `mark_failed`
+  swallowing its write, `exit 86` on a false premise, ERROR walking back to
+  IDLE, the barge-in that only tombstones one of two id sets, the panel hiding
+  its own runtime-state readout. The matching functions carry `KNOWN DEFECT`
+  blocks pointing back here. Closed in place (§1, §3, §4, §5, §13, §14, §18)
+  with a "jak naprawione" section and the evidence that proved it — close the
+  rest the same way rather than deleting them, and do not file this under
+  history while any are open.
 
 - `docs/reviews/2026-07-21-docs-vs-code-audit.md` - **the register of sentences
   in `docs/` that still disagree with the code**, from four independent readers

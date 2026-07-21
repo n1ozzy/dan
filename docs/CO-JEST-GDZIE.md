@@ -17,7 +17,7 @@ audio, the hotkey and the voice queue belongs to `dand`
 | Product venv | installer (`scripts/install.sh`) | `~/.dan/venv/` |
 | DAN persona canon | repo (versioned) | `config/persona/DAN.md` |
 | Voice assets (personas, pronunciation, styles) | repo (versioned) | `config/voice/` |
-| Runtime directory (`dand.pid`, `api-token`, locks e.g. `hotkey.lock`) | `dand` | `~/.dan/runtime/` |
+| Runtime directory (`dand.pid`, `api-token`, `supervised-children.json`, locks e.g. `hotkey.lock`) | `dand` | `~/.dan/runtime/` |
 | Installer backups and manifest | installer | `~/.dan/backups/`, `~/.dan/install-manifest.json` |
 | Cutover/rollback journal | `scripts/dan-cutover` / `scripts/dan-rollback` | `~/.dan/migration/` |
 

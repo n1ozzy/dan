@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -22,7 +23,9 @@ from dan.daemon.supervisor import (
     ChildSupervisorError,
     ForeignPortOwnerError,
     _default_listener_released,
+    _find_own_orphan,
     _is_own_orphan,
+    _SpawnLedger,
 )
 
 SUPERTONIC_SPEC = ChildSpec(
@@ -32,6 +35,35 @@ SUPERTONIC_SPEC = ChildSpec(
     restart_limit=3,
     backoff_seconds=(0.0, 0.0, 0.0),
 )
+
+# The shape production actually produces, copied from the live 2026-07-21
+# incident rather than invented: `supertonic` is a console script with a
+# shebang, so the kernel runs the interpreter and ps reports its path ahead of
+# our argv. Tests that fed `' '.join(spec.argv)` passed while the daemon could
+# not start, which is exactly why this constant is measured, not written.
+PRODUCTION_SPEC = ChildSpec(
+    name="supertonic",
+    argv=(
+        "/Users/n1_ozzy/.dan/venv/bin/supertonic",
+        "serve",
+        "--model",
+        "supertonic-3",
+        "--port",
+        "7788",
+        "--log-level",
+        "warning",
+    ),
+    health_url="http://127.0.0.1:7788/v1/health",
+    backoff_seconds=(0.0, 0.0, 0.0),
+)
+
+PRODUCTION_PS_COMMAND = (
+    "/Users/n1_ozzy/.homebrew/Cellar/python@3.14/3.14.0/Frameworks/"
+    "Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python "
+    "/Users/n1_ozzy/.dan/venv/bin/supertonic serve --model supertonic-3 "
+    "--port 7788 --log-level warning"
+)
+PRODUCTION_ORPHAN_PID = 98336
 
 
 def test_listener_release_probe_ignores_time_wait_after_server_close() -> None:
@@ -111,6 +143,7 @@ def build_supervisor(
     factory: FakeProcessFactory | None = None,
     healthy_when_spawned: bool = True,
     foreign_owner: bool = False,
+    ledger_path: Path | None = None,
 ):
     factory = factory or FakeProcessFactory()
     killpg = KillpgRecorder(factory)
@@ -138,6 +171,7 @@ def build_supervisor(
             )
         ),
         sleep=lambda seconds: None,
+        ledger_path=ledger_path,
     )
     return supervisor, factory, killpg
 
@@ -162,36 +196,166 @@ def test_foreign_port_owner_is_rejected_not_adopted_or_killed() -> None:
     assert killpg.calls == []  # and never killed it either
 
 
-def test_own_orphan_is_recognised_only_by_exact_argv_under_init() -> None:
-    """The two facts together are what make adoption safe.
+def own_orphan(spec: ChildSpec, **overrides: object) -> bool:
+    """Ask `_is_own_orphan` about a textbook orphan, one fact at a time.
 
-    argv identical to the spec says it is the same program we launch; a parent
-    of init says the dand that launched it is gone. Either one alone describes
-    a process someone else may legitimately own.
+    Every keyword defaults to the answer that says "ours"; a test names only
+    the fact it is taking away, so what the assertion is about stays visible.
     """
+
+    facts: dict[str, object] = {
+        "pid": 9100,
+        "ppid": 1,
+        "pgid": 9100,
+        "command": " ".join(spec.argv),
+        "claimed_pid": 9100,
+    }
+    facts.update(overrides)
+    return _is_own_orphan(spec, **facts)  # type: ignore[arg-type]
+
+
+def test_own_orphan_needs_a_pid_this_supervisor_recorded_starting() -> None:
+    """The spawn ledger is the ownership proof; argv alone never was.
+
+    On macOS every launchd-managed process has ppid 1, so "same argv, parent
+    is init" also describes a stranger's service. Only a pid this supervisor
+    wrote down at spawn time distinguishes our abandoned child from it.
+    """
+
+    assert own_orphan(SUPERTONIC_SPEC) is True
+    # Nothing recorded: a first-ever start, or a wiped runtime dir.
+    assert own_orphan(SUPERTONIC_SPEC, claimed_pid=None) is False
+    # We started something, but not this process.
+    assert own_orphan(SUPERTONIC_SPEC, claimed_pid=4242) is False
+
+
+def test_own_orphan_must_be_its_own_process_group_leader() -> None:
+    """Two things at once: an ownership fact and a correctness precondition.
+
+    Children are spawned with start_new_session=True, so ours always satisfy
+    pgid == pid. The reclaim signals a process GROUP, so a pid that is not its
+    group leader would address a group it does not lead.
+    """
+
+    assert own_orphan(SUPERTONIC_SPEC, pgid=4242) is False
+
+
+def test_own_orphan_still_requires_init_as_the_parent() -> None:
+    """A live parent means somebody is still supervising it — not ours to kill."""
+
+    assert own_orphan(SUPERTONIC_SPEC, ppid=4242) is False
+
+
+def test_own_orphan_rejects_a_different_program_wearing_a_recycled_pid() -> None:
+    """The ledger records a number the kernel is free to hand out again."""
 
     ours = " ".join(SUPERTONIC_SPEC.argv)
 
-    assert _is_own_orphan(SUPERTONIC_SPEC, ppid=1, command=ours) is True
-    # Someone else is supervising it — not ours to kill.
-    assert _is_own_orphan(SUPERTONIC_SPEC, ppid=4242, command=ours) is False
     # Same program, different port: a second instance we did not configure.
-    assert (
-        _is_own_orphan(
-            SUPERTONIC_SPEC,
-            ppid=1,
-            command=ours.replace("7797", "7798"),
-        )
-        is False
-    )
+    assert own_orphan(SUPERTONIC_SPEC, command=ours.replace("7797", "7798")) is False
     # A stranger that merely mentions our binary in its arguments.
-    assert (
-        _is_own_orphan(SUPERTONIC_SPEC, ppid=1, command=f"/bin/sh -c '{ours}'")
-        is False
-    )
-    assert _is_own_orphan(SUPERTONIC_SPEC, ppid=1, command="") is False
+    assert own_orphan(SUPERTONIC_SPEC, command=f"/bin/sh -c '{ours}'") is False
+    assert own_orphan(SUPERTONIC_SPEC, command="") is False
     # An unparsable command line (stray quote) must not be forced to match.
-    assert _is_own_orphan(SUPERTONIC_SPEC, ppid=1, command=ours + " \"") is False
+    assert own_orphan(SUPERTONIC_SPEC, command=ours + ' "') is False
+
+
+def test_own_orphan_tolerates_the_interpreter_the_kernel_prepends() -> None:
+    """The live 2026-07-21 failure, replayed from the measured ps output.
+
+    `shlex.split(command) == list(spec.argv)` was false for every real child,
+    so the reclaim never fired and `launchctl kickstart -k` left the daemon
+    unstartable. One leading token is allowed — the shebang interpreter — and
+    no more, so a wrapper like `sh -c` still fails the test.
+    """
+
+    assert (
+        own_orphan(
+            PRODUCTION_SPEC,
+            pid=PRODUCTION_ORPHAN_PID,
+            pgid=PRODUCTION_ORPHAN_PID,
+            claimed_pid=PRODUCTION_ORPHAN_PID,
+            command=PRODUCTION_PS_COMMAND,
+        )
+        is True
+    )
+
+
+def test_orphan_lookup_only_considers_processes_holding_our_port() -> None:
+    """`_find_own_orphan` reads the port owners, then asks about each one."""
+
+    identities = {
+        PRODUCTION_ORPHAN_PID: (1, PRODUCTION_ORPHAN_PID, PRODUCTION_PS_COMMAND),
+        4242: (1, 4242, "/usr/bin/some-stranger --port 7788"),
+    }
+
+    found = _find_own_orphan(
+        PRODUCTION_SPEC,
+        claimed_pid=PRODUCTION_ORPHAN_PID,
+        listening_pids=lambda _port: (4242, PRODUCTION_ORPHAN_PID),
+        process_identity=identities.get,
+    )
+    assert found == PRODUCTION_ORPHAN_PID
+
+    # The stranger alone on the port is never adopted, never killed.
+    assert (
+        _find_own_orphan(
+            PRODUCTION_SPEC,
+            claimed_pid=PRODUCTION_ORPHAN_PID,
+            listening_pids=lambda _port: (4242,),
+            process_identity=identities.get,
+        )
+        is None
+    )
+
+
+def test_spawn_ledger_outlives_the_supervisor_that_wrote_it(tmp_path: Path) -> None:
+    """The claim has to survive a SIGKILLed daemon — that is its whole job."""
+
+    path = tmp_path / "supervised-children.json"
+    _SpawnLedger(path).record("supertonic", 4711)
+
+    assert _SpawnLedger(path).claimed_pid("supertonic") == 4711
+    assert _SpawnLedger(path).claimed_pid("something-else") is None
+
+    _SpawnLedger(path).forget("supertonic")
+    assert _SpawnLedger(path).claimed_pid("supertonic") is None
+
+
+def test_spawn_ledger_without_a_path_claims_nothing() -> None:
+    """No runtime dir configured: the supervisor keeps the old refusal."""
+
+    ledger = _SpawnLedger(None)
+    ledger.record("supertonic", 4711)
+    assert ledger.claimed_pid("supertonic") is None
+
+
+def test_spawn_ledger_refuses_a_claim_that_is_not_a_plain_int() -> None:
+    """Nothing coerced into a pid: `true` must not come back as pid 1."""
+
+    class Corrupt(_SpawnLedger):
+        def __init__(self, value: object) -> None:
+            super().__init__(None)
+            self._value = value
+
+        def _read(self) -> dict[str, Any]:
+            return {"supertonic": self._value}
+
+    assert Corrupt(True).claimed_pid("supertonic") is None
+    assert Corrupt("4711").claimed_pid("supertonic") is None
+    assert Corrupt(4711.0).claimed_pid("supertonic") is None
+    assert Corrupt(4711).claimed_pid("supertonic") == 4711
+
+
+def test_spawn_ledger_survives_a_corrupted_file(tmp_path: Path) -> None:
+    """Unreadable bookkeeping must refuse a claim, never crash a daemon start."""
+
+    path = tmp_path / "supervised-children.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    assert _SpawnLedger(path).claimed_pid("supertonic") is None
+    _SpawnLedger(path).record("supertonic", 4711)
+    assert _SpawnLedger(path).claimed_pid("supertonic") == 4711
 
 
 class OrphanOnThePort:
@@ -219,7 +383,12 @@ class OrphanOnThePort:
             self.alive = False
 
 
-def build_supervisor_with_orphan(orphan: OrphanOnThePort):
+def build_supervisor_with_orphan(
+    orphan: OrphanOnThePort,
+    *,
+    spec: ChildSpec = SUPERTONIC_SPEC,
+    sleep: Any = None,
+):
     factory = FakeProcessFactory()
     kills: list[tuple[int, int]] = []
 
@@ -228,7 +397,7 @@ def build_supervisor_with_orphan(orphan: OrphanOnThePort):
         orphan.kill(pgid, signum)
 
     supervisor = ChildSupervisor(
-        [SUPERTONIC_SPEC],
+        [spec],
         process_factory=factory,
         health_probe=lambda _url: orphan.holds_port()
         or any(process.returncode is None for process in factory.processes),
@@ -240,7 +409,7 @@ def build_supervisor_with_orphan(orphan: OrphanOnThePort):
         listener_released_probe=lambda _url: not orphan.holds_port()
         and not any(process.returncode is None for process in factory.processes),
         orphan_probe=orphan.probe,
-        sleep=lambda seconds: None,
+        sleep=sleep or (lambda seconds: None),
     )
     return supervisor, factory, kills
 
@@ -299,6 +468,56 @@ def test_orphan_that_refuses_to_die_is_reported_not_spawned_over() -> None:
         supervisor.ensure_running("supertonic")
 
     assert factory.starts == 0
+
+
+def test_spawning_records_the_claim_and_a_clean_stop_drops_it(
+    tmp_path: Path,
+) -> None:
+    """The ledger has to be written before the daemon can lose the pid.
+
+    A clean stop takes the claim back, so a pid the kernel later reuses is not
+    still described on disk as ours.
+    """
+
+    ledger_path = tmp_path / "supervised-children.json"
+    supervisor, _factory, _killpg = build_supervisor(ledger_path=ledger_path)
+
+    child = supervisor.ensure_running("supertonic")
+    assert _SpawnLedger(ledger_path).claimed_pid("supertonic") == child.pid
+
+    supervisor.stop("supertonic")
+    assert _SpawnLedger(ledger_path).claimed_pid("supertonic") is None
+
+
+def test_waiting_for_the_port_is_one_short_window_not_the_spawn_backoff() -> None:
+    """This wait is held under the lock DaemonApp.start() is standing in.
+
+    It used to walk the whole spawn backoff once after SIGTERM and again after
+    SIGKILL — about half a minute — long enough for a parallel
+    POST /runtime/restart to time out in stop_all() and push a HEALTHY daemon
+    into RuntimeState.ERROR. A kernel frees a socket immediately, so the right
+    shape is a short poll, not a retry schedule for a slow starting process.
+    """
+
+    slow_backoff = ChildSpec(
+        name="supertonic",
+        argv=SUPERTONIC_SPEC.argv,
+        health_url=SUPERTONIC_SPEC.health_url,
+        backoff_seconds=(0.5, 1.0, 2.0, 4.0, 8.0),
+    )
+    orphan = OrphanOnThePort()
+    orphan.kill = lambda pgid, signum: None  # type: ignore[method-assign]
+    sleeps: list[float] = []
+    supervisor, factory, _kills = build_supervisor_with_orphan(
+        orphan, spec=slow_backoff, sleep=sleeps.append
+    )
+
+    with pytest.raises(ForeignPortOwnerError):
+        supervisor.ensure_running("supertonic")
+
+    assert factory.starts == 0
+    assert sum(sleeps) <= 3.0, f"{sum(sleeps)}s slept under the lifecycle lock"
+    assert max(sleeps) <= 0.2, "a single sleep this long is a backoff, not a poll"
 
 
 def test_stop_terminates_the_whole_process_group() -> None:

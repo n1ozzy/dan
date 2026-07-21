@@ -39,22 +39,39 @@ the daemon crashed. Seen live 2026-07-21.
 
 It is usually not a crash: the previous daemon died but its `supertonic serve`
 child survived as an orphan and still holds port 7788. The new daemon finds the
-port answering, cannot prove the listener is its own child, and refuses to
-adopt or kill it — by design (ADR-001: never kill someone else's process). The
-startup then fails with `ForeignPortOwnerError`.
+port answering and will not adopt or kill a listener it cannot prove is its own
+(ADR-001: never kill someone else's process), so startup fails with
+`ForeignPortOwnerError`.
+
+**Since 2026-07-21 the daemon clears this by itself.** Each spawn is recorded in
+`~/.dan/runtime/supervised-children.json`, and the next daemon reclaims a port
+owner that is the pid it recorded, orphaned to init, leading its own process
+group, with matching argv. Verified live: the daemon came back in two seconds
+with `Reclaiming supertonic: pid … is this supervisor's orphan.` in the log.
+
+So run the manual recipe only when the log actually shows `ForeignPortOwnerError`
+— which now means one of:
+
+- the orphan predates the ledger (a child started before that change, or after
+  the runtime directory was wiped) — nothing recorded it, so it is refused;
+- the port owner really is somebody else's process. The log line names the
+  facts that produced the refusal: `Port owner pid … is not supertonic's orphan
+  (ppid=…, pgid=…, this daemon last started pid …)`. Read it before doing
+  anything — it usually ends the diagnosis on the spot.
 
 ```bash
 # 1. Confirm the diagnosis — this line, not a guess:
-tail -30 ~/.dan/logs/dand.err.log      # look for ForeignPortOwnerError
+tail -30 ~/.dan/logs/dand.err.log      # ForeignPortOwnerError + the refusal line
 
 # 2. Identify who holds the port, and PROVE it is ours before touching it:
 lsof -nP -iTCP:7788 -sTCP:LISTEN
-ps -p <PID> -o ppid=,lstart=,command=
+ps -p <PID> -o ppid=,pgid=,command=
 ```
 
-Adopt-or-kill only when all of it matches: the binary is `~/.dan/venv/bin/supertonic`,
-the arguments are our model/port/log-level, and `ppid` is 1 (orphan). A process
-that does not match all three is somebody else's — stop and ask, do not kill it.
+Kill it only when all of it matches: the binary is `~/.dan/venv/bin/supertonic`
+(the interpreter path in front of it is normal — it is a shebang script), the
+arguments are our model/port/log-level, and `ppid` is 1 (orphan). A process that
+does not match all of that is somebody else's — stop and ask, do not kill it.
 
 ```bash
 # 3. Ours and orphaned → terminate, wait for the port, restart:
@@ -63,10 +80,11 @@ lsof -nP -iTCP:7788 -sTCP:LISTEN       # must come back empty
 launchctl kickstart -k gui/501/com.dan.dand
 ```
 
-Why it happens at all: the supervisor's ownership test compares `ps` output
-against the child's argv, but `supertonic` is a console script with a shebang,
-so the kernel prepends the interpreter path and the comparison can never match.
-Full analysis and the trap in fixing it: `docs/reviews/2026-07-21-restart-orphan-shell-review.md` §1.
+Why it used to happen on every restart: the ownership test compared `ps` output
+against the child's argv, and `supertonic` is a console script with a shebang,
+so the kernel prepends the interpreter path and the comparison could never
+match. Full analysis, the trap in fixing it, and the live proof:
+`docs/reviews/2026-07-21-restart-orphan-shell-review.md` §1.
 
 ## DAN says it has no tools, no access, no memory
 

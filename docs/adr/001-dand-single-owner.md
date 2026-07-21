@@ -58,23 +58,41 @@ draining, and the child keeps listening, reparented to init. To the next
 voice stayed dead until someone killed the orphan by hand — fail-safe had
 turned into fail-dead.
 
-The supervisor therefore reclaims a port owner that satisfies **both**
-conditions: its argv is identical to the `ChildSpec` argv, and its parent is
-init. Together those say "the same program we launch, whose launcher is
-gone". It is terminated (`SIGTERM`, then `SIGKILL`) and respawned. Anything
-that fails either condition — a different port, a wrapper shell, a live
-supervisor — still gets the refusal. The rule stays "never kill someone
+The supervisor therefore reclaims a port owner that satisfies **all four**
+conditions, none of which is sufficient alone:
+
+1. **the pid is one this daemon recorded starting.** Every spawn is written to
+   `~/.dan/runtime/supervised-children.json` before anything else can go
+   wrong, and the next incarnation reads it. This is the ownership proof;
+2. **its parent is init**, so whoever launched it is gone and nobody is
+   supervising it now;
+3. **it leads its own process group.** Children are spawned with
+   `start_new_session=True`, so ours always do — and the reclaim signals a
+   process *group*, so this is also what makes `killpg` address the orphan's
+   own tree and nobody else's;
+4. **argv still matches** the `ChildSpec`, allowing the one leading token the
+   kernel inserts for a shebang script, which catches a stale claim on a pid
+   the kernel has since handed to somebody else.
+
+It is then terminated (`SIGTERM`, then `SIGKILL`) and respawned. Anything that
+fails any condition — a different port, a wrapper shell, a live supervisor, a
+process this daemon never started — still gets the refusal, and the refusal is
+logged with the facts that produced it. The rule stays "never kill someone
 else's process"; what changed is that our own orphan is no longer someone
 else.
 
-> **NOT IN EFFECT (2026-07-21).** The argv test never matches in production.
-> `supertonic` is a console script with a shebang, so `ps` reports the Python
-> interpreter path ahead of the arguments and `shlex.split(command)` is one
-> token longer than `spec.argv`. The reclaim therefore never fires and the
-> fail-dead described above is unchanged; the tests pass only because they feed
-> synthetic argv. Fixing the comparison also arms the `ppid == 1` test, which on
-> macOS is true of every launchd-managed process — the two must be fixed
-> together. See `docs/reviews/2026-07-21-restart-orphan-shell-review.md` §1.
+Argv was once expected to carry this alone, and could not: on macOS every
+launchd-managed process reports `ppid` 1, so "same program, parent is init"
+also describes a stranger's service, and killing it would have started a
+kill/respawn war with launchd. The ledger exists because the process table has
+no answer to "did *we* start this" — another process's environment is not
+readable even for its owner, so no marker can be planted in the child and read
+back (measured 2026-07-21).
+
+The one case the ledger cannot cover is the first start after this mechanism
+ships, when a child from before it exists: no claim was ever written, so that
+orphan is refused and has to be cleared by hand once
+(`docs/ODZYSKIWANIE.md`).
 
 ### Failed restart: containment decides whether exiting is safe
 

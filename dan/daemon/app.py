@@ -306,7 +306,14 @@ class DaemonApp:
                     if self.child_supervisor is None:
                         from dan.daemon.supervisor import ChildSupervisor
 
-                        self.child_supervisor = ChildSupervisor()
+                        # The ledger path is what lets the NEXT dand recognise
+                        # a child this one leaves behind; without it the
+                        # supervisor can only refuse a port it already owns.
+                        self.child_supervisor = ChildSupervisor(
+                            ledger_path=(
+                                self.paths.runtime_dir / "supervised-children.json"
+                            )
+                        )
                     supervised_serve = self._ensure_supertonic_serve_child()
                     voice_engine = build_tts_engine(
                         self.config.voice.default_tts,

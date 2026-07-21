@@ -7,25 +7,28 @@
 > ręcznie przez czytanie kodu i żywego procesu, nie na słowo agenta.
 >
 > **Co jest już naprawione** (każdy punkt oznaczony u siebie, nie tylko tutaj):
-> §3 — utwardzenie gita, ZAMKNIĘTE. §4 — walidacja typów w `[security]`,
-> ZAMKNIĘTE. §5 — flaga niezapisywalna przez HTTP, ZAMKNIĘTE. §18 — worktree
-> usunięte, ZAMKNIĘTE. §2 — częściowo: `shell_read` przestał opisywać się
-> modelowi jako read-only, ale samo wykonanie jest nadal niebramkowane.
-> Do tego token transportowy włączony (poza rejestrem, patrz `SECURITY_MODEL.md`).
+> §1 — reklamacja sieroty, ZAMKNIĘTE (razem z §13 i §14, bo inaczej się
+> wzajemnie uzbrajają). §3 — utwardzenie gita, ZAMKNIĘTE. §4 — walidacja typów
+> w `[security]`, ZAMKNIĘTE. §5 — flaga niezapisywalna przez HTTP, ZAMKNIĘTE.
+> §18 — worktree usunięte, ZAMKNIĘTE. §2 — częściowo: `shell_read` przestał
+> opisywać się modelowi jako read-only, ale samo wykonanie jest nadal
+> niebramkowane. Do tego token transportowy włączony (poza rejestrem, patrz
+> `SECURITY_MODEL.md`).
 >
-> Wspólny mianownik zamkniętych: **wszystkie dotyczyły drogi, którą mógł wejść
-> ktoś obcy** — wrogie repo, zapis po HTTP, strona w przeglądarce. Otwarte
-> zostaje to, co odpala sam właściciel albo model na jego polecenie; taki był
-> jego wybór.
+> Wspólny mianownik zamkniętych z 21 lipca wieczorem: **wszystkie dotyczyły
+> drogi, którą mógł wejść ktoś obcy** — wrogie repo, zapis po HTTP, strona w
+> przeglądarce. Otwarte zostaje to, co odpala sam właściciel albo model na jego
+> polecenie; taki był jego wybór. §1 doszedł osobno, na wyraźne polecenie: nie
+> był dziurą dla obcego, tylko awarią, która realnie położyła produkcję.
 >
 > **Reszta stoi otwarta** i dokument jest ich rejestrem, nie raportem z fixów:
 > w każdym pliku z potwierdzoną wadą stoi blok `KNOWN DEFECT` odsyłający do
 > właściwego paragrafu, żeby czytający kod nie uwierzył opisowi obok defektu.
+> Blok znika razem z wadą — `dan/daemon/supervisor.py` już go nie ma.
 > Kolejność prac: sekcja „Co dalej" na końcu.
-> Pliki opatrzone: `dan/daemon/supervisor.py`, `dan/daemon/restart.py`,
-> `dan/daemon/app.py` (`mark_failed`), `dan/daemon/state_machine.py`,
-> `dan/tools/shell_tool.py`, `dan/config.py`, `dan/voice/queue.py`,
-> `dan/panel/assets/typewriter.js`.
+> Pliki wciąż opatrzone: `dan/daemon/restart.py`, `dan/daemon/app.py`
+> (`mark_failed`), `dan/daemon/state_machine.py`, `dan/tools/shell_tool.py`,
+> `dan/config.py`, `dan/voice/queue.py`, `dan/panel/assets/typewriter.js`.
 
 ## Legenda pewności
 
@@ -34,7 +37,11 @@
 
 ---
 
-## 1. Reklamacja sieroty nigdy nie odpala w produkcji — POTWIERDZONE
+## 1. Reklamacja sieroty nigdy nie odpala w produkcji — ZAMKNIĘTE 2026-07-21
+
+Naprawione razem z §13 i §14 — patrz „Jak naprawione" na końcu tej sekcji.
+
+### Jak było
 
 `dan/daemon/supervisor.py:190`
 
@@ -52,14 +59,14 @@ wstawia ścieżkę interpretera na początek:
   ~/.dan/venv/bin/supertonic serve --model supertonic-3 --port 7788 --log-level warning
 ```
 
-Porównanie jest **zawsze** fałszywe → `_default_find_own_orphan` zwraca `None` →
-`_reclaim_own_orphan_locked` zwraca `False` → po `launchctl kickstart -k` dand
-dalej dostaje `ForeignPortOwnerError` i głos zostaje martwy. Fail-dead, który ta
-zmiana i ADR-001 §"Ports" deklarują jako naprawiony, jest nietknięty.
+Porównanie było **zawsze** fałszywe → `_default_find_own_orphan` zwracał `None` →
+`_reclaim_own_orphan_locked` zwracał `False` → po `launchctl kickstart -k` dand
+dostawał `ForeignPortOwnerError` i głos zostawał martwy. Fail-dead, który tamta
+zmiana i ADR-001 §"Ports" deklarowały jako naprawiony, był nietknięty.
 
-Testy przechodzą, bo karmią `' '.join(SUPERTONIC_SPEC.argv)` albo wstrzykują
-`orphan_probe` — czyli sprawdzają logikę na danych, których produkcja nigdy nie
-wytworzy.
+Testy przechodziły, bo karmiły `' '.join(SUPERTONIC_SPEC.argv)` albo wstrzykiwały
+`orphan_probe` — czyli sprawdzały logikę na danych, których produkcja nigdy nie
+wytwarzała.
 
 ### ZDARZYŁO SIĘ NA ŻYWO — 2026-07-21, 20:51
 
@@ -88,18 +95,54 @@ naprawy argv (razem z dowodem własności, patrz pułapka niżej).
 
 ### PUŁAPKA W KOLEJNOŚCI NAPRAW
 
-`_is_own_orphan` wymaga **obu** warunków: identyczne argv **i** `ppid == 1`.
-Dopóki argv nigdy nie pasuje, nikt nikogo nie zabija. Naprawa porównania argv na
-skróty (obcięcie interpretera, porównanie sufiksu) **natychmiast uzbraja**
+`_is_own_orphan` wymagał **obu** warunków: identyczne argv **i** `ppid == 1`.
+Dopóki argv nigdy nie pasowało, nikt nikogo nie zabijał. Naprawa porównania argv
+na skróty (obcięcie interpretera, porównanie sufiksu) **natychmiast uzbrajała**
 pozostałe defekty:
 
 - na macOS **każdy** proces startowany przez launchd ma `ppid == 1`, więc cudza
-  usługa z tym samym argv zostanie uznana za naszą sierotę i ubita, a launchd ją
-  wskrzesi → pętla kill/respawn i złamanie reguły ADR-001 „never kill someone
-  else's process";
-- `supervisor.py:719` woła `killpg` z PID-em zwróconym przez `lsof` (patrz §7).
+  usługa z tym samym argv zostałaby uznana za naszą sierotę i ubita, a launchd
+  by ją wskrzesił → pętla kill/respawn i złamanie reguły ADR-001 „never kill
+  someone else's process";
+- `supervisor.py:719` wołał `killpg` z PID-em zwróconym przez `lsof` (patrz §13).
 
-**Argv i dowód własności trzeba naprawić razem, nie po kolei.**
+**Argv i dowód własności trzeba było naprawić razem, nie po kolei** — i tak
+zostały naprawione.
+
+### JAK NAPRAWIONE — 2026-07-21, 22:03
+
+Dowód własności to teraz **rejestr spawnów na dysku**, a nie heurystyka z tablicy
+procesów: `~/.dan/runtime/supervised-children.json` (0600), zapisywany przez
+`_SpawnLedger` natychmiast po `Popen`, czytany przez następne wcielenie demona.
+Tablica procesów na tę pytanie odpowiedzieć nie umie — zmierzone tego samego
+dnia: `ps -E` nie pokazuje środowiska nawet dla własnego procesu (więc nie da się
+wsadzić dziecku znacznika i odczytać go z powrotem), a `lstart` jedzie w
+lokalizacji demona, której launchd i shell nie muszą uzgadniać.
+
+`_is_own_orphan` wymaga teraz **czterech** faktów naraz: PID zapisany przez nas,
+`ppid == 1`, `pgid == pid` oraz argv zgodne z dokładnością do jednego wiodącego
+tokenu (interpreter shebanga). `pgid == pid` załatwia przy okazji §13: `killpg`
+dostaje grupę, którą sierota rzeczywiście prowadzi. Każda odmowa ląduje w logu z
+faktami, które ją spowodowały — poprzednio operator dostawał ciszę.
+
+Sprawdzone na żywym systemie, nie na fixture:
+
+- na **działającym** supertonicu (PID 22851): stara reguła `tokens == argv`
+  daje `False`, nowa `tokens[1:] == argv` daje `True`; żywe dziecko z
+  `ppid = 22850` jest słusznie **odrzucane**, a ten sam proces w kształcie
+  sieroty (`ppid = 1`) bez wpisu w rejestrze też — dopiero z wpisem uznany;
+- odtworzona awaria z 20:51: `kill -9` na samym dandzie, dziecko zostaje na
+  porcie z `ppid = 1`. Log nowego demona:
+  `WARNING Reclaiming supertonic: pid 23133 holds http://127.0.0.1:7788/v1/health
+  and is this supervisor's orphan.` Demon wstał w **dwie sekundy**, świeże
+  dziecko 23399 zdrowe, rejestr zaktualizowany.
+
+Testy przestały karmić syntetyczne argv: `PRODUCTION_PS_COMMAND` w
+`tests/test_engine_supervisor.py` to skopiowany wynik `ps` z tej maszyny.
+
+**Czego to nie obejmuje:** dziecka wystartowanego przez wcielenie sprzed tej
+zmiany — dla niego nikt nie zapisał roszczenia, więc raz trzeba je sprzątnąć
+ręcznie (`docs/ODZYSKIWANIE.md`).
 
 ---
 
@@ -394,7 +437,9 @@ jest zamaskowana.
 
 ---
 
-## 13. Supervisor: `killpg` z PID-em z `lsof` — PRZEŚLEDZONE
+## 13. Supervisor: `killpg` z PID-em z `lsof` — ZAMKNIĘTE 2026-07-21
+
+### Jak było
 
 `supervisor.py:719` — `os.killpg` interpretuje pierwszy argument jako **grupę**.
 Gdy sierota nie jest liderem swojej grupy, oba sygnały rzucają `ProcessLookupError`,
@@ -403,20 +448,41 @@ się udała. W drugą stronę: między `lsof` a sygnałem stoją dwa `subprocess
 z limitami 5 s; jeśli PID zostanie w tym czasie przydzielony ponownie liderowi
 niepowiązanej grupy, `killpg(..., SIGKILL)` niszczy cudze drzewo procesów.
 
-## 14. Supervisor: ~31 s snu pod lockiem na ścieżce startu — PRZEŚLEDZONE
+### Jak naprawione
 
-`supervisor.py:733` — `_await_port_release` przechodzi cały spawn-owy backoff
+`pgid == pid` jest teraz jednym z czterech warunków `_is_own_orphan`, więc sonda
+zwraca wyłącznie PID-y, o których udowodniła, że prowadzą własną grupę — a to
+dokładnie kształt, który produkuje `start_new_session=True`. `killpg` adresuje
+więc drzewo sieroty (razem z ewentualnymi workerami `serve`) i niczyje inne.
+`_default_process_identity` czyta `ppid=,pgid=,command=` jednym `ps`.
+
+Okno TOCTOU między odczytem tablicy procesów a sygnałem **zostaje** i jest tak
+opisane w kodzie: PID przetasowany w tym oknie musiałby dodatkowo być sierotą pod
+initem, liderem własnej grupy, trzymać ten konkretny port i mieć to konkretne
+argv. Wąskie, nie zerowe — alternatywą jest fail-dead z §1.
+
+## 14. Supervisor: ~31 s snu pod lockiem na ścieżce startu — ZAMKNIĘTE 2026-07-21
+
+### Jak było
+
+`supervisor.py:733` — `_await_port_release` przechodził cały spawn-owy backoff
 `(0.5, 1.0, 2.0, 4.0, 8.0)` = 15,5 s, osobno po SIGTERM i po SIGKILL, trzymając
 RLock supervisora branego w `ensure_running` (czyli w `DaemonApp.start()`) i w
 `_restart_dead_child_locked`.
 
-Sprzężenie: równoległy `POST /runtime/restart` wchodzi w `stop_all(timeout=5.0)`,
-którego `acquire` wygasa (`supervisor.py:468`), zwraca `_incomplete_stop_result` →
-`app.py:580` rzuca → exit zablokowany i `mark_failed` spycha **zdrowego** demona
+Sprzężenie: równoległy `POST /runtime/restart` wchodził w `stop_all(timeout=5.0)`,
+którego `acquire` wygasał (`supervisor.py:468`), zwracał `_incomplete_stop_result` →
+`app.py:580` rzucał → exit zablokowany i `mark_failed` spychał **zdrowego** demona
 do `RuntimeState.ERROR` tylko dlatego, że watchdog siedział w nowej ścieżce.
 
-Harmonogram ponawiania spawnu to zły stały czas na „jądro zwolniło gniazdo"
-(natychmiast). Właściwe: jedno okno ~1 s odpytywane co 50 ms.
+### Jak naprawione
+
+Backoff spawnu odpowiada na pytanie „czy proces już wstał"; tu pytanie brzmi
+„czy martwy proces puścił gniazdo", a na to jądro odpowiada natychmiast. Czekanie
+to teraz krótki poll ze stałym sufitem (`_PORT_RELEASE_POLL_INTERVAL`,
+`_PORT_RELEASE_POLL_ATTEMPTS` — około sekundy), niezależny od `backoff_seconds`
+spec-a. Pilnuje tego test na kształt, nie na wartość: suma snów pod lockiem
+poniżej trzech sekund i żaden pojedynczy sen dłuższy niż 0,2 s.
 
 ---
 
@@ -516,24 +582,23 @@ randomly", Ozzy 2026-07-13).
 
 ## Co dalej — kolejność
 
-Zamknięte 2026-07-21, **nie zaczynaj od nich**: §3, §4, §5, §18, token
-transportowy, oraz uczciwy opis `shell_read` dla modelu (wstawka w §2).
+Zamknięte 2026-07-21, **nie zaczynaj od nich**: §1, §3, §4, §5, §13, §14, §18,
+token transportowy, oraz uczciwy opis `shell_read` dla modelu (wstawka w §2).
 Otwarte zostaje poniższe.
 
-1. **§1 + §13 razem** — reklamacja sieroty. Awansowało na pierwsze miejsce, bo
-   **zdarzyło się na produkcji 2026-07-21** (pomiar w §1), a nie tylko w kodzie:
-   każdy restart dand-a może się skończyć demonem, który nie wstaje. Argv i dowód
-   własności naprawiać jednym ruchem, nigdy osobno.
-2. **§11 — barge-in.** Podniesione, bo to jedyna z otwartych wad, którą operator
+1. **§11 — barge-in.** Na czele, bo to jedyna z otwartych wad, którą operator
    czuje codziennie: przerwany DAN po powrocie z narzędzia mówi to, co mu właśnie
    ucięto. FIX-09 jest z powrotem otwarty.
+2. **§6–§9 — restart i widoczność awarii.** Ta rodzina ma teraz najwyższą wagę
+   spośród „kodowych", bo §1 pokazał, że restart potrafi paść naprawdę, a te
+   punkty decydują, czy taka awaria będzie **widoczna**. `exit 86` musi zależeć
+   od tego, co `stop()` faktycznie zdemontował, a nie od containmentu dzieci;
+   `mark_failed` potrzebuje `force_error` na wzór `force_idle` i odporności na
+   powrót ERROR → IDLE.
 3. **§2 — reszta dziury shellowej.** Wykonanie jest nadal niebramkowane, a `risk`
    nadal raportuje `"shell_read"` dla narzędzia, które może wszystko. To jednak
    **świadomy wybór właściciela**, nie przeoczenie: spust trzyma on. Ruszać tylko
    na jego wyraźne polecenie.
-4. **§6–§9 — restart i widoczność awarii.** `exit 86` musi zależeć od tego, co
-   `stop()` faktycznie zdemontował, a nie od containmentu dzieci; `mark_failed`
-   potrzebuje `force_error` na wzór `force_idle` i odporności na powrót
-   ERROR → IDLE.
-5. **§10, §15 — panel.** Ukryty `#activityStrip` (czerwone światło, którego nikt
-   nie zobaczy) i zaszyta w `typewriter.js` prędkość persony.
+4. **§10, §15 — panel.** Ukryty `#activityStrip` (czerwone światło, którego nikt
+   nie zobaczy) i zaszyta w `typewriter.js` prędkość persony. §10 zyskało na
+   wadze razem z §6–§9: bez niego stan ERROR nie ma się gdzie pokazać.

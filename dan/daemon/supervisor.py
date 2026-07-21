@@ -8,25 +8,23 @@ spawns, health-probes and reaps those children. Contracts:
 - Before any spawn the configured health URL is probed: an answering server
   that is NOT our child is a foreign owner — a loud error, never adopted and
   never killed. The single exception is our own orphan from a previous
-  incarnation (identical argv, reparented to init after a hard restart);
-  that one is terminated and respawned, because refusing it left the daemon
-  permanently unstartable. See _is_own_orphan and ADR 001.
+  incarnation, reparented to init after a hard restart; that one is
+  terminated and respawned, because refusing it left the daemon permanently
+  unstartable. See _SpawnLedger and _is_own_orphan, and ADR 001.
 - stop() terminates the whole process group (children are spawned with
   start_new_session=True, so pgid == pid) and escalates SIGTERM -> SIGKILL.
 
-KNOWN DEFECT (2026-07-21) — the orphan exception above never fires in
-production, so the fail-dead it was written to end is unchanged. See
-_is_own_orphan for why the argv comparison cannot match a real supertonic, and
-_reclaim_own_orphan_locked / _await_port_release for the two defects that
-mismatch currently masks. The tests pass because they feed synthetic argv.
-docs/reviews/2026-07-21-restart-orphan-shell-review.md §1, §13, §14.
-
 Every OS touchpoint (process factory, health probe, killpg, orphan probe,
-sleep) is injectable so tests run without a real process or port.
+sleep) is injectable so tests run without a real process or port. The one
+thing that must NOT be only injectable is the shape of a real port owner:
+_is_own_orphan is tested against ps output measured on this machine, because
+the previous version passed its tests on synthetic argv while the daemon it
+was written to rescue could not start at all.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import signal
@@ -37,12 +35,21 @@ import time
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from dan.logging import get_logger
+from dan.paths import RUNTIME_FILE_MODE, secure_path
 
 logger = get_logger(__name__)
+
+# Waiting for a dead process to drop its socket. The kernel does that
+# immediately, so this is a poll with a short ceiling, deliberately NOT the
+# spawn backoff: the wait happens under the lifecycle lock DaemonApp.start()
+# holds, and a long one there times out a parallel POST /runtime/restart.
+_PORT_RELEASE_POLL_INTERVAL = 0.05
+_PORT_RELEASE_POLL_ATTEMPTS = 20
 
 
 class ChildSupervisorError(Exception):
@@ -178,37 +185,113 @@ def _default_process_group_alive(pgid: int) -> bool:
     return True
 
 
-def _is_own_orphan(spec: ChildSpec, *, ppid: int, command: str) -> bool:
+class _SpawnLedger:
+    """The pids this supervisor started, written where a SIGKILL cannot erase them.
+
+    Reclaiming a port needs to separate our own abandoned child from a
+    stranger's service, and on this platform the process table cannot answer
+    that question. Every launchd-managed process reports ppid 1, and another
+    process's environment is unreadable even for its owner (both measured on
+    this machine, 2026-07-21) — so no marker can be planted in the child and
+    read back. What remains is a record only this daemon could have written,
+    laid down at spawn time and read by the next incarnation.
+
+    Every operation is best-effort. Bookkeeping that cannot be read or written
+    costs a reclaim — the daemon keeps its refusal, which is the safe
+    direction — and must never cost a start.
+    """
+
+    def __init__(self, path: Path | str | None) -> None:
+        self._path = Path(path) if path is not None else None
+
+    def claimed_pid(self, name: str) -> int | None:
+        claimed = self._read().get(name)
+        # An int and nothing else: a corrupted file must not produce a number
+        # by coercion (`True` would come back as pid 1) that then gets signalled.
+        return claimed if isinstance(claimed, int) and not isinstance(
+            claimed, bool
+        ) else None
+
+    def record(self, name: str, pid: int) -> None:
+        self._write({**self._read(), name: int(pid)})
+
+    def forget(self, name: str) -> None:
+        claims = self._read()
+        if claims.pop(name, None) is not None:
+            self._write(claims)
+
+    def _read(self) -> dict[str, Any]:
+        if self._path is None:
+            return {}
+        try:
+            loaded = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _write(self, claims: Mapping[str, Any]) -> None:
+        if self._path is None:
+            return
+        pending = self._path.with_name(self._path.name + ".pending")
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            pending.write_text(json.dumps(claims), encoding="utf-8")
+            secure_path(pending, RUNTIME_FILE_MODE)
+            # Replace, so a crash mid-write cannot leave a half-file that
+            # reads as "we started nothing".
+            os.replace(pending, self._path)
+        except OSError:
+            logger.exception("Could not record supervised children in %s.", self._path)
+
+
+def _is_own_orphan(
+    spec: ChildSpec,
+    *,
+    pid: int,
+    ppid: int,
+    pgid: int,
+    command: str,
+    claimed_pid: int | None,
+) -> bool:
     """Decide whether a port owner is unmistakably our own abandoned child.
 
-    Both facts are required. Identical argv says it is the same program this
-    supervisor launches; a parent of init says the dand that launched it is
-    already gone. Either one alone describes a process somebody else may
-    legitimately own, so anything that fails this test keeps the refusal.
+    Four facts, all required, none of them sufficient alone:
+
+    - the pid is the one this supervisor wrote down when it spawned the child.
+      This is the ownership proof. argv never was one: on macOS a stranger's
+      launchd service running the same program is also orphaned to init and
+      also matches, and killing it starts a kill/respawn war with launchd;
+    - its parent is init, so the dand that launched it is gone and nobody is
+      supervising it now;
+    - it leads its own process group. Everything spawned here gets
+      start_new_session=True, so ours always do — and the reclaim signals a
+      GROUP, so this is simultaneously the precondition that makes killpg
+      address what it means to address;
+    - argv still matches, which is what catches a stale claim on a pid the
+      kernel has since handed to somebody else.
+
+    One leading token is allowed before our argv and no more. `supertonic` is
+    a console script with a shebang, so the kernel runs the interpreter and ps
+    reports its path first; the old exact comparison was therefore false for
+    every real child, the reclaim never fired, and a hard restart left the
+    daemon unstartable. A wrapper such as `sh -c '...'` adds two tokens and
+    still fails, which is the point of the limit.
 
     The command line comes back from ps as one string, so an argument
     containing whitespace can never round-trip; that only ever costs us an
     adoption we then refuse, which is the safe direction.
-
-    KNOWN DEFECT: the argv comparison never matches the real child.
-    `~/.dan/venv/bin/supertonic` is a console script with a shebang, so ps
-    reports the interpreter path ahead of it and shlex.split(command) comes
-    back one token longer than spec.argv. Measured on this machine 2026-07-21.
-
-    Do NOT fix that comparison on its own. It is the only thing currently
-    keeping the ppid test harmless: on macOS every launchd-managed process has
-    ppid == 1, so the moment argv starts matching, a foreign service that
-    happens to share our argv gets killed, launchd puts it back, and we kill it
-    again — the exact "never kill someone else's process" rule ADR-001 exists
-    to hold. Argv and a real ownership proof have to land together.
     """
 
-    if ppid != 1 or not command.strip():
+    if claimed_pid is None or pid != claimed_pid:
+        return False
+    if ppid != 1 or pgid != pid or not command.strip():
         return False
     try:
-        return shlex.split(command) == list(spec.argv)
+        tokens = shlex.split(command)
     except ValueError:  # unbalanced quoting: unparsable is not a match
         return False
+    argv = list(spec.argv)
+    return tokens == argv or tokens[1:] == argv
 
 
 def _default_listening_pids(port: int) -> tuple[int, ...]:
@@ -231,10 +314,18 @@ def _default_listening_pids(port: int) -> tuple[int, ...]:
     return tuple(pids)
 
 
-def _default_process_identity(pid: int) -> tuple[int, str] | None:
+def _default_process_identity(pid: int) -> tuple[int, int, str] | None:
+    """Read (ppid, pgid, command) for a pid, or None if it cannot be read.
+
+    Both leading fields are numeric and the command comes last, so splitting
+    on the first two gaps is unambiguous however many spaces the command
+    holds. Deliberately no `lstart`: its format follows the daemon's locale,
+    which launchd and a shell do not have to agree on.
+    """
+
     try:
         completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            ["/bin/ps", "-p", str(pid), "-o", "ppid=,command="],
+            ["/bin/ps", "-p", str(pid), "-o", "ppid=,pgid=,command="],
             capture_output=True,
             text=True,
             timeout=5,
@@ -242,23 +333,34 @@ def _default_process_identity(pid: int) -> tuple[int, str] | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    line = completed.stdout.strip()
-    if not line:
+    fields = completed.stdout.strip().split(None, 2)
+    if len(fields) < 3:
         return None
-    head, _, command = line.partition(" ")
     try:
-        return int(head), command.strip()
+        return int(fields[0]), int(fields[1]), fields[2].strip()
     except ValueError:
         return None
 
 
-def _default_find_own_orphan(spec: ChildSpec) -> int | None:
+def _find_own_orphan(
+    spec: ChildSpec,
+    *,
+    claimed_pid: int | None,
+    listening_pids: Callable[[int], tuple[int, ...]] = _default_listening_pids,
+    process_identity: Callable[
+        [int], tuple[int, int, str] | None
+    ] = _default_process_identity,
+) -> int | None:
     """Find the pid of our own orphan holding the child's port, if any.
 
     A hard restart (`launchctl kickstart -k`) kills dand but leaves the child
     listening, reparented to init. The next dand then saw a live port it held
     no handle on and refused to start at all, so fail-safe turned into
     fail-dead until someone killed the orphan by hand.
+
+    Only processes actually holding the configured port are ever considered,
+    and each refusal is logged: the live failure this exists to end gave the
+    operator no reason at all, just a daemon that would not come up.
     """
 
     try:
@@ -267,13 +369,30 @@ def _default_find_own_orphan(spec: ChildSpec) -> int | None:
         return None
     if port is None:
         return None
-    for pid in _default_listening_pids(port):
-        identity = _default_process_identity(pid)
+    for pid in listening_pids(port):
+        identity = process_identity(pid)
         if identity is None:
             continue
-        ppid, command = identity
-        if _is_own_orphan(spec, ppid=ppid, command=command):
+        ppid, pgid, command = identity
+        if _is_own_orphan(
+            spec,
+            pid=pid,
+            ppid=ppid,
+            pgid=pgid,
+            command=command,
+            claimed_pid=claimed_pid,
+        ):
             return pid
+        logger.warning(
+            "Port owner pid %s is not %s's orphan and will not be touched "
+            "(ppid=%s, pgid=%s, this daemon last started pid %s): %s",
+            pid,
+            spec.name,
+            ppid,
+            pgid,
+            claimed_pid,
+            command,
+        )
     return None
 
 
@@ -323,6 +442,7 @@ class ChildSupervisor:
         monotonic: Callable[[], float] = time.monotonic,
         watchdog_poll_interval: float = 0.5,
         watchdog_waiter: Callable[[threading.Event, float], bool] | None = None,
+        ledger_path: Path | str | None = None,
     ) -> None:
         self._specs: dict[str, ChildSpec] = {spec.name: spec for spec in specs}
         self._children: dict[str, ChildHandle] = {}
@@ -336,7 +456,8 @@ class ChildSupervisor:
         self._listener_released_probe = (
             listener_released_probe or _default_listener_released
         )
-        self._orphan_probe = orphan_probe or _default_find_own_orphan
+        self._ledger = _SpawnLedger(ledger_path)
+        self._orphan_probe = orphan_probe or self._find_own_orphan
         self._sleep = sleep
         self._monotonic = monotonic
         self._watchdog_poll_interval = max(0.01, float(watchdog_poll_interval))
@@ -612,9 +733,12 @@ class ChildSupervisor:
         if not process_result.complete:
             return
         # A released process group must never remain addressable by numeric PID;
-        # the kernel may reuse it before a listener-only containment retry.
+        # the kernel may reuse it before a listener-only containment retry. The
+        # ledger claim goes for the same reason: this pid is proven gone, and a
+        # claim outliving it would describe whoever inherits the number.
         if self._children.get(name) is child:
             self._children.pop(name, None)
+        self._ledger.forget(name)
         if child.spec.health_url and not listener_released:
             self._unresolved_listeners.add(name)
         else:
@@ -712,6 +836,13 @@ class ChildSupervisor:
                 )
         self._unresolved_listeners.discard(spec.name)
 
+    def _find_own_orphan(self, spec: ChildSpec) -> int | None:
+        """Default orphan probe: the port owners, judged against our ledger."""
+
+        return _find_own_orphan(
+            spec, claimed_pid=self._ledger.claimed_pid(spec.name)
+        )
+
     def _reclaim_own_orphan_locked(self, spec: ChildSpec) -> bool:
         """Free the port when the process holding it is our own orphan.
 
@@ -733,13 +864,13 @@ class ChildSupervisor:
             pid,
             spec.health_url,
         )
-        # KNOWN DEFECT: killpg addresses a process GROUP, and pid came from
-        # lsof, which reports a process. An orphan that is not its own group
-        # leader turns both signals into ProcessLookupError, swallowed just
-        # below — the port stays held while the log claims the reclaim worked.
-        # The other direction is worse: two subprocess.run calls with 5 s
-        # timeouts sit between the lsof and the signal, so a recycled pid means
-        # SIGKILL lands on an unrelated process tree. Review §13.
+        # killpg addresses a process GROUP, and the probe only returns a pid it
+        # proved leads its own — so the group signalled here is the orphan's
+        # own tree, forked serve workers included. What stays open is the gap
+        # between reading the process table and signalling: a pid recycled
+        # inside it would have to be orphaned to init, leading its own group,
+        # holding this exact port and running this exact argv to be mistaken
+        # for ours. Narrow, not zero; the alternative is the fail-dead.
         for signum in (signal.SIGTERM, signal.SIGKILL):
             try:
                 self._killpg(pid, signum)
@@ -756,17 +887,17 @@ class ChildSupervisor:
         return False
 
     def _await_port_release(self, spec: ChildSpec) -> bool:
-        # KNOWN DEFECT: this walks the whole spawn backoff once after SIGTERM
-        # and again after SIGKILL, holding the RLock that ensure_running (i.e.
-        # DaemonApp.start) took. A parallel POST /runtime/restart then times
-        # out on stop_all(timeout=5.0), gets _incomplete_stop_result, and
-        # app.py raises — pushing a HEALTHY daemon into RuntimeState.ERROR
-        # because the watchdog was busy in here. The spawn schedule is also the
-        # wrong clock: the kernel frees a socket immediately, so the right
-        # shape is one ~1 s window polled every 50 ms. Review §14.
-        for delay in (0.0, *spec.backoff_seconds):
-            if delay:
-                self._sleep(delay)
+        # Runs under the RLock ensure_running (i.e. DaemonApp.start) took, so
+        # its length is somebody else's timeout. It used to walk the whole
+        # spawn backoff once after SIGTERM and again after SIGKILL — half a
+        # minute, enough for a parallel POST /runtime/restart to expire in
+        # stop_all(timeout=5.0) and mark a healthy daemon failed. The spawn
+        # schedule was the wrong clock anyway: that one waits for a process to
+        # become ready, this one waits for a dead process to drop a socket,
+        # which the kernel does at once.
+        for attempt in range(_PORT_RELEASE_POLL_ATTEMPTS):
+            if attempt:
+                self._sleep(_PORT_RELEASE_POLL_INTERVAL)
             if self._listener_released(spec) and not self._health_probe(
                 spec.health_url
             ):
@@ -777,6 +908,10 @@ class ChildSupervisor:
         process = self._process_factory(spec)
         child = ChildHandle(spec=spec, process=process)
         self._children[spec.name] = child
+        # Claim the pid before anything else can go wrong: from here on, a
+        # SIGKILLed daemon leaves an orphan the next incarnation can prove is
+        # its own instead of refusing to start next to it.
+        self._ledger.record(spec.name, child.pid)
         if not spec.health_url:
             return child
         delays = (0.0, *spec.backoff_seconds) or (0.0,)
