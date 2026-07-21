@@ -376,10 +376,15 @@ class SecurityConfig:
     localhost_only: bool = True
     api_token_required: bool = False
     # Product defaults are OPEN (Ozzy's decree 2026-07-09): DAN on his own
-    # machine runs every attended tool class without an approval click. The
-    # panel grants flip any class back to ask-first; the code floor stays:
-    # destructive always takes one click, unattended sources never mutate.
-    # (ToolPermissionPolicy keeps conservative defaults for direct/library use.)
+    # machine runs every attended tool class without an approval click.
+    #
+    # STALE AS OF 2026-07-21 — the paragraph that used to stand here promised a
+    # code floor ("destructive always takes one click, unattended sources never
+    # mutate") and panel grants that flip a class back to ask-first. Neither is
+    # true any more: ToolPermissionPolicy.decide returns ALLOW unconditionally,
+    # so every flag below is inert and merely rendered as runtime state. What
+    # still refuses work lives in the tools themselves — approved_roots, the
+    # shell allowlist, the scrubbed env. See docs/SECURITY_MODEL.md §2.
     require_approval_for_shell: bool = False
     require_approval_for_file_write: bool = False
     require_approval_for_network: bool = False

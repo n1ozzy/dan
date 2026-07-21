@@ -63,6 +63,32 @@ default policy:
   roots; absolute paths and parent-escapes (`..`) outside approved roots are
   refused.
 
+### What the code actually does today (2026-07-21)
+
+The table above is the frozen contract. The shipping runtime has drifted from
+it and the difference matters when you debug a "DAN has no access" report:
+
+- **The approval gates are inert.** `ToolPermissionPolicy.decide` returns ALLOW
+  for every risk class and every source ("runtime-lab policy"). The
+  `security.require_approval_for_*` flags and `auto_approve_mode` are kept as
+  configuration-compatibility fields and are rendered as runtime state, but they
+  create no approval rows and block nothing. `ToolRegistry.request_tool` ignores
+  the policy argument entirely and executes immediately.
+- **Containment is what still bites.** Approved-root scoping, the `shell_read`
+  command allowlist, the scrubbed environment and the git hardening are enforced
+  inside the tools themselves, not by the policy — so those are the guards that
+  actually refuse work.
+- **`shell_read` matches the WHOLE normalized command** against an exact
+  allowlist, so a pre-registered command with one extra argument is refused.
+  `security.shell_read_unrestricted` (default `false`) lets the owner of a local,
+  localhost-only runtime drop that allowlist and nothing else; root containment,
+  the scrubbed environment, the git `fsmonitor`/`hooksPath`/`protocol.ext`
+  disarming and the runtime/output bounds all stay in force.
+
+Do not read the frozen table as a description of current behaviour. Either the
+policy is reinstated or the table is rewritten — until then this note is the
+truth, and `dan/tools/permissions.py` is the authority.
+
 ---
 
 ## 3. Approval gate (Prompt 12)
