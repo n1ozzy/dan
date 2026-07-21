@@ -39,10 +39,11 @@ Classification: current.
   until 2026-07-21, when it was turned **on** and verified against the running
   daemon — see `docs/SECURITY_MODEL.md` §2, "Who can reach a tool".) That is the
   owner's deliberate choice, the same way compiled memory is turned on below —
-  a shipping default is not a description of the running daemon. But note the
-  knock-on effect, which nobody chose: with the allowlist off, the git hardening
-  in `shell_tool.py` stops being exhaustive. Mechanism and `file:line` evidence:
-  `docs/SECURITY_MODEL.md` §2, "The `shell_read` allowlist and its opt-out".
+  a shipping default is not a description of the running daemon. The knock-on
+  effect nobody chose — the git hardening silently narrowing along with the
+  allowlist — was fixed on 2026-07-21 and now applies unconditionally.
+  Mechanism: `docs/SECURITY_MODEL.md` §2, "The `shell_read` allowlist and its
+  opt-out".
 - **`approved_roots` is the one barrier that is real, and it is set wide.**
   Measured 2026-07-21: `["~", "/tmp", "/Volumes", "/Applications"]`. The file
   tools do enforce it, exactly as `SECURITY_MODEL.md` says — but "contained to

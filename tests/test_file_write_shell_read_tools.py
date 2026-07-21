@@ -338,6 +338,59 @@ def test_unrestricted_still_confines_cwd_to_approved_roots(
         tool.run({"command": "pwd", "cwd": str(tmp_path)})
 
 
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "git status --short",
+        "/usr/bin/git status --short",
+        "env git status --short",
+        "sh -c 'git status --short'",
+        "cd . && git status --short",
+    ],
+)
+def test_git_hardening_survives_every_spelling_of_git(
+    approved_root: Path, spelling: str
+) -> None:
+    # The hardening used to be applied only when the command's first token was
+    # literally `git`, which was exhaustive only while the allowlist held
+    # commands to a fixed set of literals. The four non-literal spellings below
+    # reached a hostile repository unhardened once the owner opted out.
+    repo = approved_root / "evil-repo-spellings"
+    repo.mkdir()
+    _init_git_repo(repo)
+    sentinel = approved_root / f"sentinel-{abs(hash(spelling))}"
+    script = _make_sentinel_script(approved_root, sentinel)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.fsmonitor", str(script)],
+        check=True,
+        capture_output=True,
+    )
+    tool = ShellReadTool(approved_roots=[str(approved_root)], unrestricted=True)
+
+    tool.run({"command": spelling, "cwd": str(repo)})
+
+    assert not sentinel.exists(), f"repo-local core.fsmonitor ran via: {spelling}"
+
+
+def test_git_hardening_needs_no_command_inspection(approved_root: Path) -> None:
+    # Guards the mechanism, not one spelling: the hardening rides in the
+    # environment, so nothing has to recognise git in the command string.
+    from dan.tools.shell_tool import _GIT_ENV_HARDENING
+
+    assert _GIT_ENV_HARDENING["GIT_CONFIG_COUNT"] == "3"
+    injected = {
+        _GIT_ENV_HARDENING[f"GIT_CONFIG_KEY_{i}"]: _GIT_ENV_HARDENING[
+            f"GIT_CONFIG_VALUE_{i}"
+        ]
+        for i in range(3)
+    }
+    assert injected == {
+        "core.fsmonitor": "",
+        "core.hooksPath": "/dev/null",
+        "protocol.ext.allow": "never",
+    }
+
+
 def test_unrestricted_tells_the_model_it_is_not_read_only(approved_root: Path) -> None:
     # The brain picks what to attempt from these strings. While they said
     # "allowlisted" and "read-only", an instance running arbitrary commands was

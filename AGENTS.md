@@ -33,15 +33,15 @@ Facts, not rules. Each one contradicts something a stale doc still implies.
   `/tmp`, `/Volumes`, `/Applications`, so "contained" means the whole home.
   Details: `docs/SECURITY_MODEL.md` §2. `docs/MACOS_PERMISSION_MODEL.md` is an
   unimplemented design — never quote its matrix as behaviour.
-- **The `shell_read` allowlist and the git hardening are off on this machine.**
+- **The `shell_read` allowlist is off on this machine.**
   `security.shell_read_unrestricted = true` in the owner's `~/.dan/config.toml`
-  (his deliberate choice). The knock-on effect is not: the git hardening arms
-  `core.fsmonitor` / `core.hooksPath` / `protocol.ext` only when the command's
-  first token is literally `git`, a test that was exhaustive *only* while the
-  allowlist held commands to a fixed set of strings. With it off, `/usr/bin/git`,
-  `cd sub && git …`, `env git …` and `sh -c '…'` reach git unhardened. Do not
-  list the allowlist among the things that still contain a tool.
-  Details: `docs/SECURITY_MODEL.md` §2.
+  (his deliberate choice). Do not list the allowlist among the things that still
+  contain a tool, and do not try to "fix" it by turning the flag back on.
+  The git hardening used to break as a side effect of this and no longer does:
+  it moved from an `argv[0] == "git"` test to unconditional `GIT_CONFIG_*`
+  environment variables (2026-07-21), so `/usr/bin/git`, `cd sub && git …`,
+  `env git …` and `sh -c '…'` are all covered. Do not reintroduce command
+  sniffing. Details: `docs/SECURITY_MODEL.md` §2.
 - **`dan memory sync` copies the content of every turn into a durable archive.**
   Yours and the owner's, into `memory_archive_documents` plus an FTS index — no
   candidate, no approval, and **no forget operation**. The registered

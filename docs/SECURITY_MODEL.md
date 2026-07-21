@@ -53,11 +53,11 @@ does not gate execution.
   everything (fail-closed). `file_write` additionally pins the parent directory
   by fd and uses `O_NOFOLLOW`/`O_EXCL` + `renameat`, so a symlink swap between
   the check and the write cannot redirect it.
-- **`shell_read`** — a scrubbed environment and runtime/output bounds, always.
-  Plus a command allowlist and git hardening (`fsmonitor`, `hooksPath` and
-  `protocol.ext` disarmed) — **but both of those are off on this machine**, and
-  the second one only ever worked because of the first. See "The `shell_read`
-  allowlist and its opt-out" below before you count either as a barrier.
+- **`shell_read`** — a scrubbed environment, runtime/output bounds, and git
+  hardening (`fsmonitor`, `hooksPath` and `protocol.ext` disarmed), all three
+  unconditional. Plus a command allowlist — **that one is off on this machine**;
+  see "The `shell_read` allowlist and its opt-out" below before counting it as a
+  barrier.
 - Every tool — its own argument validation, size caps and timeouts.
 
 **Consequence for anyone editing a tool:** the check you are looking at is not
@@ -78,12 +78,16 @@ Dropping it is not the narrow change it sounds like. Two of the guards that
 "still stand" are not what their names suggest (`dan/tools/shell_tool.py`, which
 carries the same warning as `KNOWN DEFECT` in its module docstring):
 
-- **Git hardening stops being exhaustive.** `core.fsmonitor` /
-  `core.hooksPath` / `protocol.ext` are disarmed only when
-  `shlex.split(normalized)[0] == "git"`. That test was exhaustive *because* the
-  allowlist held commands to a fixed set of literals. Without it, `/usr/bin/git`,
-  `cd sub && git …`, `env git …` and `sh -c 'git …'` all reach git unhardened, so
-  a hostile repository can run its own program.
+- ~~**Git hardening stops being exhaustive.**~~ **Fixed 2026-07-21.** It used to
+  disarm `core.fsmonitor` / `core.hooksPath` / `protocol.ext` only when
+  `shlex.split(normalized)[0] == "git"` — a test that was exhaustive *because*
+  the allowlist held commands to a fixed set of literals, so without the
+  allowlist `/usr/bin/git`, `cd sub && git …`, `env git …` and `sh -c 'git …'`
+  all reached a hostile repository unhardened. The settings now ride in
+  `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` on every invocation, so no spelling of
+  git can miss them and there is no command inspection to keep in sync. Measured
+  against a repo whose `core.fsmonitor` writes a sentinel: it fires with no
+  hardening and stays silent for all five spellings with it.
 - **Root containment binds the cwd, not the command.** `_resolve_cwd` confines
   where the process starts; argv carries its own absolute paths, and
   `subprocess.run(…, shell=True)` gets the string with no metacharacter

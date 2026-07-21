@@ -12,11 +12,11 @@ path reads them to make a decision.
 The real containment lives INSIDE the individual tools and nowhere else:
 approved-root scoping (`file_tool`), the scrubbed environment and the per-tool
 runtime/output bounds (`shell_tool`). If you weaken a check inside a tool,
-nothing behind it catches the mistake. Do NOT add the `shell_read` allowlist or
-the git hardening to that list: `security.shell_read_unrestricted` switches the
-allowlist off — it is off on this machine — and the git hardening only ever
-armed because the allowlist held commands to a fixed set of literals. See the
-module docstring of `shell_tool`.
+nothing behind it catches the mistake. Do NOT add the `shell_read` allowlist to
+that list: `security.shell_read_unrestricted` switches it off, and it is off on
+this machine. The git hardening does belong on it again — since 2026-07-21 it
+rides in the environment and applies to every command, rather than only to ones
+starting with the word `git`. See the module docstring of `shell_tool`.
 
 `RequestSource` is recorded for audit — it is copied into the result's
 `source` field — but it does not change any decision. The source-sensitive

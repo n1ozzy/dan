@@ -7,11 +7,16 @@
 > ręcznie przez czytanie kodu i żywego procesu, nie na słowo agenta.
 >
 > **Co jest już naprawione** (każdy punkt oznaczony u siebie, nie tylko tutaj):
-> §4 — walidacja typów w `[security]`, ZAMKNIĘTE. §18 — worktree usunięte,
-> ZAMKNIĘTE. §2 — `shell_read` przestał opisywać się modelowi jako read-only
-> (samo wykonanie nadal niebramkowane). §5 — token transportowy włączony, więc
-> sekwencja `POST /settings` + restart wymaga dziś tokenu; sam rozjazd
-> `writable`/`_VERSIONED_KEYS` zostaje.
+> §3 — utwardzenie gita, ZAMKNIĘTE. §4 — walidacja typów w `[security]`,
+> ZAMKNIĘTE. §5 — flaga niezapisywalna przez HTTP, ZAMKNIĘTE. §18 — worktree
+> usunięte, ZAMKNIĘTE. §2 — częściowo: `shell_read` przestał opisywać się
+> modelowi jako read-only, ale samo wykonanie jest nadal niebramkowane.
+> Do tego token transportowy włączony (poza rejestrem, patrz `SECURITY_MODEL.md`).
+>
+> Wspólny mianownik zamkniętych: **wszystkie dotyczyły drogi, którą mógł wejść
+> ktoś obcy** — wrogie repo, zapis po HTTP, strona w przeglądarce. Otwarte
+> zostaje to, co odpala sam właściciel albo model na jego polecenie; taki był
+> jego wybór.
 >
 > **Reszta stoi otwarta** i dokument jest ich rejestrem, nie raportem z fixów:
 > w każdym pliku z potwierdzoną wadą stoi blok `KNOWN DEFECT` odsyłający do
@@ -130,7 +135,25 @@ testy `test_unrestricted_tells_the_model_it_is_not_read_only` i
 raportuje `"shell_read"`. Zdejmowanie ryzyka wymagałoby ruszenia rejestru klas ryzyka
 i ledgera testów, więc zostaje otwarte.
 
-## 3. Utwardzenie gita omijalne po zdjęciu allowlisty — POTWIERDZONE
+## 3. Utwardzenie gita omijalne po zdjęciu allowlisty — ZAMKNIĘTE 2026-07-21
+
+**Naprawione, i to zmianą mechanizmu, nie łatką na wzorzec.** Ustawienia
+`core.fsmonitor` / `core.hooksPath` / `protocol.ext` jadą teraz w zmiennych
+`GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`, nakładanych na **każde** wywołanie
+`shell_read`. Nie ma już żadnej inspekcji komendy, więc nie ma czego omijać ani
+czego utrzymywać w zgodzie z nową składnią.
+
+Zmierzone na wrogim repo, którego `core.fsmonitor` dotyka pliku-wartownika:
+bez utwardzenia wartownik powstaje przy zwykłym `git status --short`, z
+utwardzeniem nie powstaje przy żadnej z pięciu form — `git`, `/usr/bin/git`,
+`env git`, `sh -c 'git …'`, `cd . && git`. Testy: `test_git_hardening_survives_
+every_spelling_of_git` (parametryzowany po tych formach) oraz
+`test_git_hardening_needs_no_command_inspection`, który pilnuje samego
+mechanizmu, a nie jednej pisowni. Wymaga gita ≥ 2.31; na tej maszynie 2.50.1.
+
+Opis pierwotnej dziury zostaje niżej.
+
+### Jak było
 
 `dan/tools/shell_tool.py:151` (test `argv_check[0] == "git"` w `run`)
 
@@ -188,7 +211,17 @@ typy. Dziura jest więc **wyłącznie na ścieżce pliku TOML** — zapis przez 
 przechodzi przez `_typed_parser`, który przy defaultcie `bool` odrzuca nie-boola
 (`ConfigWriteRejected`). Naprawiać trzeba warstwę ładowania pliku, nie zapis.
 
-## 5. Flaga zapisywalna przez HTTP — POTWIERDZONE
+## 5. Flaga zapisywalna przez HTTP — ZAMKNIĘTE 2026-07-21
+
+**Naprawione:** `security.shell_read_unrestricted` dopisane do `_VERSIONED_KEYS`,
+więc `writable=False` — dokładnie jak sześć sąsiednich `require_approval_for_*`.
+`POST /settings` już jej nie przestawi. Sprawdzone, że **efektywna wartość się nie
+zmienia**: plik `~/.dan/config.toml` dalej wygrywa (na tej maszynie `true`),
+„versioned" rządzi wyłącznie zapisem przez API, nie odczytem.
+
+Opis pierwotnego rozjazdu niżej.
+
+### Jak było
 
 `security.shell_read_unrestricted` nie trafiła do `_VERSIONED_KEYS`, więc ląduje
 w zapisywalnym koszyku INSTALLATION — w przeciwieństwie do sąsiednich
@@ -483,10 +516,9 @@ randomly", Ozzy 2026-07-13).
 
 ## Co dalej — kolejność
 
-Zamknięte 2026-07-21, **nie zaczynaj od nich**: §4 (walidacja typów w
-`[security]`), §18 (worktree usunięte), token transportowy włączony i zmierzony
-(patrz wstawka w §5), a `shell_read` przestał opisywać się modelowi jako
-read-only (wstawka w §2). Otwarte zostaje poniższe.
+Zamknięte 2026-07-21, **nie zaczynaj od nich**: §3, §4, §5, §18, token
+transportowy, oraz uczciwy opis `shell_read` dla modelu (wstawka w §2).
+Otwarte zostaje poniższe.
 
 1. **§1 + §13 razem** — reklamacja sieroty. Awansowało na pierwsze miejsce, bo
    **zdarzyło się na produkcji 2026-07-21** (pomiar w §1), a nie tylko w kodzie:
@@ -495,11 +527,10 @@ read-only (wstawka w §2). Otwarte zostaje poniższe.
 2. **§11 — barge-in.** Podniesione, bo to jedyna z otwartych wad, którą operator
    czuje codziennie: przerwany DAN po powrocie z narzędzia mówi to, co mu właśnie
    ucięto. FIX-09 jest z powrotem otwarty.
-3. **§2, §3, §5 — reszta dziury shellowej.** Wykonanie jest nadal niebramkowane,
-   `risk` nadal raportuje `"shell_read"`, matcher gita nadal łapie wyłącznie
-   dosłowne `git`, a flaga nadal jest `writable=True` i brakuje jej w
-   `_VERSIONED_KEYS`. Token utrudnił dosięgnięcie tego z zewnątrz, nie zamknął
-   samego mechanizmu.
+3. **§2 — reszta dziury shellowej.** Wykonanie jest nadal niebramkowane, a `risk`
+   nadal raportuje `"shell_read"` dla narzędzia, które może wszystko. To jednak
+   **świadomy wybór właściciela**, nie przeoczenie: spust trzyma on. Ruszać tylko
+   na jego wyraźne polecenie.
 4. **§6–§9 — restart i widoczność awarii.** `exit 86` musi zależeć od tego, co
    `stop()` faktycznie zdemontował, a nie od containmentu dzieci; `mark_failed`
    potrzebuje `force_error` na wzór `force_idle` i odporności na powrót

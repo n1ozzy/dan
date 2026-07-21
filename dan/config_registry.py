@@ -280,6 +280,12 @@ _VERSIONED_KEYS = frozenset(
         "security.require_approval_for_ui",
         "security.require_approval_for_terminal",
         "security.require_approval_for_memory",
+        # Versioned, therefore NOT writable over HTTP (2026-07-21). It was the
+        # odd one out among the security switches: POST /settings could flip it
+        # and a restart armed an unrestricted shell permanently, without anyone
+        # touching the config file. The six approval flags beside it were
+        # already read-only for exactly that reason.
+        "security.shell_read_unrestricted",
     }
 )
 
