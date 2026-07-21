@@ -5,11 +5,18 @@
 > (`shell_read_unrestricted`, `personas.toml`).
 > Dziesięć niezależnych kątów wyszukiwania; najcięższe zarzuty zweryfikowane
 > ręcznie przez czytanie kodu i żywego procesu, nie na słowo agenta.
-> **Naprawiony jest dokładnie jeden punkt — §4** (walidacja typów w
-> `[security]`), oznaczony u siebie jako ZAMKNIĘTE. Reszta stoi otwarta i
-> dokument jest ich rejestrem, nie raportem z fixów: w każdym pliku z
-> potwierdzoną wadą stoi blok `KNOWN DEFECT` odsyłający do właściwego paragrafu,
-> żeby czytający kod nie uwierzył opisowi obok defektu.
+>
+> **Co jest już naprawione** (każdy punkt oznaczony u siebie, nie tylko tutaj):
+> §4 — walidacja typów w `[security]`, ZAMKNIĘTE. §18 — worktree usunięte,
+> ZAMKNIĘTE. §2 — `shell_read` przestał opisywać się modelowi jako read-only
+> (samo wykonanie nadal niebramkowane). §5 — token transportowy włączony, więc
+> sekwencja `POST /settings` + restart wymaga dziś tokenu; sam rozjazd
+> `writable`/`_VERSIONED_KEYS` zostaje.
+>
+> **Reszta stoi otwarta** i dokument jest ich rejestrem, nie raportem z fixów:
+> w każdym pliku z potwierdzoną wadą stoi blok `KNOWN DEFECT` odsyłający do
+> właściwego paragrafu, żeby czytający kod nie uwierzył opisowi obok defektu.
+> Kolejność prac: sekcja „Co dalej" na końcu.
 > Pliki opatrzone: `dan/daemon/supervisor.py`, `dan/daemon/restart.py`,
 > `dan/daemon/app.py` (`mark_failed`), `dan/daemon/state_machine.py`,
 > `dan/tools/shell_tool.py`, `dan/config.py`, `dan/voice/queue.py`,
@@ -476,12 +483,26 @@ randomly", Ozzy 2026-07-13).
 
 ## Co dalej — kolejność
 
-1. **§1 + pułapka** — reklamacja sieroty jest martwa; naprawiać razem z dowodem
-   własności (§13), nigdy osobno.
-2. **§2–§5** — `shell_read_unrestricted` w obecnej postaci to dowolny shell dla
-   modelu. Minimum: walidacja typu, klucz read-only, matcher argv zamiast
-   przełącznika globalnego.
-3. **§6–§9** — restart: `exit 86` musi zależeć od tego, co `stop()` faktycznie
-   zdemontował, a nie od containmentu dzieci; `mark_failed` potrzebuje
-   `force_error` na wzór `force_idle` i odporności na powrót ERROR → IDLE.
-4. **§11** — barge-in.
+Zamknięte 2026-07-21, **nie zaczynaj od nich**: §4 (walidacja typów w
+`[security]`), §18 (worktree usunięte), token transportowy włączony i zmierzony
+(patrz wstawka w §5), a `shell_read` przestał opisywać się modelowi jako
+read-only (wstawka w §2). Otwarte zostaje poniższe.
+
+1. **§1 + §13 razem** — reklamacja sieroty. Awansowało na pierwsze miejsce, bo
+   **zdarzyło się na produkcji 2026-07-21** (pomiar w §1), a nie tylko w kodzie:
+   każdy restart dand-a może się skończyć demonem, który nie wstaje. Argv i dowód
+   własności naprawiać jednym ruchem, nigdy osobno.
+2. **§11 — barge-in.** Podniesione, bo to jedyna z otwartych wad, którą operator
+   czuje codziennie: przerwany DAN po powrocie z narzędzia mówi to, co mu właśnie
+   ucięto. FIX-09 jest z powrotem otwarty.
+3. **§2, §3, §5 — reszta dziury shellowej.** Wykonanie jest nadal niebramkowane,
+   `risk` nadal raportuje `"shell_read"`, matcher gita nadal łapie wyłącznie
+   dosłowne `git`, a flaga nadal jest `writable=True` i brakuje jej w
+   `_VERSIONED_KEYS`. Token utrudnił dosięgnięcie tego z zewnątrz, nie zamknął
+   samego mechanizmu.
+4. **§6–§9 — restart i widoczność awarii.** `exit 86` musi zależeć od tego, co
+   `stop()` faktycznie zdemontował, a nie od containmentu dzieci; `mark_failed`
+   potrzebuje `force_error` na wzór `force_idle` i odporności na powrót
+   ERROR → IDLE.
+5. **§10, §15 — panel.** Ukryty `#activityStrip` (czerwone światło, którego nikt
+   nie zobaczy) i zaszyta w `typewriter.js` prędkość persony.
