@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from dan.brain.base import BrainMessage, BrainRequest
-from dan.brain.context_builder import ContextBuilder
+from dan.brain.context_builder import DEFAULT_PERSONA_PROFILE, ContextBuilder
 from dan.memory.compiler import (
     CompiledMemoryContext,
     MemoryCompiler,
@@ -36,8 +36,11 @@ def conn(tmp_path: Path) -> sqlite3.Connection:
 
 @pytest.fixture
 def persona_path(tmp_path: Path) -> Path:
+    # The canon header is not decoration: render_persona refuses any file
+    # without `DAN_CANON_VERSION: 1`, so a fixture missing it fails every test
+    # in this module on persona load, long before the compiler is reached.
     path = tmp_path / "dan.md"
-    path.write_text("Persona: DAN owns memory.", encoding="utf-8")
+    path.write_text("DAN_CANON_VERSION: 1\n\nPersona: DAN owns memory.", encoding="utf-8")
     return path
 
 
@@ -344,10 +347,6 @@ def test_force_disabled_blocks_session_profile_enablement(
     persona_path: Path,
 ) -> None:
     insert_conversation(conn)
-    (persona_path.parent / "scope-profile.md").write_text(
-        "Persona: scoped profile.",
-        encoding="utf-8",
-    )
     compiler = StaticCompiler(
         CompiledMemoryContext(
             selected_items=[
@@ -366,7 +365,7 @@ def test_force_disabled_blocks_session_profile_enablement(
         compiled_memory_enabled=False,
         compiled_memory_scope_gate_enabled=True,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-1", "scope-profile"),
+            ("conversation-1", DEFAULT_PERSONA_PROFILE),
         ),
         compiled_memory_force_disabled=True,
         now=fixed_now,
@@ -441,16 +440,21 @@ def test_scoped_override_true_does_not_persist_across_requests(
     }
 
 
-def test_session_profile_enablement_requires_matching_scope_and_does_not_leak(
+def test_session_scope_gate_matches_on_conversation_and_does_not_leak(
     conn: sqlite3.Connection,
     persona_path: Path,
 ) -> None:
+    """The scope gate opens for the named conversation only.
+
+    Persona profiles are gone: DAN renders ONE versioned canon, and
+    _build_settings pins persona.profile to DEFAULT_PERSONA_PROFILE no matter
+    what the request asks for. So a caller-supplied profile can neither open
+    the gate for a conversation outside the allow-list nor close it for one
+    inside it — the conversation id is the whole key.
+    """
+
     insert_conversation(conn)
     insert_conversation(conn, conversation_id="conversation-2")
-    (persona_path.parent / "scope-profile.md").write_text(
-        "Persona: scoped profile.",
-        encoding="utf-8",
-    )
     compiler = StaticCompiler(
         CompiledMemoryContext(
             selected_items=[
@@ -469,7 +473,7 @@ def test_session_profile_enablement_requires_matching_scope_and_does_not_leak(
         compiled_memory_enabled=False,
         compiled_memory_scope_gate_enabled=True,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-1", "scope-profile"),
+            ("conversation-1", DEFAULT_PERSONA_PROFILE),
         ),
         now=fixed_now,
     )
@@ -478,18 +482,17 @@ def test_session_profile_enablement_requires_matching_scope_and_does_not_leak(
         turn_id="turn-matched",
         conversation_id="conversation-1",
         input_text="Matched",
-        settings={"persona.profile": "scope-profile"},
     )
-    wrong_profile = builder.build_request(
-        turn_id="turn-wrong-profile",
-        conversation_id="conversation-1",
-        input_text="Wrong profile",
+    spoofed_profile = builder.build_request(
+        turn_id="turn-spoofed-profile",
+        conversation_id="conversation-2",
+        input_text="Spoofed profile",
+        settings={"persona.profile": "scope-profile"},
     )
     wrong_session = builder.build_request(
         turn_id="turn-wrong-session",
         conversation_id="conversation-2",
         input_text="Wrong session",
-        settings={"persona.profile": "scope-profile"},
     )
 
     assert compiler.calls == 1
@@ -501,11 +504,13 @@ def test_session_profile_enablement_requires_matching_scope_and_does_not_leak(
         "  claim: SESSION_PROFILE_CLAIM\n"
         "  evidence_count: 1"
     )
-    assert matched.context_snapshot["persona_profile"] == "scope-profile"
-    assert compiled_memory_messages(wrong_profile.request) == []
+    # The request asked for another persona; the single canon wins anyway.
+    assert matched.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
+    assert spoofed_profile.context_snapshot["persona_profile"] == DEFAULT_PERSONA_PROFILE
+    assert compiled_memory_messages(spoofed_profile.request) == []
     assert compiled_memory_messages(wrong_session.request) == []
     assert compiled_memory_diagnostics(matched)["compiled_memory_enabled"] is True
-    assert compiled_memory_diagnostics(wrong_profile)["compiled_memory_enabled"] is False
+    assert compiled_memory_diagnostics(spoofed_profile)["compiled_memory_enabled"] is False
     assert compiled_memory_diagnostics(wrong_session)["compiled_memory_enabled"] is False
 
 
@@ -514,10 +519,6 @@ def test_request_override_false_disables_session_profile_enablement_for_one_requ
     persona_path: Path,
 ) -> None:
     insert_conversation(conn)
-    (persona_path.parent / "scope-profile.md").write_text(
-        "Persona: scoped profile.",
-        encoding="utf-8",
-    )
     compiler = StaticCompiler(
         CompiledMemoryContext(
             selected_items=[
@@ -536,7 +537,7 @@ def test_request_override_false_disables_session_profile_enablement_for_one_requ
         compiled_memory_enabled=False,
         compiled_memory_scope_gate_enabled=True,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-1", "scope-profile"),
+            ("conversation-1", DEFAULT_PERSONA_PROFILE),
         ),
         now=fixed_now,
     )
@@ -545,14 +546,12 @@ def test_request_override_false_disables_session_profile_enablement_for_one_requ
         turn_id="turn-disabled",
         conversation_id="conversation-1",
         input_text="Disabled",
-        settings={"persona.profile": "scope-profile"},
         compiled_memory_enabled_override=False,
     )
     enabled = builder.build_request(
         turn_id="turn-enabled",
         conversation_id="conversation-1",
         input_text="Enabled",
-        settings={"persona.profile": "scope-profile"},
     )
 
     assert compiler.calls == 1
@@ -577,10 +576,6 @@ def test_memory_enabled_false_blocks_session_profile_and_request_override(
     persona_path: Path,
 ) -> None:
     insert_conversation(conn)
-    (persona_path.parent / "scope-profile.md").write_text(
-        "Persona: scoped profile.",
-        encoding="utf-8",
-    )
     disabled_config = config()
     disabled_config.memory.enabled = False
     compiler = StaticCompiler(
@@ -601,7 +596,7 @@ def test_memory_enabled_false_blocks_session_profile_and_request_override(
         compiled_memory_enabled=True,
         compiled_memory_scope_gate_enabled=True,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-1", "scope-profile"),
+            ("conversation-1", DEFAULT_PERSONA_PROFILE),
         ),
         now=fixed_now,
     )
@@ -652,24 +647,24 @@ def rollout_case(case_id: str, **overrides: Any) -> Any:
 @pytest.mark.parametrize(
     "case",
     [
+        # These three prove PRECEDENCE, so their scope must actually match:
+        # with a foreign profile in the allow-list the gate never opened and the
+        # cases passed without exercising the rule they are named after.
         rollout_case(
             "memory-enabled-false",
             memory_enabled=False,
-            scoped_allow_list=(("conversation-1", "scope-profile"),),
-            persona_profile="scope-profile",
+            scoped_allow_list=(("conversation-1", DEFAULT_PERSONA_PROFILE),),
             request_override=True,
         ),
         rollout_case(
             "force-disabled",
             force_disabled=True,
-            scoped_allow_list=(("conversation-1", "scope-profile"),),
-            persona_profile="scope-profile",
+            scoped_allow_list=(("conversation-1", DEFAULT_PERSONA_PROFILE),),
             request_override=True,
         ),
         rollout_case(
             "request-override-false",
-            scoped_allow_list=(("conversation-1", "scope-profile"),),
-            persona_profile="scope-profile",
+            scoped_allow_list=(("conversation-1", DEFAULT_PERSONA_PROFILE),),
             request_override=False,
         ),
         rollout_case(
@@ -682,31 +677,29 @@ def rollout_case(case_id: str, **overrides: Any) -> Any:
         ),
         rollout_case("default-off", compiled_context_enabled=False),
         rollout_case(
-            "matched-session-profile",
-            scoped_allow_list=(("conversation-1", "scope-profile"),),
-            persona_profile="scope-profile",
+            "matched-session-scope",
+            scoped_allow_list=(("conversation-1", DEFAULT_PERSONA_PROFILE),),
             expected_enabled=True,
             expected_compiler_calls=1,
             expected_section_present=True,
         ),
+        # An allow-list entry naming any profile other than the canon can never
+        # match: _build_settings pins persona.profile to DEFAULT_PERSONA_PROFILE,
+        # so `persona_profile` below is deliberately inert — the request cannot
+        # talk its way into a scope that was granted to a different persona.
         rollout_case(
-            "nonmatching-profile",
+            "foreign-profile-never-matches",
             scoped_allow_list=(("conversation-1", "scope-profile"),),
+            persona_profile="scope-profile",
         ),
         rollout_case(
             "nonmatching-session",
-            scoped_allow_list=(("conversation-1", "scope-profile"),),
+            scoped_allow_list=(("conversation-1", DEFAULT_PERSONA_PROFILE),),
             conversation_id="conversation-2",
-            persona_profile="scope-profile",
         ),
-        rollout_case(
-            "empty-scoped-allow-list",
-            scoped_allow_list=(),
-            persona_profile="scope-profile",
-        ),
+        rollout_case("empty-scoped-allow-list", scoped_allow_list=()),
         rollout_case(
             "none-scoped-allow-list",
-            persona_profile="scope-profile",
             expected_enabled=True,
             expected_compiler_calls=1,
             expected_section_present=True,
@@ -727,10 +720,6 @@ def test_compiled_memory_rollout_precedence_matrix(
 ) -> None:
     insert_conversation(conn, conversation_id="conversation-1")
     insert_conversation(conn, conversation_id="conversation-2")
-    (persona_path.parent / "scope-profile.md").write_text(
-        "Persona: scoped profile.",
-        encoding="utf-8",
-    )
     test_config = config()
     test_config.memory.enabled = case["memory_enabled"]
     title = f"SAFE_MATRIX_TITLE_{case['id']}"
@@ -1309,10 +1298,6 @@ def test_session_profile_enablement_keeps_prompt_safe_and_diagnostics_redacted(
     persona_path: Path,
 ) -> None:
     insert_conversation(conn)
-    (persona_path.parent / "scope-profile.md").write_text(
-        "Persona: scoped profile.",
-        encoding="utf-8",
-    )
     raw_evidence_quote = "RAW_SESSION_PROFILE_EVIDENCE_QUOTE"
     raw_observation_text = "RAW_SESSION_PROFILE_OBSERVATION_TEXT"
     raw_secret_marker = "sk-sessionprofile1234567890"
@@ -1368,7 +1353,7 @@ def test_session_profile_enablement_keeps_prompt_safe_and_diagnostics_redacted(
         compiled_memory_enabled=False,
         compiled_memory_scope_gate_enabled=True,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-1", "scope-profile"),
+            ("conversation-1", DEFAULT_PERSONA_PROFILE),
         ),
         now=fixed_now,
     )
@@ -2308,10 +2293,6 @@ def test_session_profile_enablement_compiler_failure_fails_closed_and_redacts(
     persona_path: Path,
 ) -> None:
     insert_conversation(conn)
-    (persona_path.parent / "scope-profile.md").write_text(
-        "Persona: scoped profile.",
-        encoding="utf-8",
-    )
     secret_marker = "SECRET_SESSION_PROFILE_FAILURE_MARKER"
     compiler = FailingCompiler(
         f"SESSION_PROFILE_COMPILER_BOOM {secret_marker}\nTraceback bait\nRuntimeError bait"
@@ -2324,7 +2305,7 @@ def test_session_profile_enablement_compiler_failure_fails_closed_and_redacts(
         compiled_memory_enabled=False,
         compiled_memory_scope_gate_enabled=True,
         compiled_memory_enabled_session_profiles=(
-            ("conversation-1", "scope-profile"),
+            ("conversation-1", DEFAULT_PERSONA_PROFILE),
         ),
         now=fixed_now,
     )

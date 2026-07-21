@@ -1015,7 +1015,10 @@ def test_context_builder_behavior_remains_unchanged(
     )
     insert_evidence(conn, memory_id="mem-contextbuilder")
     persona_path = tmp_path / "persona.md"
-    persona_path.write_text("Persona: context builder test.", encoding="utf-8")
+    # render_persona refuses any canon without the DAN_CANON_VERSION: 1 header.
+    persona_path.write_text(
+        "DAN_CANON_VERSION: 1\n\nPersona: context builder test.", encoding="utf-8"
+    )
     builder = ContextBuilder(conn, config=context_config(), persona_path=persona_path)
 
     result = builder.build_request(
