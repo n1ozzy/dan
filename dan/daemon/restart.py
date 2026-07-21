@@ -9,11 +9,20 @@ Contract:
    launchd (KeepAlive) resurrects dand; in tests the exit function is
    injected. The coordinator NEVER calls launchctl or pkill — process
    resurrection is the platform's job, not ours.
-3. If the drain raises, containment decides. Supervised children proven dead
-   means exiting is still safe and still necessary — a mute survivor would
-   only squat the hotkey lock. Children left alive is the one case that keeps
-   the process here, and then it reports itself failed so the outage is
-   visible instead of green (ADR-001).
+3. If the drain raises, containment decides: supervised children proven dead
+   exits anyway; children left alive — or containment unavailable — keeps the
+   process here, and then it reports itself failed so the outage is visible
+   instead of green (ADR-001).
+
+KNOWN DEFECT — do not read point 3 as sound reasoning. Containment proves only
+that ChildSupervisor's children are dead; it says nothing about how far
+DaemonApp.stop() actually got. Three of stop()'s four raise sites fire BEFORE
+the voice teardown (app.py:482 close_intake, :483 wait_for_drain, :552
+_quiesce_voice_broker), and a lease outliving the drain timeout is the likeliest
+failure of all. On that path this code exits a fully live daemon mid-turn, and
+os._exit skips the hotkey release, brain_manager.close() and the recorder —
+orphaning the Claude stream-json subprocess and sox onto a live mic.
+See docs/reviews/2026-07-21-restart-orphan-shell-review.md §6-§7.
 """
 
 from __future__ import annotations
@@ -49,8 +58,11 @@ class RestartCoordinator:
         flush_seconds: float = DEFAULT_RESPONSE_FLUSH_SECONDS,
     ) -> None:
         self._app = app
-        # os._exit: the HTTP server thread pool must not block the exit and
-        # app.stop() has already flushed durable state.
+        # os._exit: the HTTP server thread pool must not block the exit. The
+        # "app.stop() already flushed durable state" half of that holds only on
+        # the success path — the drain-failure branch exits after stop() raised,
+        # so daemon.stopped never lands and finally/atexit/logging.shutdown()
+        # are all skipped.
         self._exit = exit_fn or os._exit
         self._sleep = sleep
         self._flush_seconds = flush_seconds
@@ -120,11 +132,16 @@ class RestartCoordinator:
             containment = self._emergency_containment()
             if containment is not None and containment.complete:
                 # Every supervised child is proven dead, so launchd cannot end
-                # up running a second daemon beside a live one — the only thing
-                # blocking the exit protects against. Staying alive is strictly
-                # worse: stop() drops broker, engine and player before it
-                # raises, so this process can no longer speak, and it keeps
-                # holding the hotkey flock that the next daemon needs for PTT.
+                # up running a second daemon beside a live supertonic — the
+                # danger blocking the exit was written against. Exiting is also
+                # what frees the hotkey flock the next daemon needs for PTT.
+                #
+                # This is NOT proof that leaving is safe. "stop() already
+                # dropped broker, engine and player, so this process can no
+                # longer speak" holds only when stop() raised at app.py:568 or
+                # :582; at :482/:483/:552 the voice layer is still up and this
+                # exit kills a live daemon mid-turn. See the module docstring
+                # and docs/reviews/2026-07-21-restart-orphan-shell-review.md §6.
                 logger.critical(
                     "Restart drain failed but every supervised child is contained; "
                     "exiting %s so launchd can start a clean owner.",

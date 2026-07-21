@@ -67,27 +67,51 @@ supervisor — still gets the refusal. The rule stays "never kill someone
 else's process"; what changed is that our own orphan is no longer someone
 else.
 
+> **NOT IN EFFECT (2026-07-21).** The argv test never matches in production.
+> `supertonic` is a console script with a shebang, so `ps` reports the Python
+> interpreter path ahead of the arguments and `shlex.split(command)` is one
+> token longer than `spec.argv`. The reclaim therefore never fires and the
+> fail-dead described above is unchanged; the tests pass only because they feed
+> synthetic argv. Fixing the comparison also arms the `ppid == 1` test, which on
+> macOS is true of every launchd-managed process — the two must be fixed
+> together. See `docs/reviews/2026-07-21-restart-orphan-shell-review.md` §1.
+
 ### Failed restart: containment decides whether exiting is safe
 
 `POST /runtime/restart` drains through `DaemonApp.stop()` and exits 86. When
-that drain raises, the teardown is already past the point of no return:
-`stop()` drops broker, engine and player before either of its failure paths
-raises, so the surviving process cannot speak, and intake is closed.
+that drain raises, the daemon now asks the child supervisor for containment.
+Containment **proven complete** exits 86 anyway; children left alive — or
+containment unavailable — keeps the process here and marks it failed
+(`RuntimeState.ERROR`), which drops `ok` in `snapshot_state()`.
 
-Blocking the exit guards against exactly one thing — launchd starting a
-second daemon beside a child that is still alive. When containment is
-**proven complete**, that danger is gone and the daemon exits 86 as usual.
-Exiting is also what frees the hotkey `flock`, which the kernel releases with
-the process; the next daemon needs it for PTT.
+The problem being addressed is real: blocking the exit unconditionally left a
+mute daemon squatting the hotkey lock, unable to speak and unable to be
+resurrected, while `dan state` and `dan doctor` still answered ok — so a dead
+PTT read as a hotkey fault rather than a dead owner. Exiting is what frees the
+hotkey `flock`, which the kernel releases with the process.
 
-Blocking that case too is what this decision corrects. It left a mute daemon
-squatting the hotkey lock, unable to speak and unable to be resurrected,
-while `dan state` and `dan doctor` still answered ok — so a dead PTT read as
-a hotkey fault rather than a dead owner.
-
-Children left alive is the one case that keeps the process here. It then
-reports itself failed (`RuntimeState.ERROR`), which drops `ok` in
-`snapshot_state()` and therefore in `/health` and the panel.
+> **THE IMPLEMENTATION DOES NOT YET HOLD UP (2026-07-21).** Recorded here so the
+> next reader does not mistake this section for a working guarantee. Details and
+> fix order: `docs/reviews/2026-07-21-restart-orphan-shell-review.md` §6-§10.
+>
+> - **The premise is false.** This section originally claimed `stop()` drops
+>   broker, engine and player before it can raise. Three of its four raise sites
+>   fire earlier (`app.py:482` `close_intake`, `:483` `wait_for_drain`, `:552`
+>   `_quiesce_voice_broker`), and a lease outliving the drain timeout is the most
+>   likely failure of all. There the surviving process CAN still speak, and the
+>   new branch `os._exit(86)`s it mid-turn.
+> - **Containment is the wrong invariant.** `ChildContainmentResult` covers only
+>   `ChildSupervisor` children. Exiting skips `_stop_hotkey_monitor()`,
+>   `brain_manager.close()` and the recorder, so the Claude stream-json
+>   subprocess (its own process group) and `sox` survive onto a live mic — two
+>   owners, which is what this ADR exists to forbid.
+> - **"Visible" is not yet enforced.** `mark_failed` swallows a failed ERROR
+>   transition and leaves the state untouched, so the green-when-dead case
+>   survives exactly when the event store is the thing that broke;
+>   `ERROR -> IDLE` is an allowed transition, so a worker turn finishing clears
+>   the flag; and the panel's only runtime-state readout (`#activityStrip`) is
+>   force-hidden by `typewriter.js`, so ERROR is displayed nowhere.
+>   `RuntimeStateMachine.force_idle` is the shape the fix should copy.
 
 ## Consequences
 
@@ -97,6 +121,7 @@ reports itself failed (`RuntimeState.ERROR`), which drops `ok` in
   broker, a file feeder). Contract tests enforce a single player, a single
   daemon instance and the absence of `launchctl`/`pkill` in runtime code.
 - A daemon failure stops voice entirely — deliberately: one visible missing
-  owner is better than two owners at once. "Visible" is enforced, not
-  assumed: a daemon that survives a failed restart moves to `ERROR` and stops
-  reporting `ok`.
+  owner is better than two owners at once. Making "visible" *enforced* rather
+  than assumed is the intent of `mark_failed`; as of 2026-07-21 that
+  enforcement is incomplete on three counts (see the box above), so a failed
+  restart can still read as green.
