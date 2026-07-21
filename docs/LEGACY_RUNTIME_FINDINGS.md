@@ -1,6 +1,25 @@
 # Jarvis v4.1 — Legacy Runtime Findings (DIAGNOSTIC-GROUNDED)
 
-> **Status:** AUTHORITATIVE (Prompt 00B). Runtime picture of the old DAN/Jarvis,
+> ## ⛔ HISTORICAL EVIDENCE — NOT A DESCRIPTION OF CURRENT BEHAVIOUR
+>
+> **Classification: historical.** Superseded by the Release 1 cutover
+> (2026-07-18) and the 2026-07-21 audit. Frozen as forensic evidence of the
+> **pre-v4.1 stack** captured on **2026-06-30**; every process, path, plist and
+> `/tmp` file named below was already dead when this file was written, and the
+> "v4.1 replacement" columns describe an intent that was only partly built.
+>
+> **Do not read any line of this file as how DAN behaves today.** In particular
+> §9 promises "registry + `ApprovalGate`; rejected/blocked tool calls never
+> execute; destructive blocked by default" — that never shipped and is FALSE
+> today (see the note in §9).
+>
+> Current truth lives in: `AGENTS.md`, `docs/PROJECT_RULES.md`,
+> `docs/STATUS.md`, `docs/CO-JEST-GDZIE.md` (what lives where),
+> `docs/GLOS-I-KOLEJKA.md` (voice/queue) and the shipping code under `dan/`.
+> Naming: everything here that says `jarvisd` / `com.ozzy.jarvisd` / `~/.jarvis`
+> is today `dand` / `com.dan.dand` / `~/.dan`, API on `127.0.0.1:41741`.
+
+> **Original status line (2026-06-30, kept for provenance):** AUTHORITATIVE (Prompt 00B). Runtime picture of the old DAN/Jarvis,
 > reconstructed **read-only** from
 > `jarvis-diagnostic-20260630-194208.tar.gz` (snapshot **2026-06-30 19:42 CEST**,
 > macOS 26.5.1 / Darwin 25.5.0 arm64, user uid 501) plus a read-only inspection
@@ -182,14 +201,30 @@ Both trees are volatile `/tmp` and serve as the system's de-facto database.
   actions via `ctx.confirm` (verified by `test_shell_safety.py` /
   `test_tool_confirmations.py`), with `delegate`/`ops` plan-vs-apply modes — a
   good concept to migrate, but it lives inside the agent, not behind a daemon.
-- **v4.1:** registry + `ApprovalGate`; rejected/blocked tool calls never execute;
-  destructive blocked by default; secrets redacted; **no reliance on provider
-  sandbox flags** ([ADR-010](DECISIONS.md#adr-010),
+- **v4.1 intent (NOT what shipped):** registry + `ApprovalGate`; rejected/blocked
+  tool calls never execute; destructive blocked by default; secrets redacted;
+  **no reliance on provider sandbox flags** ([ADR-010](DECISIONS.md#adr-010),
   [SECURITY_MODEL.md](SECURITY_MODEL.md)).
+  > **STALE — corrected 2026-07-21.** The approval half of that plan was
+  > abandoned. `ToolPermissionPolicy.decide()` now returns ALLOW unconditionally
+  > for every risk class and every source, and `ToolRegistry.request_tool()`
+  > ignores its `permission_policy`/`source`/`approval_gate` arguments and
+  > executes immediately. `ApprovalGate` still exists but is not in the tool
+  > execution path. What DID ship, and is real: **secret redaction**
+  > (`dan/security/redaction.py` + a 4096-char persistence cap), and
+  > tool-internal containment — approved roots, the `shell_read` allowlist, a
+  > scrubbed environment, git `fsmonitor`/`hooksPath`/`protocol.ext` hardening,
+  > and runtime/output bounds. Also true: DAN still does not use
+  > `--dangerously-skip-permissions`.
 
 ---
 
 ## 10. Likely conflicts with the future `com.ozzy.jarvisd`
+
+> **Naming — corrected 2026-07-21.** The label `com.ozzy.jarvisd` was never
+> shipped. The one official label today is **`com.dan.dand`**
+> (`~/.dan/bin/dand`, API `127.0.0.1:41741`); the panel runs under
+> `com.dan.panel`. Read the whole section with that substitution.
 
 1. **Label confusion:** old `com.ozzy.jarvis` vs new `com.ozzy.jarvisd` differ by
    one letter. The supervisor must match exactly and surface both.
@@ -202,8 +237,9 @@ Both trees are volatile `/tmp` and serve as the system's de-facto database.
 4. **`/tmp` ambiguity:** stale `/tmp/dan-voice/state.json`, `broker.pid`, `ready`
    could mislead any tool that still trusts `/tmp`.
 5. **TCC trap:** any new agent must keep its script/logs out of `~/Documents`
-   (use `~/.jarvis`) to avoid the "can't open input file" thrash seen for
-   `com.dan.voice-broker`.
+   (today: `~/.dan`) to avoid the "can't open input file" thrash seen for
+   `com.dan.voice-broker`. This one is still live and is honoured by the
+   shipping installer — see `docs/runbooks/LAUNCHD.md`.
 
 The `RuntimeSupervisor` (Prompt 08) records these as
 `RuntimeProcessObservation`s and warns via `/state` and `/runtime/processes`.

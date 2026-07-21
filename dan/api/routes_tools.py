@@ -24,7 +24,9 @@ def get_tools(app: DaemonApp) -> dict[str, object]:
 
 def post_tool_request(app: DaemonApp, request_payload: Any) -> dict[str, object]:
     payload = _validate_request_payload(request_payload)
-    # Source is backend-owned audit metadata, never caller-controlled.
+    # Backend-owned, never caller-controlled — and inconsequential:
+    # DaemonApp.request_tool discards it (`del source`). Future-proofing, not a
+    # control.
     result = app.request_tool(
         tool_name=payload["tool_name"],
         arguments=payload["arguments"],

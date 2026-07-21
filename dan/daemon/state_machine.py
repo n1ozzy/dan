@@ -54,6 +54,10 @@ _NORMAL_TRANSITIONS: dict[RuntimeState, set[RuntimeState]] = {
     RuntimeState.TOOLING: {RuntimeState.THINKING},
     RuntimeState.SPEAKING: {RuntimeState.IDLE, RuntimeState.INTERRUPTED},
     RuntimeState.INTERRUPTED: {RuntimeState.LISTENING, RuntimeState.THINKING},
+    # ERROR is not sticky: any turn that finishes afterwards can walk it back
+    # to IDLE. That is fine for a per-turn fault and wrong for a daemon-level
+    # one — it is what makes DaemonApp.mark_failed's red light disappear on its
+    # own. See docs/reviews/2026-07-21-restart-orphan-shell-review.md §9.
     RuntimeState.ERROR: {RuntimeState.IDLE},
     RuntimeState.STOPPING: set(),
 }
@@ -156,6 +160,11 @@ class RuntimeStateMachine:
         event but NEVER raises, and always leaves the runtime in IDLE so it is
         not stranded outside IDLE after a failed turn. STOPPING is terminal
         shutdown and is never resurrected; an already-IDLE runtime is a no-op.
+
+        There is no force_error sibling, and DaemonApp.mark_failed needs one:
+        it uses the normal transition() and swallows the failure, so a daemon
+        that cannot persist ERROR keeps reporting ok
+        (docs/reviews/2026-07-21-restart-orphan-shell-review.md §8).
         """
 
         with self._lock:

@@ -1,4 +1,19 @@
-"""Prompt 13 tool permission, approval and recorder tests."""
+"""Permission-policy, approval-gate and tool-run recorder tests.
+
+What these prove, so nobody misreads them as a security guarantee:
+`ToolPermissionPolicy.decide()` allows EVERYTHING. Every `== ALLOW` assertion
+below is asserting exactly that, including the ones whose names mention
+approved roots or symlinks. The policy has no path logic at all.
+
+Real containment is enforced inside the tools and is covered elsewhere:
+approved roots in `test_file_read_tool.py`, the `shell_read` allowlist and git
+hardening in `test_file_write_shell_read_tools.py`. Look there before
+concluding a path is reachable.
+
+`ApprovalGate` is exercised here as a standalone record-keeper. It is NOT in
+the tool execution path — `ToolRegistry.request_tool` never calls it, which is
+what the `*_executes_without_approval*` tests below pin down.
+"""
 
 from __future__ import annotations
 
@@ -208,8 +223,9 @@ def test_direct_policy_allows_former_approval_required_risks(risk: str) -> None:
 
 
 def test_shell_allows_model_originated_when_shell_approval_disabled() -> None:
-    """The panel's "require approval for shell" toggle is the real knob: when
-    it is off, model-originated shell tools run without an approval click."""
+    """The `require_approval_for_shell` flag is inert — setting it either way
+    changes nothing. This pins the False case; the True case is pinned in
+    test_effective_tool_policy.py, and both end in ALLOW."""
 
     policy = ToolPermissionPolicy(require_approval_for_shell=False)
 

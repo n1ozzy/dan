@@ -147,7 +147,9 @@ def test_cockpit_is_single_view_app_with_tabbar() -> None:
     assert "chat-toolbar" in markup
     assert "conversationSelect" not in markup
     assert "newConversationButton" not in markup
-    assert "one continuous conversation" in markup
+    # Case-insensitive on purpose: the toolbar label is user-visible copy, so
+    # its capitalisation is a design choice. Pin the statement, not the letter.
+    assert "one continuous conversation" in markup.lower()
     assert "composer" in markup
     assert "chat-log" in markup
     assert "tabbar" in styles

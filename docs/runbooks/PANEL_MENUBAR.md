@@ -36,22 +36,27 @@ scripts/dan-panel            # config resolution mirrors scripts/dand
 scripts/dan-panel --probe    # exit 0 = PyObjC + assets OK, 2 = not
 ```
 
-- **Left-click** the "J" status item: toggle the widget card
-  (size from `[panel] width/height`, default 480×760). The card hides on
-  a click outside (global mouse-down monitor) and when it loses key focus.
+> **Since 2026-07-21 the panel normally runs under launchd**, label
+> `com.dan.panel` → `~/.dan/bin/dan-panel` (plist
+> `~/Library/LaunchAgents/com.dan.panel.plist`). The commands above are the
+> manual/dev path; use them for probing, not to start a second instance next to
+> the launchd one. Ownership table: `docs/CO-JEST-GDZIE.md`. The old rumps
+> widget and its `com.dan.panels` plist were quarantined in the same cutover.
+
+- **Left-click** the "J" status item: toggle the widget card (size from
+  `[panel] width/height`). The card hides when it loses key focus
+  (`windowDidResignKey`) — the shell installs no global event monitor.
 - **Right-click**: menu with **Quit DAN Panel** (⌘Q also works while
   the panel has focus).
 
-## State border (widget chrome)
+## Widget chrome
 
 The card is a borderless, non-activating `NSPanel` (no system popover
 bubble, no arrow): a transparent window whose WKWebView layer carries the
-whole geometry — corner radius 12 plus a 2pt state border drawn by the
-shell, NOT by the cockpit HTML/CSS: teal = daemon online, amber = approvals
-pending, red = daemon unreachable. A daemon thread polls `GET /health`
-every ~3 s (`STATUS_POLL_SECONDS`) and repaints the layer on the main
-thread. The web document stays chromeless — its own state signals are the
-state pill, the offline hero, and the approvals badge/nudge.
+whole geometry. The native layer only clips — corner radius plus the window
+shadow. The animated state frame is drawn by CSS inside the cockpit and driven
+by the state the page already fetches, so the shell polls nothing and paints no
+state colour.
 
 ## Config
 

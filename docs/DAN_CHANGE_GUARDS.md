@@ -1,6 +1,8 @@
 # DAN Change Guards
 
-Classification: operational guard catalogue.
+Classification: operational guard catalogue. Every path pattern below was
+re-verified against the checkout on 2026-07-21 — the package is `dan/`, there is
+no `jarvis/` directory, and a guard written against `jarvis/...` matches nothing.
 
 ## Purpose
 
@@ -67,9 +69,12 @@ git diff --name-only | grep -E '^dan/brain/(claude|codex|openai|.*adapter)' \
 Use when docs are forbidden.
 
 ```sh
-git diff --name-only | grep -E '^docs/|^README.md|^AGENTS.md|^FIXME.md' \
+git diff --name-only | grep -E '^docs/|^README.md|^AGENTS.md|^CLAUDE.md' \
   && echo "ERROR: docs changed unexpectedly" && exit 1 || true
 ```
+
+(`FIXME.md` used to be listed here; that file no longer exists in the repo, so
+the pattern was replaced with `CLAUDE.md`, which does.)
 
 ## Docs-only guard
 

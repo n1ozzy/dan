@@ -1,17 +1,30 @@
 # DAN Current State
 
-Classification: historical evidence (handoff) — superseded 2026-07-18 by Release 1;
-see `docs/STATUS.md`, section "Release 1 cutover".
-Source snapshot: branch `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `58cca12 docs: finalize Memory OS rollout handoff` in the local checkout.
+> ## ⚠ HISTORICAL SNAPSHOT — DO NOT READ THIS AS CURRENT BEHAVIOUR
+>
+> The file name lies. This is a frozen Memory OS handoff, **superseded on
+> 2026-07-18 by Release 1**. Nothing below describes how the running daemon
+> behaves today.
+>
+> - Snapshot branch: `rescue/audt-gpt5.5pro-limit-cdn`, HEAD `58cca12 docs: finalize Memory OS rollout handoff`.
+> - Live branch today: `agent/dan-release1-integration`.
+> - Current truth: `docs/STATUS.md` ("Release 1 cutover"), `AGENTS.md`,
+>   `docs/PROJECT_RULES.md`, `docs/SECURITY_MODEL.md`, `docs/CO-JEST-GDZIE.md`.
+>
+> On 2026-07-21 the false security claims in this file were corrected or deleted
+> in place: Release 1 executes tools directly, so there is no approval gate, no
+> source-sensitivity and no policy-level blocking. See `dan/tools/permissions.py`
+> and `dan/tools/registry.py`.
+
 Public reference: `https://github.com/n1ozzy/jarvis` public `main`, used only as a secondary reference.
 
 ## Overview
 
 DAN is a local, single-user runtime centered on `dand`. The daemon owns durable truth: conversations, turns, events, memory, approvals, tool runs, worker jobs, voice queue, listening leases, settings, and runtime state. UI surfaces such as the panel or cockpit are clients only.
 
-The active local branch is not public `main`. The branch under review is `rescue/audt-gpt5.5pro-limit-cdn`. The branch contains the Memory OS rollout line after the v4.2 runtime work.
+At the time of this snapshot the branch under review was `rescue/audt-gpt5.5pro-limit-cdn`, which carried the Memory OS rollout line after the v4.2 runtime work. Work moved to `agent/dan-release1-integration` on 2026-07-18.
 
-## Repository status
+## Repository status (snapshot, 2026-07-18 and earlier)
 
 - Branch: `rescue/audt-gpt5.5pro-limit-cdn`
 - HEAD: `58cca12`
@@ -33,13 +46,14 @@ The active local branch is not public `main`. The branch under review is `rescue
 - Text turn pipeline exists.
 - CLI text input exists.
 - Conversation history API exists.
-- Tool registry and approval flow exist.
-- Approved tool execution exists.
+- Tool registry exists. The approval flow described here is NOT in the Release 1
+  execution path — `ToolRegistry.request_tool()` executes immediately.
 - Model tool request capture and provider tool-call parsing exist.
 - Static cockpit / panel client infrastructure exists.
 - WebSocket event streaming exists.
-- Source-sensitive tool permissions exist.
-- Read-only file, UI, screen, terminal, and accessibility tools exist behind policy.
+- Read-only file, UI, screen, terminal, and accessibility tools exist. Each tool
+  enforces its own guards (approved roots, command allowlist, scrubbed env);
+  there is no central permission policy gating them.
 - Voice queue, listening leases, recorder/STT/TTS plumbing, anti-echo, and broker architecture exist.
 - Menu-bar panel and global PTT work exist.
 - Security hardening tasks from FIXME are partially or substantially closed.
@@ -88,10 +102,13 @@ Runtime/config/ContextBuilder/test work is complete through session/profile scop
 - Conversation and turn persistence.
 - Text turn orchestration.
 - Stateless brain adapters and adapter selection.
-- Tool registry, approval gate, permission policy, and tool run recorder.
-- Local transport token hardening for private data reads and mutating endpoints.
-- Source-sensitive permission model.
-- File, shell, terminal, screen, UI, and memory tools with policy boundaries.
+- Tool registry and tool run recorder. `ApprovalGate` and `ToolPermissionPolicy`
+  are still importable, but neither gates execution any more.
+- Local transport token hardening for private data reads and mutating endpoints
+  (header `X-DAN-Token`, token file `~/.dan/runtime/api-token`). This one is real
+  and still enforced in `dan/daemon/lifecycle.py`.
+- File, shell, terminal, screen, UI, and memory tools; each enforces its own
+  boundaries.
 - Voice components for queue, broker, chunking, listening leases, recorder, STT, TTS, anti-echo, and cancellation.
 - Panel/cockpit assets and menu-bar app client.
 - Launchd assets are manual; no automatic install by default.
@@ -136,18 +153,28 @@ Runtime/config/ContextBuilder/test work is complete through session/profile scop
 - Compiled memory remains default-off.
 - Runtime dependency wiring does not equal global enablement.
 - Config-based dev/local enablement exists, but config defaults keep compiled memory off and `[memory].enabled=false` blocks it.
-- Session/profile scoped enablement and request-scoped override support exist as internal-only wiring and do not persist a public user setting.
-- No env, panel, public API, user-facing, or global production enablement exists for compiled memory.
-- Provider CLI adapters are configured disabled by default unless enabled in config.
-- Voice is configured disabled by default in `config/dan.example.toml`, but enabled in local development with M2 voice and clean mastering profile.
+- Session/profile scoped enablement exists and request-scoped override support exists; both are internal-only wiring and do not persist a public user setting.
+- Snapshot claim: No env, panel, public API, user-facing, or global production
+  enablement exists for compiled memory. **Corrected 2026-07-21:** operator env
+  controls DO exist — `DAN_COMPILED_MEMORY_ENABLED` and
+  `DAN_COMPILED_MEMORY_FORCE_DISABLED` are read in
+  `create_daemon_app_from_config` (`dan/daemon/app.py`). The rest of the claim
+  still holds: no panel, public API, user-facing or global production
+  enablement exists.
+- Provider CLI adapters default to `enabled = false` in `dan/config.py`, but
+  `config/dan.example.toml` ships `[brain.claude_cli] enabled = true`.
+- Voice is ENABLED in `config/dan.example.toml` (`[voice] enabled = true`,
+  `mastering_profile = "bastard"`); only the `dan/config.py` dataclass default is off.
 - Launchd auto-install is disabled by default.
-- Destructive tools are disabled by default in `config/dan.example.toml`, but enabled in local development.
-- Network access through tools requires explicit approval by default, but is enabled without approval in local development.
+- Destructive tools are ENABLED by default in both `dan/config.py`
+  (`destructive_tools_enabled = True`) and `config/dan.example.toml`. Since
+  Release 1 the flag is inert anyway — the policy allows every risk class.
+- Network access through tools requires no approval:
+  `require_approval_for_network = false` everywhere, and the policy never blocks.
 
 ## Not implemented yet
 
 - Global compiled memory enablement.
-- Env-based compiled memory enablement.
 - Panel toggle for compiled memory.
 - Public API/user-facing compiled memory toggle.
 - Usage ledger for compiled memory selection events.
@@ -167,11 +194,16 @@ Runtime/config/ContextBuilder/test work is complete through session/profile scop
 
 ## Safety posture
 
-Current safety posture is conservative in default configuration; local development configuration is permissive (destructive tools and network enabled, auto-approval for all operations).
+Safety posture is permissive by design (Ozzy's decree, owner-controlled localhost
+runtime): destructive tools and network enabled, `auto_approve_mode = "all"`, no
+approval click for any tool class. What still refuses work lives inside the tools
+themselves — approved-root containment, the `shell_read` allowlist, the scrubbed
+environment, git hardening and the runtime/output bounds.
 
 - DAN-owned state is assembled from DB/config/request data.
 - Provider sessions are not memory.
-- Model-originated tool calls pass through permission policy and approval.
+- Model-originated tool calls execute directly. There is no permission gate and
+  no approval step between the model and the tool.
 - Model-originated memory writes become candidates, not hidden active facts.
 - MemoryCompiler is deterministic and read-only during context build.
 - Unsafe, invalid, stale, and non-context-safe memory must not reach final prompt context.

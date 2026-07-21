@@ -1,241 +1,284 @@
-# Jarvis v4.1 — Security Model (FROZEN)
+# DAN — Security Model (as built)
 
-> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
-> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
-
-> **SUPERSEDED FOR THE ACTIVE OWNER RUNTIME (2026-07-13):** this document
-> describes the older restrictive approval architecture. Model-originated tools
-> now execute directly through the registry and are recorded once; they do not
-> create approvals or `awaiting_approval` turns. Do not use the rules below to
-> reinsert a gate into that active path. Redaction and truthful run recording
-> remain active.
-
-> **Status:** FROZEN (Prompt 00A). Defines the tool permission model, the
-> approval gate, secret redaction, and the boundaries on brains and workers.
-> Field shapes are in [CONTRACTS.md](CONTRACTS.md).
+> **Status: CURRENT, rewritten 2026-07-21.** This file used to be marked FROZEN
+> and described an approval architecture that the shipping runtime has not had
+> for a long time. Reading it cost real debugging time, so the stale contract
+> was removed rather than annotated. If you need the original restrictive
+> design, it is in git history and in the ADRs.
+>
+> **The authority is the code**, in this order: `dan/tools/permissions.py`,
+> `dan/tools/registry.py`, then the individual tools under `dan/tools/`.
 
 ---
 
 ## 1. Threat model (single-user, local)
 
-Jarvis runs as the user, on the user's Mac, with the user's privileges. The risk
-is **not** a remote attacker — it is **autonomous over-reach**: a brain or worker
-proposing an action (delete files, run a shell command, hit the network) that
-runs without the human realizing it. The old `dan` system ran its command path
-with `--dangerously-skip-permissions` and relied on push-to-talk as the only
-brake. v4.1 replaces that with an explicit registry + approval gate.
+DAN runs as the user, on the user's Mac, with the user's privileges. The risk
+is **not** a remote attacker — it is **autonomous over-reach**: a brain or
+worker doing something (deleting files, running a command, hitting the
+network) that the owner did not intend.
 
-The two pillars:
+The original v4.1 answer was a registry plus an approval gate. **That gate is
+gone.** The current answer is narrower and it is important to say it plainly:
 
-1. **Every tool goes through the registry and a permission policy**
-   ([ADR-010](DECISIONS.md#adr-010)).
-2. **Brains and workers cannot reach the world directly** — no speaking, no
-   memory-fact writes, no unsandboxed filesystem/shell
-   ([ADR-003](DECISIONS.md#adr-003), [ADR-009](DECISIONS.md#adr-009)).
+> Model-originated tools execute immediately. Nothing asks the owner first.
+> What limits the damage is what each individual tool refuses to do.
 
----
-
-## 2. Tool registry & permission classes (Prompt 12)
-
-Every callable capability is a registered tool with a **permission class**. The
-default policy:
-
-| Permission class | Default | Meaning |
-|------------------|---------|---------|
-| `safe_read` | **allow** | read-only, side-effect-free reads |
-| `safe_status` | **allow** | status/inspection of the running system |
-| `file_read` | **allow within approved roots** | read files under approved roots only |
-| `file_write` | **approval required** | writing files |
-| `shell_read` | **approval required (initially)** | read-only shell commands |
-| `shell_write` | **approval required** | state-changing shell commands |
-| `network` | **approval required** | any outbound network access |
-| `destructive` | **blocked-by-default; enabled in Ozzy mode** | irreversible/dangerous ops |
-
-### Rules (FROZEN)
-
-- A **rejected** or **blocked** `ToolCall` **never executes**.
-- An **approved** call **records a `tool_run`** (in `tool_runs`).
-- `destructive` is **blocked** unless explicitly enabled in configuration
-  (e.g., `security.destructive_tools_enabled=true` in `~/.jarvis/jarvis.toml`).
-  Normally never auto-approved even when enabled; in Ozzy mode with
-  `auto_approve_mode="all"`, may be auto-approved for model-originated requests.
-- File access is **root-scoped**: `file_read` is only allowed within approved
-  roots; absolute paths and parent-escapes (`..`) outside approved roots are
-  refused.
-
-### What the code actually does today (2026-07-21)
-
-The table above is the frozen contract. The shipping runtime has drifted from
-it and the difference matters when you debug a "DAN has no access" report:
-
-- **The approval gates are inert.** `ToolPermissionPolicy.decide` returns ALLOW
-  for every risk class and every source ("runtime-lab policy"). The
-  `security.require_approval_for_*` flags and `auto_approve_mode` are kept as
-  configuration-compatibility fields and are rendered as runtime state, but they
-  create no approval rows and block nothing. `ToolRegistry.request_tool` ignores
-  the policy argument entirely and executes immediately.
-- **Containment is what still bites.** Approved-root scoping, the `shell_read`
-  command allowlist, the scrubbed environment and the git hardening are enforced
-  inside the tools themselves, not by the policy — so those are the guards that
-  actually refuse work.
-- **`shell_read` matches the WHOLE normalized command** against an exact
-  allowlist, so a pre-registered command with one extra argument is refused.
-  `security.shell_read_unrestricted` (default `false`) lets the owner of a local,
-  localhost-only runtime drop that allowlist and nothing else; root containment,
-  the scrubbed environment, the git `fsmonitor`/`hooksPath`/`protocol.ext`
-  disarming and the runtime/output bounds all stay in force.
-
-Do not read the frozen table as a description of current behaviour. Either the
-policy is reinstated or the table is rewritten — until then this note is the
-truth, and `dan/tools/permissions.py` is the authority.
+That is a deliberate choice for a local, single-owner, localhost-only runtime.
+It is not a claim that gating exists.
 
 ---
 
-## 3. Approval gate (Prompt 12)
+## 2. Tool classes and what actually enforces them
 
-A gated `ToolCall` produces an `Approval` (see [CONTRACTS.md](CONTRACTS.md)):
+Every callable capability is registered with a **risk class** (`safe_read`,
+`safe_status`, `file_read`, `file_write`, `shell_read`, `shell_write`,
+`network`, `destructive`, plus the operator classes `ui_*`, `screen_read`,
+`terminal_*`, `memory_write`).
 
-```
-ToolCall (proposed)
-      ▼
-permission requires approval?
-      ▼ yes
-Approval (pending)  +  daemon state TOOLING  +  approval.requested
-      ▼
-approval.granted ──► TOOLING ──► tool_run recorded
-approval.rejected ─► ToolCall rejected ──► NEVER executes
-```
+The risk class is **metadata**. It is recorded in `tool_runs` and in events. It
+does not gate execution.
 
-- The gated action **never runs before `approved`**.
-- Destructive actions are **normally never auto-approved**; in Ozzy mode
-  (`auto_approve_mode="all"`), they may be auto-approved for model-originated
-  requests.
-- Decisions are persisted (`approvals`) and event-logged (`approval.*`).
-- `WAITING_APPROVAL` is not a v4.1 runtime state; approval waiting is modeled by
-  `approvals`, approval/tool events and, when the runtime is actively waiting as
-  part of a turn, `TOOLING`.
+| Layer | What it does today |
+|---|---|
+| `ToolPermissionPolicy.decide()` | Returns **ALLOW** for every risk class and every source. Classifies and records; blocks nothing. |
+| `ToolRegistry.request_tool()` | Ignores its `permission_policy`, `source` and `approval_gate` arguments and executes immediately. |
+| **The individual tool** | **The only real enforcement.** See below. |
+
+### What the tools themselves enforce
+
+- **`file_read` / `file_write`** — approved-root containment. Paths are
+  resolved with `realpath` *before* the containment test, so a symlink pointing
+  outside an approved root is refused. An empty `approved_roots` refuses
+  everything (fail-closed). `file_write` additionally pins the parent directory
+  by fd and uses `O_NOFOLLOW`/`O_EXCL` + `renameat`, so a symlink swap between
+  the check and the write cannot redirect it.
+- **`shell_read`** — a scrubbed environment and runtime/output bounds, always.
+  Plus a command allowlist and git hardening (`fsmonitor`, `hooksPath` and
+  `protocol.ext` disarmed) — **but both of those are off on this machine**, and
+  the second one only ever worked because of the first. See "The `shell_read`
+  allowlist and its opt-out" below before you count either as a barrier.
+- Every tool — its own argument validation, size caps and timeouts.
+
+**Consequence for anyone editing a tool:** the check you are looking at is not
+defense in depth. It is the defense. Nothing behind it catches your mistake.
+
+### The `shell_read` allowlist and its opt-out
+
+The allowlist matches the **whole normalized command string** exactly, so a
+pre-registered command with one extra argument is refused. That was a constant
+source of "DAN can't do anything" reports.
+
+`security.shell_read_unrestricted` (default `false`, added 2026-07-21) drops
+that allowlist. It is intended for a local, localhost-only runtime whose owner
+is the only user, and on this machine it is **on**
+(`~/.dan/config.toml`, verified 2026-07-21).
+
+Dropping it is not the narrow change it sounds like. Two of the guards that
+"still stand" are not what their names suggest (`dan/tools/shell_tool.py`, which
+carries the same warning as `KNOWN DEFECT` in its module docstring):
+
+- **Git hardening stops being exhaustive.** `core.fsmonitor` /
+  `core.hooksPath` / `protocol.ext` are disarmed only when
+  `shlex.split(normalized)[0] == "git"`. That test was exhaustive *because* the
+  allowlist held commands to a fixed set of literals. Without it, `/usr/bin/git`,
+  `cd sub && git …`, `env git …` and `sh -c 'git …'` all reach git unhardened, so
+  a hostile repository can run its own program.
+- **Root containment binds the cwd, not the command.** `_resolve_cwd` confines
+  where the process starts; argv carries its own absolute paths, and
+  `subprocess.run(…, shell=True)` gets the string with no metacharacter
+  handling.
+
+The scrubbed environment and the runtime/output bounds do hold.
+
+### Configuration keys that no longer do anything
+
+`security.require_approval_for_shell`, `..._file_write`, `..._network`,
+`..._ui`, `..._terminal`, `..._memory`, `security.auto_approve_mode`,
+`security.voice_auto_approve_tools`, `security.destructive_tools_enabled` and
+`security.trusted_scopes` are **inert**. They still parse, they are still
+rendered as runtime state, and the panel still shows them — but no code path
+reads them to make a decision. Do not debug a permissions problem by changing
+one of them; you will change nothing. `tests/test_effective_tool_policy.py`
+exists specifically to keep them dead.
+
+`security.approved_roots` is the exception — it is real, because the tools use
+it. Real is not the same as narrow: on this machine it is
+`["~", "/tmp", "/Volumes", "/Applications"]` (measured 2026-07-21), so the
+containment holds and encloses the entire home directory. Read the live value
+before citing it as a limit.
+
+### Who can reach a tool: the API accepts unauthenticated writes
+
+The transport token is built (`X-DAN-Token`, `dan/security/transport.py`,
+enforced in `dan/daemon/lifecycle.py`) but **it is off**:
+`security.api_token_required = false` in the owner's `~/.dan/config.toml`
+(verified 2026-07-21), and `_transport_authorized` returns `True` immediately
+for every mutating method when that flag is false. Nothing downstream re-checks
+who sent the request. What is left standing, precisely:
+
+- `_host_header_is_local` is a **DNS-rebinding guard** — a foreign name that
+  resolves to 127.0.0.1 is rejected because the `Host` header carries it. A
+  correct `Host: 127.0.0.1:41741` passes it, which a browser sends anyway.
+- **CORS with an origin allow-list** governs whether the caller may *read the
+  response*, not whether the request *runs*.
+- **No `Content-Type` check anywhere** — only `Content-Length` is read — so a
+  cross-origin `text/plain` POST is a CORS *simple request*: no preflight, and
+  it executes.
+
+Net: any page the owner visits can fire a blind write into the API. Combined
+with `security.shell_read_unrestricted = true` (also live), the reachable
+endpoint is `shell_read`, which hands the string to
+`subprocess.run(shell=True)`. This is the one finding here that is remotely
+triggerable rather than merely permissive.
+
+Setting `api_token_required = true` closes it — but verify the panel and the CLI
+actually send `X-DAN-Token` first, or flipping it blind locks out the cockpit.
 
 ---
 
-## 4. Secret redaction (Prompts 04 & 12)
+## 3. Approval gate — removed from the execution path
 
-Secrets must never be written to the event store or to `tool_run` records in the
-clear.
+`ApprovalGate` (in `dan/tools/registry.py`) still exists and still writes
+`approvals` rows and `approval.*` events when something calls it directly. **No
+tool execution calls it.** There is no `awaiting_approval` turn for
+model-originated tools, and approving something is not a prerequisite for
+anything.
 
-- A **policy helper redacts secrets in event payloads before write**
-  ([ADR-010](DECISIONS.md#adr-010)).
-- `EventStore.append` is the final persistence guard: every event payload is
-  passed through the central redactor immediately before JSON serialization, so
-  the SQLite `events.payload_json` row and `/events` API payloads cannot expose
-  raw secrets even if a caller forgot to redact earlier.
-- `ToolCall.args` and `ToolCall.result` are **redacted** wherever they appear in
-  events.
-- Callers may still redact earlier for display, approval rows, tool run rows or
-  logs, but earlier redaction is defense-in-depth rather than the event-store
-  guarantee.
-- API keys / tokens live outside the DB (environment / config), never in
+Treat the class as a record-keeper for historical rows, not as a control.
+
+---
+
+## 4. Secret redaction — active and load-bearing
+
+This part of the original model is fully intact and must stay that way.
+
+- A central redactor (`dan/security/redaction.py`) is applied to event payloads
+  **before write**. `EventStore.append` is the final guard: every payload goes
+  through it immediately before JSON serialization, so `events.payload_json`
+  and the `/events` API cannot expose raw secrets even if a caller forgot to
+  redact earlier.
+- Tool arguments and results are redacted wherever they appear in events and in
+  `tool_runs`.
+- The durable store additionally **caps long strings**
+  (`registry.PERSIST_MAX_STRING_CHARS`, 4096) so a large tool payload never
+  lands whole in `tool_runs`/`events` even if a novel secret shape slips
+  redaction. The model still receives the full redacted content through the
+  transient tool result.
+- API keys and tokens live outside the DB (environment / config), never in
   `events`.
 
 ---
 
-## 5. Brain boundary ([ADR-003](DECISIONS.md#adr-003))
+## 5. Brain boundary
 
-A brain adapter is a **stateless** function `BrainRequest → BrainResponse`:
+A brain adapter is a `BrainRequest → BrainResponse` function:
 
 - It receives a fully-formed `BrainRequest` and returns a `BrainResponse`.
-- It **does not** speak, **does not** write memory, **does not** touch the panel,
-  **does not** persist its own session.
-- The provider's server-side session is **not** Jarvis memory — context always
-  comes from Jarvis's DB + config.
-- A missing CLI yields `adapter_unavailable`; a subprocess error yields
-  `BrainAdapterError`. Timeouts are configurable. (Prompt 11.)
+- It **does not** speak, **does not** write memory facts, **does not** touch
+  the panel.
+- If a brain wants to act, it emits a tool call — which the registry then
+  executes immediately (§2). The brain never runs anything itself.
 
-If the brain wants to *act*, it proposes a `ToolCall` — which is then subject to
-the registry and the approval gate. The brain never executes anything itself.
+### The provider session IS persistent — do not believe otherwise
 
-> **Legacy evidence.** The old `cli_brain.run()` invoked
-> `claude -p --dangerously-skip-permissions` (full Bash/Edit/Write, no prompt),
-> and an attempted `--sandbox workspace-write` was *ignored* because
-> `trust_level="trusted"`. v4.1 therefore does **not** rely on any provider
-> sandbox flag for safety — the registry + approval gate is the only control.
-> See [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md) §9.
+This document previously said a brain "does not persist its own session". That
+was false and it actively misleads debugging, so it is corrected here in full:
+
+`ClaudeCliAdapter` keeps **one persistent provider session for the daemon's
+lifetime**, with a durable checkpoint at `~/.dan/runtime/claude-session.json`,
+rejoined across restarts with `--resume`.
+
+The consequences are load-bearing:
+
+- A **resumed** session keeps its ORIGINAL system prompt and its ORIGINAL tool
+  set. DAN's prompt only rides along as `--append-system-prompt`. Bootstrap
+  with a full `--system-prompt` happens only when there is no checkpoint.
+- Therefore a poisoned or foreign checkpoint **survives every restart** and DAN
+  will keep reporting a tool set that is not ours. Recovery is to quarantine
+  the checkpoint and restart — see `docs/ODZYSKIWANIE.md`.
+- Claude's native tools are deliberately disabled with `--tools ""`, and
+  `--setting-sources ""` isolates the subprocess from the operator's CLAUDE.md
+  and settings.
+
+What remains true is the *intent* behind the old wording: **the provider's
+session is not DAN's memory.** Context always comes from DAN's DB and config.
+The checkpoint is an execution cache — it must never be treated as a memory
+store, and it must never be the reason a fact "is remembered".
 
 ---
 
 ## 6. Worker boundary ([ADR-009](DECISIONS.md#adr-009))
 
-A worker (Codex/Claude background job) is even more constrained than a brain:
+> **Workers are not wired up on this branch.** `worker_broker` is `None`, so the
+> `/workers/*` endpoints fail rather than run anything, and AGENTS.md states
+> "Workers: disabled for now". The boundary below is the contract to honour when
+> they are re-enabled — today nothing exercises it.
 
 - A worker **never speaks** — it cannot enqueue a `VoiceRequest` on its own
   authority ([ADR-005](DECISIONS.md#adr-005)).
-- A worker **never writes a memory fact directly** — its result is a **memory
-  candidate** that a human or policy must promote.
-- Worker activity is fully visible in the EventStore stream (`worker.job.*`
-  entries in the general `events` table).
+- A worker's result is a **memory candidate**, not an activated memory fact.
+- Worker activity is visible in the EventStore stream (`worker.job.*`).
+
+Caveat, stated honestly: ADR-009 also wanted human promotion to be *enforced*
+for `memory_write`. Since the approval gate left the execution path (§3), that
+promotion step is a convention in the memory flow, not a gate the policy layer
+imposes. Verify in `dan/memory/` before relying on it.
 
 ---
 
-## 7. Network & destructive posture (default configuration)
+## 7. Network and destructive posture
 
-- **Network is approval-gated by default** (`network` requires approval). In
-  Ozzy mode with `auto_approve_mode="all"`, network calls like `web_fetch` are
-  auto-approved for model-originated requests. No tool reaches out without an
-  explicit configuration decision or approval.
-- **Destructive operations are blocked by default**, not merely gated — enabling
-  them is a deliberate, separate configuration act
-  (`security.destructive_tools_enabled=true`), and even when enabled, individual
-  calls normally require approval (unless `auto_approve_mode="all"`).
-- **No automatic killing** of processes (see
-  [LAUNCH_SUPERVISION.md](LAUNCH_SUPERVISION.md)).
-- **No destructive cleanup** of the old `dan` repo, ever, automatically.
+- **Network tools run without approval.** `web_fetch` and friends execute like
+  any other tool.
+- **Destructive tools run without approval** when registered. There is no
+  blocked-by-default class left in the policy; `destructive_tools_enabled` is
+  inert (§2). Whether a destructive capability exists at all is decided by
+  whether the tool is registered in `dan/daemon/app.py`, not by a flag.
+- **No automatic killing** of processes — see
+  [LAUNCH_SUPERVISION.md](LAUNCH_SUPERVISION.md).
+- **No destructive cleanup** of old repos or backups, ever, automatically.
 
----
-
-## 7a. Ozzy mode (bypass configuration)
-
-When `~/.jarvis/jarvis.toml [security]` sets:
-- `auto_approve_mode = "all"`
-- `destructive_tools_enabled = true`
-- `[brain.claude_cli] permission_mode = "bypassPermissions"`
-
-The runtime auto-approves **all non-blocked tools** for model-originated
-requests. Network calls (`web_fetch`), file writes, shell commands, and even
-destructive operations bypass the approval gate. This is the current Jarvis
-configuration for Ozzy. The `ToolPermissionPolicy` still classifies and audits
-all actions; bypass is a configuration choice, not a removal of the gate.
+The last two are still real invariants and are enforced by the absence of such
+tools, not by a policy.
 
 ---
 
 ## 8. macOS operator capability boundary
 
-macOS operator capabilities are high power. The model must not directly operate
-the Mac; `jarvisd` mediates all operator actions through `ToolRegistry`,
-`PermissionPolicy`, `ApprovalGate`, `EventStore`, and audited adapters. The
-architecture contract is in
+The model must not operate the Mac directly; `dand` mediates operator actions
+through the registry and audited adapters, and records them in the EventStore.
+The architecture contract is in
 [MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.md).
 
-Credential and passkey flows require user presence if a later scoped prompt
-promotes them into implementation. Jarvis may navigate to a login flow and
-trigger a system prompt, but Touch ID, device password, passkey confirmation,
-and Keychain unlock remain with the user and macOS. Secrets and credential
-material are not exposed to the model or persisted in events.
+Note that the mediation is now **auditing and adaptation, not gating** — the
+`ToolRegistry` + `PermissionPolicy` + `ApprovalGate` chain that older documents
+describe no longer refuses anything (§2, §3).
 
-External communication examples such as SMS, Messages, and phone initiation
-require a separate communication policy, contact resolution, audit model, and
-confirmation rules before implementation. The default posture is confirmation
-before sending or calling unless an explicit trusted-contact/direct-command
-policy narrows that risk.
+Credential and passkey flows remain with the user and macOS: Touch ID, device
+password, passkey confirmation and Keychain unlock cannot be driven by DAN.
+Secrets and credential material are not exposed to the model or persisted in
+events.
+
+External communication (SMS, Messages, phone calls) requires a separate
+communication policy before implementation; the default posture is
+confirmation before sending.
 
 ---
 
-## 9. Invariants (FROZEN)
+## 9. Invariants that actually hold
 
-1. No tool runs without passing the registry + permission policy.
-2. Rejected/blocked tool calls never execute.
-3. Secrets are redacted before any event/DB write.
-4. Brains are stateless and mute; they can only *propose* actions.
-5. Workers are mute and cannot write memory facts directly.
-6. Destructive is blocked-by-default (enabled + auto-approved in Ozzy mode);
-   network is approval-by-default (auto-approved in Ozzy mode with
-   `auto_approve_mode="all"`).
-7. Models never operate macOS directly; `jarvisd` mediates operator capabilities.
+1. Every tool execution is **recorded** — a `tool_run` row plus `tool.*`
+   events. Recording is the audit trail; it is not a control.
+2. Secrets are redacted before any event/DB write, and persisted strings are
+   size-capped.
+3. Brains are mute: they propose tool calls, they never speak or write memory
+   facts directly.
+4. Workers are mute and produce memory candidates, not activated facts.
+5. File tools refuse paths outside `approved_roots`, after symlink resolution.
+6. The provider session is an execution cache, never DAN's memory.
+7. Models never operate macOS directly; `dand` mediates and records.
+
+Anything about gating, rejection or blocked-by-default is not on this list
+because it is not built (§2, §3). Getting it back means writing code, not
+documentation.

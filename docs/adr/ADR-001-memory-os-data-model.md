@@ -1,8 +1,34 @@
 # ADR-001: Memory OS Data Model
 
-Classification: authoritative/current design decision.
+> **DESIGN DIRECTION, NOT A DESCRIPTION OF CURRENT BEHAVIOUR.** This ADR
+> authorizes a target data model; it does not describe how memory works today.
+> Do not read the sections below as runtime behaviour.
+>
+> **Where things actually stand (verified 2026-07-21):**
+> - The seven tables listed under "Decision" DO exist in
+>   `dan/store/schema.sql` (`memory_observations`, `memory_candidates`,
+>   `memory_items`, `memory_evidence`, `memory_topics`, `memory_usage_events`,
+>   `memory_review_decisions`), added additively as the Implementation note says.
+> - `memory_blocks` is still the runtime memory path: `MemoryManager` +
+>   `ContextBuilder` read it, and only ACTIVE blocks enter a `BrainRequest`.
+>   The cutover has not happened.
+> - Compiled memory context is default-off (`memory.compiled_context_enabled =
+>   false`).
+> - Naming: this file predates the rename. The daemon is `dand`, the package is
+>   `dan/`, the DB is `~/.dan/dan.db`. "Jarvis" below is an old name for the
+>   same runtime, not a second system.
+> - Current shapes: [../CONTRACTS.md](../CONTRACTS.md) §6;
+>   architecture: [../JARVIS_ARCHITECTURE.md](../JARVIS_ARCHITECTURE.md).
+>
+> This ADR is separate from the other file in this directory
+> (`001-dand-single-owner.md`); the two numbering schemes are unrelated.
 
-Status: accepted for future design direction.
+Classification: authoritative/current design decision. The DECISION is current
+and binding — it is the data-model direction later memory work is held to. What
+it authorizes is a target data model, so the sections below describe intended
+shape, not runtime behaviour; see the banner above for where reality stands.
+
+Status: accepted as design direction; schema landed, runtime cutover has not.
 
 ## Problem
 

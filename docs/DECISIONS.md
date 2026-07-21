@@ -1,11 +1,10 @@
-# Jarvis v4.1 — Architecture Decision Records (FROZEN)
+# DAN — Architecture Decision Records
 
-> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
-> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
-
-> **Status:** FROZEN (Prompt 00A). These twelve ADRs are the binding
-> architectural decisions of Jarvis v4.1. Each is **Accepted**. Changing one
-> requires superseding it with a new ADR, not editing it away.
+> **Status:** the binding architectural decisions of this runtime. Each ADR is
+> **Accepted** unless its own header says otherwise. Changing one requires
+> superseding it with a new ADR, not editing it away. Names, paths and defaults
+> were re-verified against the source on 2026-07-21; ADRs whose *decision* is
+> no longer implemented now say so in their own header instead of pretending.
 >
 > Format per ADR: **Context** (why this comes up) · **Decision** (what is fixed)
 > · **Consequences** (what follows). Cross-references point at
@@ -14,17 +13,21 @@
 > [LAUNCH_SUPERVISION.md](LAUNCH_SUPERVISION.md),
 > [SECURITY_MODEL.md](SECURITY_MODEL.md),
 > [PANEL_CONTRACT.md](PANEL_CONTRACT.md).
+>
+> The `docs/adr/` directory holds later, individually-numbered ADRs; its
+> numbering is separate from the ADR-0xx series below.
 
 ---
 
-## ADR-001 — `jarvisd` owns all truth
+## ADR-001 — `dand` owns all truth
 
 **Status:** Accepted
 
-**Context.** The old `dan` system spread truth across `/tmp` files, in-memory
-process state, and the panel. Restarts lost history; components disagreed.
+**Context.** The old script-based `dan` system spread truth across `/tmp` files,
+in-memory process state, and the panel. Restarts lost history; components
+disagreed.
 
-**Decision.** A single local daemon, **`jarvisd`**, owns all state: conversation,
+**Decision.** A single local daemon, **`dand`**, owns all state: conversation,
 memory, events, history, voice queue, listening leases, audio snapshots,
 approvals, tool runs and worker jobs. Every other component is a client.
 
@@ -55,12 +58,12 @@ client are interchangeable views. See [PANEL_CONTRACT.md](PANEL_CONTRACT.md).
 **Status:** Accepted
 
 **Context.** Provider CLIs (Claude, Codex) keep their own server-side sessions.
-Treating those as memory makes Jarvis's context non-deterministic and
+Treating those as memory makes DAN's context non-deterministic and
 unportable.
 
 **Decision.** A brain adapter is a stateless function
-`BrainRequest → BrainResponse`. Jarvis assembles all context from its own DB +
-config. The provider session is **not** Jarvis memory.
+`BrainRequest → BrainResponse`. DAN assembles all context from its own DB +
+config. The provider session is **not** DAN's memory (`brain.provider_sessions_are_memory` is pinned to `false` by the config loader).
 
 **Consequences.** Brains are swappable and testable (mock adapter by default).
 The same DB state deterministically produces the same `BrainRequest`. Adapters
@@ -77,9 +80,10 @@ cannot speak, write memory, or touch the panel. See
 **Context.** Append-only history is needed to reconstruct any turn and to debug
 the system from one place.
 
-**Decision.** State lives in SQLite at `~/.jarvis/jarvis.db`. The `events` table
-is append-only and authoritative for history. Migrations are idempotent; an
-existing DB is never destroyed.
+**Decision.** State lives in SQLite at `~/.dan/dan.db` (`[database].path`). The
+`events` table is append-only and authoritative for history. The schema is
+applied at startup and migrations are idempotent; an existing DB is never
+destroyed.
 
 **Consequences.** Any turn's lifecycle is reconstructable by filtering events on
 `correlation_id`. Events are never mutated or deleted. See
@@ -98,9 +102,11 @@ independently → overlapping audio, echo, hung queues ("brak jednego dyrygenta"
 the persisted `voice_queue`. No worker, adapter, panel or hook ever calls a
 player.
 
-**Consequences.** No overlapping or duplicate speech. There is no direct
-`afplay` anywhere outside the player adapter / test fixtures. See
-[AUDIO_RUNTIME.md](AUDIO_RUNTIME.md).
+**Consequences.** No overlapping or duplicate speech. There is no direct player
+call anywhere outside the player adapter / test fixtures, and every producer
+(CLI, panel, hooks, skills, other agents) goes through `dan speak` / the API.
+See [AUDIO_RUNTIME.md](AUDIO_RUNTIME.md) and
+[docs/adr/001-dand-single-owner.md](adr/001-dand-single-owner.md).
 
 ---
 
@@ -122,7 +128,7 @@ raw `/tmp` flag is the source of truth. See [AUDIO_RUNTIME.md](AUDIO_RUNTIME.md)
 
 ---
 
-## ADR-007 — launchd has one official Jarvis label
+## ADR-007 — launchd has one official label
 
 **Status:** Accepted
 
@@ -130,14 +136,19 @@ raw `/tmp` flag is the source of truth. See [AUDIO_RUNTIME.md](AUDIO_RUNTIME.md)
 `com.dan.voice-broker`, `com.dan.xtts-server`) that could race for the mic and
 speaker.
 
-**Decision.** There is exactly one official label: **`com.ozzy.jarvisd`**. The
+**Decision.** There is exactly one official label: **`com.dan.dand`**
+(`RuntimeSupervisor.OFFICIAL_LABEL`, `[launchd].label`). The
 `RuntimeSupervisor` detects legacy labels/processes and **reports** them. It
 **never kills** anything automatically. Install scripts are never auto-run and
 print exactly what they will do.
 
 **Consequences.** Conflicts are surfaced, not silently fought. The human decides
-what to stop. See [LAUNCH_SUPERVISION.md](LAUNCH_SUPERVISION.md) and
-[CONTRACTS.md](CONTRACTS.md) §13.
+what to stop. (The separate child supervisor in `dan/daemon/supervisor.py` may
+terminate a supervised child of a *previous incarnation of this same daemon* —
+see [docs/adr/001-dand-single-owner.md](adr/001-dand-single-owner.md), which
+also records that this reclaim does not currently fire in production.) See
+[LAUNCH_SUPERVISION.md](LAUNCH_SUPERVISION.md) and
+[CONTRACTS.md](CONTRACTS.md) §14.
 
 ---
 
@@ -171,25 +182,48 @@ never speech. Promotion to a committed `MemoryBlock` requires a human or an
 explicit policy. Workers never enqueue a `VoiceRequest`.
 
 **Consequences.** Workers advise; they do not act on the world. Memory stays
-curated. See [SECURITY_MODEL.md](SECURITY_MODEL.md) §6 and
-[CONTRACTS.md](CONTRACTS.md) §12.
+curated. See [SECURITY_MODEL.md](SECURITY_MODEL.md) and
+[CONTRACTS.md](CONTRACTS.md) §6, §13.
+
+**Status of the mechanism (2026-07-21).** Enforced structurally: a `Worker` gets
+a `WorkerJob` and returns a `WorkerResult` — it holds no DB handle, no event
+store, no memory manager and no voice queue, so it *cannot* speak or write.
+`WorkerBroker` writes the candidate as an INACTIVE `memory_blocks` row
+(`metadata.candidate = true`), and only active blocks ever enter a
+`BrainRequest`. The "explicit policy" half is the config switch
+`memory.worker_candidates_require_promotion`: when it is false — the value in
+the shipped example config — the broker immediately calls
+`promote_candidate(promoted_by="policy")`, so there is no human step. Set it to
+true to require one.
 
 ---
 
 ## ADR-010 — Tools require a registry plus an approval policy
 
-**Status:** Superseded by [ADR-022](#adr-022) (2026-07-08)
+**Status: SUPERSEDED by [ADR-022](#adr-022) (2026-07-08). HISTORICAL — the
+approval half was never merely disabled by config, it was removed from the
+code. Do not read the Decision below as current behaviour; current behaviour is
+in [CONTRACTS.md](CONTRACTS.md) §10 and [SECURITY_MODEL.md](SECURITY_MODEL.md).**
 
 **Context.** The old command path ran with `--dangerously-skip-permissions`,
 relying on push-to-talk as the only safety brake.
 
-**Decision.** Every tool is registered with a permission class. Reads are
-allowed; writes, shell and network require approval; destructive is blocked
-unless explicitly enabled. A rejected/blocked `ToolCall` never executes. Secrets
-are redacted in event payloads.
+**Decision (historical).** Every tool is registered with a permission class.
+Reads are allowed; writes, shell and network require approval; destructive is
+blocked unless explicitly enabled. A rejected/blocked `ToolCall` never executes.
+Secrets are redacted in event payloads.
 
-**Consequences.** No silent over-reach. Every executed tool leaves an auditable
-`tool_run`. See [SECURITY_MODEL.md](SECURITY_MODEL.md) and
+**What survives.** The registry, the risk class on every registered tool, the
+durable `tool_run` per execution, and the secret redaction. **What does not:**
+`ToolPermissionPolicy.decide()` returns ALLOW unconditionally,
+`ToolRegistry.request_tool()` ignores the policy/gate arguments, and no code
+path turns a tool call into an approval. Containment now lives inside the
+individual tools.
+
+**Consequences.** Every executed tool still leaves an auditable `tool_run`, but
+"no silent over-reach" is no longer guaranteed by a gate — it is guaranteed, to
+the extent it is, by each tool's own checks. See
+[SECURITY_MODEL.md](SECURITY_MODEL.md) and
 [CONTRACTS.md](CONTRACTS.md) §10–§11.
 
 ---
@@ -202,8 +236,8 @@ are redacted in event payloads.
 from any text path, so the two could (and did) drift.
 
 **Decision.** Typed panel input and accepted voice transcripts enter the **same**
-`TurnOrchestrator`, differing only in the turn's `source`. There is no separate
-"voice brain".
+`TurnOrchestrator`, differing only in the turn's `source` (`text` | `panel` |
+`cli` | `api` | `voice`). There is no separate "voice brain".
 
 **Consequences.** One pipeline, one event stream, one set of guarantees for both
 modalities. Tests for the text turn also protect the voice turn. See
@@ -251,7 +285,7 @@ and when. See [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md) and
 
 ---
 
-## ADR-014 — `jarvisd` launchd artifacts avoid the `~/Documents` TCC trap
+## ADR-014 — launchd artifacts avoid the `~/Documents` TCC trap
 
 **Status:** Accepted
 
@@ -260,10 +294,11 @@ and when. See [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md) and
 because launchd (under KeepAlive) could not read a script located under
 `~/Documents` (macOS TCC sandbox).
 
-**Decision.** The official `com.ozzy.jarvisd` agent, its scripts and its logs
-live **outside `~/Documents`** — under `~/.jarvis` (logs `~/.jarvis/logs`, pid
-`~/.jarvis/runtime`). The label is exactly `com.ozzy.jarvisd` (distinct from the
-legacy `com.ozzy.jarvis`). Install scripts print what they will do and are never
+**Decision.** The official agent, its executable and its logs live **outside
+`~/Documents`** — under `~/.dan` (`[runtime].home`; logs `~/.dan/logs`, pid
+`~/.dan/runtime/dand.pid`, binary `~/.dan/bin/dand`). The label is exactly
+`com.dan.dand` (distinct from the legacy `com.ozzy.jarvis` /
+`com.dan.voice-broker`). Install scripts print what they will do and are never
 auto-run.
 
 **Consequences.** No TCC thrash, stable log location, no one-letter label
@@ -285,7 +320,7 @@ event history mechanism.
 - `worker_jobs` is the canonical worker job state table.
 - `worker.job.*` entries in the general `events` table are the canonical worker
   job lifecycle history.
-- There is no `job_events` table in v4.1.
+- There is no `job_events` table.
 - Future job history requirements extend EventStore, not a parallel event
   table, unless a later ADR supersedes this.
 
@@ -307,10 +342,10 @@ separate turn-step timeline.
 
 - RuntimeState persisted values are exactly: `BOOTING`, `IDLE`, `LISTENING`,
   `TRANSCRIBING`, `THINKING`, `TOOLING`, `SPEAKING`, `INTERRUPTED`, `ERROR`,
-  `STOPPING`.
-- `WAITING_APPROVAL` and `WORKING` are not runtime states in v4.1.
-- Approval waiting is represented by approvals/tool events and, when
-  applicable, `TOOLING`.
+  `STOPPING`. Still true verbatim in `dan/daemon/state_machine.py`.
+- `WAITING_APPROVAL` and `WORKING` are not runtime states.
+- Tool work inside a turn is `TOOLING`; the runtime never parks waiting for a
+  human (there is no approval step — ADR-010/ADR-022).
 - Worker activity is represented by `worker_jobs` plus `worker.job.*` events,
   not runtime state expansion.
 - Turn history is represented by `turn.*` events and `turns` state, not a
@@ -322,9 +357,10 @@ runtime states require a new ADR and tests.
 
 ---
 
-## ADR-017 — `ui_read` observes only the frontmost app and focused window, via a jarvisd-owned backend
+## ADR-017 — `ui_read` observes only the frontmost app and focused window, via a daemon-owned backend
 
-**Status:** Accepted
+**Status:** Accepted, except for the PermissionPolicy step in the last bullet —
+that layer no longer gates anything (ADR-010/ADR-022).
 
 **Context.** FAZA D1 (MASTER_PLAN) adds read-only Accessibility. The §3
 matrix row says `ui_read` | user **A (approved surfaces)** | model AP |
@@ -337,8 +373,8 @@ has zero runtime dependencies (no pyobjc).
   focused window.** The tools (`ui_active_app`, `ui_read_window`) expose
   nothing broader — no other apps, no other windows, no system-wide UI tree.
   Widening the surface requires a new ADR, not a config flag.
-- The adapter is a pluggable, jarvisd-owned backend
-  (`jarvis/macos/accessibility.py`): `ax` (real AXUIElement via **ctypes**,
+- The adapter is a pluggable, daemon-owned backend
+  (`dan/macos/accessibility.py`): `ax` (real AXUIElement via **ctypes**,
   keeping the zero-dependency rule) or `fake` (deterministic fixture for
   tests/smoke, announced as `backend: "fake"` in every payload). An unknown
   backend name fails the daemon at startup — no silent fallback.
@@ -347,23 +383,32 @@ has zero runtime dependencies (no pyobjc).
   values of `AXSecureTextField` elements and clips element counts and text
   lengths. A buggy backend cannot leak a password into tool_runs. The `ax`
   backend additionally never copies secure values in the first place.
-- The model never talks to AX. Tools go through ToolRegistry →
-  PermissionPolicy (`ui_read` row) → EventStore like every other tool.
+- The model never talks to AX. Tools go through ToolRegistry → ToolRunRecorder
+  → EventStore like every other tool. (The `PermissionPolicy` step this bullet
+  originally named is gone: the policy allows everything, so the sanitizer and
+  the surface limits above are the whole guarantee.)
 
 **Consequences.** TCC onboarding is a documented human step
 ([runbooks/ACCESSIBILITY_TCC.md](runbooks/ACCESSIBILITY_TCC.md)); without the
-grant reads fail cleanly and the daemon keeps running. D2 (`ui_act`) will
-reuse the adapter but stays approval-gated per the matrix.
+grant reads fail cleanly and the daemon keeps running. D2 (`ui_act`) reuses the
+adapter; its approval gate was never built (see ADR-018).
 
 ---
 
-## ADR-018 — `ui_act` uses AX-only actions, always approval-gated, never touching credentials
+## ADR-018 — `ui_act` uses AX-only actions, never touching credentials
 
-**Status:** Accepted
+**Status:** Accepted EXCEPT the approval gate. **The "every `ui_act` request
+crosses ApprovalGate" rule is NOT implemented (verified 2026-07-21):**
+`ui_click` / `ui_type` / `ui_focus_app` are ordinary registered tools that the
+orchestrator executes directly, and the permission policy allows everything.
+The AX-only restriction, the secure-field refusal, the control-character ban
+and the `MAX_TYPE_CHARS` cap ARE implemented in
+`dan/tools/ui_tool.py` + `dan/macos/accessibility.py`. Re-introducing the gate
+needs a new ADR and real code, not a config flag.
 
 **Context.** FAZA D2 adds UI actions (`ui_click`, `ui_type`, `ui_focus_app`)
 on top of the D1 adapter. The capability inventory calls unattended UI
-control "a model with a mouse"; the operator contract forbids Jarvis from
+control "a model with a mouse"; the operator contract forbids the runtime from
 owning or extracting credentials.
 
 **Decision.**
@@ -372,9 +417,9 @@ owning or extracting credentials.
   for typing, `AXFrontmost` for focus. No CGEvent synthetic keyboard/mouse
   input in D2 — a hotkey injector is a different risk shape and would need
   its own ADR.
-- **Every `ui_act` request crosses ApprovalGate**, including direct user
-  commands (§3: user AP / model AP / auto B). Earned per-surface trust
-  stays a §6 future.
+- ~~**Every `ui_act` request crosses ApprovalGate**, including direct user
+  commands (§3: user AP / model AP / auto B).~~ **Not in effect** — see the
+  status note above. Earned per-surface trust stays a §6 future.
 - **Typing into secure text fields is refused twice**: the `ax` actor checks
   the focused element's role/subrole before setting a value, and the tool
   layer enforces the same rule against any backend. Typed text is never
@@ -410,14 +455,16 @@ tool output is on-screen text, persisted (redacted) in `tool_runs` and in
 **Decision.**
 
 - **`GET /stream` upgrades to RFC 6455 implemented in-repo**
-  (`jarvis/api/websocket.py`, ctypes-free stdlib only) on the connection
+  (`dan/api/websocket.py`, ctypes-free stdlib only) on the connection
   thread the server already dedicates. No new runtime dependency.
 - **The handshake is fail-closed behind the transport token.** Browsers
-  cannot set `X-Jarvis-Token` on a WebSocket connect, so the cockpit sends
-  it as a `jarvis-token.<token>` subprotocol entry next to `jarvis.v1`;
-  CLI/tests use the header. No token (when `security.api_token_required`
-  is on, the default) means 401 before any upgrade. The token subprotocol
-  is never echoed back. This makes the stream *stricter* than `GET /events`.
+  cannot set `X-DAN-Token` on a WebSocket connect, so the cockpit sends
+  it as a `dan-token.<token>` subprotocol entry next to `dan.v1`;
+  CLI/tests use the header. When `security.api_token_required` is on, no token
+  means 401 before any upgrade. **That flag defaults to `false`** in
+  `SecurityConfig` and in the shipped example config, so on a default install
+  the stream is NOT token-gated — turn it on if that matters. The token
+  subprotocol is never echoed back.
 - **The stream is strictly read-only.** It pushes persisted events (the
   same append-only store `GET /events` reads). Any client TEXT/BINARY
   frame closes the connection with 1003; unmasked or malformed client
@@ -434,13 +481,18 @@ tool output is on-screen text, persisted (redacted) in `tool_runs` and in
   poisons `SocketIO`; the session drains handshake leftovers once
   (non-blocking) and then uses `select()` + `recv()` on the raw socket.
 
-**Consequences.** The cockpit gets live events (≤ the 0.25 s poll interval
-of latency) with reconnect/backoff, and D4 screen events have a transport
-that is not HTTP polling. Streaming latency is poll-bounded, not
-event-driven; if D4 needs tighter latency, an EventBus wake-up can be added
-without changing the wire contract. `GET /events` keeps returning full
-payloads (including `tool.finished.output`) as before — tightening that
-route is a separate decision.
+**Consequences.** The cockpit gets live events (poll-bounded latency;
+`STREAM_POLL_INTERVAL_SECONDS` is 0.05 s today) with reconnect/backoff, and D4
+screen events have a transport that is not HTTP polling. Streaming latency is
+poll-bounded, not event-driven; if D4 needs tighter latency, an EventBus
+wake-up can be added without changing the wire contract.
+
+**Update (2026-07-21):** the omission is no longer stream-only. Both the stream
+and `GET /events` now ship payloads through the same
+`safe_event_payload_for_client` (`dan/api/event_safety.py`), which redacts
+high-risk keys and sets `output_omitted: true`. The sentence that used to close
+this ADR — "`GET /events` keeps returning full payloads (including
+`tool.finished.output`) as before" — is false; that route was tightened too.
 
 ---
 
@@ -469,13 +521,13 @@ inventory warns that the screen routinely contains secrets.
   disproportionate ABI risk for zero functional gain.
 - **OCR is Vision `VNRecognizeTextRequest` driven through ctypes
   `objc_msgSend`, executed in a short-lived subprocess**
-  (`python -m jarvis.macos.screen --ocr <png>`). Vision has no C API; the
-  ObjC bridge is the riskiest code in D4, so it never runs inside jarvisd —
+  (`python -m dan.macos.screen --ocr <png>`). Vision has no C API; the
+  ObjC bridge is the riskiest code in D4, so it never runs inside `dand` —
   a segfault costs one tool run, not the daemon. The bridge uses request
   defaults only (no blocks, no queues) and returns observations in Vision's
   natural order.
 - **Pixels are transient**: captures land as 0600 PNGs under the
-  jarvisd-owned runtime dir and are deleted right after OCR, success or
+  daemon-owned runtime dir (`~/.dan/runtime`) and are deleted right after OCR, success or
   failure. Only OCR *text* leaves the adapter — clipped at the tool layer
   (240 lines × 512 chars), redacted by ToolRunRecorder/EventStore as every
   tool output, and never carried by the D3 stream (ADR-019 omits bulk
@@ -486,9 +538,9 @@ inventory warns that the screen routinely contains secrets.
   test/smoke run proves redaction). Unknown names fail the daemon at
   startup.
 
-**Consequences.** "Look at my terminal / read this error" works with a
-human-grade permission trail; D4 needs its own TCC grant (Screen Recording,
-separate from Accessibility). The Vision bridge and its subprocess isolation
+**Consequences.** "Look at my terminal / read this error" works with an
+auditable tool-run trail (not a permission gate — see ADR-010/ADR-022); D4
+needs its own TCC grant (Screen Recording, separate from Accessibility). The Vision bridge and its subprocess isolation
 were verified live on a rendered PNG; the full native capture path awaits
 the TCC grant (live gate). OCR text quality and ordering are Vision's —
 no geometric re-sorting in D4.
@@ -497,7 +549,12 @@ no geometric re-sorting in D4.
 
 ## ADR-021 — Terminal profile D5: fixed-script osascript bridge, read and paste split, paste never submits
 
-**Status:** Accepted
+**Status:** Accepted EXCEPT the permission treatment. `terminal_read` and
+`terminal_write` remain two distinct risk classes on two distinct tools, but
+neither is gated: the policy allows everything (ADR-010/ADR-022), so
+"no source ever gets a plain allow" for `terminal_write` is NOT true today.
+The fixed-script bridge, the closed target set, the paste-never-submits rule,
+the control-character rejection and the output clipping ARE implemented.
 
 **Context.** FAZA D5 (MASTER_PLAN, dawne 21D) gives the operator a
 terminal profile: "observe terminal state, paste prepared commands"
@@ -517,7 +574,7 @@ observing and mutating never share a risk class.
   treatment §9 requires: a pasted command is one Enter away from
   execution, so no source ever gets a plain allow).
 - **The bridge executes only fixed AppleScript constants** via
-  `/usr/bin/osascript` (`jarvis/macos/terminal.py`). Parameters travel
+  `/usr/bin/osascript` (`dan/macos/terminal.py`). Parameters travel
   through the `run` handler argv and are never interpolated into script
   source — no injection surface. Targets form the closed set
   {Terminal, iTerm2}; any other app name is an error, not a fallback.
@@ -531,8 +588,7 @@ observing and mutating never share a risk class.
   so the bridge refuses to address an app that is not running (checked
   with `pgrep -qx` before osascript ever spawns).
 - **Paste never submits.** `terminal_paste` uses iTerm2's
-  `write text ... newline NO`; pressing Enter stays with the human even
-  after approval. Terminal.app has no paste-without-execute verb, so
+  `write text ... newline NO`; pressing Enter stays with the human. Terminal.app has no paste-without-execute verb, so
   pasting into Terminal.app is unsupported (the fake backend mirrors the
   refusal). Paste payloads are one bounded printable line
   (max 4096 chars); control characters — including the newline that would
@@ -552,11 +608,11 @@ observing and mutating never share a risk class.
   proves redaction). Unknown names fail the daemon at startup.
 
 **Consequences.** "Read my terminal / prepare this command for me" works
-with a human-grade permission trail and zero new dependencies. The
+with an auditable tool-run trail and zero new dependencies. The
 Automation grant is per (host app → target app) pair and separate from
 Accessibility and Screen Recording. The osascript path needs a live gate
 (running iTerm2/Terminal + Automation grant) — probe:
-`python -m jarvis.macos.terminal`. Reading scrollback history, pasting
+`python -m dan.macos.terminal`. Reading scrollback history, pasting
 into Terminal.app, multi-line paste and any submit path all remain out of
 scope pending their own ADRs.
 
@@ -577,9 +633,10 @@ machine.
 with `[security] auto_approve_mode = "all"` + `destructive_tools_enabled = true`
 + all approval flags (`require_approval_for_shell`, `require_approval_for_file_write`,
 `require_approval_for_network`) set to `false`. Every tool request from every
-source (user, model, worker) is auto-approved. The permission policy still
-classifies risk and records every tool run in the audit log; the gate does not
-block. This mode is a **conscious operational trade-off**, valid only in a
+source (user, model, worker) is auto-approved. Every tool run is still recorded
+in the audit log with the risk class of the registered tool (the policy object
+itself decides nothing — see the correction below). This mode is a
+**conscious operational trade-off**, valid only in a
 single-user, offline, air-gapped development environment under direct human
 supervision.
 
@@ -592,33 +649,57 @@ shared machines, or untrusted input demands immediate re-lock (approval required
 for mutations + destructive blocked). See [SECURITY_MODEL.md](SECURITY_MODEL.md)
 §1, `jarvis/tools/permissions.py`, and `[security]` config in `jarvis.toml`.
 
+> **CORRECTION (2026-07-21) — the re-lock described above does not exist.**
+>
+> "a future gate re-enabling approval will require no code change — only
+> `jarvis.toml` reversion" is false, and it is the most dangerous sentence in
+> this file: it tells a reader that flipping config keys restores protection.
+> It does not. `ToolPermissionPolicy.decide()` (`dan/tools/permissions.py`)
+> contains no branch at all — it returns ALLOW for every risk class and every
+> source, and never reads `auto_approve_mode`, `destructive_tools_enabled`,
+> `trusted_scopes` or any `require_approval_for_*` flag. Those keys are parsed,
+> stored and rendered as runtime state; nothing consults them. `ApprovalGate` is
+> not in the execution path. Re-locking means **writing the gate**, not
+> reverting a config file.
+>
+> This ADR also predates the rename: it is `dan/tools/permissions.py` and
+> `~/.dan/config.toml`, not `jarvis/…` / `jarvis.toml`.
+>
+> What actually constrains a tool today lives inside the individual tools —
+> and one of those constraints was removed on this branch, see
+> `security.shell_read_unrestricted`. Read
+> [SECURITY_MODEL.md](SECURITY_MODEL.md) §2,
+> [MACOS_PERMISSION_MODEL.md](MACOS_PERMISSION_MODEL.md) (whole document is
+> marked unbuilt) and
+> `reviews/2026-07-21-restart-orphan-shell-review.md` §2–§5, §12.
+
 ---
 
 ## Decision log
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| 001 | `jarvisd` owns all truth | Accepted |
+| 001 | `dand` owns all truth | Accepted |
 | 002 | The panel is a thin client | Accepted |
 | 003 | Brain adapters are stateless | Accepted |
 | 004 | The SQLite event store is the source of truth | Accepted |
 | 005 | The voice broker is the sole speaker | Accepted |
 | 006 | PTT is a `ListeningLease`, not a file | Accepted |
-| 007 | launchd has one official Jarvis label | Accepted |
+| 007 | launchd has one official label (`com.dan.dand`) | Accepted |
 | 008 | `/tmp` is compatibility transport only | Accepted |
 | 009 | Workers cannot speak or write memory facts directly | Accepted |
-| 010 | Tools require a registry plus an approval policy | Accepted |
+| 010 | Tools require a registry plus an approval policy | **Superseded by 022**; the approval half is gone from the code |
 | 011 | Panel text and voice transcript use the same `TurnOrchestrator` | Accepted |
 | 012 | `AudioDeviceManager` owns input/output device state | Accepted |
 | 013 | Legacy DAN runtime is detected and reported, never auto-killed | Accepted |
-| 014 | `jarvisd` launchd artifacts avoid the `~/Documents` TCC trap | Accepted |
+| 014 | launchd artifacts avoid the `~/Documents` TCC trap (`~/.dan`) | Accepted |
 | 015 | Worker job lifecycle uses worker_jobs for state and events for history | Accepted |
 | 016 | Runtime state names are canonical and finite | Accepted |
-| 017 | `ui_read` observes only the frontmost app and focused window, via a jarvisd-owned backend | Accepted |
-| 018 | `ui_act` uses AX-only actions, always approval-gated, never touching credentials | Accepted |
+| 017 | `ui_read` observes only the frontmost app and focused window, via a daemon-owned backend | Accepted **except** the PermissionPolicy step it names — that layer gates nothing |
+| 018 | `ui_act` uses AX-only actions, never touching credentials | Accepted **except** the approval gate — it was never built; the AX-only, secure-field, control-character and length limits are real |
 | 019 | `GET /stream` is a token-gated, read-only websocket that never carries bulk tool output | Accepted |
 | 020 | `screen_read` D4 is narrow-only: `screencapture` + Vision-via-ctypes in a crash-isolated subprocess, pixels never persist | Accepted |
-| 021 | Terminal profile D5: fixed-script osascript bridge, read and paste split, paste never submits | Accepted |
+| 021 | Terminal profile D5: fixed-script osascript bridge, read and paste split, paste never submits | Accepted **except** the permission treatment — `terminal_write` is not gated; the bridge, the closed target set and paste-never-submits are real |
 | 022 | Security bypass mode: all tools auto-approved for local testing and development (Ozzy explicit) | Accepted (supersedes ADR-010) |
 
 > ADR-013 and ADR-014 were added by the Prompt 00B inventory, grounded in

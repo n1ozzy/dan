@@ -75,11 +75,15 @@ The OCR bridge alone (no TCC needed) can be exercised on any PNG:
 
 ## 5. What D4 does *not* grant
 
-The grant is process-wide, which is why the permission matrix stays in
-charge: `screen_read` (narrow) is allow for user sources, approval for the
-model, blocked for scheduled/hook sources. D4 captures only the frontmost
-window or an explicitly named region — there is no full-display and no
-continuous capture (the broad `screen_read` shape needs a new ADR). Captured
-pixels never persist: the PNG is deleted right after OCR, only clipped OCR
-text reaches tool_runs/events, where secret redaction applies, and the D3
-event stream never carries it (ADR-019).
+The grant is process-wide. The real limits are in the tool and the capture
+shape, not in a permission matrix:
+
+D4 captures only the frontmost window or an explicitly named region — there is
+no full-display and no continuous capture (the broad `screen_read` shape needs a
+new ADR). Captured pixels never persist: the PNG is deleted right after OCR,
+only clipped OCR text reaches `tool_runs`/`events`, where secret redaction and
+the size cap apply, and the D3 event stream never carries it (ADR-019).
+
+Nothing gates the grant once it exists: a model-originated `screen_read_window`
+/ `screen_ocr_region` simply runs (`docs/SECURITY_MODEL.md` §2). Grant it
+deliberately.

@@ -169,6 +169,12 @@ height = 620
 [security]
 localhost_only = true
 api_token_required = false
+# The nine keys below are INERT. ToolPermissionPolicy.decide() returns ALLOW
+# unconditionally, so none of them gates, blocks or scopes anything — they are
+# parsed and reported as runtime state only. They are kept because persisted
+# panel state and older configs still carry them. Do not try to tighten DAN by
+# setting one of these to true; nothing will change. Real containment is
+# approved_roots below plus the checks inside each tool (docs/SECURITY_MODEL.md).
 require_approval_for_shell = false
 require_approval_for_file_write = false
 require_approval_for_network = false
@@ -178,6 +184,9 @@ require_approval_for_memory = false
 destructive_tools_enabled = true
 voice_auto_approve_tools = true
 auto_approve_mode = "all"
+
+# REAL: the file tools refuse any path outside these roots, after resolving
+# symlinks. Empty means the daemon falls back to its runtime home only.
 approved_roots = [
   "~/Documents/dev",
   "~/.dan",

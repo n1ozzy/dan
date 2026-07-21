@@ -1,90 +1,81 @@
-# Jarvis v4.1 — Launch & Supervision (FROZEN)
+# DAN — Launch & Supervision (FROZEN contract, values refreshed 2026-07-21)
 
-> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
-> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+> **Naming — Release 1 cutover (2026-07-18):** this document was written as
+> "Jarvis v4.1"; `jarvisd` / `com.ozzy.jarvisd` = today's `dand` /
+> `com.dan.dand`. The contract remains in force; the identities, paths and
+> script names below were re-verified against the code on 2026-07-21.
 
 > **Status:** FROZEN (Prompt 00A). Defines launch identity, the
 > `RuntimeSupervisor`'s observation duties, and the strict "detect, never kill"
-> rule. **This build does not install launchd and does not start anything.**
+> rule. The launchd lifecycle **is implemented and installed** today (§5) — the
+> old "this build does not install launchd and does not start anything" line was
+> true only before Release 1 and has been removed.
 
 ---
 
 ## 1. One official identity
 
-There is exactly **one** official launchd label for Jarvis:
+There is exactly **one** official launchd label:
 
 ```
-com.ozzy.jarvisd
+com.dan.dand
 ```
 
-([ADR-007](DECISIONS.md#adr-007)). Anything else that looks like Jarvis is
-**legacy** and is treated as a conflict to *report*, never to adopt or kill.
+([ADR-007](DECISIONS.md#adr-007)) — the same constant lives in code as
+`dan/runtime/supervisor.py::OFFICIAL_LABEL`. Anything else that looks like DAN
+is **legacy** and is treated as a conflict to *report*, never to adopt or kill.
 
-| Concern | Value |
-|---------|-------|
-| Official label | `com.ozzy.jarvisd` |
-| Logs | `~/.jarvis/logs/jarvisd.log` |
-| PID file | `~/.jarvis/runtime/jarvisd.pid` |
-| Database | `~/.jarvis/jarvis.db` |
+Paths, logs, PID file, database and API port live in one place —
+[CO-JEST-GDZIE.md](CO-JEST-GDZIE.md).
+
+`KeepAlive` in the plist is **required**, not cosmetic: the restart contract
+exits the process with code `86` (`dan/daemon/restart.py::RESTART_EXIT_CODE`)
+and relies on launchd bringing the daemon back.
 
 ---
 
 ## 2. Launch modes
 
-The `RuntimeSupervisor` (`jarvis/runtime/supervisor.py`, Prompt 08) detects how
-`jarvisd` was started:
+`RuntimeLaunchMode` (`dan/runtime/models.py`) defines `cli`, `launchd` and
+`unknown`.
 
-| Mode | Meaning |
-|------|---------|
-| `cli` | started by hand via `python -m jarvis.cli daemon run` |
-| `launchd` | started by the official `com.ozzy.jarvisd` agent |
-| `unknown` | cannot be determined |
-
-This is recorded as a `RuntimeProcessObservation` (see
-[CONTRACTS.md](CONTRACTS.md)) and surfaced in `/state` and `/runtime/processes`.
+**Honest state of the code:** `RuntimeSupervisor.startup_snapshot()`
+(`dan/runtime/supervisor.py`) records `RuntimeLaunchMode.CLI` unconditionally —
+it does **not** detect launchd. Do not read `launch_mode` in `/runtime/startup`
+as evidence of how the daemon was actually started. What the snapshot *does*
+report truthfully is `official_label`, `official_plist_installed` and the legacy
+observations below (`official_plist_loaded` is always the literal
+`"not_checked"`).
 
 ---
 
 ## 3. Legacy detection (report-only)
 
-The supervisor watches for old `dan`-era labels and processes and raises
-**warnings** — it never acts on them.
+The supervisor watches for pre-Release-1 labels, processes and temp artifacts
+and raises **warnings** — it never acts on them.
 
-### Legacy launchd labels
+Three families are detected, and the authoritative lists are the constants in
+`dan/runtime/supervisor.py`: `LEGACY_LAUNCH_AGENTS` (retired launchd plists),
+`LEGACY_PROCESS_PATTERNS` (the retired broker, panel and TTS-server processes
+plus their start scripts) and `LEGACY_TEMP_ARTIFACTS` (the old state
+directories under the system temp dir). Read the names there, not here: an
+enumeration copied into prose drifts without anyone noticing, and this file
+already declares the code to be the authority.
 
-- `com.ozzy.jarvis`
-- `com.dan.voice-broker`
-- `com.dan.xtts-server`
+If any are present, `/runtime/processes`, `/runtime/startup` and
+`/runtime/legacy` report them with a risk level and a warning; nothing is
+cleaned up. The official plist, when installed, is reported too — as an
+`info`-risk `official_dand_launch_agent` observation, not a conflict.
 
-### Legacy processes
+### 3.1 Diagnostic evidence
 
-- `auto_jarvis.py`
-- `listen_ozzy.py` (its listening loop)
-- `voice_broker.py`
-- `xtts_server.py`
-- `dan_panel_web.py`
-
-If any are present, the observation's `legacy_labels` / `legacy_processes` /
-`warnings` are populated and shown to the human via the API and panel.
-
-### 3.1 Diagnostic evidence (snapshot 2026-06-30)
-
-A read-only diagnostic confirmed the supervisor's job is real (full detail in
-[LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md)):
-
-- **No DAN/Jarvis label was loaded** — `launchctl print` for `com.ozzy.jarvis`,
-  `com.ozzy.jarvisd`, `com.dan.voice-broker`, `com.dan.xtts-server` all returned
-  *"Could not find service"*. The future `com.ozzy.jarvisd` **does not exist yet**.
-- **A legacy agent is installed but unloaded:** only
-  `com.dan.voice-broker.plist` is present in `~/Library/LaunchAgents`.
-- **The legacy voice stack was running, started by hand:** `voice_broker.py`
-  (pid 89968), `listen_ozzy.py loop` (pid 3238), `auto_jarvis.py` (pid 92804).
-- **TCC thrash on the legacy agent:** `/tmp/dan-voice-broker.err` is full of
-  `/bin/zsh: can't open input file: …/start-voice-broker.sh` — launchd could not
-  read the script under `~/Documents` ([ADR-014](DECISIONS.md#adr-014)).
-
-So at takeover time the conflict is at the **process/device** level (legacy
-broker + listener own the speaker and mic), not yet at the label level.
+The one-off read-only diagnostic that motivated this section is a **dated
+snapshot of 2026-06-30**, not a description of the machine today (by now
+`com.dan.dand` is installed and loaded, and the legacy voice stack is gone).
+Read it as history only: [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md).
+Its one durable lesson: launchd could not read scripts under `~/Documents`
+(`can't open input file`), which is why the wrapper and logs live under `~/.dan`
+([ADR-014](DECISIONS.md#adr-014)).
 
 ---
 
@@ -101,30 +92,39 @@ race instead of fighting it blindly.
 
 ---
 
-## 5. launchd lifecycle scripts (Prompt 21 — not run here)
+## 5. launchd lifecycle scripts (shipped)
 
-When implemented, the launchd lifecycle ships as:
+The launchd lifecycle exists and is what the machine actually runs:
 
-- `scripts/jarvisd` — daemon entry wrapper.
-- `scripts/install-launchd.sh` — **prints exactly what it will do**; the human
-  runs it deliberately. **It is never executed by the build.**
+- `scripts/dand` — daemon entry wrapper (the installer generates a copy pinned
+  to this repo at `~/.dan/bin/dand`, outside `~/Documents`).
+- `scripts/install-launchd.sh` — **prints exactly what it will do** and exits;
+  only `--yes` applies it. The human runs it deliberately. **It is never
+  executed by the build.** It refuses to stack a second agent if the label is
+  already loaded.
 - `scripts/uninstall-launchd.sh` — unloads the agent but **does not delete the
   database**.
-- `launchd/com.ozzy.jarvisd.plist.example` — the only official plist, using the
-  official label and `~/.jarvis/logs`.
+- `launchd/com.dan.dand.plist.example` — the only official plist, using the
+  official label and `~/.dan/logs`. `__HOME__` is substituted at install time,
+  so loading the example file directly fails loudly instead of silently.
 
 ### Rules (FROZEN)
 
 - **Do not run `install-launchd.sh`** as part of any automated step.
-- **Official label only:** `com.ozzy.jarvisd`.
-- **Logs go to `~/.jarvis/logs`.**
-- **Script + logs live outside `~/Documents`** (under `~/.jarvis`) to avoid the
+- **Official label only:** `com.dan.dand`.
+- **Logs go to `~/.dan/logs`.**
+- **Wrapper + logs live outside `~/Documents`** (under `~/.dan`) to avoid the
   macOS TCC trap that made the legacy `com.dan.voice-broker` agent thrash with
   *"can't open input file"* ([ADR-014](DECISIONS.md#adr-014)).
+- **`KeepAlive` stays `true`** — the restart contract depends on it.
 - **Uninstall unloads but never deletes the DB.**
 - The install script **prints exactly what it will do** before doing anything.
 
-CLI surface (Prompt 21): `python -m jarvis.cli daemon status | stop | restart`.
+CLI surface (verified against `dan/cli.py`, 2026-07-21): the only daemon
+subcommand is `python -m dan.cli daemon run` — there is **no**
+`daemon status | stop | restart`. Status is `dan health` / `dan state` /
+`dan doctor --json`; a supervised restart is `POST /runtime/restart` (drains,
+exits `86`, launchd restarts); stopping is `launchctl bootout` or SIGTERM.
 
 ---
 

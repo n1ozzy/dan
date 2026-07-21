@@ -1,22 +1,27 @@
 # Project Rules
 
-> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
-> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+Classification: authoritative. Naming updated for the Release 1 cutover
+(2026-07-18) and re-verified against the code on 2026-07-21.
 
-Classification: authoritative.
+> **Naming:** the daemon is `dand` (launchd label `com.dan.dand`, wrapper
+> `~/.dan/bin/dand`, API `127.0.0.1:41741`), the package is `dan/`, runtime state
+> lives in `~/.dan/`. Older docs that still say `jarvisd` / `com.ozzy.jarvisd` /
+> `~/.jarvis` mean exactly these. Jarvis is DAN's runtime alias, not a second
+> product.
 
-This file is the repo-level guardrail contract for Jarvis maintenance. It is
+This file is the repo-level guardrail contract for DAN maintenance. It is
 not a feature roadmap and not a smoke log.
 
 ## Architecture Laws
 
-1. jarvisd owns truth.
+1. `dand` owns truth.
 2. Panel is only a client.
 3. Brain adapters are stateless.
-4. Provider sessions are not Jarvis memory.
+4. Provider sessions are not DAN memory.
 5. One task = one scope = one commit = stop for review.
 6. No schema/migrations changes without explicit task scope.
-7. No live voice/mic/speaker/launchctl/provider/network in automated CI.
+7. No live voice/mic/speaker/launchctl/provider/network in automated CI; tests
+   MUST mock the TTS layer.
 8. Any bugfix must add or update a regression test first when practical.
 9. Docs must identify whether they are authoritative, current, runbook,
    historical, or archived.
@@ -24,18 +29,32 @@ not a feature roadmap and not a smoke log.
 11. Examples are not roadmap commitments.
 12. Voice claims must say whether they are mock/smoke/live/manual.
 13. No broad cleanup/refactor mixed with feature/fix work.
+14. Do not add approval gates, blocking permission policy, disabled-by-policy UI,
+    or mock/dev product modes. On this branch model-originated tools execute
+    directly (AGENTS.md branch contract); containment lives inside the tools.
+15. Any new config key must be registered in
+    `dan/config_registry.py::_RUNTIME_CONFIG_KEYS`. `validate_registry_complete()`
+    compares dataclass fields against that registry and raises on EVERY config
+    load if one is missing. This rule is stated here only; other docs link to it.
 
 ## Ownership
 
-- `jarvisd` is the system of record for conversation, events, memory,
-  approvals, tool runs, worker jobs, voice queue, listening leases, and runtime
-  state.
+- `dand` is the system of record for conversation, events, memory,
+  tool runs, worker jobs, voice queue, listening leases, and runtime state. It is
+  also the single audio owner — all speech goes through `dan speak` / the voice
+  API, never a parallel player.
+- The `approvals` table and `ApprovalGate` still exist as a legacy record
+  surface, but they are NOT in the tool execution path. Do not describe them as
+  a live control.
 - UI clients, including the static cockpit and macOS panel, render daemon state
   and submit intents. They do not own canonical data.
 - Brain adapters are stateless request/response adapters. They cannot preserve
-  hidden provider session memory as Jarvis memory.
-- Provider CLI sessions may exist, but Jarvis context must be assembled from
-  Jarvis config, DB, and explicit request data.
+  hidden provider session memory as DAN memory.
+- Provider CLI sessions may exist, but DAN context must be assembled from
+  DAN config, DB, and explicit request data.
+- Persona comes only from `config/persona/DAN.md` (header
+  `DAN_CANON_VERSION: 1`), loaded fail-closed. Voice casting comes only from
+  `config/voice/personas.toml` + `pronunciations.toml`. Never hardcode either.
 
 ## Change Discipline
 

@@ -122,8 +122,12 @@ def apply_pronunciations(text: str, pronunciations: dict[str, str]) -> str:
 # (2026-07-08). asetrate*k + atempo=1/k pitches DOWN without changing tempo;
 # then EQ (bass/presence), aexciter + crystalizer (transient sparkle so it
 # reads as "recorded", not "synthetic"), deesser, compressor, limiter. The
-# loudnorm tail evens out loudness. Raw supertonic sounds thin/robotic; this is
-# what makes DAN a ziomek, not a text-to-speech readout.
+# loudnorm tail evens out loudness.
+#
+# WHO ACTUALLY USES THESE (config/voice/personas.toml, the authority): only
+# danusia -> "clean". DAN and his alias jarvis are mastering = "raw", i.e. NO
+# chain at all — "bastard" was judged over-driven and dropped on 2026-07-10.
+# Do not "restore" bastard for DAN on the strength of this table.
 _MASTER_TAIL = ",loudnorm=I=-14:TP=-2.0:LRA=7,aresample=44100"
 _MASTER_PROFILES = {
     # DAN: slightly LESS bass (Ozzy 2026-07-08) — pitch 0.91->0.93, bass +3dB.

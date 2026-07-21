@@ -60,10 +60,17 @@ field values are never printed.
 
 ## 5. What D1 does *not* grant
 
-The grant is process-wide, which is why the permission matrix stays in
-charge: `ui_read` is allow for user sources, approval for the model, blocked
-for scheduled/hook sources, and secure text fields are stripped at the tool
-layer for every source. UI **actions** (`ui_act`, D2) always cross
-ApprovalGate — every click or keystroke needs an explicit approve + execute,
-typing into secure text fields is refused outright, and auto sources are
-blocked (ADR-018).
+The grant is process-wide. **What actually constrains these tools today is the
+tool layer, not a permission matrix** (corrected 2026-07-21):
+
+- `ui_read` sanitizes at the tool layer: **secure text field values never reach
+  `tool_runs`**, regardless of which backend produced the snapshot
+  (`sanitize_app_snapshot` / `sanitize_window_snapshot` in `dan/tools/ui_tool.py`).
+- `ui_type` refuses control characters outright — a newline would submit to the
+  app, so "Enter stays with the human" — and caps length at `MAX_TYPE_CHARS`.
+  The typed text is not echoed back in the tool output.
+- Tool output is redacted and size-capped before it persists.
+
+Nothing gates the grant once it exists: a model-originated
+`ui_click` / `ui_type` / `ui_focus_app` simply runs
+(`docs/SECURITY_MODEL.md` §2). Grant it deliberately.

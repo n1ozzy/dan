@@ -1,26 +1,38 @@
-# Jarvis v4.2 — Source-Sensitive Permission Model
+# DAN — Source-Sensitive Permission Model (UNIMPLEMENTED DESIGN)
 
-> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
-> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
-
-> **Status:** DESIGN (FAZA B2, [MASTER_PLAN.md](MASTER_PLAN.md)). This document
-> designs the extension of the permission policy with **request source** as a
-> first-class dimension, the operator permission classes, the user-presence
-> model, and the local transport token. It contains **no runtime code**;
-> implementation is FAZA C (C1 transport token, C2 `decide(source=...)`).
+> # ⚠️ THE PERMISSION MODEL IN THIS DOCUMENT WAS NEVER BUILT
 >
-> **⚠️ Configuration note (2026-07-08):** The local dev config
-> (`~/.jarvis/jarvis.toml [security]`) runs in bypass mode:
-> `auto_approve_mode="all"`, `destructive_tools_enabled=true`,
-> `permission_mode="bypassPermissions"`. The matrix below describes the
-> **architectural design**, not current runtime policy. Enforcement gates are
-> in place in the code; permission modes relax them selectively per config.
+> **Status as of 2026-07-21: §§1–4 and §6–7 are DESIGN ONLY, never implemented.
+> Do not read any table below as a description of runtime behaviour.**
+>
+> **Exception: §5 (transport token) IS built** — see the note in that section.
+>
+> `ToolPermissionPolicy.decide()` returns **ALLOW unconditionally** — every
+> risk class, every source. It does not consult the request source, approved
+> roots, trusted scopes, `destructive_tools_enabled`, `auto_approve_mode` or
+> any `require_approval_for_*` flag. `ToolRegistry.request_tool()` ignores the
+> policy entirely and executes immediately.
+>
+> A previous version of this banner claimed *"Enforcement gates are in place in
+> the code; permission modes relax them selectively per config."* **That was
+> false**, and it sent a debugging session down the wrong path. Deleted
+> 2026-07-21.
+>
+> For what actually constrains a tool today, read
+> [SECURITY_MODEL.md](SECURITY_MODEL.md) §2. Short version: only the individual
+> tools constrain anything.
+>
+> This document is kept because the design is still the intended direction if
+> gating is ever built. **It is a plan, not a record.**
+>
+> **Naming:** `jarvisd` / `com.ozzy.jarvisd` / `~/.jarvis/` below are OLD names.
+> Today: `dand` / `com.dan.dand` / `~/.dan/`, API on `127.0.0.1:41741`.
 
 Motivation ([MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.md) §5.4):
 "the user says *click this*" is not the same event as "the model decided to
-click". Today `ToolPermissionPolicy.decide()` sees only the risk class; the
-same action gets the same answer regardless of who asked. Before real tools
-(FAZA C) and operator adapters (FAZA D), the policy must see the source.
+click". `ToolPermissionPolicy.decide()` does not distinguish them — it does not
+distinguish anything at all. What follows is what it would take to make the
+policy see the source and act on it.
 
 ---
 
@@ -74,7 +86,10 @@ implemented only when their capability stage lands):
 | `automation_run` | whitelisted Shortcuts | later |
 | `clipboard_read` / `clipboard_write` | Pasteboard | later |
 
-## 3. Decision matrix — source × class
+## 3. Decision matrix — source × class (DESIGNED, NOT BUILT)
+
+*Reminder: no cell below is enforced. `decide()` returns ALLOW for every cell
+in this table.*
 
 Legend: **A** = allow, **AP** = approval required, **B** = blocked.
 Columns: `user` = `direct_user_command` / `panel_command` / `voice_command`
@@ -113,14 +128,14 @@ Reading the matrix:
 - **The `auto` column is the strictest.** Scheduled/hook work may observe and
   notify; it does not mutate anything without a human in the loop. Workers
   needing writes produce *proposals* (approvals), not actions.
-- **The `model` column never contains a plain A** except broker-mediated
-  speech. This is deliberate and matches the designed conservative stance —
-  see §6 for the earned-trust path. Config relaxations (e.g.,
-  `auto_approve_mode="all"`) override this when explicitly enabled.
-- **Approval is human-gated by design.** The default policy keeps it a human
-  decision plus an explicit execute step (approve ≠ execute). Config modes
-  (e.g., `auto_approve_mode` in dev) can relax this; those modes are
-  intentional deviations, not the default.
+- **The `model` column would never contain a plain A** except broker-mediated
+  speech. That is the designed conservative stance — see §6 for the
+  earned-trust path. (In the running code the model column is A everywhere,
+  because there is no gating at all.)
+- **Approval would be human-gated**, as a human decision plus an explicit
+  execute step (approve ≠ execute). No such step exists today; there is no
+  configuration value that turns one on. Building it is the work, not
+  configuring it.
 
 ## 4. User-presence model
 
@@ -146,7 +161,16 @@ Usage (design):
 - Presence transitions emit no dedicated event type; presence is derived
   state, queryable via `/state`, recorded in approval/tool_run metadata.
 
-## 5. Transport token (prerequisite for FAZA C real tools)
+## 5. Transport token — ✅ BUILT (the one implemented part of this document)
+
+> **Shipped with different names, and switched off.** The header is
+> `X-DAN-Token` (`dan/security/transport.py`), the token file is
+> `~/.dan/runtime/api-token`, enforcement lives in `dan/daemon/lifecycle.py` —
+> and every check is wrapped in `security.api_token_required`, which is `false`
+> in the owner's live config, so what that leaves reachable is analysed in
+> [SECURITY_MODEL.md](SECURITY_MODEL.md) §2 ("Who can reach a tool"). Read the
+> code and that section rather than the design sketch below.
+
 
 Localhost binding is not authentication: any local process (including a
 browser page doing `fetch` to `127.0.0.1`) can hit the API today. Before

@@ -5,7 +5,15 @@
 > (`shell_read_unrestricted`, `personas.toml`).
 > Dziesięć niezależnych kątów wyszukiwania; najcięższe zarzuty zweryfikowane
 > ręcznie przez czytanie kodu i żywego procesu, nie na słowo agenta.
-> **Nic z tej listy nie zostało naprawione** — dokument jest rejestrem, nie raportem z fixów.
+> **Naprawiony jest dokładnie jeden punkt — §4** (walidacja typów w
+> `[security]`), oznaczony u siebie jako ZAMKNIĘTE. Reszta stoi otwarta i
+> dokument jest ich rejestrem, nie raportem z fixów: w każdym pliku z
+> potwierdzoną wadą stoi blok `KNOWN DEFECT` odsyłający do właściwego paragrafu,
+> żeby czytający kod nie uwierzył opisowi obok defektu.
+> Pliki opatrzone: `dan/daemon/supervisor.py`, `dan/daemon/restart.py`,
+> `dan/daemon/app.py` (`mark_failed`), `dan/daemon/state_machine.py`,
+> `dan/tools/shell_tool.py`, `dan/config.py`, `dan/voice/queue.py`,
+> `dan/panel/assets/typewriter.js`.
 
 ## Legenda pewności
 
@@ -28,8 +36,8 @@ tokenów, bo `~/.dan/venv/bin/supertonic` jest skryptem z shebangiem i jądro
 wstawia ścieżkę interpretera na początek:
 
 ```
-/Users/n1_ozzy/.homebrew/Cellar/python@3.14/.../Python.app/Contents/MacOS/Python \
-  /Users/n1_ozzy/.dan/venv/bin/supertonic serve --model supertonic-3 --port 7788 --log-level warning
+~/.homebrew/Cellar/python@3.14/.../Python.app/Contents/MacOS/Python \
+  ~/.dan/venv/bin/supertonic serve --model supertonic-3 --port 7788 --log-level warning
 ```
 
 Porównanie jest **zawsze** fałszywe → `_default_find_own_orphan` zwraca `None` →
@@ -60,7 +68,8 @@ pozostałe defekty:
 
 ## 2. `shell_read_unrestricted` = dowolny shell dla modelu — POTWIERDZONE
 
-`dan/tools/shell_tool.py:119` (+ `dan/config.py:403`, `dan/daemon/app.py:2188`)
+`dan/tools/shell_tool.py:132` — `ShellReadTool.run`, test allowlisty
+(+ `dan/config.py:403`, `dan/daemon/app.py:2188`)
 
 ```python
 if not self.unrestricted and normalized not in self.whitelist:
@@ -71,7 +80,7 @@ Allowlista była **jedyną** barierą:
 - `dan/tools/permissions.py:142-157` — `ToolPermissionPolicy.decide()` zwraca
   `_allow()` bezwarunkowo dla każdego ryzyka i każdego źródła
   („Runtime-lab policy: tools run without approval gates");
-- `dan/tools/shell_tool.py:141` — `subprocess.run(..., shell=True)` bez żadnej
+- `dan/tools/shell_tool.py:158` (`run`) — `subprocess.run(..., shell=True)` bez żadnej
   sanityzacji metaznaków.
 
 Przy `security.shell_read_unrestricted = true` model emitujący
@@ -83,7 +92,7 @@ i opisuje się modelowi jako read-only.
 
 ## 3. Utwardzenie gita omijalne po zdjęciu allowlisty — POTWIERDZONE
 
-`dan/tools/shell_tool.py:130`
+`dan/tools/shell_tool.py:151` (test `argv_check[0] == "git"` w `run`)
 
 ```python
 if argv_check and argv_check[0] == "git":
@@ -100,24 +109,67 @@ opisanego jako read-only.
 Nowy test `test_unrestricted_keeps_the_git_hardening` sprawdza wyłącznie dosłowne
 `git status --short`, więc przechodzi mimo dziury.
 
-## 4. Nowa flaga bez walidacji typu — POTWIERDZONE
+## 4. Nowa flaga bez walidacji typu — ZAMKNIĘTE 2026-07-21
 
-`dan/config.py:598-600` — `_build_security_config` filtruje tylko klucze i nie
-waliduje typów, inaczej niż `_build_memory_config` tuż niżej (`config.py:627`),
-które woła `_require_config_bool`.
+**Naprawione.** `_build_security_config` waliduje teraz każde pole zadeklarowane
+jako `bool` w `SecurityConfig` — po adnotacji, nie po nazwie, więc następny
+przełącznik jest objęty bez dotykania tej funkcji. Powtórzenie repro poniżej
+daje dziś `ConfigError: security.shell_read_unrestricted must be a bool`.
+
+Dwie rzeczy do zapamiętania: walidacja jest **fail-closed przy starcie**, więc
+config z `= 0` zamiast `= false` (wcześniej cicho czytany jako fałsz) teraz
+zatrzymuje demona — sprawdzone, że żywy `~/.dan/config.toml` przechodzi. I obejmuje
+całą sekcję `[security]`, nie samą flagę shella.
+
+Opis pierwotnej dziury zostaje niżej jako dowód, po co ta walidacja jest.
+
+`dan/config.py` — `_build_security_config` filtrowało tylko klucze i nie
+walidowało typów, inaczej niż `_build_memory_config` tuż niżej, które woła
+`_require_config_bool`.
 
 `shell_read_unrestricted = "false"` (typowa literówka w TOML) → string przechodzi
 do frozen dataclassy bez `__post_init__` → `shell_tool.py:114` robi
 `bool("false") == True` → demon startuje z **wyłączoną** allowlistą i nigdzie nie
 zgłasza błędu. Fail-open na przełączniku bezpieczeństwa.
 
-## 5. Flaga zapisywalna przez HTTP — PRZEŚLEDZONE
+Zmierzone 2026-07-21 na tym kodzie:
+
+```
+>>> _build_security_config({"shell_read_unrestricted": "false"}).shell_read_unrestricted
+'false'          # nie bool — string przeszedł
+>>> bool('false')
+True             # allowlista WYŁĄCZONA
+```
+
+`load_config` woła wprawdzie `validate_registered_config_tree` **przed**
+`_build_security_config`, ale ta funkcja sprawdza wyłącznie, czy klucz jest
+zarejestrowany („unregistered config key…"), nie rusza parserów i nie patrzy na
+typy. Dziura jest więc **wyłącznie na ścieżce pliku TOML** — zapis przez API
+przechodzi przez `_typed_parser`, który przy defaultcie `bool` odrzuca nie-boola
+(`ConfigWriteRejected`). Naprawiać trzeba warstwę ładowania pliku, nie zapis.
+
+## 5. Flaga zapisywalna przez HTTP — POTWIERDZONE
 
 `security.shell_read_unrestricted` nie trafiła do `_VERSIONED_KEYS`, więc ląduje
 w zapisywalnym koszyku INSTALLATION — w przeciwieństwie do sąsiednich
-`require_approval_for_*`, celowo read-only. Przy `api_token_required` domyślnie
-`False` sekwencja `POST /settings` + `POST /runtime/restart` uzbraja dowolne
-wykonanie shella na stałe, bez dotykania pliku konfiguracyjnego.
+`require_approval_for_*`, celowo read-only. Decyduje o tym jedna linia
+w `dan/config_registry.py`:
+
+```python
+writable=key in _LIVE_RUNTIME_KEYS or key not in _VERSIONED_KEYS | _OWNER_KEYS,
+```
+
+Zmierzone 2026-07-21 na żywym rejestrze:
+
+```
+security.shell_read_unrestricted   -> owner=installation  writable=True
+security.require_approval_for_shell -> owner=versioned     writable=False
+```
+
+Czyli sześć sąsiednich przełączników approval jest celowo tylko do odczytu,
+a ten jeden — nie. Przy `api_token_required` domyślnie `False` sekwencja
+`POST /settings` + `POST /runtime/restart` uzbraja dowolne wykonanie shella na
+stałe, bez dotykania pliku konfiguracyjnego.
 
 ---
 
@@ -237,8 +289,29 @@ Trzy pliki siostrzane przetrwały i dalej padają — pomiar agenta:
 7 failed / 62 passed, w tym `test_ui_click_blocked_for_auto_sources`, gdzie
 `ui_click` ze źródła `SCHEDULED_WORKER` faktycznie wykonuje kliknięcie.
 `pyproject.toml` zmienia tylko `addopts` i niczego nie ignoruje, więc strata nie
-jest zamaskowana. `docs/MACOS_PERMISSION_MODEL.md` dalej opisuje tę macierz jako
-egzekwowaną.
+jest zamaskowana.
+
+> **MOJE WŁASNE ZDANIE STĄD BYŁO NIEAKTUALNE — wycofane 2026-07-21.**
+> Pisałem tu, że „`docs/MACOS_PERMISSION_MODEL.md` dalej opisuje tę macierz jako
+> egzekwowaną". Sprawdziłem plik ponownie: **nieprawda**. Ma dziś tytuł
+> „(UNIMPLEMENTED DESIGN)", banner „⚠️ THE PERMISSION MODEL IN THIS DOCUMENT WAS
+> NEVER BUILT", a w samej tabeli przypomnienie, że `decide()` zwraca ALLOW dla
+> każdej komórki. Plik sam demaskuje poprzednią wersję bannera jako fałszywą.
+> Zarzut trafiał w stan sprzed przepisania; utrzymywanie go byłby dokładnie tym
+> błędem, który ten dokument wytyka innym.
+
+> **W TRAKCIE NAPRAWY PRZEZ DRUGĄ SESJĘ (stan drzewa 2026-07-21, niezacommitowany).**
+> `dan/tools/permissions.py`, `tests/test_tool_permissions.py`,
+> `tests/test_effective_tool_policy.py` oraz ~45 plików w `docs/` są zmienione i
+> nadal się zmieniają. Sprawdzone przeze mnie: **`decide()` zachowania nie
+> zmieniło** — dalej zwraca `_allow(...)` bezwarunkowo dla każdej pary
+> (ryzyko, źródło). Zmieniony jest docstring modułu, który teraz sam mówi
+> „NOT an enforcement layer" i nazywa macierz z `MACOS_PERMISSION_MODEL.md`
+> projektem niezaimplementowanym. Czyli druga sesja prostuje ten sam opis co ja,
+> tylko od strony dokumentacji. Liczby o brakujących asercjach powyżej są sprzed
+> tej zmiany i mogą być już nieaktualne — nie przepisywałem ich, bo cel jest
+> ruchomy. **Nie edytować `docs/` ani `permissions.py` z tej sesji**, dopóki
+> tamta nie skończy.
 
 ---
 
@@ -296,6 +369,64 @@ liczby **przypadkiem**. Prędkość powinna być czytana z demona.
 - `dan/daemon/restart.py:141` — gałąź blokująca resetuje `_restarting`, ale
   zostawia stare `_operation_id`; kolejny `POST /runtime/restart` dostaje id
   poprzedniej, nieudanej operacji, bo `close_intake` widzi bramkę już zamkniętą.
+
+---
+
+## 17. Dokumentacja opisuje bramkę, której nie ma — audyt 2026-07-21
+
+Osobny przebieg czytający (nie grep) po `dan/tools/permissions.py` i całym
+`docs/`. Wzorzec jest jeden i powtarza się w kilkunastu plikach: **ADR-y i
+runbooki opierają swoje gwarancje bezpieczeństwa na macierzy (ryzyko, źródło),
+która nigdy nie została zbudowana.** Zdania typu „every `ui_act` request crosses
+ApprovalGate", „unknown risk values are blocked", „`terminal_write` is
+approval-for-everyone" opisują projekt, nie runtime.
+
+Stan na dziś:
+
+- **Trzy dokumenty mówią prawdę i są dobrym punktem wyjścia:**
+  `MACOS_PERMISSION_MODEL.md` (cały oznaczony jako niezbudowany),
+  `SECURITY_MODEL.md` §2 („Layer / What it does today"),
+  `JARVIS_DO_NOT_TOUCH.md` („The tools are the containment, not the policy").
+  Najdokładniejszym opisem stanu w całym repo jest docstring
+  `dan/tools/permissions.py:1-25`.
+- **Reszta jest w trakcie przepisywania przez drugą sesję** — nie wymieniam tu
+  numerów linii, bo pliki zmieniają się w trakcie pisania tego akapitu
+  (`DECISIONS.md` zmienił się na dysku między moim odczytem a moją edycją).
+- **`docs/DECISIONS.md` ta fala ominęła**, więc poprawiłem go z tej sesji.
+  Najgroźniejsze zdanie brzmiało: „a future gate re-enabling approval will
+  require no code change — only `jarvis.toml` reversion" (ADR-022,
+  Consequences). To nieprawda i to jest nieprawda kosztowna: ktoś przełączy
+  klucze w configu, uwierzy, że ma ochronę, i jej nie będzie. `decide()` nie ma
+  ani jednej instrukcji warunkowej. Dołożone: ramka korygująca pod ADR-022 i
+  przypis pod tabelą Decision log (wiersze 010/017/018/021 obiecują bramkowanie).
+
+Do zapamiętania na przyszłość: `MACOS_PERMISSION_MODEL.md` sam przyznaje, że
+poprzednia wersja jego bannera „sent a debugging session down the wrong path".
+Komentarz opisujący intencję zamiast implementacji jest gorszy niż brak
+komentarza — kosztuje cudzą sesję, nie własną.
+
+## 18. Rozsypane worktree — wbrew regule Ozzy'ego
+
+`git worktree list` pokazuje dwa wpisy poza głównym checkoutem:
+
+| wpis | gałąź | stan |
+|---|---|---|
+| `~/Documents/dev/DAN-release1-wt` | `feat/dan-foundation-release1` | katalog **nie istnieje**, wpis `prunable` |
+| `.claude/worktrees/voice-skills-dand-migration-521486` | `claude/voice-skills-dand-migration-521486` | 15 MB, drzewo czyste |
+
+Zmierzone: **żadna z tych gałęzi nie ma commita spoza
+`agent/dan-release1-integration`**, a worktree w `.claude/` nie ma zmian
+niezacommitowanych. Czyli nic unikalnego tam nie leży.
+
+Realna szkoda jest informacyjna: ten worktree trzyma **pełny, nieaktualny
+duplikat `docs/`** sprzed korekt z 2026-07-21 — łącznie ze starą wersją
+`SECURITY_MODEL.md`. Agent albo człowiek, który tam trafi, przeczyta
+zdementowaną wersję modelu bezpieczeństwa jako obowiązującą. Każda poprawka
+w `docs/` tę kopię omija.
+
+Globalne `CLAUDE.md` zakazuje worktree wprost („scattered worktrees lose work
+randomly", Ozzy 2026-07-13). **Nie usuwam ich z tej sesji** — usuwanie należy do
+Ozzy'ego, mimo że pomiar mówi, że nie ma czego stracić.
 
 ---
 

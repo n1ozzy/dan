@@ -544,14 +544,31 @@ def _handle_config_set(args: argparse.Namespace, config: DANConfig) -> int:
 
 
 def _handle_voice_hook(args: argparse.Namespace, config: DANConfig) -> int:
+    """Read or write `voice.hook_enabled`.
+
+    Every response carries `note`, because the switch alone tells the operator
+    nothing useful: the hook it gates was uninstalled from the host on
+    2026-07-21, so flipping it changes no behaviour until the hook is put back.
+    Without that line the command reports a success that does nothing.
+    """
     json_output = args.json_output
     client = _daemon_client(args, config)
     hook_key = "voice.hook_enabled"
+    note = (
+        "the MessageDisplay hook was uninstalled from this host on 2026-07-21; "
+        "this switch takes effect only if it is reinstalled, and speech "
+        "otherwise goes through `dan speak`"
+    )
     try:
         if args.action in {"on", "off"}:
             enabled = args.action == "on"
             client.put_setting(hook_key, enabled)
-            response = {"ok": True, "key": hook_key, "hook_enabled": enabled}
+            response = {
+                "ok": True,
+                "key": hook_key,
+                "hook_enabled": enabled,
+                "note": note,
+            }
         else:
             explanation = client.explain_setting(hook_key)
             response = {
@@ -559,6 +576,7 @@ def _handle_voice_hook(args: argparse.Namespace, config: DANConfig) -> int:
                 "hook_enabled": explanation.get("value"),
                 "owner": explanation.get("owner"),
                 "source": explanation.get("source"),
+                "note": note,
             }
     except DaemonAPIError as exc:
         return _emit_error(exc.payload, json_output, 2)

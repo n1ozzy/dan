@@ -14,6 +14,13 @@ spawns, health-probes and reaps those children. Contracts:
 - stop() terminates the whole process group (children are spawned with
   start_new_session=True, so pgid == pid) and escalates SIGTERM -> SIGKILL.
 
+KNOWN DEFECT (2026-07-21) — the orphan exception above never fires in
+production, so the fail-dead it was written to end is unchanged. See
+_is_own_orphan for why the argv comparison cannot match a real supertonic, and
+_reclaim_own_orphan_locked / _await_port_release for the two defects that
+mismatch currently masks. The tests pass because they feed synthetic argv.
+docs/reviews/2026-07-21-restart-orphan-shell-review.md §1, §13, §14.
+
 Every OS touchpoint (process factory, health probe, killpg, orphan probe,
 sleep) is injectable so tests run without a real process or port.
 """
@@ -182,6 +189,18 @@ def _is_own_orphan(spec: ChildSpec, *, ppid: int, command: str) -> bool:
     The command line comes back from ps as one string, so an argument
     containing whitespace can never round-trip; that only ever costs us an
     adoption we then refuse, which is the safe direction.
+
+    KNOWN DEFECT: the argv comparison never matches the real child.
+    `~/.dan/venv/bin/supertonic` is a console script with a shebang, so ps
+    reports the interpreter path ahead of it and shlex.split(command) comes
+    back one token longer than spec.argv. Measured on this machine 2026-07-21.
+
+    Do NOT fix that comparison on its own. It is the only thing currently
+    keeping the ppid test harmless: on macOS every launchd-managed process has
+    ppid == 1, so the moment argv starts matching, a foreign service that
+    happens to share our argv gets killed, launchd puts it back, and we kill it
+    again — the exact "never kill someone else's process" rule ADR-001 exists
+    to hold. Argv and a real ownership proof have to land together.
     """
 
     if ppid != 1 or not command.strip():
@@ -714,6 +733,13 @@ class ChildSupervisor:
             pid,
             spec.health_url,
         )
+        # KNOWN DEFECT: killpg addresses a process GROUP, and pid came from
+        # lsof, which reports a process. An orphan that is not its own group
+        # leader turns both signals into ProcessLookupError, swallowed just
+        # below — the port stays held while the log claims the reclaim worked.
+        # The other direction is worse: two subprocess.run calls with 5 s
+        # timeouts sit between the lsof and the signal, so a recycled pid means
+        # SIGKILL lands on an unrelated process tree. Review §13.
         for signum in (signal.SIGTERM, signal.SIGKILL):
             try:
                 self._killpg(pid, signum)
@@ -730,6 +756,14 @@ class ChildSupervisor:
         return False
 
     def _await_port_release(self, spec: ChildSpec) -> bool:
+        # KNOWN DEFECT: this walks the whole spawn backoff once after SIGTERM
+        # and again after SIGKILL, holding the RLock that ensure_running (i.e.
+        # DaemonApp.start) took. A parallel POST /runtime/restart then times
+        # out on stop_all(timeout=5.0), gets _incomplete_stop_result, and
+        # app.py raises — pushing a HEALTHY daemon into RuntimeState.ERROR
+        # because the watchdog was busy in here. The spawn schedule is also the
+        # wrong clock: the kernel frees a socket immediately, so the right
+        # shape is one ~1 s window polled every 50 ms. Review §14.
         for delay in (0.0, *spec.backoff_seconds):
             if delay:
                 self._sleep(delay)

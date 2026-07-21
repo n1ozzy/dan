@@ -1,5 +1,24 @@
 # E2E MVP Smoke (F1)
 
+> **Partially stale — corrected 2026-07-21.** The harness script still exists,
+> but two rows of the criterion map below were written for the approval-gated
+> build and no longer describe the code:
+>
+> - **§6.5 "model tool call: policy(source) → approval → explicit execute →
+>   ToolRun → continuation" is FALSE.** `ToolPermissionPolicy.decide()` returns
+>   ALLOW unconditionally and `ToolRegistry.request_tool()` executes immediately,
+>   ignoring its policy/source/approval arguments. There is no approval step.
+> - **§6.10 "rejected approval never executes; duplicate execute = 409"**
+>   describes the legacy `/approvals` HTTP surface, not the tool path.
+> - Consequently step [4]'s "receives `approval.created` as a live push" and the
+>   §6.4 row depend on an event that model-originated tools no longer emit.
+>
+> Still true and still worth running: §6.6 (`file_read` outside approved roots is
+> BLOCKED — enforced inside `dan/tools/file_tool.py`, realpath'd, fail-closed on
+> empty roots), §6.13 (no raw secrets in events/DB — redaction plus the
+> 4096-char persistence cap are real), §6.7 (transport token), §6.15
+> (report-only runtime conflicts). Treat the rest as unverified until re-run.
+
 `scripts/smoke-e2e-mvp.sh` walks the operator acceptance scenario from
 MASTER_PLAN §6 against ONE temporary daemon instance (port 41799, temp DB,
 fake CLI brain, no providers, no network beyond localhost). It is the

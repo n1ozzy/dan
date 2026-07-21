@@ -1,5 +1,37 @@
 # Jarvis v4.2 Reviewer Handoff
 
+> ## ⛔ HISTORICAL HANDOFF (2026-07-03) — NOT A DESCRIPTION OF CURRENT BEHAVIOUR
+>
+> **Classification: historical.** Superseded by the Release 1 cutover
+> (2026-07-18) and the 2026-07-21 audit. Kept as the record of where the project
+> stood after FAZY A–H. **Do not orient a review on it and do not treat its
+> safety boundaries as the ones in force.**
+>
+> Concretely wrong today:
+>
+> - **"Model-originated tool calls go: PermissionPolicy(source) → approval →
+>   explicit execute → ToolRun → continuation; never auto-execute" is FALSE.**
+>   `ToolPermissionPolicy.decide()` returns ALLOW unconditionally,
+>   `ToolRegistry.request_tool()` ignores its policy/source/approval arguments
+>   and executes immediately, and `ApprovalGate` is no longer in the execution
+>   path. AGENTS.md forbids adding that gate back.
+> - **Naming:** `jarvisd` → `dand`, `~/.jarvis/` → `~/.dan/`,
+>   `com.ozzy.jarvisd` → `com.dan.dand`, API `127.0.0.1:41741`. The token file is
+>   `~/.dan/runtime/api-token`.
+> - **`scripts/jarvis-panel` no longer exists** — the panel is `scripts/dan-panel`
+>   (launchd label `com.dan.panel`). `scripts/jarvis-dan-report` does still exist.
+> - **`FIXME.md` no longer exists**, so "FIXME.md is the source of truth" points
+>   at nothing. Current status lives in `docs/STATUS.md`.
+> - **Voice is no longer "deferred by decree".** The voice stack is live: `dand`
+>   owns audio, speech goes through `dan speak`, casting canon is
+>   `config/voice/personas.toml`. See `docs/GLOS-I-KOLEJKA.md`.
+> - The test/smoke counts below ("1322 tests", "22/22 smoke" on 2026-07-02) are a
+>   2026-07-02 snapshot, not present-day evidence. (22 `scripts/smoke-*.sh` files
+>   do still exist.)
+>
+> Current truth: `AGENTS.md`, `docs/PROJECT_RULES.md`, `docs/STATUS.md`,
+> `docs/CO-JEST-GDZIE.md`, and the code under `dan/`.
+
 ## Purpose
 
 - This document is for future model/human review.
@@ -123,9 +155,12 @@ ls docs/runbooks
 - `docs/runbooks/PANEL_MENUBAR.md` — H1 menu-bar shell install/run.
 - `docs/runbooks/PROVIDER_SMOKE.md` — real-provider manual smoke.
 - `docs/runbooks/SCREEN_RECORDING_TCC.md` — screen capture permission.
+- `docs/runbooks/SQLITE_BACKUP_AND_RECOVERY.md` — `dan.db` backup/restore
+  (added after this handoff was written).
 - `docs/runbooks/TERMINAL_AUTOMATION_TCC.md` — terminal automation TCC.
 - `docs/runbooks/TEXT_RUNTIME_SMOKE.md` — text pipeline smoke.
-- `docs/runbooks/TOOLS_AND_APPROVALS.md` — approval loop operations.
+- `docs/runbooks/TOOLS_AND_APPROVALS.md` — **legacy** approval API reference
+  only; the approval loop it documents is no longer in the tool path.
 
 ## What not to do during review
 
@@ -138,7 +173,11 @@ ls docs/runbooks
 - Do not run real provider subprocesses unless doing manual smoke.
 - Do not treat the cockpit/panel as a source of truth.
 
-## Handoff prompt for reviewer
+## Handoff prompt for reviewer (SPENT — do not reuse)
+
+> This prompt was consumed by the 2026-07-03 review. It is preserved for the
+> record only. Reusing it would send a reviewer looking for an approval loop
+> that no longer exists and for a voice gate that has since been passed.
 
 ```text
 Review this repository as Jarvis v4.2 after FAZY A–H. Use docs/REVIEW_HANDOFF.md as orientation, but verify against current code. Plan-of-record: docs/MASTER_PLAN.md. Focus on the approval loop, PermissionPolicy, transport auth, voice gate boundaries (G0–G4 live, G5 deferred), and the thin-client panel. Do not implement changes unless explicitly asked.

@@ -12,8 +12,25 @@ adapter receives a full `BrainRequest` each turn and returns only a
 - Provider sessions are not DAN memory.
 - DAN sends full context each turn.
 - Adapters do not write the database, append events, enqueue voice, run tools,
-  run workers, mutate the panel, or preserve provider-side session state.
+  run workers, or mutate the panel.
 - Do not use `--dangerously-skip-permissions`.
+
+> **Correction (2026-07-21): "adapters preserve no provider-side session state"
+> used to be listed above and is FALSE for `claude_cli`.** `ClaudeCliAdapter`
+> keeps ONE persistent provider session for the daemon's lifetime, with a durable
+> checkpoint in `~/.dan/runtime/claude-session.json`, rejoined with `--resume`.
+> That is provider-side session state, and it has a sharp operational edge: a
+> **resumed** session keeps its ORIGINAL system prompt and its ORIGINAL tool set,
+> because our prompt only rides along as `--append-system-prompt` (the bootstrap
+> `--system-prompt` runs only when there is no checkpoint). So a poisoned or
+> foreign checkpoint survives every restart, and the fix is to quarantine
+> `claude-session.json` and restart — see `docs/ODZYSKIWANIE.md`.
+>
+> Also do not strip `--tools ""` or `--setting-sources ""` from the argv: they
+> disable Claude's native tools and isolate the subprocess from the operator's
+> CLAUDE.md and settings. Both ARE present in the live argv — they sit after a
+> very large system prompt, so a truncated `ps` hides them. That is not evidence
+> they are missing.
 
 ## Enable Claude CLI
 
@@ -76,27 +93,34 @@ Accepted JSON fields are:
 - `name`: required string.
 - `arguments`: optional object, defaults to `{}`.
 - `id`: optional string.
-- `risk`: optional string, defaults to `safe_read`; the registry still owns
-  the effective approval risk during capture.
+- `risk`: optional string, provider-supplied metadata recorded for audit only;
+  it drives no decision.
 
 Valid blocks become `BrainResponse.tool_calls` and are removed from the visible
 response text. If the visible text would be empty, the adapter returns
-`DAN requested tool approval.` as deterministic text. Adapter metadata
-includes `parsed_tool_call_count`.
+`DAN requested tool approval.` as deterministic text (an unverified leftover
+string from the approval era — check the adapter before quoting it). Adapter
+metadata includes `parsed_tool_call_count`.
 
 Malformed blocks, missing `name`, and non-object `arguments` are not fatal.
 They are removed from visible text, recorded in
 `raw_metadata["tool_call_parse_errors"]`, and never executed.
 
-Tool requests are not executed automatically. The text turn pipeline records
-model-originated requests as approvals when possible. A human or explicit
-client must approve and then call `POST /approvals/{id}/execute`; approval
-alone does not run the tool.
+> **Corrected 2026-07-21.** The two paragraphs that used to sit here said tool
+> requests are captured as approvals and need `POST /approvals/{id}/execute`.
+> That is FALSE on this branch: `ToolRegistry.request_tool()` ignores its
+> policy/source/approval arguments and executes immediately, and
+> `ToolPermissionPolicy.decide()` returns ALLOW unconditionally. Model-originated
+> tools **do** run and return their real result — `AGENTS.md` makes that the
+> branch contract and forbids putting an approval row back in the path.
 
-The provider prompt tells models not to claim a requested tool has already run,
-not to request dangerous shell/file/network/system mutation, and not to expose
-hidden chain-of-thought. This parser is only an approval-capture path, not
-autonomous tool use.
+Parsed tool calls execute directly and are recorded in `tool_runs`/`events`
+(redacted, with long strings capped). What can still refuse a call is the tool
+itself: approved-root containment, the `shell_read` allowlist, the scrubbed
+environment, git hardening, and the size/timeout bounds.
+
+The provider prompt tells models not to claim a requested tool has already run
+and not to expose hidden chain-of-thought.
 
 ## Smoke Testing
 

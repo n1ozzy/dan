@@ -1,5 +1,30 @@
 # Jarvis Fix Tasks Handoff
 
+> ## ⛔ DOKUMENT HISTORYCZNY — NIE JEST OPISEM DZISIEJSZEGO ZACHOWANIA
+>
+> **Klasyfikacja: historyczna (handoff).** Zamknięty i zdezaktualizowany przez
+> Release 1 cutover (2026-07-18) oraz audyt z 2026-07-21. To zapis kolejki
+> zadań Task 1–7 z lipca 2026 — wartościowy jako dowód, co i dlaczego wtedy
+> naprawiono. **Nie jest instrukcją do wykonania i nie opisuje stanu kodu.**
+>
+> Czego NIE brać z tego pliku dosłownie:
+>
+> - **Ścieżki.** `$HOME/Documents/dev/jarvis` nie istnieje — repo to
+>   `~/Documents/dev/dan` (== `dev/DAN`, ten sam inode). Pakiet `jarvis/…` nie
+>   istnieje — jest `dan/…` (`dan/voice/`, `dan/turns/`, `dan/brain/`,
+>   `dan/daemon/`, `dan/api/`).
+> - **Task 4 „Persona Boundaries".** `config/persona/jarvis.md` i
+>   `config/persona/gangus-1.md` zostały USUNIĘTE. Dziś jest jeden kanon:
+>   `config/persona/DAN.md` z nagłówkiem `DAN_CANON_VERSION: 1`, ładowany
+>   fail-closed przez `dan persona context`; profile person wycięto, a Jarvis
+>   to alias DANa, nie osobna postać. Nie przywracaj markerów
+>   `Granice`/`approval`/`registry` do persony.
+> - **Prompt dla następnej sesji** (blok poniżej) — jest zużyty, dotyczył
+>   commita z lipca 2026. Nie odpalaj go.
+>
+> Aktualna prawda: `AGENTS.md`, `docs/PROJECT_RULES.md`, `docs/STATUS.md`,
+> `docs/CO-JEST-GDZIE.md`, `docs/GLOS-I-KOLEJKA.md` i kod w `dan/`.
+
 Cel: robic kazdy task w osobnej sesji. Nie mieszac zmian.
 
 ## Aktualny stan po sesji Task 5-7 + DAN fillery

@@ -12,13 +12,13 @@ from pathlib import Path
 import pytest
 
 from dan.input.macos_event_tap import MacOSHotkeyMonitor, SingleOwnerError
-from tests.test_daemon_hotkey import RIGHT_CMD_RIGHT_SHIFT, FakeEventTap
+from tests.test_daemon_hotkey import DEFAULT_PTT_MASK, FakeEventTap
 
 
 def make_monitor(lock_path: Path, edges: list[str] | None = None) -> MacOSHotkeyMonitor:
     return MacOSHotkeyMonitor(
         lock_path=lock_path,
-        required_mask=RIGHT_CMD_RIGHT_SHIFT,
+        required_mask=DEFAULT_PTT_MASK,
         on_edge=(edges.append if edges is not None else lambda edge: None),
         tap_factory=FakeEventTap,
         trusted_checker=lambda: True,
@@ -45,7 +45,7 @@ def test_rejected_owner_leaves_the_running_monitor_untouched(tmp_path: Path) -> 
         with pytest.raises(SingleOwnerError):
             make_monitor(lock_path).start()
         assert first.running is True
-        first.handle_flags_changed(RIGHT_CMD_RIGHT_SHIFT)
+        first.handle_flags_changed(DEFAULT_PTT_MASK)
         first.handle_flags_changed(0x0)
         assert edges == ["down", "up"]
     finally:
@@ -81,7 +81,7 @@ def test_failed_tap_start_releases_the_lock(tmp_path: Path) -> None:
 
     broken = MacOSHotkeyMonitor(
         lock_path=lock_path,
-        required_mask=RIGHT_CMD_RIGHT_SHIFT,
+        required_mask=DEFAULT_PTT_MASK,
         on_edge=lambda edge: None,
         tap_factory=ExplodingTap,
         trusted_checker=lambda: True,

@@ -1,14 +1,25 @@
-# Jarvis v4.2 — macOS Capability Inventory
+# DAN — macOS Capability Inventory
 
-> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
-> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+> **Naming:** `jarvisd` / `com.ozzy.jarvisd` below = today's `dand` /
+> `com.dan.dand` (API `127.0.0.1:41741`).
 
-> **Status:** DESIGN (FAZA B1, [MASTER_PLAN.md](MASTER_PLAN.md)). This document
-> inventories macOS capability classes Jarvis may be designed to use. It is an
-> **inventory, not a roadmap**: nothing here is an implementation commitment
-> until promoted by a scoped stage in MASTER_PLAN.md
-> ([MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.md): examples ≠
-> commitments). No runtime code accompanies this document.
+> **Status:** INVENTORY of macOS capability classes — not a roadmap and not a
+> record. Nothing here is an implementation commitment until promoted by a
+> scoped stage ([MACOS_OPERATOR_CONTRACT.md](MACOS_OPERATOR_CONTRACT.md):
+> examples ≠ commitments).
+>
+> **⚠️ The per-capability `Status:` lines below are STALE (2026-07-21).** Some
+> of what they call planned or later has since shipped: screen reading
+> (`screen_read_window`, `screen_ocr_region`), Accessibility read AND action
+> (`ui_active_app`, `ui_read_window`, `ui_click`, `ui_type`, `ui_focus_app`),
+> the terminal bridge (`terminal_read_screen`, `terminal_paste`) and
+> `web_fetch` are all registered in `dan/daemon/app.py` and run with no
+> approval gate. The authoritative list of what exists is that registration
+> block; the risk classes named here gate nothing
+> ([SECURITY_MODEL.md](SECURITY_MODEL.md) §2).
+>
+> Treat this file as "what these frameworks can do and what they cost", which
+> is still accurate and still useful.
 
 Every capability below is described with:
 

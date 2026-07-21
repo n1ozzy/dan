@@ -2,6 +2,10 @@
 
 > **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
 > doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+> Likewise `jarvis/panel/...` = today's `dan/panel/...`. Current panel facts
+> (label, launcher, code and asset paths) live in `docs/PANEL.md` and
+> `docs/CO-JEST-GDZIE.md`; §5 below was refreshed 2026-07-21, the rest of the
+> contract is unchanged.
 
 > **Status:** FROZEN (Prompt 00A). Defines the boundary between the macOS panel
 > and `jarvisd`. The panel is a **thin client** ([ADR-002](DECISIONS.md#adr-002)):
@@ -36,16 +40,23 @@ so the panel talks to it instead of to `/tmp`.
 | Sticky listen | `POST /voice/listen/lock` / `POST /voice/listen/unlock` |
 | Read live state | `GET /state`, `GET /stream` (WebSocket) |
 | Read history | `GET /events`, conversation/turn reads |
-| Read/change settings | `GET /settings`, `POST /settings` |
+| Read/change settings | `GET /settings`, `GET /settings/explain/{key}`, `PUT /settings/{key}` with `{"value": …}` (not `POST /settings`) |
 | Switch brain | brain route (Prompt 20) — persisted in DB settings |
 | Read/edit memory | memory route (Prompt 20) — emits `memory.updated` |
-| Decide approvals | approval routes (Prompt 12) |
 | See audio/voice/jobs/warnings | the matching read endpoints |
 
-The full cockpit (Prompt 19) is a *view* composed entirely from these endpoints:
-top status, text input + PTT, live state strip, conversation, voice/audio strip,
-brain/tools strip, jobs strip, warnings strip, approval cards, event drawer,
-memory drawer.
+The "decide approvals" intent that used to stand here is **not** part of the
+current tool path: `ToolRegistry.request_tool()` executes immediately and the
+`ApprovalGate` is no longer called for tool execution. Nothing the panel does
+gates a tool. See `docs/SECURITY_MODEL.md` ("What the code actually does
+today").
+
+The cockpit is a *view* composed entirely from these endpoints. What actually
+ships (`dan/panel/assets/index.html`, 2026-07-21) is four tabs — **Chat**,
+**Memory**, **Logs**, **System** — with the activity strip, composer, voice
+queue controls, runtime diagnostics and the settings groups inside them. The
+"jobs strip / warnings strip / approval cards" list that used to stand here was
+a Prompt-19 plan, not the shipped UI.
 
 ---
 
@@ -75,13 +86,18 @@ When `jarvisd` is unreachable:
 
 ---
 
-## 5. Shell & rendering (Prompts 18–19)
+## 5. Shell & rendering (refreshed 2026-07-21 against `dan/panel/menubar_app.py`)
 
-- macOS menu-bar: PyObjC `NSStatusItem` + `NSPopover` + `WKWebView`.
-- Assets: `jarvis/panel/assets/{index.html,app.js,styles.css}`.
-- Launcher: `scripts/jarvis-panel`.
-- Default size ~`420×620`, primary actions visible without scrolling; width and
-  height are configurable.
+- macOS menu-bar: PyObjC `NSStatusItem` + a **borderless `NSPanel`** +
+  `WKWebView`. Deliberately *not* `NSPopover` — one geometry, no system bubble,
+  no arrow, no gap.
+- Assets: `dan/panel/assets/`, loaded from the daemon origin
+  (`GET /panel/index.html`) so the webview's API calls stay same-origin.
+- Launcher: `scripts/dan-panel` (repo) / `~/.dan/bin/dan-panel` under the
+  launchd label `com.dan.panel` (production).
+- Size: `[panel].width` / `[panel].height` in the runtime config; primary
+  actions must stay visible without scrolling. No size is fixed by this
+  contract.
 
 These are presentation details; none of them grant the panel any authority over
 state. The contract in §1–§4 holds regardless of how the UI looks.

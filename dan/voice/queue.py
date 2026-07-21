@@ -368,6 +368,20 @@ class VoiceQueue:
             # deltas after this transaction commits. The session ids in the
             # queue are channel names whose rows are cancelled right here, so
             # tombstoning them added nothing and muted the channel for the TTL.
+            #
+            # KNOWN DEFECT (2026-07-21): "channel names" is not what session_id
+            # holds — it is the orchestrator's turn id, the same value written
+            # as turn_id in the cancelled event below. And
+            # generation_turn_ids is empty whenever nothing registered: the
+            # qwen, ollama, eco_brain and test adapters never call
+            # GenerationRegistry.register at all (only claude_cli_adapter
+            # does), and brain.current_adapter is API-writable. Even the Claude
+            # adapter is unregistered while a tool call runs. Barge-in in that
+            # window cancels the rows without tombstoning the turn, the tool
+            # returns, the orchestrator enqueues under the same id — and DAN
+            # says the thing you just cut off. FIX-09 is open again.
+            # queue_turn_ids is computed and returned but never acted on.
+            # docs/reviews/2026-07-21-restart-orphan-shell-review.md §11.
             tombstoned = self._tombstone_turns_in_transaction(generation_turn_ids)
             request_ids = self._cancel_rows_in_transaction(
                 rows,

@@ -644,10 +644,27 @@ class DaemonApp:
         """Record that this daemon is alive but no longer serving.
 
         Used when a restart could not exit safely: the process survives with
-        intake closed and the voice layer already torn down, so snapshot_state
-        must stop reporting ok. While it stayed green, /health and the panel
-        vouched for a daemon that could not speak, and a dead PTT looked like
-        a hotkey problem instead of a dead owner.
+        intake closed, so snapshot_state must stop reporting ok. While it
+        stayed green, /health and the panel vouched for a daemon that could not
+        speak, and a dead PTT looked like a hotkey problem instead of a dead
+        owner.
+
+        KNOWN DEFECT (2026-07-21) — it does not make that outage visible yet,
+        so do not read it as a guarantee. The except below leaves the state
+        untouched, and the failure that breaks the append (event store locked
+        or full) is the same class that most likely broke the drain — so it
+        stays green exactly when it matters. RuntimeStateMachine.force_idle is
+        the shape to copy: assign the state even when the append raises.
+        ERROR -> IDLE is a permitted transition and worker threads are drained
+        only further down in stop(), so a turn finishing after this call walks
+        the flag back. The guard above covers ERROR but not STOPPING, the other
+        state with no outgoing transitions, from which transition() raises. The
+        panel renders it nowhere either: typewriter.js force-hides
+        #activityStrip, the only element showing runtime state. The premise
+        "intake closed" is also optimistic — the voice layer is torn down only
+        at the two raise sites after teardown, while dan/daemon/restart.py
+        calls this after a drain that usually failed earlier.
+        docs/reviews/2026-07-21-restart-orphan-shell-review.md §8-§10.
         """
 
         machine = self.state_machine
@@ -2719,8 +2736,12 @@ def _connect_daemon_db(path: Path) -> ThreadLocalConnection:
 def _request_source_from_approval(approval: Mapping[str, Any]) -> RequestSource | None:
     """Restore the original request source stored in the approval payload.
 
-    Fail closed: approvals without a recognizable source never execute
-    (docs/MACOS_PERMISSION_MODEL.md §1: unknown source => blocked).
+    Legacy helper: it serves the `/approvals` execute path, which model tool
+    calls no longer take — they run straight through the registry. Returning
+    None here blocks nothing in the live turn flow, so do not cite this as a
+    fail-closed guard (the "unknown source => blocked" rule it used to
+    implement was never built; see docs/MACOS_PERMISSION_MODEL.md, which is
+    marked unimplemented design).
     """
 
     payload = approval.get("payload")

@@ -884,7 +884,14 @@ def _stream_after_id(query: dict[str, list[str]]) -> int | None:
 
 
 def _transport_authorized(handler: BaseHTTPRequestHandler, app: DaemonApp) -> bool:
-    """Check the local transport token on mutating requests (fail closed)."""
+    """Authorize a mutating request against the local transport token.
+
+    Not fail-closed, despite the shape of the call: when
+    `security.api_token_required` is false — the default, and the live setting
+    on this machine — every mutating request is authorized without inspecting a
+    header, and nothing downstream re-checks who sent it. What that costs is in
+    `docs/SECURITY_MODEL.md` §2, which is the only copy of the analysis.
+    """
 
     if not app.config.security.api_token_required:
         return True

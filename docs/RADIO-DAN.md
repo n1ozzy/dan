@@ -6,6 +6,17 @@ Release 1 has no radio scheduler, no "Radio DAN" tab in the panel, no radio
 sessions with participants and no formats (dobranocka (bedtime-story show),
 standup, roast, call-in). No document or skill should pretend otherwise.
 
+Re-verified 2026-07-21: the cockpit has exactly four tabs — Chat, Memory, Logs,
+System (`dan/panel/assets/index.html`); the database has no playlist, segment or
+schedule table (`dan/store/schema.sql`); `GET /sessions` reports daemon/brain/
+queue usage, not radio participants.
+
+**Do not confuse the shipped skills with a runtime feature.** The repo does
+ship `dobranocka`, `standup`, `danusia-live`, `trio-live` and friends under
+`integrations/shared/skills/`. Those are *agent* skills: an agent writes lines
+and pushes them one by one through `dan speak`. There is no scheduler, no
+backpressure and no format state inside `dand` behind them.
+
 ## What in Release 1 is already compatible with the future Radio
 
 Radio will be a tab of the same product, on the same contracts:
@@ -15,8 +26,10 @@ Radio will be a tab of the same product, on the same contracts:
   not a separate system (`docs/GLOS-I-KOLEJKA.md`);
 - **queue sessions** — `dan speak --session ...` and `dan queue flush --session ...`
   already isolate a stream of utterances today (e.g. a `radio` session);
-- **voice personas** — configured in `config/voice/personas.toml`
-  (among others `dan`, `danusia`), selected explicitly via `--as`;
+- **voice personas** — configured in `config/voice/personas.toml` (that file is
+  the canon, not this document), selected explicitly via `--as`. `dan` is the
+  main voice, `danusia` is a separate female persona, and `jarvis` is a **legacy
+  alias of DAN**, not a character of its own;
 - **the Chatterbox V3 offline pipeline** — prepared lines rendered outside the
   live queue;
 - **brain adapters** (participant = an explicit `identity + brain + voice`):

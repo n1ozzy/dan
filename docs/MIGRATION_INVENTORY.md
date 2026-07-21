@@ -1,16 +1,39 @@
-# Jarvis v4.1 — Migration Inventory (AUTHORITATIVE)
+# Jarvis v4.1 — Migration Inventory (HISTORICAL)
 
-> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
-> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+> ## ⛔ HISTORICAL EVIDENCE — THE MIGRATION IS DONE; DO NOT READ THIS AS CURRENT
+>
+> **Classification: historical.** Superseded by the Release 1 cutover
+> (2026-07-18) and the 2026-07-21 audit. This is the 2026-06-30 decision record
+> for moving off the pre-v4.1 stack. Every "old path" listed here is gone, and
+> every "new target" listed here was written before the package was renamed.
+>
+> **Two traps for anyone reading this file today:**
+>
+> 1. **`$HOME/Documents/dev/dan` is NOT the legacy reference repo any more — it
+>    is THIS repo, the live one.** In 2026-06-30 terms the legacy checkout sat
+>    there and the new runtime sat in `dev/jarvis`; after the rename the live
+>    product moved into `dev/dan` (== `dev/DAN`, one inode on a
+>    case-insensitive filesystem). Nothing here licenses treating the current
+>    checkout as read-only legacy.
+> 2. **Every `jarvis/...` target path below does not exist.** The shipping
+>    package is `dan/` — `dan/voice`, `dan/brain`, `dan/tools`, `dan/panel`,
+>    `dan/config.py`, `dan/paths.py`. Likewise `~/.jarvis/jarvis.db` is today
+>    `~/.dan/dan.db`, `com.ozzy.jarvisd` is `com.dan.dand`, and
+>    `config/persona/jarvis.md` is `config/persona/DAN.md` (the single canon —
+>    per-profile personas were removed).
+>
+> Current truth: `AGENTS.md`, `docs/PROJECT_RULES.md`, `docs/STATUS.md`,
+> `docs/CO-JEST-GDZIE.md`, and the code under `dan/`.
 
-> **Status:** AUTHORITATIVE (Prompt 00B). Built from a read-only inspection of
+> **Original status line (2026-06-30, kept for provenance):** AUTHORITATIVE
+> (Prompt 00B). Built from a read-only inspection of
 > the old repo and the diagnostic archive
 > `jarvis-diagnostic-20260630-194208.tar.gz`. The old repo was **not modified**;
 > no old runtime code was copied. Runtime-level observations (processes, launchd,
 > `/tmp`, audio) live in [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md).
 >
-> **Reference repo (read-only, never modified):**
-> `$HOME/Documents/dev/dan`
+> **Reference repo as it was in 2026-06-30 (read-only, never modified):**
+> the legacy checkout then at `$HOME/Documents/dev/dan` — see trap 1 above.
 >
 > Decisions are one of: **KEEP** (idea is sound, reimplement clean — no file
 > copied), **REWRITE** (responsibility needed, implementation replaced),
@@ -127,10 +150,18 @@ Bash/Edit/Write run **without confirmation** ("świadoma decyzja"). A prior
 `--sandbox workspace-write` attempt was **ignored** because `trust_level="trusted"`
 (L23–24). The chat path `run_chat()` is restricted to `WebSearch WebFetch` (L122).
 `auto_jarvis.py`'s command heuristic can route speech to the full-access `run()`.
-**v4.1 rule:** brains are stateless and mute; any action goes through the tool
-registry + approval gate, and v4.1 does **not** rely on provider sandbox flags
-([ADR-003](DECISIONS.md#adr-003), [ADR-010](DECISIONS.md#adr-010),
-[SECURITY_MODEL.md](SECURITY_MODEL.md)).
+**v4.1 rule (as written 2026-06-30):** brains are stateless and mute; any action
+goes through the tool registry + approval gate, and v4.1 does **not** rely on
+provider sandbox flags ([ADR-003](DECISIONS.md#adr-003),
+[ADR-010](DECISIONS.md#adr-010), [SECURITY_MODEL.md](SECURITY_MODEL.md)).
+> **Half of that rule is STALE — corrected 2026-07-21.** Still true: brains are
+> stateless and mute, and DAN does not use `--dangerously-skip-permissions` or
+> any provider sandbox flag. **No longer true: the approval gate.**
+> `ToolPermissionPolicy.decide()` returns ALLOW unconditionally and
+> `ToolRegistry.request_tool()` executes immediately, ignoring its
+> `permission_policy`/`source`/`approval_gate` arguments. Containment now lives
+> inside each tool (approved roots, `shell_read` allowlist, scrubbed env, git
+> hardening, bounds). AGENTS.md forbids adding an approval gate back.
 
 ### 3.7 Old launchd labels
 

@@ -1,5 +1,29 @@
 # Jarvis History
 
+> ## ⛔ HISTORICAL — A COMMIT MAP, NOT A DESCRIPTION OF CURRENT BEHAVIOUR
+>
+> **Classification: historical.** Superseded by the Release 1 cutover
+> (2026-07-18) and the 2026-07-21 audit. Every bullet below is the *title of a
+> commit that happened*, which is a permanently true statement about history and
+> a frequently false statement about the code. A feature named here may since
+> have been rewritten, disabled, or deleted.
+>
+> The clearest example: the commits `4ab52fc docs: design source-sensitive
+> permission model`, `077ccbd feat: make permission decisions source-sensitive`
+> and `0fd3a49 feat: add approval-gated file_write and whitelisted shell_read
+> tools` all really landed — and none of that behaviour survives.
+> `ToolPermissionPolicy.decide()` now returns ALLOW unconditionally and
+> `ToolRegistry.request_tool()` executes immediately. Containment lives inside
+> the individual tools.
+>
+> Naming: `jarvisd`/`com.ozzy.jarvisd`/`~/.jarvis` here = today's
+> `dand`/`com.dan.dand`/`~/.dan`, API `127.0.0.1:41741`. The package is `dan/`,
+> not `jarvis/`.
+>
+> Current truth: `AGENTS.md`, `docs/PROJECT_RULES.md`, `docs/STATUS.md`,
+> `docs/CO-JEST-GDZIE.md`, and the code under `dan/`. For real history, use
+> `git log` — this file is a map, not a source.
+
 Classification: history summary.
 Source: branch `rescue/audt-gpt5.5pro-limit-cdn` git log through HEAD `bd18d3b`.
 
@@ -177,8 +201,14 @@ Representative commits:
 - `4266fbc test: harden compiled memory context governance`
 - `bd18d3b feat: add compiled memory context observability`
 
-## Current active diff
+## Where this map stops (NOT "current")
 
-`MEMORY-CONTEXT-OBSERVE-01` is committed at `bd18d3b` on branch `rescue/audt-gpt5.5pro-limit-cdn`.
+`MEMORY-CONTEXT-OBSERVE-01` was committed at `bd18d3b` on branch
+`rescue/audt-gpt5.5pro-limit-cdn`. That is where this map ends — it is **not**
+the current HEAD and `rescue/audt-gpt5.5pro-limit-cdn` is **not** the current
+branch.
 
-The current active diff is docs-only package integration/review in `docs/`.
+As of 2026-07-21 the active branch is `agent/dan-release1-integration`, and
+`bd18d3b` is an ancestor of it. Everything after `bd18d3b` — including the whole
+Jarvis → DAN rename, the Release 1 cutover, and the removal of the approval
+gate — is not covered here. Run `git log --oneline` for the real head.

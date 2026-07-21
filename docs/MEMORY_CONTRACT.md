@@ -1,15 +1,44 @@
 # Jarvis Memory OS Contract
 
-Classification: authoritative.
+Classification: authoritative. Authoritative as INTENT — this is the contract
+memory work is held to, not a report on what the runtime already enforces.
+Status of each rule verified against source 2026-07-21.
 
-This document defines the target contract for Jarvis Memory OS before
-auto-memory, consolidation, or topic documents are implemented. It does not
-change runtime behavior. It does not change the SQLite schema. It does not
-change current `MemoryManager` behavior.
+**Read this as the contract we want, not as a description of what the runtime
+enforces.** Several rules below — most importantly the ones about
+model-originated writes needing approval — are NOT enforced by the current code.
+Every such rule is now marked. For current behaviour see
+`docs/MEMORY_OS_ARCHITECTURE.md` and the source: `dan/memory/`,
+`dan/tools/memory_tool.py`, `dan/brain/context_builder.py`.
 
-`memory_blocks` remain the current v0 semantic memory items. Future tasks must
-introduce candidate, evidence, usage, and topic structures deliberately instead
-of treating the current table as the whole memory system.
+> ## ⚠️ A THIRD WRITE PATH EXISTS AND IS NOT DESCRIBED ANYWHERE IN THIS FILE
+>
+> Added 2026-07-21 — `docs/reviews/2026-07-21-docs-vs-code-audit.md` D1–D2.
+> Every "write paths that exist today" list below is missing the largest one.
+>
+> `dan memory sync` (`dan/cli.py:160-172`, `799-818`) calls
+> `sync_dan_turns()` (`dan/memory/sync.py:115-181`), which writes the **content
+> of every turn — user and assistant — into durable `memory_archive_documents`
+> plus an FTS index**. `sync_path()` (`:22-37`) additionally imports Claude and
+> Codex JSONL session files and markdown memory files.
+>
+> That path has no candidate, no evidence, no approval and no lifecycle. **There
+> is no forget operation** — a row leaves only via another sync with
+> `replace`/`delete_item_ids`.
+>
+> It is not write-only. `memory_recall` (`dan/tools/memory_recall_tool.py:17-45`,
+> risk `safe_read`) is registered in the live daemon (`dan/daemon/app.py:2344`)
+> and offered to the model in its tool list; it runs an FTS5 query over that
+> archive (`dan/memory/archive.py:342-370`) and returns full `content`. So the
+> model can full-text search the owner's transcript history.
+>
+> This is an owner-privacy question, not a documentation nit. Nothing here is a
+> recommendation to change it — it is a statement that the contract above does
+> not currently cover it.
+
+`memory_blocks` remain the v0 semantic memory items and are still injected into
+every turn. The candidate, evidence and item structures were added beside them
+(`dan/store/schema.sql`); usage and topic structures exist as empty tables.
 
 ## Product Intent
 
@@ -22,6 +51,19 @@ explicit user-managed state entered through approved product surfaces. Automatic
 assistant memory is a future capability that must pass through observation,
 candidate review, evidence, policy, and audit before anything becomes active.
 
+## Non-Goals
+
+This document is policy, not machinery. It does not change runtime behavior,
+schema, daemon, panel, provider, brain adapter, or voice behavior. Writing a
+rule here does not implement it — which is why every rule below carries its
+real status.
+
+Historical scope note: MEMORY-DESIGN-01, the task that first wrote this file on
+2026-07-04, deliberately implemented nothing at all — no auto-memory
+extraction, no schema change, no migration, no live validation. Later tasks
+(MEMORY-SCHEMA-01, the candidate inbox, the evidence ledger, MemoryCompiler)
+built parts of it. What is still unbuilt is the list in "Not Implemented Yet".
+
 ## Authority And Scope
 
 Jarvis memory is local, daemon-owned product state. Provider sessions are not
@@ -29,18 +71,19 @@ Jarvis memory, and brain adapters are stateless.
 
 This contract is binding for future memory work:
 
-- No model-originated write may create hidden active memory.
-- Active memory must be evidence-backed.
-- Memory lifecycle and retrieval must be auditable.
+- No model-originated write may create hidden active memory. **NOT ENFORCED
+  TODAY** — `memory_save` activates in one call from any source; see "Write
+  Paths".
+- Active memory must be evidence-backed. ENFORCED for compiled memory: the
+  compiler skips any item with `evidence_count < 1`, and `activate_candidate`
+  refuses a candidate with no evidence. NOT enforced for `memory_blocks`, whose
+  only provenance is an optional `source_event_id` that nothing requires.
+- Memory lifecycle and retrieval must be auditable. PARTIAL: lifecycle
+  transitions emit events (`memory.candidate.*`, `memory.activated`,
+  `memory.updated`); retrieval emits nothing durable.
 - Procedural rules that matter for safety must be enforced by docs plus
   guardrail tests, hooks, or runtime policy, not only prompt text.
 - Mock/unit tests are not proof of live product behavior.
-
-## Non-Goals
-
-MEMORY-DESIGN-01 does not implement runtime behavior. It does not add
-auto-memory extraction, schema changes, migrations, daemon behavior, panel UI,
-provider behavior, brain adapter behavior, voice behavior, or live validation.
 
 ## Memory Layers
 
@@ -114,30 +157,65 @@ Memory-capable records must use explicit lifecycle states:
 - `forgotten` - memory was removed or tombstoned by explicit forget policy and
   must not be retrieved by default.
 
-Status transitions must be auditable. Future operators should emit events such
-as `memory.candidate.created`, `memory.candidate.approved`,
-`memory.activated`, `memory.superseded`, `memory.used_in_context`,
-`memory.disabled`, and `memory.forgotten`.
+Which of these are real: `memory_candidates.status` accepts exactly
+`needs_review`, `approved`, `rejected` (`VALID_CANDIDATE_STATUSES`).
+`memory_items.status` is only ever written as `active`. `observed`, `superseded`,
+`disabled` and `forgotten` are recognised by the compiler's skip logic but are
+never produced by any code path.
+
+Events emitted today: `memory.candidate.created`, `memory.candidate.approved`,
+`memory.candidate.rejected`, `memory.evidence.created`, `memory.activated`, and
+`memory.updated` for `memory_blocks`. Never emitted:
+`memory.superseded`, `memory.used_in_context`, `memory.disabled`,
+`memory.forgotten`.
 
 ## Write Paths
 
-Jarvis supports these intended write paths:
+The write paths this contract sanctions, each with its real status:
 
-- Manual panel/API/CLI writes: explicit user-managed memory operations.
-- Model-originated `memory_save`: a proposal path, not silent activation.
+- Manual panel/API/CLI: explicit user-managed memory operations. EXISTS —
+  `POST/PATCH/DELETE /memory` over `memory_blocks`, plus `POST
+  /memory/candidates` and the approve / reject / activate routes.
+- Model-originated memory_save: a proposal path, not silent activation. The
+  tool exists; the "proposal, not activation" half does NOT — see the binding
+  rules below.
 - Explicit user "remember this": creates a candidate or manual memory with
-  evidence and policy checks.
+  evidence and policy checks. NOT IMPLEMENTED — there is no recogniser; the
+  user calls the API, or the model calls `memory_save`.
 - Future background consolidator: future only, for dedupe, summaries, topic
-  updates, conflict detection, and decay.
+  updates, conflict detection, and decay. NOT IMPLEMENTED.
 - Future topic document consolidation: future only, for turning reviewed claims
-  and episodes into maintained topic documents with evidence links.
+  and episodes into maintained topic documents with evidence links. NOT
+  IMPLEMENTED — `memory_topics` is an empty table.
 
-A model-originated memory_save cannot silently write active durable memory.
-`memory_save` requires approval/execution policy before any candidate becomes
-active memory. The current v0 `memory_blocks` surface is manual memory, not a
-complete automatic assistant memory system.
+Write paths that exist today, concretely:
 
-In short: memory_save requires approval/execution policy.
+- Manual panel/API/CLI writes to `memory_blocks`: `POST/PATCH/DELETE /memory`.
+- Manual candidate review: `POST /memory/candidates`, then approve / reject /
+  activate, with evidence attached before activation.
+- `memory_save` tool: creates a candidate plus evidence, approves it and
+  activates it into `memory_items` in a single call.
+
+Write paths that do NOT exist: automatic extraction of candidates from
+conversation, a "remember this" recogniser, a background consolidator, and topic
+document consolidation.
+
+Two binding rules of this contract — **NOT ENFORCED TODAY**:
+
+- a model-originated memory_save cannot silently write active durable memory.
+- memory_save requires approval/execution policy before any candidate becomes
+  active memory.
+
+**What the runtime actually does, 2026-07-21.** It breaks both rules above.
+Earlier revisions of this file printed them as descriptions of behaviour; they
+are requirements the code does not meet. `DaemonApp.request_tool` discards the
+request source and calls `ToolRegistry.execute_tool` directly;
+`ToolRegistry.request_tool` ignores its `approval_gate` argument;
+`MemorySaveTool.run` self-approves the candidate it just created and activates
+it. The `/approvals` routes return 404
+(`tests/test_no_approval_surface.py`). The only guards on a model-originated
+save are schema validation, the kind allow-list, the 200/2000-character title
+and body caps, and secret redaction.
 
 Hot-path writes should be narrow: explicit remember requests, clear low-risk
 preferences, or explicit project decisions. Heavy summarization, dedupe, topic
@@ -146,25 +224,25 @@ consolidator or manual CLI/runbook first.
 
 ## Approval Policy
 
-Low-risk explicit preferences may be auto-candidate when the user states them
-clearly and they affect product behavior, for example communication style or
-workflow preferences.
+**None of this is enforced.** There is no approval gate, no sensitivity
+classifier, and no promotion step in the runtime. The rules below are the target.
 
-Sensitive data requires explicit approval before it can become durable memory:
-personal data, health, finance, location, relationships, account identifiers,
-private identifiers, or other sensitive facts.
+Sensitive data should require explicit approval before it can become durable
+memory: personal data, health, finance, location, relationships, account
+identifiers, private identifiers, or other sensitive facts. Today the
+`sensitivity` column is written as `"unknown"` by both `memory_save` and the
+candidate API unless a caller sets it, and nothing reads it to make a decision.
 
-Secrets must be rejected or redacted. API keys, passwords, session tokens,
-private keys, and credential material must not be stored as memory. Secret
-redaction rules still apply before any event or DB write.
+Secrets ARE handled, and this part is real: `redact_secret_text` runs on
+candidate claim, title and reason, on evidence quotes, and again on every string
+the compiler returns. Persisted tool payloads are redacted and capped at 4096
+characters (`dan/tools/registry.py`).
 
-The model cannot silently write active durable memory. It may propose a
-candidate with rationale and evidence; a human or explicit policy must promote
-it.
-
-The system must reject one-off emotion, unsupported inference, and offensive
-content as a stored "preference" unless the user explicitly asks for a safe,
-bounded project/persona rule.
+Target, not current behaviour: the model should only propose a candidate with
+rationale and evidence, with a human or explicit policy promoting it. The system
+should reject one-off emotion, unsupported inference, and offensive content as a
+stored "preference" unless the user explicitly asks for a safe, bounded
+project/persona rule.
 
 ## Privacy Policy
 
@@ -173,8 +251,12 @@ Jarvis memory must be useful without becoming creepy or unsafe:
 - no secret storage.
 - no hidden psychological inference.
 - no sensitive inference without approval.
-- secrets must be rejected or redacted.
-- forget/disable must prevent default retrieval.
+- secrets must be rejected or redacted. ENFORCED by redaction.
+- forget/disable must prevent default retrieval. The compiler honours
+  `disabled`, `superseded` and `forgotten`, but **no operation can set them** —
+  `MemoryItemRepository` has no disable/forget/supersede method and no API route
+  exists. `memory_blocks` can be disabled (`DELETE /memory/{id}`); `memory_items`
+  cannot.
 
 Sensitive memory must have explicit policy before promotion. User profile
 claims must be grounded in evidence and scoped to observable product use, not
@@ -193,27 +275,31 @@ memory item must have provenance:
 - confidence.
 - sensitivity.
 
-Evidence should explain what was remembered, why it was remembered, where it
-came from, when it was observed, and whether it replaced older memory.
+`memory_evidence` carries `conversation_id`, `turn_id`, `event_id`, `quote`,
+`weight` and an `observation_id`, and `add_evidence` refuses a row with none of
+those locators. `confidence` and `sensitivity` live on the candidate/item, not
+the evidence row, and default to `"unknown"`.
 
-Future retrieval should record usage: which memory was included, for which
-turn, at what rank, and why. A user must be able to audit whether a response
-used a memory item.
+Retrieval records nothing. `memory_usage_events` is an empty table, so a user
+cannot audit whether a response used a memory item.
 
 ## Dedupe, Revision, And Conflict Policy
 
-Memory is not append-only fact spam. Future semantic memory must support:
+Memory is not append-only fact spam. Semantic memory must support:
 
-- create - add a new memory when no suitable existing item exists.
-- merge evidence - attach new evidence to the same canonical claim.
-- revise - update a claim while preserving evidence history.
-- supersede - replace older active memory with a newer memory item.
-- reject duplicate - refuse equivalent candidate memories.
-- flag conflict - mark contradictions for human or policy review.
+- create — implemented.
+- merge evidence — implemented at activation only: `activate_candidate` reuses
+  an item with the same `canonical_key` and relinks the new evidence to it.
+- revise — not implemented.
+- supersede — not implemented (columns exist, nothing writes them).
+- reject duplicate — not implemented as a candidate-level refusal; duplicates
+  collapse silently at activation via `canonical_key`.
+- flag conflict — not implemented; `conflict` status is honoured by the
+  compiler but nothing sets it.
 
-Semantic memory should carry a `canonical_key`, `topic_id`, claim hash or
-equivalent identity, `supersedes`, `superseded_by`, `evidence_count`, and
-`last_confirmed_at`.
+`memory_items` carries `canonical_key`, `supersedes`, `superseded_by` and
+`last_confirmed_at`; `evidence_count` is computed by join at compile time. There
+is no `topic_id`.
 
 When new evidence narrows an older claim instead of simply contradicting it,
 split scope instead of deleting useful memory. Example: short step-by-step
@@ -225,35 +311,36 @@ when explicitly requested.
 Retrieval must be explainable and scoped. It cannot rely only on nearest-vector
 similarity.
 
-Default retrieval rules:
+Default retrieval rules, with what `MemoryCompiler` actually does:
 
-- namespace-scoped.
-- topic-routed.
-- active only by default.
-- default retrieval excludes disabled, superseded, and forgotten memory.
-- no secret memory.
-- no unsupported sensitive inference.
-- explain why included.
-- fit a budgeted MemoryCompiler.
+- namespace-scoped — optional, via `namespace_filter`; unset by default.
+- topic-routed — not implemented.
+- active only by default — implemented.
+- default retrieval excludes disabled, superseded, and forgotten memory —
+  implemented in the compiler's skip logic, though no supported operation can
+  set those statuses in the first place.
+- no secret memory — by redaction, not exclusion.
+- no unsupported sensitive inference — not implemented.
+- explain why included — only as the constant `reason_selected="eligible"`.
+- fit a budgeted MemoryCompiler — implemented (`max_items`, `max_chars`).
 
-The future `MemoryCompiler` should select and organize memory for each
-`BrainRequest` under explicit limits, for example procedural rules needed for
-the task, active user preferences, current project status, relevant semantic
-topic documents, recent episode cards, pending decisions, and user-pinned
-memory.
-
-The compiler should also be able to explain exclusions, such as old resolved
-bugs, low-confidence candidates, disabled memory, superseded memory, off-topic
-summaries, and secrets.
+`MemoryCompiler` exists and is wired; the contract for it is
+`docs/MEMORY_COMPILER.md`. It does not organize by topic documents, episode
+cards, pending decisions or user pins — none of those exist.
 
 The compiled prompt shape should preserve hierarchy, for example
-`user_preferences`, `project_status`, `relevant_lessons`, and `open_risks`,
-instead of dumping unrelated memory bullets into one flat section.
+`user_preferences`, `project_status`, `relevant_lessons`, and `open_risks`.
+It does not: the rendered section is one flat list of
+`title` / `claim` / `evidence_count` triples.
 
 ## Topic Documents
 
-Topic documents are future consolidation units. They are not implemented in
-this task.
+Topic documents are future consolidation units. They are not implemented:
+`memory_topics` is an empty table.
+
+Namespaces in use today are assigned by `memory_save` from the memory kind:
+`user/default` for identity and user_preference, `project/default` for project,
+`global/<kind>` for the rest. The families below are aspirational.
 
 Future namespace families include:
 
@@ -278,37 +365,36 @@ related episode cards, and last consolidation time. It must link to evidence;
 it must not become an untraceable replacement for EventStore or active memory
 items.
 
-## Not Implemented Yet
-
-The following are design targets only:
+## Not Implemented Yet (checked against source, 2026-07-21)
 
 - auto-memory extraction is not implemented yet.
-- summarization/consolidator is not implemented yet.
+- summarization/consolidator is not implemented yet
+  (`MemorySummarizer.summarize` raises `NotImplementedError`).
 - topic documents are not implemented yet.
-- dedupe engine is not implemented yet.
+- the dedupe/revision engine is not implemented yet beyond the `canonical_key`
+  collapse at activation.
 - memory audit UI is not implemented yet.
 - episode cards are not implemented yet.
-- Memory Inbox candidate review is not implemented yet.
-- MemoryCompiler is not implemented yet.
 - memory usage events are not implemented yet.
+- no lifecycle transition after activation is implemented yet: disable,
+  supersede, forget.
 
-Current `MemoryManager`, `memory_blocks`, `ContextBuilder` memory injection,
-manual Memory API/CLI, and `memory.updated` events remain the current behavior.
+Implemented, and no longer to be described as future: Memory Inbox candidate
+review (repository plus `/memory/candidates` routes), the evidence ledger,
+`memory_items` activation, and `MemoryCompiler` including its `ContextBuilder`
+wiring and the read-only `POST /memory/compile-preview` route.
+
+Current behaviour therefore is: `MemoryManager` and `memory_blocks` injection on
+every turn, plus compiled memory when enabled, plus the manual Memory API/CLI,
+with `memory.updated`, `memory.candidate.created/approved/rejected`,
+`memory.evidence.created` and `memory.activated` events.
 
 ## Migration Path From memory_blocks
 
-No schema migration is allowed by this task.
-
-Future memory tasks should treat current `memory_blocks` as v0 semantic memory
-items and then deliberately introduce:
-
-- observations.
-- candidates.
-- evidence records.
-- active memory item lifecycle.
-- topic documents.
-- usage audit events.
-- review decisions.
+The additive schema landed (MEMORY-SCHEMA-01): observations, candidates,
+evidence and items are live; topics, usage events and review decisions are empty
+tables. No `memory_blocks` row has been migrated into `memory_items`, and the
+two paths run side by side.
 
 Future migration work must preserve the rule that disabled memory is excluded
 from default retrieval and that provider sessions are not Jarvis memory.

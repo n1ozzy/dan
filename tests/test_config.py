@@ -16,6 +16,7 @@ from dan.config import (
     COMPILED_MEMORY_ENABLED_ENV,
     COMPILED_MEMORY_FORCE_DISABLED_ENV,
     ConfigError,
+    VoiceConfig,
     compiled_memory_operator_env_controls,
     load_config,
 )
@@ -154,6 +155,7 @@ height = 620
 
 [security]
 localhost_only = true
+shell_read_unrestricted = false
 require_approval_for_shell = true
 require_approval_for_file_write = true
 require_approval_for_network = true
@@ -262,6 +264,18 @@ def test_example_config_compiled_memory_defaults_off() -> None:
     assert config.memory.compiled_context_max_items == MemoryCompilerConfig().max_items
     assert config.memory.compiled_context_max_chars == MemoryCompilerConfig().max_chars
     assert config.memory.compiled_context_include_procedural is False
+
+
+def test_example_config_ptt_hotkey_matches_dataclass_default() -> None:
+    """The shipped example and the dataclass must name the same PTT combo.
+
+    They drifted apart once — the example said left, the dataclass said right —
+    and nothing caught it, because a mismatched mask produces no PTT edges
+    rather than an error.
+    """
+    config = load_config(ROOT / "config" / "dan.example.toml")
+
+    assert config.voice.ptt_hotkey == VoiceConfig().ptt_hotkey
 
 
 def test_compiled_memory_operator_env_absent_has_no_enablement(
@@ -385,6 +399,48 @@ def test_compiled_memory_config_rejects_invalid_types(
     message: str,
 ) -> None:
     config_path = tmp_path / "invalid-compiled-memory.toml"
+    config_path.write_text(
+        canonical_config().replace(line, replacement, 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=message):
+        load_config(config_path)
+
+
+@pytest.mark.parametrize(
+    ("line", "replacement", "message"),
+    (
+        (
+            "shell_read_unrestricted = false",
+            'shell_read_unrestricted = "false"',
+            "security.shell_read_unrestricted must be a bool",
+        ),
+        (
+            "localhost_only = true",
+            'localhost_only = "true"',
+            "security.localhost_only must be a bool",
+        ),
+        (
+            "destructive_tools_enabled = false",
+            'destructive_tools_enabled = "false"',
+            "security.destructive_tools_enabled must be a bool",
+        ),
+    ),
+)
+def test_security_config_rejects_quoted_bools(
+    tmp_path: Path,
+    line: str,
+    replacement: str,
+    message: str,
+) -> None:
+    """A quoted bool must fail loudly, not fail open.
+
+    `bool("false")` is `True`, so an unvalidated string reaching
+    `security.shell_read_unrestricted` would boot the daemon with the
+    `shell_read` allowlist off and report nothing.
+    """
+    config_path = tmp_path / "invalid-security.toml"
     config_path.write_text(
         canonical_config().replace(line, replacement, 1),
         encoding="utf-8",

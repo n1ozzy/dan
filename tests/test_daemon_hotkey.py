@@ -12,12 +12,17 @@ import json
 import sqlite3
 from pathlib import Path
 
+from dan.config import VoiceConfig
+from dan.input.hotkey import parse_hotkey
 from dan.input.macos_event_tap import MacOSHotkeyMonitor
 
-# right_cmd (0x10) + right_shift (0x4): the default voice.ptt_hotkey combo.
-RIGHT_CMD_RIGHT_SHIFT = 0x10 | 0x4
-RIGHT_OPTION_DOWN = RIGHT_CMD_RIGHT_SHIFT
-RIGHT_OPTION_UP = 0x0
+# Derived from the default `voice.ptt_hotkey`, never copied from it. These tests
+# build a daemon from the default config, and a hand-maintained copy has already
+# drifted once — silently, because a mismatched mask produces no PTT pair rather
+# than a failure.
+DEFAULT_PTT_MASK = parse_hotkey(VoiceConfig().ptt_hotkey)
+PTT_DOWN = DEFAULT_PTT_MASK
+PTT_UP = 0x0
 
 
 class FakeEventTap:
@@ -134,9 +139,9 @@ def test_one_physical_press_creates_one_ptt_pair(tmp_path: Path) -> None:
     try:
         # macOS delivers repeated flagsChanged events while a combo is held;
         # only the edge may create a PTT pair, never the level.
-        tap.flags_changed(RIGHT_OPTION_DOWN)
-        tap.flags_changed(RIGHT_OPTION_DOWN)
-        tap.flags_changed(RIGHT_OPTION_UP)
+        tap.flags_changed(PTT_DOWN)
+        tap.flags_changed(PTT_DOWN)
+        tap.flags_changed(PTT_UP)
 
         assert len(_events_of_type(db_path, "ptt.down")) == 1
         assert len(_events_of_type(db_path, "ptt.up")) == 1

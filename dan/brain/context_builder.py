@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PERSONA_PATH = DEFAULT_CANON_PATH
 DEFAULT_CONTEXT_BUDGET_CHARS = 24000
-JOB_PROMPT_PREVIEW_CHARS = 120
 
 PERSONA_PROFILE_SETTING_KEY = "persona.profile"
 
@@ -187,10 +186,11 @@ class ContextBuilder:
             recent_turn_limit,
             exclude_turn_id=normalized_turn_id,
         )
-        active_jobs = self._active_worker_jobs()
-        job_message = self._build_job_message(active_jobs)
-        if job_message is not None:
-            core_messages.append(job_message)
+        # No worker-job context here: workers are disabled in this runtime path
+        # (`worker_broker` is None, so nothing can queue a job). The query that
+        # fetched them and the builder that formatted them were both deleted
+        # 2026-07-21 — they read as live code and neither could ever run.
+        # Recover them from git history if workers are switched back on.
         compiled_memory_enabled = self._resolve_compiled_memory_enabled(
             conversation_id=normalized_conversation_id,
             persona_profile=persona_profile,
@@ -250,7 +250,9 @@ class ContextBuilder:
             "context_message_count": len(messages),
             "memory_block_count": len(brain_memory_blocks),
             "recent_turn_count": recent_turn_count,
-            "active_job_count": len(active_jobs),
+            # Always zero while workers are disabled; kept in the snapshot
+            # because tests and readers rely on the field being present.
+            "active_job_count": 0,
             "max_context_chars": budget,
             "estimated_context_chars": estimated_context_chars,
             "includes_persona": bool(messages and messages[0].metadata.get("kind") == "persona"),
@@ -598,63 +600,6 @@ class ContextBuilder:
                 )
         return messages
 
-    def _active_worker_jobs(self) -> list[dict[str, Any]]:
-        # Workers are intentionally disabled in the runtime-lab path for now.
-        # DAN is the single active brain; background job context was another
-        # source of prompt confusion.
-        return []
-        try:
-            rows = self._conn.execute(
-                """
-                SELECT id, type, status, worker_kind, prompt
-                FROM worker_jobs
-                WHERE status IN ('queued', 'running')
-                ORDER BY created_at ASC, id ASC
-                """
-            ).fetchall()
-        except sqlite3.Error as exc:
-            raise ContextBuilderError(f"Could not read worker jobs: {exc}") from exc
-
-        return [
-            {
-                "id": str(row[0]),
-                "type": str(row[1]),
-                "status": str(row[2]),
-                "worker_kind": str(row[3]),
-                "prompt": str(row[4]),
-            }
-            for row in rows
-        ]
-
-    def _build_job_message(self, active_jobs: list[dict[str, Any]]) -> BrainMessage | None:
-        if not active_jobs:
-            return None
-
-        # Worker jobs are operator/runtime queued work items, not a second system
-        # prompt. They are carried as user context so DAN can use them without
-        # letting them override the owner persona.
-        lines = [
-            f"Active worker jobs: {len(active_jobs)} (operator/runtime queued work; "
-            "use when relevant, while keeping the DAN persona and current user "
-            "turn authoritative):",
-        ]
-        for job in active_jobs:
-            preview = _truncate(job["prompt"], JOB_PROMPT_PREVIEW_CHARS)
-            lines.append(
-                "- {id} [{status}] {worker_kind}/{type}: prompt={prompt!r}".format(
-                    id=job["id"],
-                    status=job["status"],
-                    worker_kind=job["worker_kind"],
-                    type=job["type"],
-                    prompt=preview,
-                )
-            )
-        return BrainMessage(
-            role="user",
-            content="\n".join(lines),
-            metadata={"kind": "worker_jobs", "untrusted": True},
-        )
-
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -873,13 +818,6 @@ def _required_text(value: str, label: str) -> str:
     if not normalized:
         raise ContextBuilderError(f"{label} must be a non-empty string.")
     return normalized
-
-
-def _truncate(value: str, max_chars: int) -> str:
-    normalized = " ".join(value.split())
-    if len(normalized) <= max_chars:
-        return normalized
-    return normalized[: max_chars - 3].rstrip() + "..."
 
 
 __all__ = [

@@ -184,21 +184,22 @@ class VoiceConfig:
     enabled: bool = False
     speak_responses: bool = False
     broker_enabled: bool = False
-    # Message-display voice hook toggle exposed as `dan voice hook on|off`.
-    # The hook script reads this installation key through the settings API;
-    # the daemon itself never spawns the hook.
+    # Gates the host-side MessageDisplay hook, which was uninstalled and
+    # quarantined 2026-07-21, so nothing in the daemon reads this. The hook
+    # source still ships at integrations/claude/hooks/tts-message-display.sh and
+    # still honours the key (tests/test_hook_fail_open.py); it is simply not
+    # wired into the host. This concerns the HOST hook only — the `[[GŁOS]]`
+    # markers in dan/brain/context_builder.py are live product, not dead syntax.
     hook_enabled: bool = True
     output_gain: float = 1.0
     default_tts: str = "supertonic"
     default_stt: str = "mlx_whisper"
     ptt_mode: str = "hold"
-    # Global push-to-talk hotkey held anywhere on the desktop (source
-    # "global_hotkey"). Empty = no global hotkey (panel button still works).
-    # Spec is a "+"-joined set of side-qualified modifiers, e.g.
-    # "left_cmd+left_shift" (see dan/panel/hotkey.py). The panel's native
-    # shell watches these keys and drives /voice/ptt/{down,up}; it needs
-    # macOS Accessibility permission to observe keys outside its own window.
-    ptt_hotkey: str = "right_cmd+right_shift"
+    # Global push-to-talk hotkey: a "+"-joined set of side-qualified modifiers,
+    # parsed by dan/input/hotkey.py. Empty = no global hotkey (the panel button
+    # still works). The daemon owns the only event tap on the machine, so the
+    # Accessibility grant belongs to dand, not to the panel.
+    ptt_hotkey: str = "left_cmd+left_shift"
     queue_persisted: bool = True
     recorder: str = "mock"
     # sox recorder (G4a): leases decide WHEN it runs, the AudioDeviceManager
@@ -318,20 +319,21 @@ class VoiceConfig:
     # externally-managed server (e.g. the broker or a launchd job).
     supertonic_serve_autostart: bool = False
     supertonic_serve_max_chunk_length: int = 400
-    # Per-persona mastering (ported from DAN): ffmpeg timbre chain applied
-    # after synthesis (pitch down + EQ + exciter + compressor + limiter +
-    # loudnorm). Empty = raw supertonic (no mastering). Profiles: bastard
-    # (DAN — the ziomek voice), gritty, clean. Fail-safe: any ffmpeg error
-    # plays the raw chunk, so mastering never causes silence.
+    # DEAD CONFIG (verified 2026-07-21): mastering_profile and the three
+    # persona_* maps are parsed and never read. VoiceResolver.resolve takes
+    # voice, speed, mastering and dsp exclusively from the
+    # config/voice/personas.toml catalog, and mastering_profile is not even a
+    # fallback — it builds every snapshot from `_required_spec_text(spec,
+    # "mastering")`, which raises SnapshotValidationError on a persona missing
+    # the key. The resolver reads exactly one installation value from this
+    # section: voice.output_gain. Setting any of these changes nothing about
+    # how DAN sounds; they survive only because dan/config_registry.py requires
+    # every key to exist. The profiles themselves are _MASTER_PROFILES in
+    # dan/voice/tts.py.
     mastering_profile: str = ""
+    # LIVE, unlike the keys around it: the ffmpeg executable the mastering
+    # chain runs. Absent from PATH, mastering is skipped (dan/voice/tts.py).
     mastering_binary: str = "ffmpeg"
-    # Per-persona voice + mastering binding (2026-07-08): map persona.profile
-    # (the panel's "Profil persony") -> supertonic voice / mastering profile,
-    # so switching persona live changes how DAN SOUNDS, not just his text
-    # tone. Empty maps = every profile uses the global supertonic_voice /
-    # mastering_profile (pre-binding behavior, unchanged). Fail-safe: an
-    # unmapped profile falls back to the global default, so a new persona can
-    # never cause silence or the wrong voice.
     persona_voices: dict[str, str] = field(default_factory=dict)
     persona_mastering: dict[str, str] = field(default_factory=dict)
     persona_speeds: dict[str, float] = field(default_factory=dict)
@@ -358,11 +360,12 @@ class PanelConfig:
 
 @dataclass(frozen=True)
 class TrustedScope:
-    """A filesystem scope where model-originated tools can be auto-approved.
+    """Config shape for a per-path trust grant. INERT — nothing reads it.
 
-    Configured in [security.trusted_scopes] as an array of tables. Each scope
-    grants auto-approval for specific tools within a path prefix. Sessions can
-    activate scopes temporarily via API; config scopes are always active.
+    Parsed from [security.trusted_scopes] as an array of tables, and that is
+    where it ends: no code grants, restricts or activates anything on the
+    strength of a scope, and there is no API to activate one. Real path control
+    is `approved_roots`, enforced inside the file tools.
     """
     name: str
     path: str
@@ -375,16 +378,13 @@ class TrustedScope:
 class SecurityConfig:
     localhost_only: bool = True
     api_token_required: bool = False
-    # Product defaults are OPEN (Ozzy's decree 2026-07-09): DAN on his own
-    # machine runs every attended tool class without an approval click.
-    #
-    # STALE AS OF 2026-07-21 — the paragraph that used to stand here promised a
-    # code floor ("destructive always takes one click, unattended sources never
-    # mutate") and panel grants that flip a class back to ask-first. Neither is
-    # true any more: ToolPermissionPolicy.decide returns ALLOW unconditionally,
-    # so every flag below is inert and merely rendered as runtime state. What
-    # still refuses work lives in the tools themselves — approved_roots, the
-    # shell allowlist, the scrubbed env. See docs/SECURITY_MODEL.md §2.
+    # INERT FLAGS — the seven below decide nothing, whatever you set them to.
+    # ToolPermissionPolicy.decide() returns ALLOW unconditionally, so these are
+    # parsed, stored and rendered as runtime state, and that is all. Changing
+    # one will not fix a permissions problem. What actually refuses work lives
+    # in the tools: approved_roots, the scrubbed env, the per-tool bounds. The
+    # shell allowlist does NOT belong on that list while
+    # shell_read_unrestricted is true. See docs/SECURITY_MODEL.md §2.
     require_approval_for_shell: bool = False
     require_approval_for_file_write: bool = False
     require_approval_for_network: bool = False
@@ -401,10 +401,14 @@ class SecurityConfig:
     shell_read_whitelist: tuple[str, ...] = ()
     # Owner opt-out from that whitelist (Ozzy 2026-07-21). The match is exact on
     # the WHOLE normalized command, so any argument the operator did not
-    # pre-register is refused — unusable on a personal runtime. True drops the
-    # allowlist only; approved-root containment, the scrubbed environment, the
-    # git hardening and the runtime/output bounds all stay. Default False so a
-    # shared or default install keeps the cage.
+    # pre-register is refused — unusable on a personal runtime. Default False so
+    # a shared or default install keeps the cage.
+    # KNOWN DEFECT (2026-07-21): True removes the ONLY barrier in front of the
+    # shell, not one of several — see the module docstring of
+    # dan/tools/shell_tool.py. It is also missing from _VERSIONED_KEYS, so
+    # unlike the require_approval_for_* fields beside it, POST /settings can
+    # flip it and a restart arms it permanently.
+    # docs/reviews/2026-07-21-restart-orphan-shell-review.md §2, §5.
     shell_read_unrestricted: bool = False
     # ui_read backend: "ax" (real AXUIElement, needs the Accessibility TCC
     # grant) or "fake" (deterministic fixture for tests/smoke). Unknown
@@ -422,15 +426,15 @@ class SecurityConfig:
     # "fake" (deterministic fixture for tests/smoke). Unknown names fail
     # the daemon at startup.
     terminal_backend: str = "osascript"
-    # Trusted scopes: model-originated tools auto-approved within these paths.
+    # INERT — nothing reads trusted_scopes. Declaring a scope grants and
+    # restricts nothing; approved_roots is the real path control.
     # Configured in [security.trusted_scopes] array of tables.
     trusted_scopes: tuple[TrustedScope, ...] = ()
-    # Voice auto-approval: if true, VOICE_COMMAND gets ALLOW for mutation tools
-    # (file_write, shell_read, network, etc.) within approved_roots.
-    # This makes voice fully seamless for trusted paths.
+    # INERT — voice is not treated differently from any other source, because
+    # no source is treated differently from any other source.
     voice_auto_approve_tools: bool = True
-    # Auto-approve mode for model-originated tools (Claude CLI on this branch).
-    # Runtime-lab default is "all": tools are approved and executed automatically.
+    # INERT — tools execute directly regardless of this value. Kept because
+    # persisted panel state and older configs still carry it.
     auto_approve_mode: str = "all"
 
 
@@ -603,6 +607,14 @@ def _build_section(section_type: type[T], raw: dict[str, Any]) -> T:
 def _build_security_config(raw: dict[str, Any]) -> SecurityConfig:
     allowed = {field.name for field in fields(SecurityConfig)}
     selected = {key: value for key, value in raw.items() if key in allowed and key != "trusted_scopes"}
+    # Validate by declared type, not key by key, so a switch added later is
+    # covered without editing this function. Security is the one section where a
+    # quoted bool has to be an error: shell_tool.py reads a TOML
+    # `shell_read_unrestricted = "false"` as bool("false") == True, which boots
+    # the daemon with the allowlist off and reports nothing.
+    for spec in fields(SecurityConfig):
+        if spec.name in selected and spec.type in (bool, "bool"):
+            _require_config_bool(f"security.{spec.name}", selected[spec.name])
     
     # Parse trusted_scopes from array of tables
     trusted_scopes = ()

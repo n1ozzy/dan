@@ -1,9 +1,17 @@
 """memory_save: explicit durable memory with candidate/evidence provenance.
 
-The proposal path creates a Memory OS candidate plus evidence. Direct model
-execution activates that same candidate into ``memory_items``. It deliberately
-does not create ``memory_blocks``; ContextBuilder still reads legacy blocks
-until the later MemoryCompiler cutover.
+**A model-originated memory_save writes active memory immediately.** `run()`
+creates the candidate, approves it and activates it into ``memory_items`` in
+one step. There is no human promotion in this path, whatever MEMORY_CONTRACT.md
+says: `ToolRegistry.request_tool` ignores its approval-gate argument.
+
+`propose()` is live — `run()` calls it to build the candidate. What that ignored
+argument stranded is the wrapper that used to call `propose()` separately:
+`_MemorySaveProposalApprovalGate` in `dan/daemon/app.py`, whose only constructor
+(`DaemonApp._approval_gate_for_tool_requests`) now has no callers at all.
+
+It deliberately does not create ``memory_blocks``; ContextBuilder still reads
+legacy blocks alongside compiled memory.
 """
 
 from __future__ import annotations

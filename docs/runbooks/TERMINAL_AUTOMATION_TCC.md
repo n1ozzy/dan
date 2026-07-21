@@ -66,10 +66,16 @@ timed out"); answer the dialog — or find who swallowed it — and re-run.
 
 ## 4. What the grant does NOT change
 
-- The permission matrix still applies on top of TCC: `terminal_read` is
-  allow-for-user / approval-for-model; `terminal_write` is
-  approval-for-everyone (docs/MACOS_PERMISSION_MODEL.md §3, ADR-021).
 - Paste never submits: `terminal_paste` writes the line without a newline
-  and rejects control characters — pressing Enter stays with you.
+  and rejects control characters — pressing Enter stays with you. The check runs
+  twice (in `dan/tools/terminal_tool.py` and again in the bridge), so the
+  invariant never depends on the backend.
+- Read output is clipped by `sanitize_terminal_snapshot` before it leaves the
+  tool, and the pasted text is not echoed back in the tool output.
 - Terminal output is treated as secret-bearing: redacted before it
   persists, never carried by the `/stream` websocket (ADR-019).
+
+Nothing gates the grant once it exists: a model-originated
+`terminal_read_screen` / `terminal_paste` simply runs against the target app
+(`docs/SECURITY_MODEL.md` §2). Paste-never-submits is the guarantee that
+actually holds. Grant deliberately.

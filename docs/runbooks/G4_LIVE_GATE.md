@@ -1,6 +1,27 @@
 # G4-LIVE-GATE — first real microphone (Ozzy's gate)
 
-Status: TO BE PASSED. This gate is passed by **Ozzy personally** — the assistant
+> ## ⚠️ HISTORICAL GATE PROCEDURE — the gate it guards has been passed
+>
+> **Status corrected 2026-07-21.** This was written on 2026-07-02, when voice was
+> switched off pending Ozzy's decision. That decree is spent: the voice stack is
+> live today — `dand` owns audio (launchd `com.dan.dand`), speech goes through
+> `dan speak`, supertonic serve runs as `dand`'s supervised child on
+> `127.0.0.1:7788`, and the queue is `dan queue list`. See
+> `docs/GLOS-I-KOLEJKA.md` and `docs/CO-JEST-GDZIE.md`.
+>
+> **Do not read "Status: TO BE PASSED" as current.** Keep this file as the
+> calibration procedure — the §2 hallucination-firewall drill and the §3 knob
+> table are still the right method for re-tuning thresholds after a hardware or
+> microphone change. For a broken voice path, diagnose with `dan doctor --json`
+> first.
+>
+> **One dangerous line, §0:** "check `launchctl list | grep dan`" was written to
+> find the *legacy* stack. Today that command lists the CURRENT daemon
+> (`com.dan.dand`) and panel (`com.dan.panel`). Do not stop them thinking they
+> are leftovers — the retired ones are the old `com.ozzy.*` voice labels plus
+> `com.dan.voice-broker` and `com.dan.xtts-server`.
+
+Original status line (2026-07-02): TO BE PASSED. This gate is passed by **Ozzy personally** — the assistant
 does not run it (session decree 2026-07-02: voice disabled until Ozzy's decision).
 This is the equivalent of Gate 6 from PRO (voice safety review) for the G4a–G4d scope.
 

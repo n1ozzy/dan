@@ -1,12 +1,13 @@
-"""File tools.
+"""File tools. Real read AND real write; the `*Placeholder` classes are legacy.
 
-FAZA C3 (docs/MASTER_PLAN.md) implements the real read-only file tool.
-File writing remains a placeholder until FAZA C4.
-
-Safety model for reads:
-- PermissionPolicy decides first (fail-closed approved roots, source matrix).
-- The tool re-checks containment at execution time (defense in depth against
-  symlink swaps between the policy check and the execute step).
+Safety model — read this before touching a check below:
+- **This tool is the ONLY containment.** `ToolPermissionPolicy` allows
+  everything unconditionally (see dan/tools/permissions.py), so the
+  approved-roots test in `_is_within_approved_roots` is not defense in depth,
+  it is the entire defense. Weaken it and nothing behind it catches the miss.
+- Paths are resolved with `realpath` BEFORE the containment test, so a symlink
+  pointing out of an approved root is refused. Empty `approved_roots` refuses
+  everything (fail-closed).
 - Size-limited, UTF-8 text only; binary content is refused, never returned.
 - The full (redacted) content reaches the model via the transient tool result,
   but the DURABLE store keeps only a redacted, size-capped preview: secret

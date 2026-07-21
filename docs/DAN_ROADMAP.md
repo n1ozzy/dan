@@ -2,6 +2,9 @@
 
 Classification: planning.
 This document does not override code, tests, `AGENTS.md`, or project rules.
+The "Done" list records what was built, not how it behaves today: Release 1
+(2026-07-18) removed the approval gate from the tool path. For the running
+behaviour read `docs/STATUS.md` and `docs/SECURITY_MODEL.md`.
 
 ## Done
 
@@ -26,14 +29,17 @@ This document does not override code, tests, `AGENTS.md`, or project rules.
 - CLI provider adapters.
 - Adapter switching through settings.
 
-### Tools and approvals
+### Tools
 
 - Tool registry.
-- Approval gate.
-- Approved tool execution.
 - Model tool-call parsing.
-- Source-sensitive permission policy.
-- Read-only and approval-gated local tools.
+- Local tools (file, shell_read, UI, screen, terminal, memory), each enforcing
+  its own guards: approved roots, the `shell_read` allowlist, a scrubbed
+  environment, git hardening, runtime/output bounds.
+- Built and then RETIRED from the execution path in Release 1: the approval
+  gate, approved-tool execution and the source-sensitive permission policy.
+  `ApprovalGate` and `ToolPermissionPolicy` still exist as classes but neither
+  blocks nor gates a tool run.
 
 ### Panel and runtime clients
 
@@ -49,7 +55,8 @@ This document does not override code, tests, `AGENTS.md`, or project rules.
 - Audio device manager.
 - Listening leases and PTT API.
 - Voice queue and TTS broker.
-- Supertonic TTS and sox playback path.
+- Supertonic TTS. Playback is `CoreAudioPlayer` (native), not the original sox
+  `play` path.
 - Sox recorder path.
 - MLX Whisper STT path.
 - Anti-echo and barge-in cancellation.
@@ -81,16 +88,15 @@ This document does not override code, tests, `AGENTS.md`, or project rules.
 
 ## Now
 
-### Final Memory OS handoff
+### Release 1 observation window
 
-`MEMORY-OS-FINAL-HANDOFF-01` records the completed compiled-memory runtime rollout safety workstream in authoritative docs. Runtime/config/ContextBuilder/test work is complete through session/profile scoped enablement, compiled-memory force-disable, and rollout precedence matrix coverage.
+Release 1 cut over on 2026-07-18 (`docs/STATUS.md`). The current work is running
+the production daemon on `agent/dan-release1-integration` and keeping the old
+stack parked until the operator signs off on donor deletion.
 
-Goal:
-
-- Preserve compiled-memory default-off status.
-- Keep completed internal safety wiring separate from future rollout features.
-- Document prompt-visible output, governance exclusions, diagnostics redaction, fail-closed/read-only behavior, and kill-switch precedence.
-- Make clear that env, public API, panel, user-facing, and global production enablement remain future.
+The Memory OS workstream (`MEMORY-OS-FINAL-HANDOFF-01`) closed before that
+cutover. Compiled memory shipped default-off; Ozzy's live `~/.dan/config.toml`
+enables it.
 
 ## Next
 
@@ -98,11 +104,13 @@ Goal:
 
 Future compiled-memory rollout work must be split into separate scoped tasks:
 
-- optional env enablement;
 - optional internal API enablement;
 - optional panel toggle;
 - production rollout plan;
 - observability dashboard, if needed.
+
+Env enablement is no longer future work: `DAN_COMPILED_MEMORY_ENABLED` and
+`DAN_COMPILED_MEMORY_FORCE_DISABLED` are already read at daemon construction.
 
 Rules:
 
@@ -119,7 +127,10 @@ Rules:
 - Memory audit UI.
 - Topic documents and background consolidation.
 - Panel controls for memory review and enablement.
-- Env/public API/panel/user-facing enablement remains future.
+- Env/public API/panel/user-facing enablement remains future — as this roadmap
+  was written. **Correction 2026-07-21:** env enablement shipped
+  (`DAN_COMPILED_MEMORY_ENABLED`, `DAN_COMPILED_MEMORY_FORCE_DISABLED`); only
+  public API, panel and user-facing enablement are still future.
 - Provider hardening and manual smoke coverage.
 - Runtime ergonomics and packaging.
 - More complete docs maintenance pipeline.
@@ -128,6 +139,9 @@ Rules:
 
 - Do not enable compiled memory globally.
 - Do not add env, panel, public API, or user-facing compiled-memory enablement casually.
+  The two operator env variables that already exist
+  (`DAN_COMPILED_MEMORY_ENABLED`, `DAN_COMPILED_MEMORY_FORCE_DISABLED`) are the
+  whole of the env surface; widening it needs a scoped task like any other.
 - Do not bypass compiled-memory governance exclusions.
 - Do not expose raw evidence, IDs, secrets, diagnostics internals, skipped items, or compiler internals to the model.
 - Do not start G5 voice clone work.

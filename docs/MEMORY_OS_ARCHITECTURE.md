@@ -1,57 +1,64 @@
 # Memory OS Architecture
 
-Classification: technical architecture.
-Scope: Memory OS as implemented and tested on branch `rescue/audt-gpt5.5pro-limit-cdn` at HEAD `58cca12 docs: finalize Memory OS rollout handoff`.
+Classification: technical architecture — current behaviour.
+Scope: re-verified 2026-07-21 against the source on `agent/dan-release1-integration`: `dan/memory/`, `dan/brain/context_builder.py`, `dan/tools/memory_tool.py`, `dan/api/routes_memory.py`, `dan/daemon/app.py`, `dan/config.py`, `dan/store/schema.sql`.
 
-Current rollout snapshot: Memory OS compiled-memory rollout safety workstream is complete through compiled-memory policy docs, docs status refresh, session/profile scoped enablement, compiled-memory force-disable, and rollout precedence matrix tests. This document describes the current safety contract; future env/API/panel/production rollout work remains separately scoped.
+Rollout snapshot: the compiled-memory safety workstream (policy, scoped enablement, force-disable, precedence matrix tests) is complete. Operator env controls and a read-only preview API have landed since. Panel and user-facing enablement remain unbuilt.
 
 ## Purpose
 
-Memory OS makes Jarvis memory explicit, reviewable, evidence-backed, and safe to use in prompt context. It replaces hidden or accidental memory behavior with a lifecycle model.
+Memory OS makes DAN memory explicit, reviewable, evidence-backed, and safe to use in prompt context. It replaces hidden or accidental memory behavior with a lifecycle model.
 
-The design rejects silent model-originated memory activation. A model may propose memory through a controlled path, but active memory requires approval and evidence.
+The design rejects silent model-originated memory activation. **The runtime does not currently honour that design**: the `memory_save` tool creates its own candidate, approves it and activates it in one call. See "Approval and activation".
 
 ## Data lifecycle
 
-The intended flow is:
+The flow, with the actor for each arrow:
 
 ```text
-observation / memory_save proposal
-→ memory_candidate
-→ memory_evidence
-→ approval or rejection
-→ activation
-→ memory_item
-→ MemoryCompiler
+memory_save call OR POST /memory/candidates
+→ memory_candidate            (status needs_review)
+→ memory_evidence             (+ memory_observations row)
+→ approval or rejection       (memory_save approves its own candidate;
+                               the API leaves it to the caller)
+→ activation                  (evidence required, canonical_key dedupes)
+→ memory_item                 (status active — and it stays active forever)
+→ MemoryCompiler              (only when compiled memory is enabled)
 → ContextBuilder
 → BrainRequest/context_messages
 ```
 
-Legacy `memory_blocks` remain present and are still used by ContextBuilder. Memory OS does not casually replace them.
+Nothing feeds this pipeline automatically: there is no observation harvesting from turns and no candidate extraction from conversation text.
+
+Legacy `memory_blocks` remain present and are still injected by ContextBuilder on every turn, independently of compiled memory. Memory OS does not casually replace them.
 
 ## Storage model
 
-Primary tables in `jarvis/store/schema.sql` include:
+Tables in `dan/store/schema.sql`, with what actually reads or writes them:
 
-- `memory_blocks`
-- `memory_observations`
-- `memory_candidates`
-- `memory_items`
-- `memory_evidence`
+- `memory_blocks` — `MemoryManager`; injected into every turn.
+- `memory_observations` — one row per evidence attachment.
+- `memory_candidates` — inbox and `memory_save`.
+- `memory_items` — written by `activate_candidate`, read by the compiler.
+- `memory_evidence` — written by the evidence repository.
+- `memory_topics`, `memory_usage_events`, `memory_review_decisions` — declared, never written or read.
+- `memory_archive_documents`, `memory_archive_sync_state`, `memory_archive_fts` — separate archive/recall surface (`dan/memory/archive.py`), not part of the compiler path.
 
 Related tables include `events`, `settings`, `conversations`, and `turns`.
 
 ## Evidence and provenance
 
-Memory must be evidence-backed before it can be prompt-eligible. Evidence can link to candidate, observation, conversation, turn, event, and quote fields.
+Memory must be evidence-backed before it can be prompt-eligible: the compiler skips any item with `evidence_count < 1`, and `activate_candidate` refuses an approved candidate that has no evidence. `add_evidence` requires at least one locator (`source_id`, `conversation_id`, `turn_id`, `event_id` or `quote`).
 
-Prompt-visible compiled memory must not expose raw evidence quotes.
+Prompt-visible compiled memory does not expose raw evidence quotes — only `title`, `claim` and `evidence_count` are rendered.
 
 ## Approval and activation
 
-Candidates are created before activation. Approval makes a candidate eligible for activation; activation creates a durable `memory_item`.
+The candidate → evidence → approval → activation sequence is the only way a `memory_items` row is created, and `activate_candidate` enforces it: approved status required, evidence required, `canonical_key` collision reuses the existing item.
 
-Model-originated `memory_save` is a proposal path. It must not create hidden active memory.
+**The approval step is not a human gate.** `MemorySaveTool.run` calls `approve_candidate` on the candidate it just created and then activates it, so a `memory_save` from the model produces active durable memory in one tool call. `DaemonApp.request_tool` discards the request source and calls `ToolRegistry.execute_tool` directly; `ToolRegistry.request_tool` ignores its `approval_gate` argument; the `/approvals` HTTP routes return 404 (`tests/test_no_approval_surface.py`). The `MemorySaveTool.propose` method — candidate and evidence without activation — still exists but is not on any live path.
+
+There is no reverse operation. `MemoryItemRepository` exposes only `activate_candidate`, `get_item`, `list_items` and `list_items_for_compiler`; nothing can disable, supersede or forget an item once it is active.
 
 ## Memory item states
 
@@ -70,13 +77,16 @@ Model-originated `memory_save` is a proposal path. It must not create hidden act
 - `source_policy`
 - `supersedes`
 - `superseded_by`
-- evidence count through joined evidence
+- evidence count through joined evidence (computed at compile time, not stored)
 
-Only active, eligible, evidence-backed items should be selectable.
+Only active, eligible, evidence-backed items are selectable. In practice
+`status` is only ever written as `active`, and `supersedes` / `superseded_by`
+are never written at all — the other lifecycle values are recognised by the
+compiler but unreachable through any supported operation.
 
 ## Compiler architecture
 
-`jarvis/memory/compiler.py` defines:
+`dan/memory/compiler.py` defines:
 
 - `MemoryCompilerConfig`
 - `MemoryCompilerRequest`
@@ -97,13 +107,13 @@ The compiler output may contain internal metadata:
 - selection reasons
 - skipped reasons
 - audit metadata
-- warnings
+- warnings (always an empty list; no warning is ever produced)
 
-Those internal fields are not automatically prompt-visible. ContextBuilder must render only safe fields.
+Those internal fields are not automatically prompt-visible. ContextBuilder renders only safe fields.
 
 ## Selected memory model
 
-Selected memory may include internal fields such as `memory_id`, `canonical_key`, `source_policy`, and `sensitivity`. These fields are useful for audit but forbidden in final prompt text.
+Selected memory may include internal fields such as `memory_id`, `canonical_key`, `source_policy`, `sensitivity` and `budget_cost`. These fields are useful for audit but forbidden in final prompt text. `memory_id` is itself a projection — `mem_ref_<sha256 of the row id>` — so the database id never leaves the compiler.
 
 Prompt-rendered compiled memory uses only:
 
@@ -154,13 +164,15 @@ Final BrainRequest/context output must exclude:
 
 ## Procedural memory
 
-Procedural memory is excluded by default. It requires explicit opt-in through compiler configuration.
+Procedural memory is excluded by default (`include_procedural=false`). Opting in puts procedural items in the same flat list as semantic ones — there is no separate section.
 
-Procedural rules must not be mixed blindly with semantic facts. Safety-relevant procedural behavior should also be enforced by code and tests, not only by memory.
+In practice no procedural item can be created through a supported path: `memory_save` validates `kind` against `MEMORY_KINDS` (identity, user_preference, project, fact, summary, temporary), which does not contain `procedural`. Only the candidate API, which accepts a free-text `candidate_kind`, can produce one.
+
+Safety-relevant procedural behavior should be enforced by code and tests, not by memory.
 
 ## ContextBuilder integration
 
-`ContextBuilder` accepts optional memory compiler dependencies, explicit enablement gates, session/profile scoped internal enablement, request-scoped internal override, and a force-disable kill switch.
+`ContextBuilder` accepts optional memory compiler dependencies, explicit enablement gates, session-scoped internal enablement, request-scoped internal override, and a force-disable kill switch.
 
 Key behavior:
 
@@ -180,15 +192,20 @@ untrusted = True
 
 ## Runtime integration
 
-Runtime dependency wiring exists so daemon-created ContextBuilder instances can receive compiler dependencies. That is not global enablement.
+`create_daemon_app_from_config` builds the compiler and hands it plus every gate to the daemon's `ContextBuilder`. Wiring is not enablement.
 
-Compiled memory remains default-off. Config-based dev/local enablement exists, but it can enable compiled memory only when `[memory].enabled=true`, compiled-memory context is explicitly enabled in config, and the force-disable kill switch is off.
+**Default-off means the shipped defaults, not necessarily the running daemon.** `MemoryConfig.compiled_context_enabled` defaults to `False` (`dan/config.py`) and `config/dan.example.toml` ships `compiled_context_enabled = false`. But the live config is `~/.dan/config.toml`, which is not in the repo and can set it `true` — and on this machine it does. Read the live file before asserting that compiled memory is off on a given install; `[memory].enabled` must also be true for it to run.
 
-Session/profile scoped enablement exists and is internal-only. An empty session/profile allow-list enables zero sessions and does not globally leak; a `None` allow-list preserves established global config behavior.
+Operator env controls exist and are read at daemon build time (`compiled_memory_operator_env_controls` in `dan/config.py`):
 
-Request-scoped internal override support exists for one request at a time. Request override False disables one request. Request override True cannot bypass `[memory].enabled=false` or `compiled_memory_force_disabled`. Overrides do not mutate builder or runtime state.
+- `DAN_COMPILED_MEMORY_ENABLED` — overrides `compiled_context_enabled`. An unparseable value is treated as false.
+- `DAN_COMPILED_MEMORY_FORCE_DISABLED` — sets the kill switch. An unparseable value is treated as TRUE, so a typo fails closed.
 
-No env, panel, public API, user-facing, or global production enablement exists yet.
+Session-scoped enablement exists and is internal-only. The allow-list is typed as `(session_id, persona_profile)` pairs, but per-profile personas were removed: `_build_settings` pins `persona.profile` to `DEFAULT_PERSONA_PROFILE = "dan"` no matter what a request asks for, so an entry naming any other profile can never match and the conversation id is effectively the whole key. An empty allow-list enables zero sessions; a `None` allow-list leaves global config behaviour untouched.
+
+Request-scoped internal override support exists for one request at a time. Request override False disables one request. Request override True cannot bypass `[memory].enabled=false` or `compiled_memory_force_disabled`. Overrides do not mutate builder or runtime state — a compiler created lazily under an override is deliberately not cached.
+
+Not built: panel toggle, public enablement API, and any user-facing switch. There IS a public read-only compiler route, `POST /memory/compile-preview` (`dan/api/routes_memory.py`); it constructs its own compiler and cannot change what any turn sees.
 
 ## Compiled memory context policy
 
@@ -196,17 +213,35 @@ This section is the formal rollout and safety contract for compiled memory in pr
 
 ### Enablement precedence
 
-- The global default is off.
+Ratified policy text, restated here as the contract future work must preserve.
+Where the runtime has moved since it was ratified, the correction is inline:
+
+- The global default is off. That is the shipped default (`dan/config.py`, `config/dan.example.toml`); the live `~/.dan/config.toml` may say otherwise — see "Runtime integration".
 - Config dev/local enablement can enable compiled memory when `[memory].enabled=true`.
 - `[memory].enabled=false` is an absolute compiled-memory disable.
 - `compiled_memory_force_disabled` disables compiled memory regardless of config, session/profile, or request override.
-- Session/profile scoped enablement exists and is internal-only.
+- Session/profile scoped enablement exists and is internal-only. The profile half of the key is inert: `_build_settings` pins `persona.profile` to `DEFAULT_PERSONA_PROFILE = "dan"`, so only the conversation id can ever match.
 - Empty session/profile allow-list enables zero sessions and does not globally leak.
 - `None` allow-list preserves established global config behavior.
 - Request-scoped override True can enable compiled memory for one request only when `[memory].enabled=true` and the kill switch is off.
 - Request-scoped override False disables compiled memory for one request.
-- Request-scoped override must not mutate builder/runtime state.
-- No env, panel, public API, user-facing, or global production enablement exists yet.
+- Request-scoped override must not mutate builder/runtime state. A compiler created lazily under an override is deliberately not cached.
+- No env, panel, public API, user-facing, or global production enablement exists yet. **Out of date since the policy was ratified:** the two operator env controls shipped (`DAN_COMPILED_MEMORY_ENABLED`, `DAN_COMPILED_MEMORY_FORCE_DISABLED`, see "Runtime integration"). Panel, public API, user-facing and global production enablement genuinely do not exist.
+
+Evaluated in this order by `ContextBuilder._resolve_compiled_memory_enabled`:
+
+1. `[memory].enabled=false` — absolute disable, nothing overrides it.
+2. `compiled_memory_force_disabled` — kill switch; beats config, scope and request override. Settable from config wiring or `DAN_COMPILED_MEMORY_FORCE_DISABLED`.
+3. Request-scoped override, if not `None` — True enables, False disables, for one request.
+4. Global enablement (`memory.compiled_context_enabled`, or `DAN_COMPILED_MEMORY_ENABLED`).
+5. Otherwise the scope gate: enabled only if `(conversation_id, "dan")` is in the allow-list.
+
+Notes:
+- The shipped default is off; the live `~/.dan/config.toml` may say otherwise.
+- Empty allow-list enables zero sessions and does not globally leak.
+- `None` allow-list leaves global config behaviour unchanged.
+- Request-scoped override does not mutate builder/runtime state.
+- Env enablement exists. Panel, user-facing and global production enablement do not.
 
 ### Prompt-visible output contract
 
@@ -273,6 +308,8 @@ A safe diagnostics object records coarse failure state. It must not include exce
 
 Diagnostics are not prompt-visible and must not include raw IDs, canonical keys, evidence, observations, secrets, user input, exception text, or traceback.
 
+Fields: `compiled_memory_enabled`, `compiler_available`, `compiled_memory_attempted`, `compiled_memory_section_present`, `selected_count`, `skipped_count`, `fail_closed`, `failure_category` (only ever `"compiler_error"`), and `skipped_categories` — counts bucketed against a fixed allow-list of reasons, with anything else counted as `other`. They are returned on `ContextBuildResult` and not persisted anywhere.
+
 ## Test coverage
 
 Relevant tests:
@@ -295,8 +332,9 @@ Test focus has moved from compiler internals to final BrainRequest/context outpu
 
 ## Future work
 
-- Keep env, public API, panel, user-facing, and global production enablement out until scoped future tasks define them.
-- Treat optional env enablement, optional internal API enablement, optional panel toggle, production rollout plan, and any observability dashboard as separate tasks.
-- Add usage ledger/audit events for memory selection.
+- Keep panel, user-facing, and global production enablement out until scoped future tasks define them. (Env enablement is no longer future — it shipped; see "Runtime integration".)
+- Give `memory_items` a lifecycle after activation: disable, supersede, forget. Today the compiler honours those statuses and nothing can set them.
+- Decide whether `memory_save` should regain a human step, or whether the contract in `docs/MEMORY_CONTRACT.md` should be rewritten to match one-call activation. The two currently disagree.
+- Add usage ledger/audit events for memory selection (`memory_usage_events` is an empty table).
 - Add production telemetry or dashboards only after a scoped observability task.
 - Add panel UX only after a scoped panel task.

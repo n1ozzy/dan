@@ -1,7 +1,15 @@
 """Release 1 direct-execution tool policy.
 
-Legacy panel approval settings may still exist in persisted state, but they
-must not reintroduce an approval row or awaiting-approval turn.
+These tests exist to keep a DEAD setting dead. Legacy `security.require_*` and
+`auto_approve_mode` values still sit in persisted panel state and in config;
+`_policy_with_settings_overlay` must never let one of them resurrect an
+approval row or an awaiting-approval turn. Every assertion below is therefore
+`== ALLOW` on purpose — that is the contract, not an oversight.
+
+The overlay is the only thing under test here. `decide()` itself allows
+everything unconditionally (dan/tools/permissions.py), so these tests cannot
+tell you anything about what actually constrains a tool. That lives in the
+tools themselves.
 """
 
 from __future__ import annotations
@@ -67,10 +75,9 @@ def _decide(policy: ToolPermissionPolicy, risk: str) -> ToolDecision:
 
 
 def test_panel_settings_disable_ui_terminal_and_memory_approval() -> None:
-    """The panel grants cover EVERY switchable mutation class, not just the
-    original three: ui_act (clicking/typing), terminal_write (pasting into a
-    terminal) and memory_write (operator's explicit override of the ADR-009
-    default) each have their own live settings key."""
+    """Every switchable mutation class has its own legacy settings key —
+    ui_act, terminal_write, memory_write — and none of them gates anything.
+    Pinned so a future reader does not mistake the keys for live grants."""
 
     base = ToolPermissionPolicy()
 

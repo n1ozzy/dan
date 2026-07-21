@@ -3,11 +3,41 @@
 ## Broker
 
 The voice broker runs **inside `dand`** and is the sole owner of synthesis
-and playback. Every producer (the CLI, the panel, a hook, a skill, other
-agents) speaks through the API/CLI — nobody plays WAV files directly and
-nobody starts a broker of their own. The live engine is Supertonic; a missing
+and playback. Every producer (the CLI, the panel, a skill, other agents)
+speaks through the API/CLI — nobody plays WAV files directly and nobody
+starts a broker of their own. The live engine is Supertonic; a missing
 engine, voice or asset ends the request with an explicit error — there is no
 silent fallback.
+
+The one command every producer uses:
+
+```bash
+dan speak --json --as <persona> --session <session> --source claude --stdin
+```
+
+The Claude MessageDisplay hook is **no longer a producer**: it was removed and
+quarantined on 2026-07-21. `integrations/claude/hooks/tts-message-display.sh`
+stays in the repo as history, not as an installation.
+
+> **`[[GŁOS]]` is live syntax.** Calling it dead confuses two different
+> producers:
+>
+> - **A Claude Code session in the terminal** must never write those markers.
+>   Nothing consumes them there — the hook is gone, so they are just litter in
+>   the chat. Speech from a terminal session goes through `dan speak`.
+> - **The brain inside `dand` is explicitly ordered to emit them.**
+>   `_VOICE_FORM_INSTRUCTION` (`dan/brain/context_builder.py:36-53`) tells the
+>   model in Polish to open its reply with a `[[GŁOS]] … [[/GŁOS]]` block, and it
+>   is injected whenever `speech_form_enabled()` is true — that is
+>   `voice.enabled` **and** `voice.speak_responses`, both `true` in the owner's
+>   live `~/.dan/config.toml`. The consumer is live too:
+>   `dan/voice/speech_form_stream.py` routes the block's contents to TTS and the
+>   rest to chat.
+>
+> The two are a matched pair. As `speech_form_enabled()`'s own docstring warns:
+> instruction without router means TTS reads the markers aloud; router without
+> instruction means live speech stays silent until finalize. Never remove one
+> alone.
 
 ## Queue statuses
 
@@ -94,11 +124,14 @@ to its previous bytes so disk and resolver never diverge.
 
 The old path: a bash feeder watched a growing playlist file and every appended
 line started playing immediately; DSP was driven by a smuggled-in `profile`
-field. Release 1 has no such path: a playlist is imported transactionally as
-session segments, appending anything to the old file after the import
-**triggers nothing**, progress lives in the database (a restart neither
-duplicates nor loses anything), and live content enters through the same API
-as just another segment — there is no second queue.
+field. Release 1 has no such path — and no replacement for it either: **there
+is no playlist import and no "segments" table** (the schema is
+`dan/store/schema.sql`; the queue table is `voice_queue`). Appending to any old
+playlist file triggers nothing. Everything that gets spoken enters as an
+ordinary `voice_queue` row through the same API/CLI, with its render snapshot
+resolved before the write — there is no second queue and no second producer
+path. Scheduled/format-driven playback (Radio) is Release 2; see
+`docs/RADIO-DAN.md`.
 
 ## Offline render
 
@@ -129,10 +162,12 @@ dan queue cancel 42
 dan queue flush --session radio
 
 # Where the current configuration came from (file, env, default):
-dan config explain --json
-
-# Voice hook switch:
-dan voice hook off
-dan voice hook on
-dan voice hook status
+dan config explain <key> --json
 ```
+
+`dan voice hook on|off|status` still exists in the CLI, but it only flips the
+`voice.hook_enabled` setting — the Claude MessageDisplay hook that used to read
+it is not installed any more (quarantined 2026-07-21), so the switch currently
+has no consumer. Do not use it as a way to "turn DAN's voice on or off"; that
+is `[voice].enabled` / `[voice].speak_responses` plus the panel's
+pause/resume.

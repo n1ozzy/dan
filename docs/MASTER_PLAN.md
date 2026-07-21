@@ -1,6 +1,19 @@
 # Jarvis v4.2 — Master Plan (plan-of-record)
 
-Status: IN FORCE (Ozzy's mandate 2026-07-02: "chciałbym abyś mnie prowadził
+> ## ⚠ HISTORICAL PLAN — NOT A DESCRIPTION OF CURRENT BEHAVIOUR
+>
+> Status: **SUPERSEDED on 2026-07-18 by Release 1.** This is the 2026-07-02
+> plan-of-record, written when the product was still called Jarvis. It is kept as
+> a record of what was decided and why, not as a statement of how the daemon
+> works today.
+>
+> Renames since: `jarvisd` → `dand`, `com.ozzy.jarvisd` → `com.dan.dand`,
+> `~/.jarvis` → `~/.dan`, package `jarvis/` → `dan/`, persona
+> `config/persona/jarvis.md` → `config/persona/DAN.md`.
+> Current truth: `docs/STATUS.md`, `AGENTS.md`, `docs/PROJECT_RULES.md`,
+> `docs/CO-JEST-GDZIE.md`, `docs/SECURITY_MODEL.md`.
+
+Original mandate: Ozzy 2026-07-02 ("chciałbym abyś mnie prowadził
 [...] sam ogarniesz co i jak" + "dyscyplina w chuj aż dowieziemy Jarvisa").
 Date: 2026-07-02. HEAD at the time of writing: `28b1611` (19D-A, 615 tests green).
 Product goal (Ozzy's vision): turn DAN into a Jarvis like in Iron Man —
@@ -41,21 +54,27 @@ The 20A pivot stands. We settle the PRO MVP against this decision.
 
 ---
 
-## 2. Sacred principles (unchanged)
+## 2. Sacred principles (as written 2026-07-02)
 
 ```text
-jarvisd owns truth (SQLite)
+dand owns truth (SQLite)
 panel renders truth
 brain thinks statelessly — the model NEVER executes, it only proposes
-jarvisd executes: ToolRegistry -> PermissionPolicy -> ApprovalGate -> EventStore
+dand executes: ToolRegistry -> PermissionPolicy -> ApprovalGate -> EventStore
 provider session is not memory
 EventStore = append-only audit timeline with central secret redaction
 approve does not execute; execute-approved is separate and explicit
 examples != commitments (after 20A-FIX)
 /tmp is transport, not memory
-the only launchd label: com.ozzy.jarvisd
+the only launchd label: com.dan.dand
 legacy repo dev/dan: read-only museum
 ```
+
+Two of those principles no longer hold in code. Release 1 executes model tool
+calls directly: `ToolRegistry.request_tool()` ignores the policy and the gate,
+and `ToolPermissionPolicy.decide()` returns ALLOW for every risk class and every
+source. So "PermissionPolicy -> ApprovalGate" and "approve does not execute" are
+history, not law. The rest still stands.
 
 Operating rules (the discipline to deliver):
 
@@ -332,12 +351,13 @@ from PRO). It happens BEFORE G5 — it does not wait for the voice-clone (decree
 
 The MVP-operator passes when:
 
-1. `jarvisd` starts and reports health (launchd or cli).
+1. `dand` starts and reports health (launchd or cli).
 2. One input (text/CLI/panel) = exactly one Turn; history survives a restart.
 3. Events explain the full lifecycle of every turn and every tool.
 4. The cockpit shows the same truth as the daemon, live (stream, not polling).
-5. A model-originated tool call goes through: policy(source) → approval → explicit
-   execute → ToolRun → continuation; never auto-execute.
+5. ~~A model-originated tool call goes through: policy(source) → approval → explicit
+   execute → ToolRun → continuation; never auto-execute.~~ **Reversed by Release 1:**
+   model tool calls execute directly, then ToolRun → continuation.
 6. `file_read` outside approved roots = BLOCKED; symlink escape = BLOCKED (tested).
 7. Mutating endpoints require the local token.
 8. Jarvis reads real UI state (Accessibility read) and performs an approved UI
@@ -347,7 +367,7 @@ The MVP-operator passes when:
 11. A brain switch preserves history.
 12. A worker job never speaks and never writes memory directly.
 13. Zero raw secrets in events/logs (redaction tests + manual grep).
-14. Launchd install is manual only, one label `com.ozzy.jarvisd`.
+14. Launchd install is manual only, one label `com.dan.dand`.
 15. Legacy conflicts visible in `/runtime/processes` and the cockpit.
 16. `pytest tests -v` green; all smoke harnesses PASS.
 

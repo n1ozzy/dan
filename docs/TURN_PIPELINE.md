@@ -1,8 +1,14 @@
-# Jarvis v4.1 — Turn Pipeline & State Machine (FROZEN)
+# DAN — Turn Pipeline & State Machine
 
-> **Status:** FROZEN (Prompt 00A). Defines the runtime state set, the canonical
-> turn lifecycle, and the event sequence. Field shapes are in
-> [CONTRACTS.md](CONTRACTS.md).
+> **Status:** describes the running pipeline; re-verified against
+> `dan/turns/orchestrator.py` and `dan/daemon/state_machine.py` on 2026-07-21.
+> Defines the runtime state set, the turn lifecycle, and the event sequence.
+> Field shapes are in [CONTRACTS.md](CONTRACTS.md).
+
+> **Tools execute inside the turn — there is no approval step.** The
+> orchestrator runs the model's tool calls immediately and feeds the results
+> back to the model in the same turn (§3, §5.1). `awaiting_approval` is a legacy
+> status the pipeline never sets.
 
 ---
 
@@ -11,23 +17,24 @@
 Typed panel text and a transcribed voice utterance are **the same kind of
 input** and go through **the same `TurnOrchestrator`** ([ADR-011](DECISIONS.md#adr-011)).
 There is no separate "voice brain" path. The only difference is the turn's
-`source` field (`panel_text` vs `voice_transcript`).
+`source` field: `text` | `panel` | `cli` | `api` for typed input (`POST
+/input/text` accepts exactly that set), `voice` for an accepted transcript.
 
 ```
 POST /input/text  ──►┐
                      ├──► TurnOrchestrator ──► … ──► (optional) VoiceRequest
-voice transcript  ──►┘        (jarvis/turns)
+voice transcript  ──►┘        (dan/turns)
 ```
 
-This is the single most important behavioral guarantee of v4.1: it is what makes
-panel and voice consistent, debuggable from one event stream, and impossible to
-drift apart.
+This is the single most important behavioral guarantee of the runtime: it is
+what makes panel and voice consistent, debuggable from one event stream, and
+impossible to drift apart.
 
 ---
 
 ## 2. Runtime states (FROZEN)
 
-The daemon state machine (`jarvis/daemon/state_machine.py`) has exactly these
+The daemon state machine (`dan/daemon/state_machine.py`) has exactly these
 states:
 
 | State | Meaning |
@@ -37,7 +44,7 @@ states:
 | `LISTENING` | A `ListeningLease` is active; capturing audio. |
 | `TRANSCRIBING` | Captured audio is being turned into text. |
 | `THINKING` | A turn is open; building context / awaiting the brain/model. |
-| `TOOLING` | Tool and approval execution periods inside a turn. |
+| `TOOLING` | A round of tool execution inside a turn. |
 | `SPEAKING` | The voice broker is playing a `VoiceRequest`. |
 | `INTERRUPTED` | Barge-in / cancellation interrupted the current activity. |
 | `ERROR` | An unrecoverable error for the current activity. |
@@ -47,11 +54,9 @@ The canonical persisted `RuntimeState` values are exactly:
 `BOOTING`, `IDLE`, `LISTENING`, `TRANSCRIBING`, `THINKING`, `TOOLING`,
 `SPEAKING`, `INTERRUPTED`, `ERROR`, `STOPPING`.
 
-`WAITING_APPROVAL` and `WORKING` are not v4.1 runtime states. Approval waiting
-is represented by `approvals` / `approval.*` / tool events and, when the
-runtime is actively waiting as part of a turn, `TOOLING`. Worker job lifecycle
-is represented by `worker_jobs` state plus `worker.job.*` events, not runtime
-state expansion.
+`WAITING_APPROVAL` and `WORKING` are not runtime states. Tool work inside a turn
+is `TOOLING`; worker job lifecycle is represented by `worker_jobs` state plus
+`worker.job.*` events, not runtime state expansion.
 
 Allowed normal transitions:
 
@@ -78,32 +83,44 @@ state in the payload. The state machine is the only writer of the current state.
 
 > Note: states are runtime *activity* status. A `Turn` also has its own
 > `status` (`received`/`started`/`context_built`/`brain_requested`/
-> `brain_responded`/`awaiting_approval`/`finished`/`failed`/`cancelled`) — the
-> two are related but distinct (the daemon can be `IDLE` while a turn is
-> `awaiting_approval`, for example).
+> `brain_responded`/`finished`/`failed`/`cancelled`, plus the legacy
+> `awaiting_approval`) — the two are related but distinct.
+
+Recovery rules worth knowing: a failed turn goes `… → ERROR → IDLE`, and if
+either transition cannot be persisted the machine falls back to
+`force_idle()` so the runtime is never stranded outside `IDLE`. `STOPPING` is
+never resurrected.
 
 ---
 
-## 3. The text turn (MVP — Prompt 10)
+## 3. The text turn
 
-`POST /input/text` drives this exact sequence:
+`POST /input/text` drives this sequence (`TurnOrchestrator.handle_text`):
 
 ```
+[runtime must be IDLE, else 409 busy]
+      ▼
+[Turn persisted: status=received, source=text|panel|cli|api]
+      ▼
 input.text.received
       ▼
-turn.started            (Turn persisted: status=running, source=panel_text)
+turn.started            (Turn: status=started)
       ▼
 state.changed → THINKING
       ▼
 [build context]         (context_builder: DB + config + ACTIVE memory only)
       ▼
-brain.requested         (BrainRequest assembled by Jarvis)
+turn.context.built      (context snapshot attached to the Turn)
       ▼
-brain.responded   OR   brain.failed
+brain.requested         (BrainRequest assembled by DAN)
       ▼
-[persist response on Turn]
+brain.responded   OR   brain.failed / brain.cancelled
       ▼
-turn.finished           (Turn: status=finished | awaiting_approval | failed)
+[while the response carries tool calls: the §5.1 loop]
+      ▼
+[persist final_text on Turn: status=finished | failed | cancelled]
+      ▼
+turn.finished
       ▼
 state.changed → IDLE
 ```
@@ -111,34 +128,28 @@ state.changed → IDLE
 ### Guarantees
 
 - **One input → exactly one turn.**
+- **A turn only starts from `IDLE`** — a second concurrent turn is refused with
+  `TurnOrchestratorBusyError` (HTTP 409), it does not queue.
 - **The turn survives a DB reload** (it is persisted before the brain is called).
 - **The response appears in the event stream** (`brain.responded` + the turn's
-  `response_text`).
-- **The mock brain is the default in tests** — no real provider is required to
+  `final_text`).
+- **The mock brain is available for tests** — no real provider is required to
   exercise the pipeline.
-- **`awaiting_approval` does not execute a tool** — it means the model requested
-  one or more approvable tools and Jarvis persisted pending approvals for a user
-  decision. The runtime returns to `IDLE` and `/state.pending_approval_count`
-  exposes pending work without globally blocking unrelated input.
-- **Approve alone does not continue a turn** — `approve` records the decision
-  only. The boundary for tool execution and any continuation is explicit
-  `execute-approved`.
-- **One-shot approved tool continuation is supported** — after an approval tied
-  to an `awaiting_approval` turn is approved and explicitly executed
-  successfully, Jarvis builds a continuation `BrainRequest` from the original
-  user input, the original turn context snapshot when available, the approved
-  tool name/arguments, and the recorded tool result. The continuation answer
-  replaces the old approval-required final text and the original turn moves
-  from `awaiting_approval` to `finished`.
-- **Continuation failure is non-replaying** — the `ToolRun` stays recorded, the
-  tool is not executed again, `brain.failed` / `error.raised` are appended with
-  redacted continuation payloads, and the original turn remains
-  `awaiting_approval` with `tool_result_continuation.status=failed` metadata.
-  Duplicate execute still conflicts, so there is no automatic retry loop.
+- **Tool calls execute inside this turn** — the model's calls run immediately,
+  their results are fed back as a continuation `BrainRequest`, and the LAST
+  model response is the turn's final answer. No approval row is created and the
+  runtime never parks the turn (§5.1).
+- **A cancelled generation is not a failure** — barge-in raises
+  `BrainGenerationCancelled`, which ends the turn as `cancelled` (events
+  `brain.cancelled` + `turn.cancelled`) and settles the runtime back to `IDLE`
+  without passing through `ERROR`.
+- **Post-completion errors never reclassify a finished turn** — once the turn
+  reaches `finished`/`failed`/`cancelled`, a later failed event append or state
+  transition cannot rewrite it (FIX-05).
 
 ---
 
-## 4. The voice turn (Prompt 17)
+## 4. The voice turn
 
 A transcribed utterance becomes input to the *same* pipeline:
 
@@ -149,7 +160,7 @@ TRANSCRIBING
       ▼
 input.voice.transcribed
       ▼   (accepted transcript, post anti-echo / garbage filter)
-turn.started          (source=voice_transcript)
+turn.started          (source=voice)
       ▼
    … identical to §3 from here …
       ▼
@@ -164,36 +175,47 @@ acknowledgement) **does not** open a turn — it is dropped by policy before
 
 ---
 
-## 5. Branches: tools, approvals, workers
+## 5. Branches: tools, workers, barge-in
 
 These extend a turn without changing its identity. Turn state lives in `turns`;
 turn lifecycle history is represented by `turn.*` events in the single
-EventStore stream. There is no `turn_steps` table in v4.1 unless a future ADR
+EventStore stream. There is no `turn_steps` table unless a future ADR
 supersedes ADR-016.
 
-### 5.1 Tool call (Prompt 12)
+### 5.1 Tool call — direct in-turn execution
 
 ```
-THINKING → (brain proposes ToolCall)
-        → tool.proposed
-        → if permission requires approval:
-              TOOLING + approval.requested
-              → approval.granted | approval.rejected
-        → if approved and explicitly executed:
-              TOOLING → tool.run.started → tool.run.finished
-              → if one-shot continuation eligible and original turn is awaiting_approval:
-                    brain.requested → brain.responded → turn.finished
-        → if rejected/blocked: the call NEVER executes
-        → back to THINKING / turn.finished
+THINKING → (the model's response carries tool calls)
+        → [speak this response as commentary, not as the final answer]
+        → state.changed → TOOLING
+        → per call: tool.requested → tool.started → tool.finished | tool.failed
+        → state.changed → THINKING
+        → brain.requested → brain.responded   (continuation carrying the results)
+        → if that response carries tool calls again: repeat
+        → turn.finished with the LAST response as final_text
 ```
 
-The current MVP implements only continuation-eligible one-shot tool results.
-Future result classes such as `requires_user_presence`,
+Bounds that make the loop terminate (`dan/turns/orchestrator.py`,
+`dan/turns/loop_guard.py`):
+
+- `MAX_DIRECT_TOOL_ROUNDS = 8`. Exceeding it fails the turn.
+- A `ToolLoopGuard` watches repeated (tool, arguments) pairs: it first warns —
+  and the warning is carried into the continuation prompt so the model can see
+  it is repeating itself — then cuts the batch, which fails the turn.
+- Tool results are redacted and budget-clipped before they re-enter the prompt,
+  and the continuation prompt states that tool output is untrusted data, never
+  instructions.
+- An unregistered tool, non-JSON arguments or a missing registry is recorded as
+  a failed call (`tool.failed` + `error.raised`) and the turn continues.
+
+The legacy approve/execute path (`continue_after_tool_result`) still exists for
+a turn parked in `awaiting_approval`; only continuation-eligible one-shot
+results qualify there. Result classes `requires_user_presence`,
 `external_communication_pending`, `operator_session_started`,
-`live_visual_control_session`, and `worker_job_started` are reserved design
-space; they are not treated as ordinary one-shot continuation.
+`live_visual_control_session` and `worker_job_started` are reserved names, not
+implemented behaviour.
 
-### 5.2 Worker job (Prompt 13)
+### 5.2 Worker job
 
 ```
 THINKING → (turn dispatches a WorkerJob)
@@ -203,7 +225,7 @@ THINKING → (turn dispatches a WorkerJob)
         → back to THINKING / turn.finished
 ```
 
-### 5.3 Barge-in / interrupt (Prompt 17)
+### 5.3 Barge-in / interrupt
 
 ```
 SPEAKING → (real barge-in detected, under policy)
@@ -222,20 +244,26 @@ SPEAKING → (real barge-in detected, under policy)
 | `input.text.received` | ✅ | `POST /input/text` accepted |
 | `input.voice.transcribed` | ✅ | a transcript is accepted as input |
 | `turn.started` | ✅ | a turn is opened + persisted |
+| `turn.context.built` | | the context snapshot is attached |
 | `brain.requested` | ✅ | a `BrainRequest` is dispatched |
 | `brain.responded` | ✅ | a `BrainResponse` returns ok |
 | `brain.failed` | ✅ | brain adapter fails / unavailable |
-| `turn.finished` | ✅ | a turn closes (finished or failed) |
+| `brain.cancelled` | | generation cancelled by barge-in |
+| `turn.finished` | ✅ | a turn closes successfully |
+| `turn.failed` / `turn.cancelled` | | the other two terminal outcomes |
 | `voice.speak.cancelled` | ✅ | a `VoiceRequest` is cancelled (barge-in) |
 | `memory.updated` | ✅ | a `MemoryBlock` changes |
-| `tool.*` | family | tool proposed/run lifecycle |
-| `approval.*` | family | approval requested/decided |
+| `tool.*` | family | `tool.requested` / `started` / `finished` / `failed` / `rejected` |
+| `approval.*` | family | legacy approve/execute path only (§5.1) |
 | `worker.job.*` | family | worker job lifecycle in the general `events` table |
 | `voice.speak.*` | family | voice queue/playback lifecycle |
-| `voice.listening.*` | family | listening lease lifecycle |
-| `audio.device.changed` | family | device selection change |
-| `runtime.observed` | family | supervisor snapshot |
-| `conversation.*` | family | conversation lifecycle |
+| `listening.lease.*` | family | listening lease lifecycle |
+| `audio.devices.snapshot` | | device snapshot recorded (only on change) |
+| `runtime.process.observed` | family | supervisor observation |
+| `error.raised` | | any recorded error |
+
+Canonical names live in `dan/events/types.py::EventType`; this table is a map,
+not the authority.
 
 Correlation: every event belonging to a turn carries the turn's
 `correlation_id` (and `turn_id` where applicable), so the full lifecycle of any

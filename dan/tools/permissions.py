@@ -1,9 +1,30 @@
-"""Deterministic, source-sensitive permission decisions for DAN tools.
+"""Tool risk classification for DAN. NOT an enforcement layer.
 
-Design: docs/MACOS_PERMISSION_MODEL.md — "the user says *click this*" is not
-the same event as "the model decided to click". Every decision therefore takes
-the request source as a required dimension. Sources are assigned by dand at
-the entry points, never taken from payloads.
+READ THIS BEFORE TRUSTING ANYTHING HERE (accurate as of 2026-07-21):
+
+`ToolPermissionPolicy.decide()` returns ALLOW unconditionally — every risk
+class, every source. It gates nothing. The constructor still accepts
+`approved_roots`, `trusted_scopes`, `destructive_tools_enabled`,
+`auto_approve_mode` and the `require_approval_for_*` flags, and dand still
+passes them, but they are stored and rendered as runtime state only. No code
+path reads them to make a decision.
+
+The real containment lives INSIDE the individual tools and nowhere else:
+approved-root scoping (`file_tool`), the scrubbed environment and the per-tool
+runtime/output bounds (`shell_tool`). If you weaken a check inside a tool,
+nothing behind it catches the mistake. Do NOT add the `shell_read` allowlist or
+the git hardening to that list: `security.shell_read_unrestricted` switches the
+allowlist off — it is off on this machine — and the git hardening only ever
+armed because the allowlist held commands to a fixed set of literals. See the
+module docstring of `shell_tool`.
+
+`RequestSource` is recorded for audit — it is copied into the result's
+`source` field — but it does not change any decision. The source-sensitive
+matrix in docs/MACOS_PERMISSION_MODEL.md is an UNIMPLEMENTED design, not a
+description of this file.
+
+Secret redaction (`dan.security.redaction`) is separate from this module and
+IS active.
 """
 
 from __future__ import annotations
@@ -53,20 +74,18 @@ class RequestSource(StrEnum):
 
 @dataclass(frozen=True)
 class TrustedScope:
-    """A filesystem scope where model-originated tools can be auto-approved.
-    
-    Used by ToolPermissionPolicy to grant ALLOW for MODEL_ORIGINATED requests
-    within specific paths for specific tools.
+    """INERT — `decide()` never consults `trusted_scopes`. See `dan.config`,
+    which declares the identical shape this one duplicates; neither is read.
     """
     name: str
     path: str
     tools: tuple[str, ...] = ()
-    # Optional: max session TTL in minutes for runtime activations (0 = no limit)
     max_session_ttl_minutes: int = 0
 
 
-# Matrix columns (docs/MACOS_PERMISSION_MODEL.md §3): user sources share one
-# column deliberately — voice is not trusted more than text.
+# Source groupings kept for audit/reporting and for the day the matrix in
+# docs/MACOS_PERMISSION_MODEL.md is actually built. `decide()` does not branch
+# on them today.
 USER_SOURCES = frozenset(
     {
         RequestSource.DIRECT_USER_COMMAND,
@@ -93,10 +112,10 @@ class ToolPermissionResult:
 
 
 class ToolPermissionPolicy:
-    """Default DAN v4.2 tool safety policy.
+    """Classifier only — allows everything. See the module docstring.
 
-    This policy only classifies requests. It does not execute commands, inspect
-    processes, mutate files, or make network calls.
+    Nothing here blocks, gates, or scopes. It does not execute commands,
+    inspect processes, mutate files, or make network calls either.
     """
 
     def __init__(
@@ -127,8 +146,8 @@ class ToolPermissionPolicy:
         self.require_approval_for_network = require_approval_for_network
         self.require_approval_for_ui = require_approval_for_ui
         self.require_approval_for_terminal = require_approval_for_terminal
-        # memory_write defaults to human promotion (ADR-009); switching this
-        # off is the operator explicitly overriding that default for himself.
+        # ADR-009 wanted memory_write to require human promotion. That gate is
+        # not implemented here either — this flag is reported, never enforced.
         self.require_approval_for_memory = require_approval_for_memory
 
     def decide(
@@ -176,16 +195,6 @@ def _allow(risk: str, reason: str, *, source: RequestSource | str) -> ToolPermis
         risk=risk,
         reason=reason,
         source=str(source),
-    )
-
-
-def _blocked(risk: str, reason: str, *, source: RequestSource | str) -> ToolPermissionResult:
-    return ToolPermissionResult(
-        decision=ToolDecision.BLOCKED,
-        risk=risk,
-        reason=reason,
-        source=str(source),
-        blocked=True,
     )
 
 

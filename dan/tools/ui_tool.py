@@ -1,8 +1,18 @@
-"""Read-only UI observation tools (FAZA D1, risk class ui_read).
+"""UI observation AND action tools — this module can click and type.
 
-The tools delegate to an injected AccessibilityReader backend and sanitize
-every result at this layer — secure text field values never reach tool_runs
-regardless of which backend produced the snapshot.
+NOT read-only, despite what this docstring used to say. It defines both
+`ui_read`-class observers (`UiActiveAppTool`, `UiReadWindowTool`) and
+`ui_act`-class actuators (`UiClickTool`, `UiTypeTool`, `UiFocusAppTool`) that
+drive the real Mac through the Accessibility backend.
+
+Nothing gates them: `ToolPermissionPolicy` allows every class, so a
+model-originated `ui_click` runs the moment the TCC grant is in place. The
+guards that remain are the ones written here — secure text field values never
+reach tool_runs, control characters are rejected, typed input is length-capped
+— plus the macOS Accessibility permission itself, which is enforced by the OS.
+
+Observers delegate to an injected AccessibilityReader and sanitize every result
+at this layer, regardless of which backend produced the snapshot.
 """
 
 from __future__ import annotations

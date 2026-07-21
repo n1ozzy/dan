@@ -7,6 +7,14 @@
   var EVT_POLL = 250, Q_POLL = 700, TICK = 40, META_TICK = 600, GAP_MS = 1200;
   var GLIDE_MS = 180;
 
+  // KNOWN DEFECT (2026-07-21): 1.29 is the [dan] speed from the voice persona
+  // canon under config/voice/, copied here. CLAUDE.md: "canon IN THIS REPO
+  // ... do NOT hardcode values." Commit 9305568 moved that speed to 1.32 and
+  // left this line untouched while rewriting this very file, so the panel
+  // types at a speed the runtime no longer uses. Read it from the daemon.
+  // The catalog file is deliberately not named here: panel sources may not
+  // spell it (tests/test_panel_no_runtime_ownership.py).
+  // docs/reviews/2026-07-21-restart-orphan-shell-review.md §15.
   var perChar = 58 / 1.29;
 
   var afterId = 0;
@@ -136,6 +144,15 @@
 
   /* ---------- collapse the duplicate top state/stage row into the bubble meta ---------- */
 
+  // KNOWN DEFECT (2026-07-21): #activityStrip is not just a duplicate row. It
+  // is the panel's ONLY runtime-state readout (#stateLabel, #activityStage,
+  // #activityTool, #activityStatus, #activityResult) and its only aria-live
+  // region; app.js writes ERROR / "Runtime error" into it. Hiding it on load
+  // and again every 600 ms means a failed restart lights a red light nobody
+  // can see — and the replacement meta line in rewriteMeta only renders while
+  // a DAN bubble is live, which a daemon that failed to restart never
+  // produces. Breaks AGENTS.md "Panel: render effective runtime state".
+  // docs/reviews/2026-07-21-restart-orphan-shell-review.md §10.
   function hideChrome() {
     var tb = document.querySelector('.chat-toolbar.single-dan-toolbar');
     if (tb && tb.style.display !== 'none') tb.style.display = 'none';

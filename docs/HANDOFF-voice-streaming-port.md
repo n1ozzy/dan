@@ -1,8 +1,47 @@
 # HANDOFF — Voice/Streaming Port (DAN → Jarvis) + Streaming Fixes
+
+> # ⛔ DOKUMENT HISTORYCZNY — 2026-07-08. NIE OPISUJE DZISIEJSZEGO RUNTIME'U.
+>
+> Ten plik jest zapisem jednej sesji z **8 lipca 2026**, sprzed scalenia repo
+> i sprzed Release 1. **Nie czytaj go jako opisu tego, jak system działa dziś**
+> i nie wykonuj z niego żadnych komend — ścieżki, procesy i skrypty poniżej
+> w większości już nie istnieją.
+>
+> Co się zmieniło (stan zweryfikowany 2026-07-21):
+> - **Nie ma dwóch repo ani dwóch brokerów.** Jest jedno repo (`~/Documents/dev/dan`)
+>   i jeden broker — **w środku demona `dand`** (`dan/voice/broker.py`).
+>   `tools/jarvis/voice_broker.py`, `dan_core/say.py`, `start-voice-broker.sh`
+>   i `~/Documents/dev/jarvis` to nieżywe byty; supervisor traktuje je jako
+>   **legacy do zgłoszenia** (`docs/LAUNCH_SUPERVISION.md` §3).
+> - **Żadnego stanu w `/tmp`.** Kolejka, stan i pliki gotowości żyją w bazie
+>   `~/.dan/dan.db` i w `~/.dan/runtime/` — `/tmp/dan-voice/*` to legacy artefakt.
+> - **Mowa idzie wyłącznie przez** `dan speak --json --as <persona> --session <s>
+>   --source claude --stdin`. Hook MessageDisplay **hosta Claude Code** został
+>   usunięty i zakwarantannowany 2026-07-21 — nie wskrzeszać.
+>   **To nie dotyczy markerów `[[GŁOS]]` w kodzie `dand`** — tam są żywym
+>   produktem (`dan/brain/context_builder.py`), a ich wycięcie psuje mowę na
+>   żywo. Szczegóły i granica: `docs/GLOS-I-KOLEJKA.md`.
+> - **Głosy i persony** to `config/voice/personas.toml` (kanon w repo). Opisany
+>   niżej podział „DAN=M3 / DANusia=F4 / Jarvis=M5 bastard" jest NIEAKTUALNY —
+>   `jarvis` jest dziś **aliasem DAN-a**, nie osobną postacią, a profile
+>   masteringu person czytaj z pliku, nie stąd.
+> - **Warm serve** został przeportowany i żyje w `dan/voice/tts.py`
+>   (`supertonic serve` jako dziecko nadzorowane przez `dand`), a nie w bashu.
+> - Skille nie leżą w `~/.claude/skills/` tylko w `integrations/` w tym repo.
+> - **Klucz ElevenLabs** z §7: potraktuj jako spalony i zrotowany; ElevenLabs
+>   nie jest dziś silnikiem DAN-a (silnik = Supertonic).
+>
+> Gdzie jest dzisiejsza prawda: `AGENTS.md`, `docs/CO-JEST-GDZIE.md`,
+> `docs/GLOS-I-KOLEJKA.md`, `docs/AUDIO_RUNTIME.md`, `docs/VOICE_STREAMING.md`.
+>
+> Po co ten plik zostaje: to zapis pomiarów i decyzji (dlaczego warm serve,
+> dlaczego whole-utterance NIE dla live, gdzie ucieka latencja). Wartość ma
+> **rozumowanie**, nie ścieżki.
+
 **Data:** 2026-07-08 · **Autor sesji:** Claude Opus 4.8 (1M) · **Dla:** nowej sesji Ozzy'ego
 
-> Cel tego pliku: nowa sesja z ZEROWYM kontekstem ma móc wejść i kontynuować bez zgadywania.
-> Czytaj w całości przed dotknięciem kodu. Ozzy słyszy większość rzeczy głosem — nie zasypuj czatu.
+> Cel tego pliku (w 2026-07-08): nowa sesja z ZEROWYM kontekstem ma móc wejść i kontynuować bez zgadywania.
+> Ozzy słyszy większość rzeczy głosem — nie zasypuj czatu.
 
 ---
 

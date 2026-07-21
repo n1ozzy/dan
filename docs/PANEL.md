@@ -2,7 +2,21 @@
 
 The menu bar panel is a **pure HTTP client** of a running `dand`. It has no
 runtime of its own: it does not play audio, does not start processes, does not
-touch launchd. Start: `scripts/dan-panel`.
+touch launchd.
+
+Shell: `NSStatusItem` + a borderless `NSPanel` + `WKWebView` that loads the
+cockpit assets from the daemon origin (`GET /panel/index.html`) —
+`dan/panel/menubar_app.py`, assets in `dan/panel/assets/`.
+
+Start:
+
+- production: launchd agent `com.dan.panel` → `~/.dan/bin/dan-panel`
+  (`KeepAlive`; see `docs/CO-JEST-GDZIE.md`);
+- from the repo: `scripts/dan-panel` (needs the panel extra:
+  `.venv/bin/pip install -e '.[panel]'`).
+
+Window size comes from `[panel].width` / `[panel].height` in the runtime config
+(`~/.dan/config.toml`) — no size is hardcoded here.
 
 ## States
 

@@ -283,26 +283,47 @@ _VERSIONED_KEYS = frozenset(
     }
 )
 
+# `consumers` is data, not prose: GET /settings/explain serves it to the panel.
+# VoiceResolver.resolve reads exactly one installation key; voice, speed,
+# mastering and dsp come from config/voice/personas.toml.
 _VOICE_RESOLVER_CONSUMERS = {
     "voice.output_gain": ("VoiceResolver",),
-    "voice.default_tts": ("VoiceResolver",),
-    "voice.supertonic_voice": ("VoiceResolver",),
-    "voice.supertonic_speed": ("VoiceResolver",),
-    "voice.tts_pronunciations": ("VoiceResolver",),
-    "voice.mastering_profile": ("VoiceResolver",),
-    "voice.persona_voices": ("VoiceResolver",),
-    "voice.persona_mastering": ("VoiceResolver",),
-    "voice.persona_speeds": ("VoiceResolver",),
 }
 
-_SPECIAL_CONSUMERS = {
+# Nothing reads these to decide anything. An empty tuple is the honest answer; a
+# plausible-looking name here makes the panel assert that a dead knob is wired.
+_DEAD_CONFIG_CONSUMERS: dict[str, tuple[str, ...]] = {
+    "voice.mastering_profile": (),
+    "voice.persona_voices": (),
+    "voice.persona_mastering": (),
+    "voice.persona_speeds": (),
+}
+
+# Read by a repo-shipped integration script rather than by the daemon, so it is
+# neither a runtime consumer nor dead. The script honours the key (see
+# tests/test_hook_fail_open.py) but is not installed in the host's settings.json
+# — the entry was removed 2026-07-21. This used to name a `VoiceHook` class that
+# has never existed.
+_INTEGRATION_CONSUMERS = {
+    "voice.hook_enabled": ("integrations/claude/hooks/tts-message-display.sh",),
+}
+
+_SPECIAL_CONSUMERS: dict[str, tuple[str, ...]] = {
     "owner.display_name": ("PersonaRenderer",),
-    "voice.hook_enabled": ("VoiceHook",),
     "brain.current_adapter": ("BrainManager",),
     "dan.conversation_id": ("TurnOrchestrator",),
     "voice.conversation_id": ("VoiceTurnGateway",),
     "model": ("BrainManager",),
     "effort": ("BrainManager",),
+}
+
+# The four maps above are disjoint by construction; merging once keeps the
+# lookup a single dict access instead of a chain of fallbacks.
+_CONSUMERS: Mapping[str, tuple[str, ...]] = {
+    **_VOICE_RESOLVER_CONSUMERS,
+    **_DEAD_CONFIG_CONSUMERS,
+    **_INTEGRATION_CONSUMERS,
+    **_SPECIAL_CONSUMERS,
 }
 
 REJECTED_KEYS: Mapping[str, str] = {
@@ -562,9 +583,7 @@ REGISTRY: Mapping[str, ConfigKey] = {
             if key in _LIVE_RUNTIME_KEYS | _OWNER_KEYS
             else _typed_parser(key)
         ),
-        consumers=_SPECIAL_CONSUMERS.get(
-            key, _VOICE_RESOLVER_CONSUMERS.get(key, ("DaemonApp",))
-        ),
+        consumers=_CONSUMERS.get(key, ("DaemonApp",)),
     )
     for key in _RUNTIME_CONFIG_KEYS
 }

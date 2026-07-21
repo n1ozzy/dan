@@ -1,13 +1,19 @@
 # DAN v4.2 — Voice Sentence-Streaming Contract (G0)
 
-Status: DESIGN (G0, docs-only). This document is the contract that G3 (TTS
-broker + queue) and G4 (STT/anti-echo/barge-in) implement. It changes **no
-runtime code and no schema**. It exists because the legacy requirement (§4a
-of MASTER_PLAN) is hard: **first-sound ≤ ~2 s** for a spoken answer, while
-the old DAN took 8–10 s by waiting for the full completion before speaking.
+Status: **IMPLEMENTED** (verified against the code 2026-07-21). This started as
+a docs-only G0 design; G3/G4 have since shipped it, so read it as a description
+of how the running system behaves, not as a plan. The modules are
+`dan/voice/chunker.py` (SentenceChunker), `dan/voice/speech.py`
+(SpeechPipeline / SpeechStreamSession / FillerTimer), `dan/voice/queue.py`
+(VoiceQueue) and `dan/voice/broker.py` (the only speaker). It exists because
+the requirement (§4a of MASTER_PLAN) is hard: **first-sound ≤ ~2 s** for a
+spoken answer, while the old DAN took 8–10 s by waiting for the full completion
+before speaking.
 
-Decree anchors: TTS engines are **Supertonic + Chatterbox** (voice-clone),
-with **edgeTTS, piper and XTTS banned** (MASTER_PLAN §7.3). STT is MLX
+Decree anchors: the live TTS engine is **Supertonic**; **Chatterbox** is still
+reserved as a live engine (`RESERVED_ENGINES` in `dan/voice/tts.py`) and exists
+only as an offline render pipeline. **edgeTTS, piper and XTTS are banned**
+(MASTER_PLAN §7.3) — requesting one raises `BannedEngineError`. STT is MLX
 whisper (§7.4). Tests use mock engines only.
 
 ---
@@ -48,23 +54,30 @@ def generate(self, request: BrainRequest, *, on_delta=None) -> BrainResponse
 - Deltas carry **no authority**: no tool execution, no memory writes, no
   state transitions are ever driven by a delta.
 
-Claude CLI (`--output-format stream-json`) and Codex CLI streaming arrive
-with G3/G4; G0 only fixes the shape they must fit.
+State of the adapters (2026-07-21): the **Claude CLI adapter streams** — the
+flags ride in `[brain.claude_cli].stream_args`
+(`--output-format stream-json --verbose --include-partial-messages`). The
+**Codex CLI adapter does not**: `CodexCliAdapter.supports_streaming = False`
+and it accepts `on_delta` only to ignore it, which is exactly the documented
+degradation — the final text is sentence-cut after the fact.
 
 ## 3. SentenceChunker (dand-owned, deterministic)
 
-A pure, deterministic state machine living in dand (module planned as
-`dan/voice/chunker.py` in G3) — not in the adapter (adapters stay dumb
-pipes) and not in the broker (the broker only plays what is queued):
+A pure, deterministic state machine living in dand (`dan/voice/chunker.py`) —
+not in the adapter (adapters stay dumb pipes) and not in the broker (the broker
+only plays what is queued):
 
 - Input: a sequence of delta strings (or one final string). Output: a
   sequence of **sentence chunks**.
 - Cut points: `.`, `!`, `?`, `…`, and hard newlines — followed by
-  whitespace/end; a chunk is only emitted at `min_chars` (default 12) so a
-  bare "Ok." does not fire the TTS pipeline for nothing.
-- Abbreviation guard: a dotted token from a fixed Polish/English list
-  ("np.", "tzn.", "itd.", "dr.", "mr.", "e.g.", "i.e.", …) is not a cut
-  point. The list is config data, not code.
+  whitespace/end; a chunk is only emitted once it reaches the minimum length,
+  so a bare "Ok." does not fire the TTS pipeline for nothing. The minimum is
+  `[voice].min_sentence_chars` in the runtime config (the chunker's own
+  `DEFAULT_MIN_CHARS` is only the fallback) — do not quote a number here.
+- Abbreviation guard: a dotted token from a fixed Polish/English list is not a
+  cut point. **The list lives in code**, as `ABBREVIATIONS` in
+  `dan/voice/chunker.py` — it is not config data; extend it there when a new
+  abbreviation misfires.
 - `flush()` at end-of-stream emits whatever remains, cut or not.
 - Determinism is a hard requirement: same input sequence → same chunks,
   because tests (G3) assert exact chunk boundaries.
@@ -120,18 +133,23 @@ either. Partial tokens are transport, not truth (the same instinct as
 When generation is slow, silence is the enemy. Fillers are the compromise —
 short canned utterances that buy time without pretending to be an answer:
 
-- Trigger: no first sentence chunk within `voice.filler_after_ms` (default
-  800) of `brain.requested` for a turn that will be spoken.
-- Pool: `voice.fillers` config list (Polish, persona-neutral, e.g. "A spierdalaj...", "Chwila."). Data, not code; Ozzy tunes it in TOML.
-- Hard limits: **at most one** filler per turn; never after the first real
-  sentence was queued; never when voice is disabled; never for worker jobs
-  (workers are silent — ADR-009); never for turns that immediately park in
-  `awaiting_approval` before the filler timer fires.
+- Trigger: no first sentence chunk within `voice.filler_after_ms` of
+  `brain.requested` for a turn that will be spoken. The delay is a config
+  value Ozzy tunes — it is deliberately not quoted here.
+- Pool: the `voice.fillers` config list; the shipped fallback is
+  `DEFAULT_VOICE_FILLERS` in `dan/config.py`. Data, not code; Ozzy tunes it in
+  TOML. Selection rotates through the pool (`itertools.count`), it is not
+  random.
+- Hard limits: **at most one** filler per turn (`FillerTimer`: disarm wins if
+  it arrives first); never after the first real sentence was queued; never when
+  voice is disabled; never for worker jobs (workers are silent — ADR-009).
+  (The old "never for turns that park in `awaiting_approval`" clause is gone
+  with the approval gate — tool execution no longer parks a turn.)
 - A filler is a normal `VoiceRequest` with `metadata_json.kind="filler"`
   and `interrupt_policy` allowing the first real sentence to cut it off
   mid-playback rather than delay it.
 
-## 7. Cancellation and barge-in (contract for G4)
+## 7. Cancellation and barge-in
 
 Cancelling a spoken turn (user barge-in, panel stop, turn failure) is one
 idempotent operation with three legs:
@@ -144,26 +162,27 @@ idempotent operation with three legs:
    event); only the broker touches audio — cancellation never spawns a
    second speaker path.
 
-Barge-in detection itself (mic-side) is G4 scope; G0 only fixes what
-"cancel" means so G3 builds the queue with the right semantics from day one.
+All three legs are implemented. Which cancel also writes a tombstone (and
+therefore blocks further enqueues under that id) is **not** uniform — a
+generation turn id is tombstoned, a session/channel name is not. That
+distinction is the one that used to mute named agent channels for an hour;
+the current rules live in `docs/GLOS-I-KOLEJKA.md` ("Cancelling") and in
+`dan/voice/queue.py`.
 
-## 8. What G0 explicitly does NOT do
+## 8. Boundaries this contract still holds
 
-- No runtime code, no schema change, no new events beyond the frozen
-  `voice.speak.*` family already reserved in CONTRACTS.
-- No cockpit live-text rendering of deltas (would require an ADR-019
+The original "G0 does not do any of this yet" list is obsolete — G3/G4 shipped.
+What remains true as a *boundary*, verified 2026-07-21:
+
+- **No schema change was needed and none was made.** `voice_queue` carries
+  everything; the sentence/filler distinction rides in `metadata_json`. No
+  event type outside the `voice.speak.*` family was added for streaming
+  (`voice.speak.synthesis.started` / `.completed` are part of that family).
+- **Deltas are still not persisted and not broadcast.** There is no
+  `brain.delta` event and `/stream` carries only DB events.
+- **No cockpit live-text rendering of deltas** (would require an ADR-019
   amendment; deliberately out of scope for the voice track).
-- No engine integration: Supertonic (first real engine) and Chatterbox
-  (voice-clone) arrive in G3/G5; **banned engines stay banned** (edgeTTS,
-  piper, XTTS — decree §7.3). Tests use a mock engine exclusively.
-- No always-on listening; PTT/leases are G2 and unchanged by this design.
-
-## 9. Consumption map
-
-| Stage | Consumes from this contract |
-|-------|------------------------------|
-| G1 | nothing (devices); unaffected |
-| G2 | nothing (leases); unaffected |
-| G3 | SentenceChunker, sentence→VoiceRequest mapping, fillers policy, per-engine chunk preparation (§4a: next chunk synthesized while the previous one plays) |
-| G4 | `on_delta` in CLI adapters, cancellation legs 1–3, barge-in trigger |
-| G5 | nothing new; Chatterbox obeys the same queue/broker contract (MLX inference on its dedicated thread — §4a fact) |
+- **Chatterbox is still not a live engine** — reserved in `dan/voice/tts.py`;
+  it exists only as the offline render pipeline. **Banned engines stay banned**
+  (edgeTTS, piper, XTTS — decree §7.3). Tests use a mock engine exclusively.
+- **No always-on listening**; PTT/leases are unchanged by this design.

@@ -220,7 +220,10 @@ def test_explain_versioned_key_reads_repo_source_not_installation_config(
     assert explained.source_surface == "versioned config"
     assert explained.source_file == repo_root / "config" / "dan.example.toml"
     assert explained.revision
-    assert explained.consumers == ("VoiceResolver",)
+    # No consumer: VoiceResolver takes the mastering profile from the persona
+    # spec and raises when that key is missing (dan/voice/resolver.py), so
+    # nothing ever falls back to this one. Do not "restore" VoiceResolver here.
+    assert explained.consumers == ()
 
 
 def test_config_explain_cli_emits_the_registry_explanation(

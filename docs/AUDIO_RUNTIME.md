@@ -1,9 +1,18 @@
-# Jarvis v4.1 — Audio Runtime (FROZEN)
+# DAN — Audio Runtime (FROZEN contract, values refreshed 2026-07-21)
+
+> **Naming:** written as "Jarvis v4.1"; every `jarvis*` name below is today's
+> `dan*` (Release 1 cutover, 2026-07-18).
 
 > **Status:** FROZEN (Prompt 00A). Defines listening, speaking, device
 > ownership, anti-echo and barge-in. Field shapes are in
-> [CONTRACTS.md](CONTRACTS.md). **No live voice is started by this build** —
-> every component below is implemented and tested against mocks first.
+> [CONTRACTS.md](CONTRACTS.md).
+>
+> **Voice is LIVE.** The line that used to stand here — "no live voice is
+> started by this build" — was true only before the G-gates shipped and has been
+> removed. Today `dand` runs the real stack: sox recorder, MLX whisper STT,
+> Supertonic TTS (with `supertonic serve` as a supervised child), real playback.
+> Mocks remain the *test* doubles, not the runtime (see AGENTS.md: tests must
+> never spawn real audio).
 
 ---
 
@@ -44,8 +53,9 @@ Push-to-talk and sticky-listen are both **leases**, not flags.
 - A **locked** lease is **not** cleared by a button release — only by an explicit
   unlock (or expiry).
 - A **stale** lease **expires** (`expires_at`) instead of listening forever.
-- Releasing a **hold** lease **promptly requests the (mock) recorder to stop** —
-  no lingering capture.
+- Releasing a **hold** lease **promptly requests the recorder to stop** — no
+  lingering capture. (The live recorder backend is `sox`; `mock` is the test
+  double. Which one runs is `[voice].recorder` in the runtime config.)
 - There is **no raw `/tmp` flag** that means "is listening"
   ([ADR-006](DECISIONS.md#adr-006), [ADR-008](DECISIONS.md#adr-008)).
 
@@ -79,14 +89,17 @@ producer (e.g. a finished turn) ──► enqueue VoiceRequest ──► voice_q
   restart**.
 - An **interrupt policy** controls cancellation (see barge-in below).
 - TTS is **mocked in tests** — no real synthesis required to validate the queue.
-- Lifecycle: `VoiceRequest.status` moves `queued → speaking → done | cancelled |
-  failed`; the daemon is `SPEAKING` while an item plays.
+- Lifecycle: `VoiceRequest.status` moves
+  `queued → synthesizing → speaking → done | cancelled | failed`; the daemon is
+  `SPEAKING` while an item plays. The `synthesizing` step is enforced in SQL —
+  a row cannot jump from `queued` to `speaking`
+  (`voice_queue_status_transition` trigger, `dan/store/schema.sql`).
 
 ---
 
 ## 4. Anti-echo, STT, VAD (Prompt 17)
 
-When Jarvis speaks, its own voice must not be transcribed back into a new turn.
+When DAN speaks, his own voice must not be transcribed back into a new turn.
 
 - **Content anti-echo:** a transcript that is similar to recently-spoken TTS is
   **filtered** (not turned into input). This mirrors the old content-based
@@ -126,39 +139,50 @@ event-logged; there is never silent duplicate or overlapping playback.
 
 ### Policy (FROZEN)
 
-- **Preferred input:** `Mikrofon (MacBook Air)`.
-- **Output:** follows the system default.
-- **Bluetooth microphone:** warns, or is disabled by default.
+- **Input policy:** pin the built-in mic. Which device that is comes from
+  `[audio].input_policy` / `[audio].preferred_input` in the runtime config —
+  not from this document.
+- **Output:** follows the system default (`[audio].output_policy`).
+- **Bluetooth microphone:** warns, and is disabled by default
+  (`[audio].allow_bluetooth_microphone = false`).
 - A **mock implementation** backs the tests.
 - State is captured as `AudioDeviceState` snapshots (`audio_device_snapshots`);
   voice/STT components must consult the manager rather than choosing devices
   themselves ([ADR-012](DECISIONS.md#adr-012)).
 
-### Observed devices (diagnostic 2026-06-30)
+### Why the Bluetooth rule exists
 
-A read-only diagnostic (`system_profiler SPAudioDataType`) showed the policy
-matches reality and the bluetooth risk is concrete (detail in
-[LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md) §7):
-
-| Device | Transport | Role | Rate |
-|--------|-----------|------|------|
-| **Mikrofon (MacBook Air)** | Built-in | Default **Input** | 48000 |
-| **Głośniki (MacBook Air)** | Built-in | Default System Output | 48000 |
-| **Bose Revolve+ II SoundLink** | **Bluetooth** | Default **Output** (+ a 16 kHz BT **input**) | 44100 / 16000 |
-
-The preferred input (`Mikrofon (MacBook Air)`) is the current default input — the
-policy is consistent with the live machine. A Bluetooth device is the default
-*output* and also exposes a low-rate BT *microphone*; the `AudioDeviceManager`
-must not silently capture from it (warn/disable by default).
+The concrete case that produced it: a Bluetooth speaker was the default
+*output* while also exposing a low-rate (16 kHz) Bluetooth *microphone*, so a
+naive "follow the default device" would have captured from it. The
+`AudioDeviceManager` must not silently do that. The full device listing behind
+this is a **dated 2026-06-30 diagnostic** and no longer describes the machine —
+see [LEGACY_RUNTIME_FINDINGS.md](LEGACY_RUNTIME_FINDINGS.md) §7 for that
+snapshot; for what is connected now, ask the daemon (`GET /audio/devices`).
 
 ---
 
-## 7. What is explicitly NOT done in this build
+## 7. What is real today (2026-07-21) and what still is not
 
-- No microphone is opened, no recorder is run, no TTS engine is loaded for real.
-- No launchd autostart of any audio component.
-- Real STT/TTS engine selection (supertonic / chatterbox / eleven equivalents)
-  is deferred; the contracts here are engine-agnostic and validated with mocks.
+Real and running:
 
-Turning on real audio is a separate, deliberate step taken only after the queue,
-leases, anti-echo and device policy pass with mocks.
+- **TTS:** Supertonic is the live engine (`dan/voice/tts.py`), plus a warm
+  `supertonic serve` HTTP server that `dand` supervises as a child so the model
+  is not reloaded per chunk; the CLI path is the fallback. A missing engine,
+  voice or asset **fails the request** — there is no silent fallback.
+- **STT:** MLX whisper. **Recorder:** sox. Both selected in the runtime config.
+- **Autostart:** the launchd agent `com.dan.dand` starts `dand`, and `dand`
+  owns the audio devices, the queue and the hotkey. There is no separate
+  launchd job for a broker or a TTS server — a second one would be a legacy
+  conflict (see LAUNCH_SUPERVISION.md §3).
+
+Still not implemented:
+
+- **Chatterbox as a live engine** — reserved, not wired
+  (`RESERVED_ENGINES` in `dan/voice/tts.py`); asking for it is an explicit
+  error. The Chatterbox V3 work that does exist is an **offline** render
+  pipeline (`dan/voice/pipelines/`), never an automatic live engine.
+- **edgeTTS, piper, XTTS** — banned by decree; requesting one raises
+  `BannedEngineError`.
+- **Streaming VAD (`silero_vad`)** — the config surface exists, the engine in
+  use is the energy gate (`[voice].vad_engine`).

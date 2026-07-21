@@ -1,16 +1,21 @@
 # Jarvis MemoryCompiler Contract
 
-Classification: current design contract.
+Classification: current contract. Implementation status verified 2026-07-21.
 
-This document defines the contract for the future MemoryCompiler before runtime
-wiring. It is design and contract only. ContextBuilder is not wired in this
-task, and this task does not change runtime prompt behavior.
+The compiler is BUILT (`dan/memory/compiler.py`) and WIRED: `ContextBuilder`
+calls it and renders a `compiled_memory` context message when compiled memory is
+enabled (`dan/brain/context_builder.py`). Enablement rules live in
+`docs/MEMORY_OS_ARCHITECTURE.md`.
+
+This document is the contract. Where the shipped implementation is narrower than
+the contract, the gap is called out inline as "Not implemented" — those are the
+lines you must not trust as descriptions of runtime behaviour.
 
 ## Purpose
 
-MemoryCompiler is responsible for turning active `memory_items` into a bounded,
-deterministic, explainable memory context for future `BrainRequest`
-construction.
+MemoryCompiler turns active `memory_items` into a bounded, deterministic,
+explainable memory context that `ContextBuilder` renders into the
+`BrainRequest`.
 
 It selects memory for a conversation turn, records why items were selected or
 skipped, preserves provenance, and leaves enough audit metadata for a later
@@ -25,48 +30,60 @@ and prior governance.
 
 ## Non-Goals For First Implementation
 
-The first MemoryCompiler implementation must not include:
+Non-goals set for the first MemoryCompiler implementation, each marked with
+whether the shipped compiler still honours it:
 
-- no provider calls.
-- no vector store.
-- no hidden summarization.
-- no auto-memory.
-- no prompt wiring yet.
-- no automatic conflict resolution.
-- no automatic confidence boosting from retrieval.
-- no automatic overwrite, merge, or revision of memory records.
-- no Topic Documents runtime.
-- no panel UI.
-- no runtime ledger in this task.
+- no provider calls. — still honoured.
+- no vector store. — still honoured.
+- no hidden summarization. — still honoured.
+- no auto-memory. — still honoured.
+- no prompt wiring yet. — **this one no longer holds.** MEMORY-COMPILER-WIRE-01
+  shipped the `ContextBuilder` wiring, and compiled output does reach the prompt
+  when compiled memory is enabled.
+- no automatic conflict resolution. — still honoured.
+- no automatic confidence boosting from retrieval. — still honoured.
+- no automatic overwrite, merge, or revision of memory records. — still
+  honoured.
+- no Topic Documents runtime. — still honoured.
+- no panel UI. — still honoured.
+- no runtime ledger in this task. — still honoured, and still true afterwards:
+  the compiler performs no database writes of any kind.
 
-In this design task specifically, ContextBuilder is not wired, no runtime
-MemoryCompiler service is implemented, and no prompt behavior changes.
+Scope of the original design task (MEMORY-COMPILER-DESIGN-01, 2026-07-04) —
+historical record, superseded 2026-07-21. As written then:
+
+> ContextBuilder is not wired in this task, and this task
+> does not change runtime prompt behavior.
+
+That is the scope of that task, not today's runtime; see the header for what
+shipped since.
 
 ## Inputs
 
-The future compiler input must be explicit and serializable:
+`MemoryCompilerRequest` carries `conversation_id`, `current_turn_id`,
+`current_user_text` and a `MemoryCompilerConfig`. The items themselves are not
+passed in: the compiler pulls them through
+`MemoryItemRepository.list_items_for_compiler()`, which joins the evidence count
+onto every `memory_items` row.
 
-- `conversation_id`.
-- `current_turn_id` or equivalent turn metadata.
-- current user text.
-- active `memory_items` eligible for retrieval.
-- evidence metadata linked to each eligible item.
-- budget configuration.
-- optional namespace/scope filters.
+`MemoryCompilerConfig` fields are exactly: `max_items` (default 3), `max_chars`
+(default 1200), `include_procedural` (default false), `scope_filter`,
+`namespace_filter`, `include_debug_metadata` (default true).
 
-Budget configuration should include at least max item count, max character
-budget, per-item character limit, namespace policy, and safety policy flags.
+Not implemented: a per-item character limit and any safety policy flags —
+neither exists as a config field. `current_user_text` is accepted and echoed
+into nothing; the compiler does not use it for relevance.
 
-Optional namespace and scope filters may come from route, project, conversation,
-tool mode, or future topic routing. They narrow selection; they must not bypass
-lifecycle, evidence, or safety checks.
+Namespace and scope filters narrow selection. They do not bypass lifecycle or
+evidence checks; both of those run before the filter.
 
 ## Outputs
 
 The compiler returns a `CompiledMemoryContext` contract:
 
-- `selected_items`: prompt-eligible memory entries after lifecycle, safety,
-  scope, conflict, and budget checks.
+- `selected_items`: prompt-eligible memory entries after lifecycle, provenance,
+  procedural, scope/namespace and budget checks. There is no separate safety
+  check — secrets are redacted, not filtered.
 - `skipped_items`: considered entries that were not selected.
 - `budget_used`: total budget cost of selected entries.
 - `budget_limit`: configured limit applied to this compilation.
@@ -74,36 +91,48 @@ The compiler returns a `CompiledMemoryContext` contract:
   was included.
 - `skipped_reasons`: keyed by `memory_id`, explaining why each skipped item was
   excluded.
-- `audit_metadata`: deterministic compiler version, input filters, ordering
-  policy, timestamp source, and future turn linkage.
-- `warnings`: non-fatal conditions such as stale memory, conflicts requiring
-  review, missing optional metadata, or budget pressure.
+- `audit_metadata`: policy tag `memory_compiler_v1`, redacted conversation/turn
+  ids, source/selected/skipped counts and the filter settings. Empty when
+  `include_debug_metadata=false`.
+- `warnings`: **Not implemented — always an empty list.** No stale-memory,
+  conflict or budget-pressure warning is ever emitted.
 
-Compiled output must preserve provenance through `memory_id` and evidence
-metadata. It must be safe to inspect in logs or an audit view after redaction.
-Every selected `memory_item` must have provenance. Every selected `memory_item`
-must have `evidence_count >= 1` or an equivalent explicit provenance record.
-Legacy, manual, and migrated memories must carry provenance metadata rather
-than bypassing provenance. `source_policy` can describe the kind of provenance,
-but cannot waive the requirement.
+Compiled output preserves provenance through `memory_id` and evidence metadata.
+`memory_id` is NOT the database id: it is `mem_ref_<sha256 of the row id>`, so
+raw ids never leave the compiler. It must be safe to inspect in logs or an audit
+view after redaction.
+
+Every selected `memory_item` must have provenance: `evidence_count >= 1` or an
+equivalent explicit provenance record. Enforced as `evidence_count >= 1`, with
+`reason_skipped="missing_provenance"` otherwise; the "equivalent explicit
+provenance record" alternative has no implementation, because no second form of
+provenance exists to accept. Legacy, manual, and migrated memories must carry
+provenance metadata rather than bypassing provenance. `source_policy` can
+describe the kind of provenance, but cannot waive the requirement — the shipped
+compiler does not read it for eligibility at all.
 
 ## Selection Rules
 
 Selection is deterministic, policy-first, and explainable:
 
-- Include only `status=active` `memory_items`.
+- Include only `status=active` `memory_items`. An `active` row that carries
+  `superseded_by` is treated as superseded and skipped.
 - Exclude inactive, disabled, superseded, forgotten, rejected, and
   candidate-only states.
-- Exclude items with sensitivity/secrets policy violations.
-- Require provenance for every selected item: `evidence_count >= 1` or an
-  equivalent explicit provenance record.
+- Require provenance for every selected item: `evidence_count >= 1`.
+- Secrets are handled by redaction, not exclusion: `redact_secret_text` runs
+  over title, claim, canonical key, kind, scope, namespace and sensitivity, and
+  the item is still selected. **Not implemented: there is no
+  sensitivity-policy skip and no `sensitivity` threshold** — an item marked
+  sensitive is compiled like any other.
 - Prefer current project/thread scope over global scope.
 - Prefer exact namespace matches over broad namespace matches.
 - Prefer recently confirmed items over stale items only as a tie-breaker, not as
   the sole criterion.
-- Skip or mark conflicts for review; do not silently resolve them.
-- Treat procedural memory separately from semantic memory.
-- Procedural memory must not be mixed blindly with semantic facts.
+- Skip items already marked `conflict` or `merge_candidate`; do not resolve
+  them. **Not implemented: the compiler does not detect conflicts between two
+  active items** — it only honours a conflict status someone else has set.
+- Skip procedural memory unless `include_procedural=true`.
 - Preserve `memory_id` and evidence metadata for every selected item.
 
 Selection must not include disabled, superseded, forgotten, rejected, or
@@ -123,11 +152,15 @@ require review unless deterministic equivalence is defined:
 - narrowing scope should be represented as separate scoped memory or explicit
   revision metadata.
 - supersession must preserve the older `memory_id` lineage.
-- conflicting active items should produce a warning and skipped reason unless a
-  future governance policy defines deterministic equivalence.
 
 Records must not be silently overwritten, silently merged, or selected as if
 they were one clean truth when review is required.
+
+What the shipped compiler actually does: it reads `status` and `superseded_by`
+and skips accordingly. Two contradictory `active` items are both selected, with
+no warning. Deduplication happens earlier, at write time —
+`MemoryItemRepository.activate_candidate` reuses an existing row when the
+`canonical_key` matches instead of inserting a second one.
 
 ## Budget Rules
 
@@ -137,37 +170,46 @@ Budgeting is part of the contract, not an implementation detail:
 - Use stable tie-breakers.
 - Enforce max item count.
 - Enforce max character budget.
-- Apply per-item character truncation policy before final prompt formatting.
+- Apply per-item character truncation policy before final prompt formatting —
+  **Not implemented.** There is no per-item limit and no
+  `unsafe_or_unrepresentable` reason. The upside is that nothing is ever cut
+  mid-value, so nothing can be cut through a secret.
 - Record a skipped reason when an item is over budget.
 - Preserve enough metadata for skipped over-budget items to be auditable.
 
-Suggested ordering inputs are: eligibility pass, kind bucket, exact scope match,
-exact namespace match, source policy priority, evidence count, last confirmed
-timestamp, and final stable `memory_id` tie-breaker. Recency is allowed as a
-tie-breaker, not as a standalone reason to select a memory.
+Per-item cost is `len(title) + len(claim)`. An item that would push the running
+total past `max_chars`, or that arrives after `max_items` are already selected,
+is skipped whole with `reason_skipped="over_budget"`; the loop continues, so a
+later smaller item can still fit.
 
-Per-item truncation must not cut through raw secrets or expose unsafe evidence.
-If a memory cannot be safely represented under the per-item limit, skip it with
-`reason_skipped=unsafe_or_unrepresentable`.
+Ordering applied by `_sort_eligible_items`, from weakest to strongest key:
+`memory_id`, then `updated_at` descending, then `last_confirmed_at` descending,
+then confidence rank (high/medium/low/unknown), then the scope-match and
+namespace-match ranks — the last sort wins, so scope/namespace match dominates
+and `memory_id` is the final stable tie-breaker. Kind bucket and source-policy
+priority are not used.
 
 ## Explainability
 
-Each selected item must expose:
+`SelectedMemoryItem` exposes:
 
-- `memory_id`.
+- `memory_id` (projected `mem_ref_<sha256>`, never the raw row id).
 - `canonical_key`.
 - `kind`.
 - `scope`.
 - `namespace`.
 - `title`.
-- `reason_selected`.
+- `claim`.
+- `reason_selected` — a single constant, `"eligible"`. There is no per-item
+  explanation of WHY this item beat another.
 - `evidence_count`.
 - `source_policy`.
 - `sensitivity`.
+- `budget_cost`.
 
-Each skipped item must expose:
+`SkippedMemoryItem` exposes:
 
-- `memory_id`.
+- `memory_id` (projected the same way).
 - `reason_skipped`.
 
 Selected and skipped explanations must be stable enough for contract tests and
@@ -188,9 +230,15 @@ Compiled memory must be safe by default:
 - user control must remain possible through future disable, forget, and
   governance operations.
 
-Secrets policy applies even when an item is otherwise active. If an active item
-or evidence record contains unsafe material, the compiler must skip it or emit
-only a redacted representation permitted by policy.
+Secrets policy applies even when an item is otherwise active. The shipped
+compiler satisfies it by redaction only: every string it returns has passed
+through `redact_secret_text`, and `content` is never returned at all. It never
+skips an item for being unsafe.
+
+Reality check on user control: there is no disable, forget or supersede
+operation anywhere — `MemoryItemRepository` has no such method and no API route
+exists. The compiler honours those statuses, but today only a direct database
+edit can set one.
 
 ## Procedural Versus Semantic Memory
 
@@ -207,16 +255,25 @@ execution, but it must not be mixed blindly with semantic memory. A project fact
 must not override a procedural safety rule, and a procedural rule must not be
 treated as a factual claim about the user.
 
+Shipped behaviour: separation is achieved by exclusion, not by sectioning. With
+the default `include_procedural=false` every item whose `kind` is `procedural`
+is skipped. If a caller sets it true, procedural items land in the same flat
+list as semantic ones — **the separate section does not exist.** Note also that
+`memory_save` cannot create procedural items: `MEMORY_KINDS` is
+identity / user_preference / project / fact / summary / temporary.
+
 ## Governance addendum for first compiler implementation
 
 This addendum closes first-compiler governance rules without creating a separate
-governance source of truth.
+governance source of truth. Every rule in it is implemented as written, except
+the procedural sectioning noted below.
 
 ### Compiler eligibility statuses
 
-- selectable: active only.
+- selectable: active only, and only when `superseded_by` is empty.
 - never selectable: candidate, needs_review, approved-but-not-activated,
   rejected, disabled, superseded, forgotten, conflict, merge_candidate.
+- any other status value falls through to `reason_skipped="inactive"`.
 
 ### Status precedence
 
@@ -230,29 +287,43 @@ The compiler must not resolve conflicts. The compiler must skip conflict-marked
 items or surface `reason_skipped="conflict"`. The compiler must not merge
 memories and must not silently pick one conflicting memory as truth.
 
+Implemented as written: it skips items whose status is `conflict` or
+`merge_candidate` with `reason_skipped="conflict"`. It also does not detect
+conflicts — nothing in the codebase sets a conflict status, so the rule is
+enforced only over statuses somebody else would have to write.
+
 ### Supersession handling for first compiler
 
-The compiler must skip superseded items. If a superseding active item exists and
-is eligible, the compiler may select the superseding item. A skipped superseded
-item must receive `reason_skipped="superseded"`.
+The compiler must skip superseded items, and a skipped superseded item must
+receive `reason_skipped="superseded"`. If a superseding active item exists and is
+eligible, the compiler may select the superseding item.
+
+Implemented as written, both when `status="superseded"` and when an `active` row
+carries `superseded_by`. Nothing in the codebase sets `supersedes` or
+`superseded_by`.
 
 ### Forget/disable handling for first compiler
 
-Disabled memory is skipped and remains auditable. Forgotten memory is skipped
-and must not be surfaced in compiled output. Future APIs may distinguish
+Disabled memory is skipped and remains auditable. Forgotten memory is skipped and
+must not be surfaced in compiled output. Future APIs may distinguish
 tombstone/audit behavior, but compiler output must not expose forgotten content.
+
+Implemented as written. Nothing in the codebase can set either status.
 
 ### Merge policy for first compiler
 
 There is no runtime merge in the first compiler. Same title, same namespace, or
 similar text is not enough to merge. Deterministic equivalence/merge is future
-governance runtime, not compiler runtime.
+governance runtime, not compiler runtime. The only deduplication anywhere is
+`activate_candidate` reusing a `memory_items` row with an identical
+`canonical_key`, and that happens at write time, not in the compiler.
 
 ### Procedural memory handling for first compiler
 
 The first compiler must skip procedural memories by default unless explicitly
-requested by caller config. Procedural memory must not be mixed into semantic
-memory output without a separate section or reason.
+requested by caller config — implemented. Procedural memory must not be mixed
+into semantic memory output without a separate section or reason — **NOT
+implemented**: with `include_procedural=true` both kinds share one flat list.
 
 ### Compiler output reasons
 
@@ -261,15 +332,22 @@ output field. Per-item skip reasons must use the existing `reason_skipped`
 field, and aggregate skipped reasons must use the existing `skipped_reasons`
 collection.
 
-Canonical skipped reasons for the first implementation are: `inactive`,
-`disabled`, `superseded`, `forgotten`, `conflict`, `candidate_only`,
-`rejected`, `over_budget`, `missing_provenance`, `sensitivity_policy`,
-`procedural_not_requested`, and `namespace_mismatch`.
+Skipped reasons the compiler actually emits: `inactive`, `disabled`,
+`superseded`, `forgotten`, `conflict`, `candidate_only`, `rejected`,
+`over_budget`, `missing_provenance`, `procedural_not_requested`,
+`namespace_mismatch`. `merge_candidate` status is reported as `conflict`.
+
+`sensitivity_policy` is reserved and never emitted — no sensitivity skip exists.
+`ContextBuilder` buckets any reason outside the list above as `other` in its
+diagnostics.
 
 ## Future Usage Ledger
 
-A future `memory_usage_events` ledger should persist what happened during
-compilation. The concept includes:
+Still future, still unbuilt. A future `memory_usage_events` ledger should
+persist what happened during compilation; today `memory_usage_events` exists as
+a table in `dan/store/schema.sql` and no code writes to or reads from it. The
+compiler does not implement runtime ledger persistence — it performs no database
+writes at all. If it is ever built, the fields should be:
 
 - `memory_id`.
 - `conversation_id`.
@@ -280,9 +358,9 @@ compilation. The concept includes:
 - `budget_cost`.
 - `created_at`.
 
-This task does not implement runtime ledger persistence. The ledger is a future
-audit feature so a user can ask which memory was used, skipped, or blocked for a
-turn and why.
+The point of the ledger would be to let a user ask which memory was used,
+skipped, or blocked for a turn and why. Today that question has no answer beyond
+the coarse per-build `CompiledMemoryDiagnostics`, which is not persisted.
 
 ## Failure Modes
 
@@ -298,13 +376,17 @@ The design must explicitly guard against:
 - self-reinforcing retrieval loops where repeated selection boosts confidence
   without new evidence.
 
-Warnings and skipped reasons should make these failure modes visible during
-manual debugging and future Memory Audit work.
+Skipped reasons make some of these visible during manual debugging. Warnings do
+not — the list is always empty, so "conflicting memory selected without review"
+and "self-reinforcing retrieval" would pass unannounced.
 
 ## Future Milestones
 
-- MEMORY-COMPILER-01: deterministic compiler service.
-- MEMORY-COMPILER-WIRE-01: ContextBuilder integration.
-- MEMORY-USAGE-LEDGER-01: usage event persistence.
-- MEMORY-GOVERNANCE-DESIGN-01: conflict/revision/forgetting contract.
-- MEMORY-AUDIT-01: explain what memory was used and why.
+Original milestone list, with what has landed since:
+
+- MEMORY-COMPILER-01: deterministic compiler service — DONE.
+- MEMORY-COMPILER-WIRE-01: ContextBuilder integration — DONE.
+- MEMORY-USAGE-LEDGER-01: usage event persistence — not started.
+- MEMORY-GOVERNANCE-DESIGN-01: conflict/revision/forgetting contract — not
+  started; no operation can move an item out of `active`.
+- MEMORY-AUDIT-01: explain what memory was used and why — not started.
