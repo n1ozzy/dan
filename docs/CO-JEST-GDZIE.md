@@ -12,7 +12,7 @@ audio, the hotkey and the voice queue belongs to `dand`
 | Runtime configuration | operator (edits), `dand` (reads) | `~/.dan/config.toml` (template: `config/dan.example.toml` in the repo) |
 | Daemon logs | `dand` (rotates them itself) | `~/.dan/logs/` |
 | launchd plist | installer (`scripts/install-launchd.sh`) | `~/Library/LaunchAgents/com.dan.dand.plist` (template: `launchd/com.dan.dand.plist.example`) |
-| Panel (menu bar) | operator; only an HTTP client of the daemon | start: `scripts/dan-panel`; code: `dan/panel/` |
+| Panel (menu bar) | launchd (`KeepAlive`), label `com.dan.panel`; only an HTTP client of the daemon | plist: `~/Library/LaunchAgents/com.dan.panel.plist` → `~/.dan/bin/dan-panel`; code: `dan/panel/` (legacy rumps widget + `com.dan.panels` plist quarantined 2026-07-21 → `~/.dan/quarantine-2026-07-21-menubar-cutover/`) |
 | `dan` CLI | operator | `~/.dan/bin/dan` (wrapper around `python -m dan.cli`) |
 | Product venv | installer (`scripts/install.sh`) | `~/.dan/venv/` |
 | DAN persona canon | repo (versioned) | `config/persona/DAN.md` |

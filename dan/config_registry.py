@@ -10,6 +10,8 @@ import re
 import sqlite3
 import tempfile
 import tomllib
+import types
+import typing
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
 from enum import StrEnum
@@ -427,11 +429,70 @@ def parse_hotkey(value: Any) -> str:
     return value.strip()
 
 
+def _optional_base_annotation(annotation: Any) -> Any:
+    """`T | None` → `T`; plain `T` → `T`; unions of several real types → None."""
+    if annotation is None:
+        return None
+    origin = typing.get_origin(annotation)
+    if origin in (typing.Union, types.UnionType):
+        args = [a for a in typing.get_args(annotation) if a is not type(None)]
+        return args[0] if len(args) == 1 else None
+    return annotation
+
+
+def _parse_by_annotation(key: str, value: Any, annotation: Any) -> Any:
+    origin = typing.get_origin(annotation) or annotation
+    if annotation is bool:
+        if not isinstance(value, bool):
+            raise ConfigWriteRejected(f"{key} must be a boolean or null")
+        return value
+    if annotation is int:
+        if type(value) is not int:
+            raise ConfigWriteRejected(f"{key} must be an integer or null")
+        return value
+    if annotation is float:
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise ConfigWriteRejected(f"{key} must be a number or null")
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ConfigWriteRejected(f"{key} must be finite")
+        return parsed
+    if annotation is str:
+        if not isinstance(value, str):
+            raise ConfigWriteRejected(f"{key} must be a string or null")
+        return value
+    if origin in (list, tuple):
+        if not isinstance(value, (list, tuple)):
+            raise ConfigWriteRejected(f"{key} must be an array or null")
+        element_types = tuple(
+            a for a in typing.get_args(annotation) if a is not Ellipsis
+        )
+        if element_types == (str,) and not all(
+            isinstance(item, str) for item in value
+        ):
+            raise ConfigWriteRejected(f"{key} must be an array of strings")
+        return list(value)
+    if origin is dict or (isinstance(origin, type) and issubclass(origin, Mapping)):
+        if not isinstance(value, Mapping):
+            raise ConfigWriteRejected(f"{key} must be a table or null")
+        return dict(value)
+    return value
+
+
 def _typed_parser(key: str) -> Callable[[Any], Any]:
     def parse(value: Any) -> Any:
         default = _runtime_defaults().get(key)
         if default is None:
-            if value is None or isinstance(value, bool):
+            # A None default says nothing about the field's type — validate
+            # against the declared dataclass annotation (e.g. `list[str] |
+            # None` for stream_args). Only when no annotation is known does
+            # the historical nullable-boolean contract apply.
+            if value is None:
+                return None
+            annotation = _optional_base_annotation(_runtime_annotations().get(key))
+            if annotation is not None:
+                return _parse_by_annotation(key, value, annotation)
+            if isinstance(value, bool):
                 return value
             raise ConfigWriteRejected(f"{key} must be a boolean or null")
         if isinstance(default, bool):
@@ -851,6 +912,67 @@ def _runtime_defaults() -> dict[str, Any]:
     for section, instance in instances.items():
         walk(section, instance)
     return defaults
+
+
+_ANNOTATION_CACHE: dict[str, Any] = {}
+
+
+def _runtime_annotations() -> dict[str, Any]:
+    """Declared field annotations per registered key, resolved once.
+
+    Mirrors the `_runtime_defaults()` walk, but records the dataclass type
+    annotation instead of the default value — the only honest type source for
+    fields whose default is None.
+    """
+    if _ANNOTATION_CACHE:
+        return _ANNOTATION_CACHE
+    from dan.config import (
+        AudioConfig,
+        BrainConfig,
+        DaemonConfig,
+        DatabaseConfig,
+        LaunchdConfig,
+        MemoryConfig,
+        PanelConfig,
+        RuntimeConfig,
+        SecurityConfig,
+        VoiceConfig,
+    )
+
+    instances = {
+        "daemon": DaemonConfig(),
+        "database": DatabaseConfig(),
+        "brain": BrainConfig(),
+        "memory": MemoryConfig(),
+        "voice": VoiceConfig(),
+        "audio": AudioConfig(),
+        "panel": PanelConfig(),
+        "security": SecurityConfig(),
+        "runtime": RuntimeConfig(),
+        "launchd": LaunchdConfig(),
+    }
+    annotations: dict[str, Any] = {}
+
+    def walk(prefix: str, value: Any, annotation: Any) -> None:
+        if prefix in REGISTRY:
+            annotations[prefix] = annotation
+            return
+        if hasattr(value, "__dataclass_fields__"):
+            try:
+                hints = typing.get_type_hints(type(value))
+            except Exception:
+                hints = {}
+            for item in fields(value):
+                walk(
+                    f"{prefix}.{item.name}" if prefix else item.name,
+                    getattr(value, item.name),
+                    hints.get(item.name),
+                )
+
+    for section, instance in instances.items():
+        walk(section, instance, None)
+    _ANNOTATION_CACHE.update(annotations)
+    return _ANNOTATION_CACHE
 
 
 def _nested_value(data: Mapping[str, Any], key: str) -> tuple[bool, Any]:

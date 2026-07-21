@@ -239,3 +239,40 @@ def test_config_explain_cli_emits_the_registry_explanation(
     assert payload["source_file"] == str(config_path)
     assert payload["revision"]
     assert payload["consumers"] == ["VoiceResolver"]
+
+
+def test_none_default_field_validates_against_declared_type(tmp_path: Path) -> None:
+    """Regression (2026-07-21): GET /settings answered 400 because a field whose
+    dataclass default is None (brain.claude_cli.stream_args: list[str] | None)
+    was validated as "boolean or null" — the parser guessed the type from the
+    default value instead of the field's declared annotation."""
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[brain.claude_cli]\nstream_args = ["--output-format", "stream-json"]\n',
+        encoding="utf-8",
+    )
+    store = ConfigStore(path)
+
+    assert store.get("brain.claude_cli.stream_args") == [
+        "--output-format",
+        "stream-json",
+    ]
+    snapshot = store.installation_snapshot()
+    assert snapshot["brain.claude_cli.stream_args"] == [
+        "--output-format",
+        "stream-json",
+    ]
+
+
+def test_none_default_field_still_rejects_wrong_type(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[brain]\n", encoding="utf-8")
+    store = ConfigStore(path)
+    before = path.read_bytes()
+
+    with pytest.raises(ConfigWriteRejected):
+        store.set("brain.claude_cli.stream_args", "not-a-list")
+    with pytest.raises(ConfigWriteRejected):
+        store.set("brain.claude_cli.stream_args", [1, 2])
+
+    assert path.read_bytes() == before
