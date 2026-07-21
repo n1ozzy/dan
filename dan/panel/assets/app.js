@@ -56,6 +56,9 @@ const cockpit = {
     model: null,
     overrides: {},
   },
+  // GET /voice/personas payload (persona routes + allowed values);
+  // null until the first successful fetch.
+  personaVoices: null,
   runtimeSettingsApply: {
     payload: null,
     applyingGroup: null,
@@ -490,10 +493,10 @@ function bindElements() {
     "voiceSttModelManual",
     "voiceSttLanguageSelect",
     "voiceSttLanguageManual",
-    "voiceVoiceIdSelect",
-    "voiceVoiceIdManual",
-    "voiceProfileSelect",
-    "voiceSpeedInput",
+    "personaVoicePersonaSelect",
+    "personaVoiceVoiceSelect",
+    "personaVoiceSpeedInput",
+    "personaVoiceStatus",
     "resetTtsPreviewButton",
     "resetSttPreviewButton",
     "applyTtsSettingsButton",
@@ -578,16 +581,18 @@ function bindEvents() {
   bindIf(el.activeBrainEffortSelect, "change", updateBrainControlOptions);
   bindManualSelectInput(el.activeBrainModelManual, el.activeBrainModelSelect);
   bindManualSelectInput(el.activeBrainEffortManual, el.activeBrainEffortSelect);
-  bindManualSelectInput(el.voiceVoiceIdManual, el.voiceVoiceIdSelect);
   bindManualSelectInput(el.voiceSttModelManual, el.voiceSttModelSelect);
   bindManualSelectInput(el.voiceSttLanguageManual, el.voiceSttLanguageSelect);
   bindSummaryToggleGuards();
   bindIf(el.voiceSpeakResponsesToggle, "change", updateTtsControlOptions);
   bindIf(el.voiceTtsSelect, "change", updateTtsControlOptions);
   bindIf(el.voiceTtsModelSelect, "change", updateTtsControlOptions);
-  bindIf(el.voiceVoiceIdSelect, "change", updateTtsControlOptions);
-  bindIf(el.voiceProfileSelect, "change", updateTtsControlOptions);
-  bindIf(el.voiceSpeedInput, "input", updateTtsControlOptions);
+  // Persona voices go through the daemon's persona routes, not runtime
+  // settings: switching the persona only re-renders, changing voice/speed
+  // applies immediately.
+  bindIf(el.personaVoicePersonaSelect, "change", renderPersonaVoiceSelection);
+  bindIf(el.personaVoiceVoiceSelect, "change", applyPersonaVoice);
+  bindIf(el.personaVoiceSpeedInput, "change", applyPersonaVoice);
   bindIf(el.voiceSttSelect, "change", updateSttControlOptions);
   bindIf(el.voiceSttModelSelect, "change", updateSttControlOptions);
   bindIf(el.voiceSttLanguageSelect, "change", updateSttControlOptions);
@@ -612,7 +617,7 @@ function bindEvents() {
   };
   const instantApplyGroups = {
     brain: [el.activeBrainProviderSelect, el.activeBrainModelSelect, el.activeBrainEffortSelect],
-    tts: [el.voiceSpeakResponsesToggle, el.voiceTtsSelect, el.voiceTtsModelSelect, el.voiceVoiceIdSelect, el.voiceProfileSelect, el.voiceSpeedInput],
+    tts: [el.voiceSpeakResponsesToggle, el.voiceTtsSelect, el.voiceTtsModelSelect],
     stt: [el.voiceSttSelect, el.voiceSttModelSelect, el.voiceSttLanguageSelect],
     ptt: [el.pttModeSelect, el.pttHotkeyInput, el.pttMergeWindowInput],
     tools: [el.toolsEnabledToggle],
@@ -1804,6 +1809,7 @@ async function refreshSettingsPreview() {
     );
     renderRuntimeSettingsControls(payload);
     renderSettingsPreview(cockpit.settingsPreview.model);
+    await refreshPersonaVoices();
   } catch (error) {
     clearRuntimeSettingsControls();
     clearNode(el.settingsPreviewList);
@@ -1848,8 +1854,8 @@ function clearRuntimeSettingsControls() {
     el.voiceSttSelect,
     el.voiceSttModelSelect,
     el.voiceSttLanguageSelect,
-    el.voiceVoiceIdSelect,
-    el.voiceProfileSelect,
+    el.personaVoicePersonaSelect,
+    el.personaVoiceVoiceSelect,
     el.pttModeSelect,
     el.personaProfileSelect,
   ]) {
@@ -2129,8 +2135,6 @@ function renderTtsApplyControls(payload) {
   const currentTts = projectionValue(voice.default_tts);
   const ttsField = settingsPreviewField(payload, "voice_tts", "tts_provider");
   const ttsModelField = settingsPreviewField(payload, "voice_tts", "tts_model");
-  const voiceIdField = settingsPreviewField(payload, "voice_tts", "voice_id");
-  const voiceProfileField = settingsPreviewField(payload, "voice_tts", "voice_profile");
   if (el.voiceSpeakResponsesToggle) {
     el.voiceSpeakResponsesToggle.checked = Boolean(runtimeSettingsPreviewValue(
       "tts",
@@ -2160,42 +2164,112 @@ function renderTtsApplyControls(payload) {
     })),
     ttsModelField.effective || ttsModelField.current || "",
   );
-  setSelectOptions(
-    el.voiceVoiceIdSelect,
-    settingsFieldAllowedValuesWithCurrent(voiceIdField).map((value) => ({
-      value,
-      label: value,
-      disabled: false,
-    })),
-    voiceIdField.effective || voiceIdField.current || "",
-  );
-  setSelectOptions(
-    el.voiceProfileSelect,
-    settingsFieldAllowedValuesWithCurrent(voiceProfileField).map((value) => ({
-      value,
-      label: value,
-      disabled: false,
-    })),
-    voiceProfileField.effective || voiceProfileField.current || "",
-  );
   if (el.voiceTtsSelect) el.voiceTtsSelect.disabled = ttsProviders.length === 0;
   if (el.voiceTtsModelSelect) el.voiceTtsModelSelect.disabled = settingsFieldAllowedValuesWithCurrent(ttsModelField).length === 0;
-  if (el.voiceVoiceIdSelect) el.voiceVoiceIdSelect.disabled = settingsFieldAllowedValuesWithCurrent(voiceIdField).length === 0;
-  if (el.voiceProfileSelect) el.voiceProfileSelect.disabled = settingsFieldAllowedValuesWithCurrent(voiceProfileField).length === 0;
-  // Single-option engine/model/profile dropdowns are hidden; the Voice ID keeps its manual entry.
+  // Single-option engine/model dropdowns are hidden. Voice selection lives in
+  // the "Persona voice" controls, not in runtime settings.
   setFieldVisibleForSelect(el.voiceTtsSelect, ttsProviders.length);
   setFieldVisibleForSelect(el.voiceTtsModelSelect, settingsFieldAllowedValuesWithCurrent(ttsModelField).length);
-  setFieldVisibleForSelect(el.voiceProfileSelect, settingsFieldAllowedValuesWithCurrent(voiceProfileField).length);
-  if (el.voiceSpeedInput) {
-    el.voiceSpeedInput.disabled = false;
-    const currentSpeed = settingsPreviewFieldValue(payload, "voice_tts", "speed_or_rate");
-    el.voiceSpeedInput.value = currentSpeed === null || currentSpeed === undefined ? "" : currentSpeed;
-  }
   updateTtsControlOptions();
-  if (ttsField.requires_restart || ttsModelField.requires_restart || voiceIdField.requires_restart) {
+  if (ttsField.requires_restart || ttsModelField.requires_restart) {
     setText(el.voiceApplyStatus, "Requires restart. Restart DAN to change this.");
   }
   updateRestartRequiredBanner();
+}
+
+// --- Persona voices ---------------------------------------------------------
+// These controls do NOT go through runtime settings: GET /voice/personas
+// lists the persona routes, POST /voice/personas/apply changes one. The
+// daemon owns the catalog and reloads it; no restart, playing audio keeps
+// going.
+
+async function refreshPersonaVoices() {
+  if (!el.personaVoicePersonaSelect) {
+    return;
+  }
+  try {
+    const payload = await requestJson("/voice/personas");
+    cockpit.personaVoices = payload;
+    renderPersonaVoiceControls(payload);
+  } catch (error) {
+    cockpit.personaVoices = null;
+    setSelectOptions(el.personaVoicePersonaSelect, [], "");
+    setSelectOptions(el.personaVoiceVoiceSelect, [], "");
+    setText(el.personaVoiceStatus, `Persona voices unavailable: ${error.message || error}`);
+  }
+}
+
+function renderPersonaVoiceControls(payload) {
+  const personas = safeObject(payload && payload.personas);
+  const names = Object.keys(personas).sort();
+  const current = el.personaVoicePersonaSelect ? el.personaVoicePersonaSelect.value : "";
+  const selected = names.includes(current)
+    ? current
+    : (names.includes("dan") ? "dan" : (names[0] || ""));
+  setSelectOptions(
+    el.personaVoicePersonaSelect,
+    names.map((name) => ({ value: name, label: name })),
+    selected,
+  );
+  renderPersonaVoiceSelection();
+}
+
+function renderPersonaVoiceSelection() {
+  const payload = cockpit.personaVoices;
+  if (!payload || !el.personaVoicePersonaSelect) {
+    return;
+  }
+  const personas = safeObject(payload.personas);
+  const fields = safeObject(personas[el.personaVoicePersonaSelect.value]);
+  const allowed = Array.isArray(payload.allowed_voices) ? payload.allowed_voices : [];
+  setSelectOptions(
+    el.personaVoiceVoiceSelect,
+    allowed.map((value) => ({ value, label: value })),
+    typeof fields.voice === "string" ? fields.voice : "",
+  );
+  if (el.personaVoiceSpeedInput) {
+    if (typeof payload.speed_min === "number") el.personaVoiceSpeedInput.min = payload.speed_min;
+    if (typeof payload.speed_max === "number") el.personaVoiceSpeedInput.max = payload.speed_max;
+    el.personaVoiceSpeedInput.value = typeof fields.speed === "number" ? fields.speed : "";
+  }
+}
+
+async function applyPersonaVoice() {
+  const payload = cockpit.personaVoices;
+  if (!payload || !el.personaVoicePersonaSelect) {
+    return;
+  }
+  const persona = el.personaVoicePersonaSelect.value;
+  if (!persona) {
+    return;
+  }
+  const fields = safeObject(safeObject(payload.personas)[persona]);
+  const body = { persona };
+  const voice = el.personaVoiceVoiceSelect ? el.personaVoiceVoiceSelect.value : "";
+  if (voice && voice !== fields.voice) {
+    body.voice = voice;
+  }
+  const speedRaw = el.personaVoiceSpeedInput ? el.personaVoiceSpeedInput.value : "";
+  const speed = speedRaw === "" ? null : Number(speedRaw);
+  if (speed !== null && Number.isFinite(speed) && speed !== fields.speed) {
+    body.speed = speed;
+  }
+  if (!("voice" in body) && !("speed" in body)) {
+    renderPersonaVoiceSelection();
+    return;
+  }
+  setText(el.personaVoiceStatus, `Applying ${persona}…`);
+  try {
+    const result = await requestJson("/voice/personas/apply", { method: "POST", body });
+    await refreshPersonaVoices();
+    const changed = Object.entries(safeObject(result.changes))
+      .map(([field, pair]) => `${field} ${pair[0]} → ${pair[1]}`)
+      .join(", ");
+    setText(el.personaVoiceStatus, `Applied ${persona}: ${changed || "no changes"} — live, no restart.`);
+  } catch (error) {
+    await refreshPersonaVoices();
+    setText(el.personaVoiceStatus, `Apply failed: ${error.message || error}`);
+  }
 }
 
 function renderSttApplyControls(payload) {
@@ -3232,22 +3306,14 @@ function runtimeSettingsDraftForGroup(group) {
     return draft;
   }
   if (group === "tts") {
-    const draft = {
+    // Speed lives in the persona route, not here: the registry rejects
+    // voice.speed as a versioned asset.
+    return {
       ...(el.voiceSpeakResponsesToggle && !el.voiceSpeakResponsesToggle.disabled
         ? { "voice.speak_responses": Boolean(el.voiceSpeakResponsesToggle.checked) }
         : {}),
       "voice.default_tts": el.voiceTtsSelect && !el.voiceTtsSelect.disabled ? el.voiceTtsSelect.value : undefined,
     };
-    if (el.voiceVoiceIdSelect && !el.voiceVoiceIdSelect.disabled && el.voiceVoiceIdSelect.value) {
-      draft["voice.voice_id"] = el.voiceVoiceIdSelect.value;
-    }
-    if (el.voiceProfileSelect && !el.voiceProfileSelect.disabled && el.voiceProfileSelect.value) {
-      draft["voice.voice_profile"] = el.voiceProfileSelect.value;
-    }
-    if (el.voiceSpeedInput && !el.voiceSpeedInput.disabled && el.voiceSpeedInput.value !== "") {
-      draft["voice.speed"] = Number(el.voiceSpeedInput.value);
-    }
-    return draft;
   }
   if (group === "stt") {
     return {
@@ -8603,9 +8669,9 @@ function setInteractiveEnabled(enabled) {
     el.voiceSttSelect,
     el.voiceSttModelSelect,
     el.voiceSttLanguageSelect,
-    el.voiceVoiceIdSelect,
-    el.voiceProfileSelect,
-    el.voiceSpeedInput,
+    el.personaVoicePersonaSelect,
+    el.personaVoiceVoiceSelect,
+    el.personaVoiceSpeedInput,
     el.applyTtsSettingsButton,
     el.applySttSettingsButton,
     el.pttModeSelect,
@@ -8681,8 +8747,8 @@ function clearDynamicSections() {
   clearNode(el.voiceSttSelect);
   clearNode(el.voiceSttModelSelect);
   clearNode(el.voiceSttLanguageSelect);
-  clearNode(el.voiceVoiceIdSelect);
-  clearNode(el.voiceProfileSelect);
+  clearNode(el.personaVoicePersonaSelect);
+  clearNode(el.personaVoiceVoiceSelect);
   clearNode(el.pttModeSelect);
   clearNode(el.personaProfileSelect);
   clearNode(el.toolList);

@@ -363,21 +363,24 @@
                 <span>Speech model</span>
                 <select id="voiceTtsModelSelect" aria-label="TTS model"></select>
               </label>
-              <label class="field-label">
-                <span>Voice ID</span>
-                <select id="voiceVoiceIdSelect" aria-label="Voice identifier"></select>
-              </label>
-              <label class="field-label">
-                <span>Voice profile</span>
-                <select id="voiceProfileSelect" aria-label="Voice profile"></select>
-              </label>
-              <label class="field-label">
-                <span>Speed / tempo</span>
-                <input id="voiceSpeedInput" type="number" step="0.05" min="0.5" max="2" />
-              </label>
             </div>
             <p id="ttsApplyStatus" class="muted apply-status" aria-live="polite"></p>
             <p id="voiceApplyStatus" class="muted apply-status" hidden aria-live="polite"></p>
+            <div class="settings-control-grid" id="personaVoiceGrid">
+              <label class="field-label">
+                <span>Persona</span>
+                <select id="personaVoicePersonaSelect" aria-label="Persona"></select>
+              </label>
+              <label class="field-label">
+                <span>Persona voice</span>
+                <select id="personaVoiceVoiceSelect" aria-label="Persona voice"></select>
+              </label>
+              <label class="field-label">
+                <span>Persona speed</span>
+                <input id="personaVoiceSpeedInput" type="number" step="0.01" min="0.5" max="2" />
+              </label>
+            </div>
+            <p id="personaVoiceStatus" class="muted apply-status" aria-live="polite"></p>
           </details>
 
           <details class="sys-section active-settings-section collapsible-card" aria-labelledby="voiceSttSettingsHeading">
@@ -499,6 +502,6 @@
       </nav>
     </main>
 
-    <script src="./app.js"></script>
+    <script src="./app.js"></script><script src="./typewriter.js"></script><script src="./typewriter.js"></script><script src="./typewriter.js"></script><script src="./typewriter.js"></script><script src="./typewriter.js"></script><script src="./typewriter.js"></script>
   </body>
 </html>

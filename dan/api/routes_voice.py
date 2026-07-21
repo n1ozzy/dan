@@ -10,12 +10,20 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from dan.api.routes_runtime import CANONICAL_PTT_MODES
+from dan.api.routes_runtime import CANONICAL_PTT_MODES, SUPERTONIC_BUILTIN_VOICE_IDS
 from dan.daemon.app import DaemonApp, DaemonAppNotFoundError, DaemonAppNotStartedError
 from dan.security.redaction import redact_secrets
 from dan.voice.listening import ALLOWED_SOURCES
 from dan.voice.models import ListeningLease, SpeechIntent
-from dan.voice.tts import BANNED_ENGINES, RESERVED_ENGINES
+from dan.voice.persona_editor import (
+    SPEED_MAX,
+    SPEED_MIN,
+    list_personas,
+    set_persona_voice,
+    write_personas_text,
+)
+from dan.voice.service import default_voice_catalog_dir
+from dan.voice.tts import BANNED_ENGINES, MASTERING_PROFILES, RESERVED_ENGINES
 
 
 DEFAULT_SPEAK_SOURCE = "api"
@@ -41,6 +49,11 @@ class VoiceDisabledError(Exception):
 
 class VoiceRequestValidationError(ValueError):
     """Raised when a voice API payload is invalid."""
+
+
+class VoicePersonaReloadError(Exception):
+    """Raised when a persona edit was written but the catalog reload failed;
+    the file has already been rolled back when this propagates."""
 
 
 def _lease_payload(lease: ListeningLease) -> dict[str, Any]:
@@ -848,6 +861,93 @@ def _safe_value(value: Any) -> Any:
     return str(type(value).__name__)
 
 
+def _voice_catalog_dir(app: DaemonApp) -> Path:
+    override = getattr(app, "voice_catalog_dir", None)
+    if override:
+        return Path(override)
+    return default_voice_catalog_dir()
+
+
+def _allowed_persona_voices(personas: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    # Builtin supertonic ids plus every voice already routed in the file, so
+    # blends (M2M1, ROBOT, ...) stay selectable without hardcoding them here.
+    allowed = {str(voice_id) for voice_id in SUPERTONIC_BUILTIN_VOICE_IDS}
+    for fields in personas.values():
+        voice = fields.get("voice")
+        if isinstance(voice, str) and voice.strip():
+            allowed.add(voice.strip())
+    return sorted(allowed)
+
+
+def _optional_string(payload: Mapping[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise VoiceRequestValidationError(f"{key} must be a non-empty string.")
+    return value.strip()
+
+
+def get_voice_personas(app: DaemonApp) -> dict[str, Any]:
+    catalog_dir = _voice_catalog_dir(app)
+    personas = list_personas(catalog_dir)
+    return {
+        "personas": personas,
+        "allowed_voices": _allowed_persona_voices(personas),
+        "allowed_mastering": sorted(MASTERING_PROFILES),
+        "speed_min": SPEED_MIN,
+        "speed_max": SPEED_MAX,
+    }
+
+
+def post_voice_personas_apply(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
+    """Edit one persona route in personas.toml, then hot-swap the catalog.
+
+    Validation and the textual edit are persona_editor's job (fail-closed,
+    atomic write). If the in-process reload rejects the new catalog, the file
+    is rolled back to its previous bytes so disk and resolver never diverge.
+    """
+
+    if not isinstance(request_payload, Mapping):
+        raise VoiceRequestValidationError("Request JSON must be an object.")
+    persona = request_payload.get("persona")
+    if not isinstance(persona, str) or not persona.strip():
+        raise VoiceRequestValidationError("persona must be a non-empty string.")
+    voice = _optional_string(request_payload, "voice")
+    mastering = _optional_string(request_payload, "mastering")
+    speed = request_payload.get("speed")
+    if speed is not None and (
+        isinstance(speed, bool) or not isinstance(speed, (int, float))
+    ):
+        raise VoiceRequestValidationError("speed must be a number.")
+
+    catalog_dir = _voice_catalog_dir(app)
+    personas = list_personas(catalog_dir)
+    original = (catalog_dir / "personas.toml").read_text(encoding="utf-8")
+    edit = set_persona_voice(
+        catalog_dir,
+        persona.strip(),
+        voice=voice,
+        speed=float(speed) if speed is not None else None,
+        mastering=mastering,
+        allowed_voices=_allowed_persona_voices(personas),
+        allowed_mastering=MASTERING_PROFILES,
+    )
+    try:
+        app.reload_voice_catalog()
+    except Exception as exc:
+        write_personas_text(catalog_dir, original)
+        raise VoicePersonaReloadError(
+            f"personas.toml edit rolled back: voice catalog reload failed: {exc}"
+        ) from exc
+    return {
+        "ok": True,
+        "persona": edit.persona,
+        "changes": {name: list(pair) for name, pair in edit.changes.items()},
+        "reloaded": True,
+    }
+
+
 def register_routes(app: object) -> None:
     return None
 
@@ -855,10 +955,13 @@ def register_routes(app: object) -> None:
 __all__ = [
     "ROUTE_GROUP",
     "VoiceDisabledError",
+    "VoicePersonaReloadError",
     "VoiceRequestValidationError",
     "get_listening",
+    "get_voice_personas",
     "get_voice_queue",
     "get_voice_runtime",
+    "post_voice_personas_apply",
     "post_listen_lock",
     "post_listen_unlock",
     "post_ptt_down",

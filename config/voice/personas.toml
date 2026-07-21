@@ -3,14 +3,14 @@
 
 [jarvis]
 engine = "supertonic"
-voice = "M1"  # casting 2026-07-18: Ozzy rejected M3 (timbre collision with DAN), picked M1 from the candidates M2/M4/M1
-mastering = "clean"
-speed = 1.35
+voice = "M3"  # casting 2026-07-21: jarvis is DAN's legacy alias (panel still uses the old name) -> full DAN voice, mirrors [dan]
+mastering = "raw"
+speed = 1.28
 dsp = "none"
 
 [dan]
 engine = "supertonic"
-voice = "M3"
+voice = "M2"
 mastering = "raw"
 speed = 1.28
 dsp = "none"

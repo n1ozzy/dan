@@ -151,6 +151,10 @@ _MASTER_PROFILES = {
                "alimiter=limit=0.95,aresample=44100"),
 }
 
+# Every mastering value a persona route may carry: the ffmpeg chains above
+# plus "raw" (no mastering — mastering_filter returns "" for it).
+MASTERING_PROFILES = frozenset(_MASTER_PROFILES) | {"raw"}
+
 _SUPERTONIC_BUILTIN_VOICES = frozenset(
     {f"M{index}" for index in range(1, 6)}
     | {f"F{index}" for index in range(1, 6)}

@@ -170,6 +170,10 @@ class DaemonApp:
     voice_gateway: Any = None
     voice_cancellation: Any = None
     voice_lease_sweeper: Any = None
+    # Voice catalog directory override (personas.toml + pronunciations.toml).
+    # None means the repo's config/voice; tests point it at a tmp dir so the
+    # persona endpoints never touch the real catalog.
+    voice_catalog_dir: Any = None
     intake_gate: IntakeGate | None = None
     # Daemon-owned global PTT hotkey (Task 9): the ONE event tap on the
     # machine lives here, guarded by a file lock in the runtime dir. The
@@ -206,6 +210,26 @@ class DaemonApp:
     _lifecycle_lock: Any = field(default_factory=threading.Lock)
     _voice_owner_blocked: bool = False
     _last_child_containment: Any = None
+
+    def reload_voice_catalog(self) -> None:
+        """Rebuild the resolver from the current catalog files and hot-swap it.
+
+        In-process replacement instead of a launchd restart: queued/playing
+        audio keeps its already-resolved snapshots, only new submits see the
+        new catalog. Raises when the rebuilt catalog is invalid, leaving the
+        previous resolver in place (fail-closed).
+        """
+
+        from dan.voice.service import build_voice_resolver
+
+        resolver = build_voice_resolver(
+            self.config,
+            voice_root=self.voice_catalog_dir,
+        )
+        self.voice_resolver = resolver
+        service = self.voice_service
+        if service is not None:
+            service.replace_resolver(resolver)
 
     def start(self) -> None:
         """Start app-level state without running the long-lived HTTP loop."""
@@ -293,7 +317,10 @@ class DaemonApp:
                         else CoreAudioPlayer()
                     )
                     if self.voice_resolver is None:
-                        self.voice_resolver = build_voice_resolver(self.config)
+                        self.voice_resolver = build_voice_resolver(
+                            self.config,
+                            voice_root=self.voice_catalog_dir,
+                        )
                     voice_service = VoiceService(
                         VoiceQueue(self._require_conn(), event_store=event_store),
                         self.voice_resolver,

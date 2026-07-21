@@ -34,6 +34,29 @@ gain and the SHA-256 of the assets used. An incomplete snapshot = an error
 before the write, not a partial record. This makes it known exactly what every
 utterance was rendered with, even after the configuration changes.
 
+## Changing a persona voice (panel)
+
+The persona catalog `config/voice/personas.toml` is a versioned asset: the
+config registry rejects `voice.voice_id`, `voice.voice_profile` and
+`voice.speed`, so the runtime-settings path can never change how a persona
+sounds. The panel therefore edits the catalog itself through two routes:
+
+- `GET /voice/personas` — the routes from the file plus the allowed values
+  (built-in Supertonic ids and every blend already used in the file,
+  the mastering profiles, the speed range).
+- `POST /voice/personas/apply` `{persona, voice?, speed?, mastering?}` —
+  `dan.voice.persona_editor` validates and rewrites only the target section
+  (comments elsewhere survive, the write is atomic), then
+  `DaemonApp.reload_voice_catalog()` rebuilds the resolver **in process**.
+
+The reload is why no daemon restart is needed: `VoiceCatalog` freezes the
+file's SHA-256 at load time and the resolver re-checks it on every speak, so
+an edited file without a reload fails closed with an SHA-256 mismatch.
+Swapping the resolver instead of restarting keeps queued and playing audio
+alive — already-resolved snapshots are immutable, only new submits see the
+new catalog. If the rebuild rejects the new catalog, the file is rolled back
+to its previous bytes so disk and resolver never diverge.
+
 ## The old feeder vs Release 1 behavior
 
 The old path: a bash feeder watched a growing playlist file and every appended

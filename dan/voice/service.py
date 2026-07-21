@@ -13,11 +13,21 @@ from dan.voice.resolver import AssetMetadata, EngineMetadata, VoiceResolver
 
 class VoiceService:
     def __init__(self, queue: VoiceQueue, resolver: Any, *, intake_gate: Any = None) -> None:
+        self.queue = queue
+        self._resolver = self._validated_resolver(resolver)
+        self._intake_gate = intake_gate
+
+    @staticmethod
+    def _validated_resolver(resolver: Any) -> Any:
         if resolver is None or not callable(getattr(resolver, "resolve", None)):
             raise TypeError("VoiceService requires one resolver dependency")
-        self.queue = queue
-        self._resolver = resolver
-        self._intake_gate = intake_gate
+        return resolver
+
+    def replace_resolver(self, resolver: Any) -> None:
+        """Hot-swap the resolver (catalog reload); a single attribute store,
+        so in-flight submits keep the snapshot they already resolved."""
+
+        self._resolver = self._validated_resolver(resolver)
 
     def submit(self, intent: SpeechIntent) -> VoiceRequest:
         return self._submit(intent)
@@ -40,11 +50,23 @@ class VoiceService:
         return self.queue.cancel_request(request_id, reason=reason)
 
 
-def build_voice_resolver(config: Any, *, repo_root: Path | None = None) -> VoiceResolver:
+def default_voice_catalog_dir() -> Path:
+    """The repo's voice catalog — the directory build_voice_resolver reads
+    when no override is given, and the one the persona editor writes to."""
+
+    return Path(__file__).resolve().parents[2] / "config" / "voice"
+
+
+def build_voice_resolver(
+    config: Any,
+    *,
+    repo_root: Path | None = None,
+    voice_root: Path | None = None,
+) -> VoiceResolver:
     """Compose the strict resolver from Task 6's versioned repository assets."""
 
     root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
-    voice_root = root / "config" / "voice"
+    voice_root = Path(voice_root) if voice_root is not None else root / "config" / "voice"
     catalog = load_voice_catalog(voice_root).voice_catalog
     manifest_setting = str(
         getattr(
@@ -79,4 +101,4 @@ def build_voice_resolver(config: Any, *, repo_root: Path | None = None) -> Voice
     )
 
 
-__all__ = ["VoiceService", "build_voice_resolver"]
+__all__ = ["VoiceService", "build_voice_resolver", "default_voice_catalog_dir"]
