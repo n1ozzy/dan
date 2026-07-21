@@ -161,11 +161,16 @@ class CoreAudioPlayer:
                                     "native audio ownership is unproven; "
                                     "stop recovery must succeed before playback"
                                 )
-                            if not should_play():
-                                raise PlaybackCancelled(
-                                    f"playback skipped for {chunk.text!r}"
-                                )
                             started = self._started
+                        # should_play() reaches SQLite (busy_timeout 5 s) in
+                        # production. The CoreAudio completion thread waits on
+                        # _state_lock while holding the engine's own mutex, so a
+                        # database roundtrip under that lock stalls the realtime
+                        # thread; _schedule_lock already serializes this.
+                        if not should_play():
+                            raise PlaybackCancelled(
+                                f"playback skipped for {chunk.text!r}"
+                            )
                         # macOS stops the engine on its own after an output-device
                         # change or sleep/wake, and a buffer scheduled on a stopped
                         # engine never fires its completion handler, so the backend
@@ -178,11 +183,19 @@ class CoreAudioPlayer:
                         engine_alive = started and self._backend.is_running()
                         if not engine_alive:
                             self._backend.start()
-                        buffer = self._backend.make_buffer(chunk.audio)
-                        with self._state_lock:
-                            if not engine_alive:
+                            # Commit the flag before anything else can raise.
+                            # make_buffer rejects a malformed WAV with a plain
+                            # CoreAudioPlayerError, which the except below does
+                            # not catch; leaving _started False after a
+                            # successful start makes stop() take its early
+                            # return and never tear the engine down, so a
+                            # running engine would hold the output route for the
+                            # rest of the daemon's life.
+                            with self._state_lock:
                                 self._started = True
                                 self.engine_start_count += 1
+                        buffer = self._backend.make_buffer(chunk.audio)
+                        with self._state_lock:
                             self._generation += 1
                             generation = self._generation
                             self._current_generation = generation
@@ -213,8 +226,9 @@ class CoreAudioPlayer:
                             cancelled_before_schedule = (
                                 self._current_completion is not completion
                                 or self._current_cancelled
-                                or not should_play()
                             )
+                        if not cancelled_before_schedule:
+                            cancelled_before_schedule = not should_play()
                         if cancelled_before_schedule:
                             raise PlaybackCancelled(
                                 "playback interrupted before schedule for "
@@ -420,10 +434,15 @@ class _AVFoundationBackend:
         self._connected_format = None
 
     def is_running(self) -> bool:
-        engine = self._engine
-        if engine is None:
-            return False
+        # Guarded like every other native boundary here, and deliberately
+        # outside the try: the kill switch must surface as
+        # AudioExecutionDisabled, not get rewritten into a recoverable route
+        # loss by the except below.
+        assert_audio_execution_allowed(operation="native route liveness probe")
         try:
+            engine = self._engine
+            if engine is None:
+                return False
             return bool(engine.isRunning())
         except Exception as exc:
             # A failing bridge call is a lost route, not a stopped engine:
@@ -438,12 +457,21 @@ class _AVFoundationBackend:
         try:
             if self._engine is None:
                 raise RuntimeError("native audio graph is unavailable")
-            # A stopped engine means macOS may have torn the player node's
-            # output connection down with it (AVAudioEngineConfigurationChange
-            # does exactly that on a device change). Synthesized WAVs always
-            # carry the same format, so _ensure_connected would short-circuit
-            # on the cached one and schedule onto a detached node — the very
-            # silence this restart exists to end. Forget it and reconnect.
+            # Apple documents that a configuration change leaves nodes
+            # "attached and connected with previously set formats", so the
+            # connection usually survives — but the format cache is the only
+            # record of it, and a restart is when that record is least
+            # trustworthy: every synthesized WAV carries the same format, so a
+            # stale cache makes _ensure_connected short-circuit and schedule
+            # onto whatever the node is actually wired to. Rebuild explicitly,
+            # disconnecting first. stop() never disconnects, so after an idle
+            # stop the node is still wired and _ensure_connected disconnects
+            # only when it holds a cached format; clearing alone would hand
+            # connect_to_format_ an already-connected node, which lands it on
+            # the mixer's nextAvailableInputBus instead of the bus it just
+            # vacated.
+            if self._connected_format is not None and self._node is not None:
+                self._engine.disconnectNodeOutput_(self._node)
             self._connected_format = None
             # Touching mainMixerNode materializes the mixer -> output path so the
             # engine can start before the first player-node connection exists.
@@ -457,6 +485,14 @@ class _AVFoundationBackend:
                     else None
                 )
                 raise RuntimeError(f"AVAudioEngine failed to start: {error}")
+            if self._node is not None:
+                # Stopping the engine is not documented to reset the player
+                # node, so isPlaying() can still report YES for a route macOS
+                # tore down. play() only calls node.play() when isPlaying() is
+                # false, so a stale YES means the node is never re-armed and
+                # the buffer never renders — the same silent timeout this
+                # restart exists to end. Re-arm before the caller schedules.
+                self._node.stop()
         except NativePlaybackRouteLost:
             raise
         except Exception as exc:

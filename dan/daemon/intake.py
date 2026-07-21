@@ -145,18 +145,29 @@ class IntakeGate:
     def snapshot(self) -> IntakeState:
         row = self._conn.execute(
             """
-            SELECT gate.state, gate.operation_id, gate.reason, gate.reopen_policy,
-                   COUNT(leases.token)
+            SELECT gate.state, gate.operation_id, gate.reason, gate.reopen_policy
             FROM intake_gate AS gate
-            LEFT JOIN intake_leases AS leases ON 1 = 1
             WHERE gate.singleton = 1
-            GROUP BY gate.singleton, gate.state, gate.operation_id, gate.reason,
-                     gate.reopen_policy
             """
         ).fetchone()
         if row is None:
             raise IntakeGateError("Durable intake gate row is missing.")
-        return IntakeState(str(row[0]), row[1], row[2], str(row[3]), int(row[4]))
+        return IntakeState(
+            str(row[0]), row[1], row[2], str(row[3]), self._live_lease_count()
+        )
+
+    def _live_lease_count(self) -> int:
+        """Count only leases whose owner process is still running.
+
+        An unclean shutdown leaves rows behind. Counting those made reopen()
+        fail forever, so the daemon could never start again without editing
+        the database by hand — fail-closed turned into fail-stuck.
+        """
+
+        rows = self._conn.execute(
+            "SELECT owner_pid FROM intake_leases"
+        ).fetchall()
+        return sum(1 for row in rows if _process_alive(row[0]))
 
     @contextmanager
     def _write(self) -> Iterator[None]:
@@ -169,6 +180,26 @@ class IntakeGate:
         except BaseException:
             self._conn.rollback()
             raise
+
+
+def _process_alive(pid: Any) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        # Unreadable owner: treat as gone rather than wedging the gate.
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Alive but owned by another user.
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def _text(value: str, label: str) -> str:

@@ -73,8 +73,15 @@ class VoiceCatalog:
         root = Path(directory).expanduser()
         personas_path = root / "personas.toml"
         pronunciations_path = root / "pronunciations.toml"
-        personas_raw = _read_toml(personas_path, strict=strict)
-        pronunciations_raw = _read_toml(pronunciations_path, strict=strict)
+        # One read per file: content and frozen SHA must describe the same
+        # bytes, otherwise a concurrent write between the two reads produces a
+        # catalog whose integrity check passes while its routes are stale.
+        personas_bytes = _read_bytes(personas_path, strict=strict)
+        pronunciations_bytes = _read_bytes(pronunciations_path, strict=strict)
+        personas_raw = _parse_toml(personas_bytes, personas_path, strict=strict)
+        pronunciations_raw = _parse_toml(
+            pronunciations_bytes, pronunciations_path, strict=strict
+        )
         personas = {
             str(name): dict(spec)
             for name, spec in personas_raw.items()
@@ -89,10 +96,16 @@ class VoiceCatalog:
             raise VoiceResolverError(f"voice catalog has no personas: {personas_path}")
 
         assets: dict[str, AssetMetadata] = {}
-        if personas_path.is_file():
-            assets["voice.personas"] = AssetMetadata.from_path(personas_path)
-        if pronunciations_path.is_file():
-            assets["voice.pronunciations"] = AssetMetadata.from_path(pronunciations_path)
+        if personas_bytes is not None:
+            assets["voice.personas"] = AssetMetadata(
+                path=personas_path,
+                sha256=hashlib.sha256(personas_bytes).hexdigest(),
+            )
+        if pronunciations_bytes is not None:
+            assets["voice.pronunciations"] = AssetMetadata(
+                path=pronunciations_path,
+                sha256=hashlib.sha256(pronunciations_bytes).hexdigest(),
+            )
         pronunciation_json = _canonical_json(pronunciations)
         pronunciation_hash = hashlib.sha256(pronunciation_json.encode("utf-8")).hexdigest()
         revision_payload = {
@@ -191,15 +204,28 @@ class VoiceResolver:
         snapshot.validate_complete()
         return snapshot
 
-def _read_toml(path: Path, *, strict: bool) -> dict[str, Any]:
+def _read_bytes(path: Path, *, strict: bool) -> bytes | None:
+    """Read the file once; None means "absent or unreadable, non-strict"."""
+
     try:
         with path.open("rb") as handle:
-            data = tomllib.load(handle)
+            return handle.read()
     except FileNotFoundError:
         if strict:
             raise VoiceResolverError(f"voice catalog file does not exist: {path}") from None
+        return None
+    except OSError as exc:
+        if strict:
+            raise VoiceResolverError(f"could not load voice catalog file {path}: {exc}") from exc
+        return None
+
+
+def _parse_toml(payload: bytes | None, path: Path, *, strict: bool) -> dict[str, Any]:
+    if payload is None:
         return {}
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    try:
+        data = tomllib.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         if strict:
             raise VoiceResolverError(f"could not load voice catalog file {path}: {exc}") from exc
         return {}

@@ -2222,21 +2222,38 @@ function renderPersonaVoiceSelection() {
   const personas = safeObject(payload.personas);
   const fields = safeObject(personas[el.personaVoicePersonaSelect.value]);
   const allowed = Array.isArray(payload.allowed_voices) ? payload.allowed_voices : [];
-  setSelectOptions(
-    el.personaVoiceVoiceSelect,
-    allowed.map((value) => ({ value, label: value })),
-    typeof fields.voice === "string" ? fields.voice : "",
-  );
+  // A background refresh must never overwrite what the operator is editing:
+  // a number input only fires change on blur, so clobbering it mid-edit lost
+  // the typed value without ever sending a request.
+  if (!hasFocus(el.personaVoiceVoiceSelect)) {
+    const current = typeof fields.voice === "string" ? fields.voice : "";
+    const options = allowed.includes(current) || !current ? allowed : [current, ...allowed];
+    setSelectOptions(
+      el.personaVoiceVoiceSelect,
+      options.map((value) => ({ value, label: value })),
+      current,
+    );
+  }
   if (el.personaVoiceSpeedInput) {
     if (typeof payload.speed_min === "number") el.personaVoiceSpeedInput.min = payload.speed_min;
     if (typeof payload.speed_max === "number") el.personaVoiceSpeedInput.max = payload.speed_max;
-    el.personaVoiceSpeedInput.value = typeof fields.speed === "number" ? fields.speed : "";
+    if (!hasFocus(el.personaVoiceSpeedInput)) {
+      el.personaVoiceSpeedInput.value = typeof fields.speed === "number" ? fields.speed : "";
+    }
   }
 }
 
+function hasFocus(node) {
+  return Boolean(node) && document.activeElement === node;
+}
+
+// Both the voice select and the speed input trigger an apply, so without this
+// two overlapping requests race on one file.
+let personaVoiceApplyInFlight = false;
+
 async function applyPersonaVoice() {
   const payload = cockpit.personaVoices;
-  if (!payload || !el.personaVoicePersonaSelect) {
+  if (!payload || !el.personaVoicePersonaSelect || personaVoiceApplyInFlight) {
     return;
   }
   const persona = el.personaVoicePersonaSelect.value;
@@ -2259,6 +2276,7 @@ async function applyPersonaVoice() {
     return;
   }
   setText(el.personaVoiceStatus, `Applying ${persona}…`);
+  personaVoiceApplyInFlight = true;
   try {
     const result = await requestJson("/voice/personas/apply", { method: "POST", body });
     await refreshPersonaVoices();
@@ -2269,6 +2287,8 @@ async function applyPersonaVoice() {
   } catch (error) {
     await refreshPersonaVoices();
     setText(el.personaVoiceStatus, `Apply failed: ${error.message || error}`);
+  } finally {
+    personaVoiceApplyInFlight = false;
   }
 }
 

@@ -179,3 +179,61 @@ def test_snapshot_reads_gate_and_lease_count_in_one_statement(tmp_path: Path) ->
     assert snapshot.active_leases == 0
     assert len(selects) == 1
     close_quietly(connection)
+
+
+def test_lease_from_a_dead_process_does_not_wedge_the_gate(tmp_path: Path) -> None:
+    """A crash-orphaned lease must not make the daemon unstartable.
+
+    An unclean shutdown leaves the row behind, and reopen() refused forever
+    because the count included leases whose owning process is long gone —
+    only manual DB surgery got the daemon back.
+    """
+
+    conn = initialize_database(tmp_path / "dan.db")
+    try:
+        gate = IntakeGate(conn)
+        gate.close(operation_id="op-restart", reason="SIGTERM")
+        with conn:
+            conn.execute(
+                "INSERT INTO intake_leases (token, channel, owner_pid, acquired_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("orphan", "text:voice", _dead_pid(), "2026-07-21T13:29:44Z"),
+            )
+
+        assert gate.snapshot().active_leases == 0
+        assert gate.reopen(operation_id="op-restart").state == "open"
+    finally:
+        close_quietly(conn)
+
+
+def test_lease_from_a_live_process_still_blocks_reopen(tmp_path: Path) -> None:
+    import os
+
+    conn = initialize_database(tmp_path / "dan.db")
+    try:
+        gate = IntakeGate(conn)
+        gate.close(operation_id="op-restart", reason="SIGTERM")
+        with conn:
+            conn.execute(
+                "INSERT INTO intake_leases (token, channel, owner_pid, acquired_at) "
+                "VALUES (?, ?, ?, ?)",
+                ("live", "text:voice", os.getpid(), "2026-07-21T13:29:44Z"),
+            )
+
+        assert gate.snapshot().active_leases == 1
+        with pytest.raises(IntakeGateError, match="active lease"):
+            gate.reopen(operation_id="op-restart")
+    finally:
+        close_quietly(conn)
+
+
+def _dead_pid() -> int:
+    """A pid that is certainly not running: fork a child and reap it."""
+
+    import os
+
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - child exits immediately
+        os._exit(0)
+    os.waitpid(pid, 0)
+    return pid

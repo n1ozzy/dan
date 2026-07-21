@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tempfile
 import tomllib
 from collections.abc import Iterable
@@ -21,6 +22,11 @@ SPEED_MIN = 0.5
 SPEED_MAX = 2.0
 
 _SECTION_RE = re.compile(r"^\[(?P<name>[^\]]+)\]\s*(?:#.*)?$")
+
+# Voice and mastering are identifiers, not free text. Anything outside this
+# shape (quotes, backslashes, newlines, control characters) is rejected before
+# it reaches the writer rather than escaped into the file.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._+-]+$")
 
 
 class PersonaEditError(ValueError):
@@ -65,7 +71,12 @@ def _format_value(field_name: str, value: object) -> str:
         # repr() of a float always round-trips and always carries a decimal
         # point, so the value stays a TOML float after the edit.
         return repr(float(value))
-    return '"' + str(value) + '"'
+    text = str(value)
+    if not _IDENTIFIER_RE.match(text):
+        raise PersonaEditError(
+            f"{field_name} {text!r} is not a plain identifier"
+        )
+    return '"' + text + '"'
 
 
 def _rewrite_section(text: str, persona: str, updates: dict[str, object]) -> str:
@@ -107,7 +118,13 @@ def _atomic_write(path: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
+        # mkstemp creates 0600 and os.replace carries the temp file's mode onto
+        # the target, so without this the catalog silently becomes owner-only
+        # after the first edit and stays that way.
+        if path.exists():
+            shutil.copymode(path, tmp_name)
         os.replace(tmp_name, path)
+        _fsync_directory(path.parent)
     except BaseException:
         try:
             os.unlink(tmp_name)
@@ -116,10 +133,55 @@ def _atomic_write(path: Path, content: str) -> None:
         raise
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Persist the rename itself, not just the new file's bytes."""
+
+    try:
+        dir_fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
 def write_personas_text(catalog_dir: Path | str, content: str) -> None:
     """Atomically restore raw personas.toml content (API rollback path)."""
 
     _atomic_write(_personas_path(catalog_dir), content)
+
+
+def _assert_no_collateral_change(
+    before: dict, after: dict, persona: str, requested: set[str]
+) -> None:
+    """Prove the textual edit moved the requested fields and nothing else.
+
+    Checking only the requested fields let a line that merely *looks* like a
+    field — e.g. inside a multi-line string — be rewritten unnoticed whenever
+    the requested value equalled the current one.
+    """
+
+    if set(before) != set(after):
+        raise PersonaEditError("edit changed the set of personas")
+    for name in before:
+        old_section = before[name]
+        new_section = after[name]
+        if not isinstance(old_section, dict) or not isinstance(new_section, dict):
+            if old_section != new_section:
+                raise PersonaEditError(f"edit changed unrelated entry {name!r}")
+            continue
+        if set(old_section) != set(new_section):
+            raise PersonaEditError(f"edit changed the fields of persona {name!r}")
+        untouched = set(old_section) - (requested if name == persona else set())
+        for field_name in untouched:
+            if old_section[field_name] != new_section[field_name]:
+                raise PersonaEditError(
+                    f"edit changed unrequested field {field_name!r} "
+                    f"of persona {name!r}"
+                )
 
 
 def set_persona_voice(
@@ -187,6 +249,7 @@ def set_persona_voice(
             raise PersonaEditError(
                 f"edit failed to apply {field_name!r} for persona {persona!r}"
             )
+    _assert_no_collateral_change(data, reparsed, persona, set(requested))
 
     _atomic_write(path, updated)
     return PersonaEdit(persona=persona, path=path, changes=changes)

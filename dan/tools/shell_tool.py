@@ -35,6 +35,8 @@ DEFAULT_SHELL_READ_WHITELIST: tuple[str, ...] = (
     "git status --short",
     "git log --oneline -10",
     "git diff --stat",
+    "git log --oneline -20",
+    "git show --stat HEAD",
 )
 
 SHELL_TIMEOUT_SECONDS = 15
@@ -46,9 +48,13 @@ _SCRUBBED_ENV = {
     "LC_ALL": "C.UTF-8",
 }
 
-# git honours repo-local .git/config, so a malicious repo can turn a
-# whitelisted read-only command into code execution (core.fsmonitor,
-# core.hooksPath). Neutralize config-driven exec paths for every git run.
+# Reading a repository executes repository-controlled configuration unless it
+# is disarmed first. A `git status` inside a hostile checkout is arbitrary code
+# execution: `core.fsmonitor` names a program git runs, `core.hooksPath` points
+# at scripts it invokes, and `protocol.ext` lets a submodule/remote URL spawn a
+# helper command. System and global config are silenced too, so the result of a
+# read-only command cannot depend on machine state outside this process.
+# These are security barriers, not cosmetics — do not drop them.
 _GIT_ENV_HARDENING = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -106,11 +112,14 @@ class ShellReadTool(Tool):
 
         cwd = self._resolve_cwd(arguments)
         env = dict(_SCRUBBED_ENV)
-        # For git commands inject hardening flags; parse argv only to detect git
+        # Reassembled through shlex.quote: the string goes back to a shell, so
+        # an allowlist entry carrying a space or a quote must not be re-parsed
+        # into extra words.
         argv_check = shlex.split(normalized)
         if argv_check and argv_check[0] == "git":
             hardening = " ".join(_GIT_ARGV_HARDENING)
-            normalized = f"git {hardening} {' '.join(argv_check[1:])}"
+            rest = " ".join(shlex.quote(part) for part in argv_check[1:])
+            normalized = f"git {hardening} {rest}"
             env.update(_GIT_ENV_HARDENING)
 
         try:

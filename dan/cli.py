@@ -35,6 +35,7 @@ from dan.store.db import (
     initialize_database,
     table_names,
 )
+from dan.voice.models import VoiceRequestStatus
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -468,15 +469,35 @@ def _handle_speak(args: argparse.Namespace, config: DANConfig) -> int:
             {"error": "daemon_unreachable", "message": str(exc)}, json_output, 3
         )
 
-    if response.get("status") != "queued" or not response.get("request_id"):
-        # Exit 0 strictly means: a complete row is committed as 'queued'.
-        return _emit_error(
-            {"error": "speak_not_committed", "response": response}, json_output, 2
+    # Exit 0 strictly means: a complete row is committed. The daemon may
+    # already be processing the row when it responds, so any in-flight or
+    # completed status proves the commit — only terminal failures and
+    # missing ids do not.
+    committed_statuses = {
+        VoiceRequestStatus.QUEUED.value,
+        VoiceRequestStatus.SYNTHESIZING.value,
+        VoiceRequestStatus.SPEAKING.value,
+        VoiceRequestStatus.DONE.value,
+    }
+    status = response.get("status")
+    if status not in committed_statuses or not response.get("request_id"):
+        # A row that reached a terminal failure IS committed; saying otherwise
+        # sends the operator hunting for a write that did happen. The exit code
+        # stays non-zero either way — the utterance will not be heard.
+        terminal = {
+            VoiceRequestStatus.CANCELLED.value,
+            VoiceRequestStatus.FAILED.value,
+        }
+        error = (
+            "speak_not_spoken"
+            if status in terminal and response.get("request_id")
+            else "speak_not_committed"
         )
+        return _emit_error({"error": error, "response": response}, json_output, 2)
     if json_output:
         _emit_payload(response, True)
     else:
-        print(f"queued {response['request_id']}")
+        print(f"{status} {response['request_id']}")
     return 0
 
 

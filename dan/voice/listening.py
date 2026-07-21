@@ -171,6 +171,11 @@ class ListeningLeaseManager:
             self._sync_recorder()
 
     def _sync_recorder(self) -> None:
+        # No capture wired is a normal state (mic unavailable, STT off). The
+        # lease still matters — it is what pauses the broker for barge-in — so
+        # a missing recorder must not blow up the PTT handler.
+        if self._recorder is None:
+            return
         if self._active_full_rows():
             self._recorder.start()
         else:

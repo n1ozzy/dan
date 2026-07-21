@@ -26,6 +26,7 @@ from dan.tools.registry import (
     ToolResult,
     ToolRunRecorder,
 )
+from dan.turns.loop_guard import ToolLoopGuard
 from dan.turns.models import Turn, TurnSource, TurnStatus
 from dan.turns.repository import ConversationRepository, TurnRepository
 from dan.voice.speech_form_stream import SpeechFormStreamRouter
@@ -422,6 +423,7 @@ class TurnOrchestrator:
             capture = _ToolCaptureResult()
             direct_tool_results: list[dict[str, Any]] = []
             direct_tool_round = 0
+            loop_guard = ToolLoopGuard()
             while response.tool_calls:
                 if direct_tool_round >= MAX_DIRECT_TOOL_ROUNDS:
                     loop_error = TurnOrchestratorError(
@@ -441,6 +443,9 @@ class TurnOrchestrator:
                     raise loop_error
                 direct_tool_round += 1
                 model_tool_calls = list(response.tool_calls)
+                # The guard runs inside the execution loop, not as a pre-scan:
+                # a block must not discard calls that were about to run, and
+                # the counters must only advance for calls that actually did.
                 # This response's voice form is explicit, user-facing
                 # commentary. It is spoken before the requested batch, but its
                 # display text is not persisted as the turn's final chat answer.
@@ -468,6 +473,7 @@ class TurnOrchestrator:
                         conversation_id=conversation.id,
                         event_ids=event_ids,
                         correlation_id=correlation_id,
+                        loop_guard=loop_guard,
                     )
                 finally:
                     if self._state_machine.state is RuntimeState.TOOLING:
@@ -483,6 +489,21 @@ class TurnOrchestrator:
                 direct_tool_results.extend(
                     _direct_tool_results(model_tool_calls, batch_capture.tool_calls)
                 )
+                if batch_capture.loop_blocked:
+                    loop_error = TurnOrchestratorError(
+                        f"direct tool loop cut by guard: {batch_capture.loop_blocked}"
+                    )
+                    self._cancel_turn_speech(turn.id)
+                    self._record_brain_failure(
+                        turn=turn,
+                        conversation_id=conversation.id,
+                        adapter=adapter_name,
+                        model=request_model,
+                        error=loop_error,
+                        event_ids=event_ids,
+                        correlation_id=correlation_id,
+                    )
+                    raise loop_error
 
                 try:
                     # Every continuation is a distinct model response and gets
@@ -867,11 +888,13 @@ class TurnOrchestrator:
         conversation_id: str,
         event_ids: list[int],
         correlation_id: str,
+        loop_guard: ToolLoopGuard | None = None,
     ) -> "_ToolCaptureResult":
         if not response.tool_calls:
             return _ToolCaptureResult()
 
         result = _ToolCaptureResult()
+        guard_warning: str | None = None
         for index, tool_call in enumerate(response.tool_calls, start=1):
             call_id = _tool_call_id(tool_call, index)
             tool_name = _tool_call_name(tool_call)
@@ -905,6 +928,20 @@ class TurnOrchestrator:
                     )
                 )
                 continue
+
+            if loop_guard is not None:
+                verdict = loop_guard.check_call(tool_name, arguments)
+                if verdict.blocked:
+                    result.loop_blocked = verdict.reason
+                    break
+                if verdict.warned:
+                    _LOGGER.warning(
+                        "loop guard warning (turn %s): %s", turn_id, verdict.reason
+                    )
+                    # Carried into the recorded result so the continuation
+                    # prompt actually shows the model why it is repeating
+                    # itself — a log line alone never reached it.
+                    guard_warning = verdict.reason
 
             request_id = str(uuid.uuid4())
             request = ToolRequest(
@@ -1010,15 +1047,17 @@ class TurnOrchestrator:
                     tool_result.status,
                 )
 
-            result.tool_calls.append(
-                {
-                    "id": call_id,
-                    "tool_name": tool.name,
-                    "status": tool_result.status,
-                    "output": redact_secrets(tool_result.output or {}),
-                    "error": redact_secrets(tool_result.error),
-                }
-            )
+            recorded: dict[str, Any] = {
+                "id": call_id,
+                "tool_name": tool.name,
+                "status": tool_result.status,
+                "output": redact_secrets(tool_result.output or {}),
+                "error": redact_secrets(tool_result.error),
+            }
+            if guard_warning is not None:
+                recorded["loop_guard_warning"] = guard_warning
+                guard_warning = None
+            result.tool_calls.append(recorded)
 
         return result
 
@@ -1617,6 +1656,9 @@ class TurnOrchestrator:
 @dataclass
 class _ToolCaptureResult:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    # Reason from the loop guard when a call was cut; the calls before it in
+    # the batch still ran and are present in tool_calls.
+    loop_blocked: str | None = None
 
 
 def _required_text(value: str, label: str) -> str:
@@ -1709,16 +1751,20 @@ def _direct_tool_results(
                 arguments = _json_safe_arguments(model_tool_calls[index])
             except TurnOrchestratorError:
                 arguments = {}
-        results.append(
-            {
-                "id": captured.get("id"),
-                "tool_name": captured.get("tool_name"),
-                "arguments": _redacted_jsonable(arguments),
-                "status": captured.get("status"),
-                "output": _redacted_jsonable(captured.get("output") or {}),
-                "error": _redacted_jsonable(captured.get("error")),
-            }
-        )
+        entry = {
+            "id": captured.get("id"),
+            "tool_name": captured.get("tool_name"),
+            "arguments": _redacted_jsonable(arguments),
+            "status": captured.get("status"),
+            "output": _redacted_jsonable(captured.get("output") or {}),
+            "error": _redacted_jsonable(captured.get("error")),
+        }
+        warning = captured.get("loop_guard_warning")
+        if warning:
+            # Survives into the continuation prompt: this is the model's only
+            # chance to notice it is repeating itself before the guard blocks.
+            entry["loop_guard_warning"] = warning
+        results.append(entry)
     return results
 
 

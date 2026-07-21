@@ -10,9 +10,9 @@ dsp = "none"
 
 [dan]
 engine = "supertonic"
-voice = "M2"
+voice = "M3"
 mastering = "raw"
-speed = 1.28
+speed = 1.29
 dsp = "none"
 
 [danusia]

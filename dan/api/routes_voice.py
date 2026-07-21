@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import shutil
 import sys
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -22,8 +24,14 @@ from dan.voice.persona_editor import (
     set_persona_voice,
     write_personas_text,
 )
-from dan.voice.service import default_voice_catalog_dir
+from dan.voice.service import default_voice_catalog_dir, installed_custom_style_names
 from dan.voice.tts import BANNED_ENGINES, MASTERING_PROFILES, RESERVED_ENGINES
+
+_LOGGER = logging.getLogger(__name__)
+
+# personas.toml is one shared file and ThreadingHTTPServer runs handlers
+# concurrently, so read-original / edit / reload must not interleave.
+_PERSONA_EDIT_LOCK = threading.Lock()
 
 
 DEFAULT_SPEAK_SOURCE = "api"
@@ -94,6 +102,10 @@ def _validated_source_from_request(payload: Any, default: str) -> str:
 def post_ptt_down(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
     _require_voice_enabled(app)
     source = _validated_source_from_request(request_payload, "ptt")
+    try:
+        app.voice_broker.pause()
+    except Exception:
+        pass
     lease = app.acquire_listening_lease(mode="hold", source=source)
     return {"ok": True, "lease": _lease_payload(lease)}
 
@@ -101,6 +113,10 @@ def post_ptt_down(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
 def post_ptt_up(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
     _require_voice_enabled(app)
     released = app.release_listening_leases(mode="hold")
+    try:
+        app.voice_broker.resume()
+    except Exception:
+        pass
     return {"ok": True, "released": len(released)}
 
 
@@ -868,14 +884,18 @@ def _voice_catalog_dir(app: DaemonApp) -> Path:
     return default_voice_catalog_dir()
 
 
-def _allowed_persona_voices(personas: Mapping[str, Mapping[str, Any]]) -> list[str]:
-    # Builtin supertonic ids plus every voice already routed in the file, so
-    # blends (M2M1, ROBOT, ...) stay selectable without hardcoding them here.
+def _allowed_persona_voices(app: DaemonApp) -> list[str]:
+    """Builtin supertonic ids plus every verified custom style on disk.
+
+    Derived from the same manifest the resolver renders from, so the panel
+    offers exactly what can actually be spoken — no more, no less.
+    """
+
     allowed = {str(voice_id) for voice_id in SUPERTONIC_BUILTIN_VOICE_IDS}
-    for fields in personas.values():
-        voice = fields.get("voice")
-        if isinstance(voice, str) and voice.strip():
-            allowed.add(voice.strip())
+    try:
+        allowed.update(installed_custom_style_names(app.config))
+    except Exception:  # noqa: BLE001 - a broken manifest must not hide builtins
+        _LOGGER.warning("custom style manifest unavailable", exc_info=True)
     return sorted(allowed)
 
 
@@ -893,7 +913,7 @@ def get_voice_personas(app: DaemonApp) -> dict[str, Any]:
     personas = list_personas(catalog_dir)
     return {
         "personas": personas,
-        "allowed_voices": _allowed_persona_voices(personas),
+        "allowed_voices": _allowed_persona_voices(app),
         "allowed_mastering": sorted(MASTERING_PROFILES),
         "speed_min": SPEED_MIN,
         "speed_max": SPEED_MAX,
@@ -922,24 +942,31 @@ def post_voice_personas_apply(app: DaemonApp, request_payload: Any) -> dict[str,
         raise VoiceRequestValidationError("speed must be a number.")
 
     catalog_dir = _voice_catalog_dir(app)
-    personas = list_personas(catalog_dir)
-    original = (catalog_dir / "personas.toml").read_text(encoding="utf-8")
-    edit = set_persona_voice(
-        catalog_dir,
-        persona.strip(),
-        voice=voice,
-        speed=float(speed) if speed is not None else None,
-        mastering=mastering,
-        allowed_voices=_allowed_persona_voices(personas),
-        allowed_mastering=MASTERING_PROFILES,
-    )
-    try:
-        app.reload_voice_catalog()
-    except Exception as exc:
-        write_personas_text(catalog_dir, original)
-        raise VoicePersonaReloadError(
-            f"personas.toml edit rolled back: voice catalog reload failed: {exc}"
-        ) from exc
+    with _PERSONA_EDIT_LOCK:
+        original = (catalog_dir / "personas.toml").read_text(encoding="utf-8")
+        edit = set_persona_voice(
+            catalog_dir,
+            persona.strip(),
+            voice=voice,
+            speed=float(speed) if speed is not None else None,
+            mastering=mastering,
+            allowed_voices=_allowed_persona_voices(app),
+            allowed_mastering=MASTERING_PROFILES,
+        )
+        try:
+            app.reload_voice_catalog()
+        except Exception as exc:
+            try:
+                write_personas_text(catalog_dir, original)
+            except Exception as rollback_exc:  # noqa: BLE001 - both causes matter
+                raise VoicePersonaReloadError(
+                    "personas.toml is now out of sync with the running "
+                    f"resolver: reload failed ({exc}) and the rollback write "
+                    f"also failed ({rollback_exc})"
+                ) from exc
+            raise VoicePersonaReloadError(
+                f"personas.toml edit rolled back: voice catalog reload failed: {exc}"
+            ) from exc
     return {
         "ok": True,
         "persona": edit.persona,

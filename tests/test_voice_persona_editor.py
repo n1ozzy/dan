@@ -183,3 +183,69 @@ class TestValidation:
     def test_nothing_to_change_fails(self, catalog_dir: Path) -> None:
         with pytest.raises(PersonaEditError):
             set_persona_voice(catalog_dir, "dan")
+
+
+class TestFilePermissions:
+    """The atomic write must not tighten the catalog's mode.
+
+    ``tempfile.mkstemp`` creates 0600 and ``os.replace`` carries that mode onto
+    the target, so a repo file tracked as 100644 silently became owner-only
+    after every panel edit.
+    """
+
+    def test_edit_preserves_world_readable_mode(self, catalog_dir: Path) -> None:
+        path = catalog_dir / "personas.toml"
+        path.chmod(0o644)
+        set_persona_voice(catalog_dir, "dan", voice="M1")
+        assert path.stat().st_mode & 0o777 == 0o644
+
+    def test_edit_preserves_restrictive_mode(self, catalog_dir: Path) -> None:
+        path = catalog_dir / "personas.toml"
+        path.chmod(0o600)
+        set_persona_voice(catalog_dir, "dan", voice="M1")
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+class TestCollateralDamage:
+    """The post-write check must prove nothing outside the request moved."""
+
+    def test_decoy_line_in_multiline_string_survives_a_noop_edit(
+        self, tmp_path: Path
+    ) -> None:
+        # A decoy `voice = ...` line inside a multi-line string is not a field.
+        # Requesting the value the section already has used to rewrite the decoy
+        # while the post-check (which only looked at the requested fields)
+        # still passed.
+        source = '''[dan]
+engine = "supertonic"
+notes = """
+voice = "DECOY"
+"""
+voice = "M3"
+mastering = "raw"
+speed = 1.28
+'''
+        (tmp_path / "personas.toml").write_text(source, encoding="utf-8")
+        before = read_raw(tmp_path)
+        with pytest.raises(PersonaEditError):
+            set_persona_voice(tmp_path, "dan", voice="M3")
+        assert read_raw(tmp_path) == before
+
+    def test_unrelated_persona_is_never_touched(self, catalog_dir: Path) -> None:
+        set_persona_voice(catalog_dir, "dan", voice="M1")
+        data = read_personas(catalog_dir)
+        assert data["danusia"]["voice"] == "F4"
+        assert data["jarvis"]["voice"] == "M3"
+
+
+class TestValueEscaping:
+    """A raw string concatenation must never emit unbalanced TOML."""
+
+    @pytest.mark.parametrize("hostile", ['M1"', 'M1\\', 'M1"\nspeed = 9.9'])
+    def test_hostile_voice_value_fails_closed(
+        self, catalog_dir: Path, hostile: str
+    ) -> None:
+        before = read_raw(catalog_dir)
+        with pytest.raises(PersonaEditError):
+            set_persona_voice(catalog_dir, "dan", voice=hostile)
+        assert read_raw(catalog_dir) == before

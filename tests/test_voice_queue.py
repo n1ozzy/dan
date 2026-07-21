@@ -201,7 +201,9 @@ def test_tombstone_landing_right_before_transaction_still_rejects_enqueue(conn) 
         original_begin()
         conn.execute(
             "INSERT OR IGNORE INTO cancelled_turns (turn_id, cancelled_at) VALUES (?, ?)",
-            ("late-turn", "2026-07-18T00:00:00Z"),
+            # A cancellation landing *now*: a fixed past date would be an
+            # already-expired tombstone, which is a different scenario.
+            ("late-turn", queue._now()),
         )
 
     queue._begin_immediate = begin_then_tombstone
@@ -211,3 +213,30 @@ def test_tombstone_landing_right_before_transaction_still_rejects_enqueue(conn) 
 
     assert not conn.in_transaction  # the raise rolled the transaction back
     assert conn.execute("SELECT COUNT(*) FROM voice_queue").fetchone()[0] == 0
+
+
+def test_expired_tombstone_stops_blocking_without_a_new_cancellation(conn) -> None:
+    """A tombstone older than the TTL must not silence a session forever.
+
+    The purge only ran while writing another tombstone, and the read path had
+    no age filter, so on an idle runtime a flushed session stayed mute far past
+    TOMBSTONE_TTL_SECONDS — across daemon restarts included.
+    """
+
+    from datetime import UTC, datetime, timedelta
+
+    from dan.voice.queue import TOMBSTONE_TTL_SECONDS
+
+    queue = VoiceQueue(conn)
+    queue.tombstone_turns(["stale"])
+    expired = (
+        datetime.now(UTC) - timedelta(seconds=TOMBSTONE_TTL_SECONDS + 60)
+    ).isoformat(timespec="seconds").replace("+00:00", "Z")
+    conn.execute(
+        "UPDATE cancelled_turns SET cancelled_at = ? WHERE turn_id = ?",
+        (expired, "stale"),
+    )
+    conn.commit()
+
+    assert queue.is_tombstoned("stale") is False
+    assert enqueue_voice(queue, "Znowu gadam.", session="stale").status == "queued"

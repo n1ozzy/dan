@@ -57,17 +57,10 @@ def default_voice_catalog_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "config" / "voice"
 
 
-def build_voice_resolver(
-    config: Any,
-    *,
-    repo_root: Path | None = None,
-    voice_root: Path | None = None,
-) -> VoiceResolver:
-    """Compose the strict resolver from Task 6's versioned repository assets."""
+def custom_style_manifest_path(config: Any, *, repo_root: Path | None = None) -> Path:
+    """Resolve the custom-style manifest exactly like build_voice_resolver does."""
 
     root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
-    voice_root = Path(voice_root) if voice_root is not None else root / "config" / "voice"
-    catalog = load_voice_catalog(voice_root).voice_catalog
     manifest_setting = str(
         getattr(
             config.voice,
@@ -79,6 +72,36 @@ def build_voice_resolver(
     manifest_path = Path(manifest_setting).expanduser()
     if not manifest_path.is_absolute():
         manifest_path = root / manifest_path
+    return manifest_path
+
+
+def installed_custom_style_names(
+    config: Any, *, repo_root: Path | None = None
+) -> tuple[str, ...]:
+    """Names of every verified custom style the resolver can actually render.
+
+    This is the set the panel may offer: deriving it from personas.toml instead
+    hid installed blends nobody routed yet and let a typo become a valid choice.
+    """
+
+    manifest = load_asset_manifest(
+        custom_style_manifest_path(config, repo_root=repo_root)
+    )
+    return tuple(sorted({asset.name for asset in manifest.assets}))
+
+
+def build_voice_resolver(
+    config: Any,
+    *,
+    repo_root: Path | None = None,
+    voice_root: Path | None = None,
+) -> VoiceResolver:
+    """Compose the strict resolver from Task 6's versioned repository assets."""
+
+    root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
+    voice_root = Path(voice_root) if voice_root is not None else root / "config" / "voice"
+    catalog = load_voice_catalog(voice_root).voice_catalog
+    manifest_path = custom_style_manifest_path(config, repo_root=root)
     manifest = load_asset_manifest(manifest_path)
     verify_assets(manifest, repo_root=root)
     engine_assets = {
@@ -101,4 +124,10 @@ def build_voice_resolver(
     )
 
 
-__all__ = ["VoiceService", "build_voice_resolver", "default_voice_catalog_dir"]
+__all__ = [
+    "VoiceService",
+    "build_voice_resolver",
+    "custom_style_manifest_path",
+    "default_voice_catalog_dir",
+    "installed_custom_style_names",
+]

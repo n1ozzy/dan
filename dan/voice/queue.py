@@ -517,9 +517,12 @@ class VoiceQueue:
         )
 
     def is_tombstoned(self, turn_id: str) -> bool:
+        # The TTL has to be enforced here, not only by the purge inside a
+        # tombstone write: on an idle runtime nothing writes another tombstone,
+        # so an expired row would keep a flushed session mute indefinitely.
         row = self._conn.execute(
-            "SELECT 1 FROM cancelled_turns WHERE turn_id = ? LIMIT 1",
-            (turn_id,),
+            "SELECT 1 FROM cancelled_turns WHERE turn_id = ? AND cancelled_at >= ? LIMIT 1",
+            (turn_id, _tombstone_cutoff(self._now())),
         ).fetchone()
         return row is not None
 

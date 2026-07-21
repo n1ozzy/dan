@@ -226,10 +226,12 @@ class DaemonApp:
             self.config,
             voice_root=self.voice_catalog_dir,
         )
-        self.voice_resolver = resolver
+        # Hand the resolver to the service first: if that rejects it, the app
+        # keeps the previous one instead of caching a resolver nothing uses.
         service = self.voice_service
         if service is not None:
             service.replace_resolver(resolver)
+        self.voice_resolver = resolver
 
     def start(self) -> None:
         """Start app-level state without running the long-lived HTTP loop."""
@@ -811,6 +813,12 @@ class DaemonApp:
         )
 
     def acquire_listening_lease(self, *, mode: str, source: str):
+        if mode == "hold" and self.voice_broker is not None:
+            try:
+                self.voice_broker.pause()
+                self.voice_broker.stop_playback()
+            except Exception:
+                pass
         if not self.started:
             raise DaemonAppNotStartedError("Daemon app is not started.")
         conn = self._connect_existing()
@@ -820,6 +828,11 @@ class DaemonApp:
             close_quietly(conn)
 
     def release_listening_leases(self, *, mode: str):
+        if mode == "hold" and self.voice_broker is not None:
+            try:
+                self.voice_broker.resume()
+            except Exception:
+                pass
         if not self.started:
             raise DaemonAppNotStartedError("Daemon app is not started.")
         conn = self._connect_existing()
@@ -2333,6 +2346,7 @@ class _MemorySaveAwareTurnOrchestrator(TurnOrchestrator):
         conversation_id: str,
         event_ids: list[int],
         correlation_id: str,
+        loop_guard: Any = None,
     ) -> Any:
         return self._capture_model_tool_calls_with_memory_validation(
             response=response,
@@ -2340,6 +2354,7 @@ class _MemorySaveAwareTurnOrchestrator(TurnOrchestrator):
             conversation_id=conversation_id,
             event_ids=event_ids,
             correlation_id=correlation_id,
+            loop_guard=loop_guard,
         )
 
     def _capture_model_tool_calls_with_memory_validation(
@@ -2350,6 +2365,7 @@ class _MemorySaveAwareTurnOrchestrator(TurnOrchestrator):
         conversation_id: str,
         event_ids: list[int],
         correlation_id: str,
+        loop_guard: Any = None,
     ) -> Any:
         if not response.tool_calls:
             return super()._capture_model_tool_calls(
@@ -2358,6 +2374,7 @@ class _MemorySaveAwareTurnOrchestrator(TurnOrchestrator):
                 conversation_id=conversation_id,
                 event_ids=event_ids,
                 correlation_id=correlation_id,
+                loop_guard=loop_guard,
             )
 
         validation_errors = [
@@ -2371,6 +2388,7 @@ class _MemorySaveAwareTurnOrchestrator(TurnOrchestrator):
                 conversation_id=conversation_id,
                 event_ids=event_ids,
                 correlation_id=correlation_id,
+                loop_guard=loop_guard,
             )
 
         result = super()._capture_model_tool_calls(
@@ -2379,6 +2397,7 @@ class _MemorySaveAwareTurnOrchestrator(TurnOrchestrator):
             conversation_id=conversation_id,
             event_ids=event_ids,
             correlation_id=correlation_id,
+            loop_guard=loop_guard,
         )
         for index, (tool_call, validation_error) in enumerate(
             zip(response.tool_calls, validation_errors, strict=True),
@@ -2408,8 +2427,12 @@ class _MemorySaveAwareTurnOrchestrator(TurnOrchestrator):
                 conversation_id=conversation_id,
                 event_ids=event_ids,
                 correlation_id=correlation_id,
+                loop_guard=loop_guard,
             )
             result.tool_calls.extend(capture.tool_calls)
+            if getattr(capture, "loop_blocked", None):
+                result.loop_blocked = capture.loop_blocked
+                break
         return result
 
     def _memory_save_proposal_validation_error(self, tool_call: Any) -> str | None:

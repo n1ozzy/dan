@@ -41,13 +41,21 @@ config registry rejects `voice.voice_id`, `voice.voice_profile` and
 `voice.speed`, so the runtime-settings path can never change how a persona
 sounds. The panel therefore edits the catalog itself through two routes:
 
-- `GET /voice/personas` — the routes from the file plus the allowed values
-  (built-in Supertonic ids and every blend already used in the file,
-  the mastering profiles, the speed range).
+- `GET /voice/personas` — the routes from the file plus the allowed values:
+  built-in Supertonic ids and every custom style in the asset manifest (the
+  same manifest the resolver renders from, so the panel offers exactly what
+  can be spoken), the mastering profiles, the speed range.
 - `POST /voice/personas/apply` `{persona, voice?, speed?, mastering?}` —
   `dan.voice.persona_editor` validates and rewrites only the target section
-  (comments elsewhere survive, the write is atomic), then
-  `DaemonApp.reload_voice_catalog()` rebuilds the resolver **in process**.
+  (comments elsewhere survive, the file mode is preserved, the write is
+  atomic), then `DaemonApp.reload_voice_catalog()` rebuilds the resolver
+  **in process**.
+
+Apply is serialised by a process-wide lock covering read → edit → reload.
+`ThreadingHTTPServer` handles requests concurrently and the panel fires apply
+from two controls, so without it one request's committed change could be
+undone by another's rollback, leaving the resolver's frozen SHA-256 pointing
+at bytes no longer on disk — which fails every later speak until a restart.
 
 The reload is why no daemon restart is needed: `VoiceCatalog` freezes the
 file's SHA-256 at load time and the resolver re-checks it on every speak, so

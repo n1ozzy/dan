@@ -8,6 +8,7 @@ from io import BytesIO
 
 import pytest
 
+from dan.audio.execution import AudioExecutionDisabled
 from dan.voice import player as player_module
 from dan.voice.tts import SynthesizedChunk
 
@@ -306,27 +307,81 @@ def test_unproven_native_stop_is_sticky_until_recovery_succeeds() -> None:
     assert backend.start_calls == starts_before_blocked_play + 1
 
 
-def test_engine_restart_forgets_the_cached_output_connection() -> None:
-    """Regression (2026-07-21): restarting an engine macOS had stopped left
-    _connected_format populated. Every synthesized WAV carries the same format,
-    so _ensure_connected short-circuited and the buffer was scheduled onto the
-    connection the device change had already torn down — the completion handler
-    never fired and playback timed out, which is the bug the restart exists to
-    fix."""
+def test_a_rejected_buffer_still_leaves_the_started_engine_stoppable() -> None:
+    """Regression (2026-07-21): make_buffer rejects a malformed WAV with a plain
+    CoreAudioPlayerError, which the recovery except deliberately does not catch.
+    Committing _started only after make_buffer left the flag False while the
+    native engine was already running, so stop() took its early return, never
+    tore the engine down, and the daemon held the output route — every later
+    barge-in silently doing nothing — for the rest of its life."""
+
+    class RejectingBackend(RecoveringFakeBackend):
+        def make_buffer(self, audio: bytes) -> bytes:
+            raise player_module.CoreAudioPlayerError("invalid WAV audio: bad")
+
+    backend = RejectingBackend()
+    player = player_module.CoreAudioPlayer(backend=backend)
+
+    with pytest.raises(player_module.CoreAudioPlayerError, match="invalid WAV"):
+        player.play(
+            wav_chunk("boom"), should_play=lambda: True, on_started=lambda: None
+        )
+
+    assert backend.start_calls == 1
+    assert backend.running is True
+    assert player.engine_start_count == 1
+
+    player.stop()
+
+    assert backend.stop_calls == 1
+    assert backend.running is False
+
+
+def test_engine_restart_rebuilds_the_connection_and_rearms_the_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (2026-07-21): restarting an engine macOS had stopped left the
+    cached output connection in place and the player node un-rearmed. Every
+    synthesized WAV carries the same format, so _ensure_connected
+    short-circuited, and node.isPlaying() still reported YES so play() never
+    called node.play() — the buffer went nowhere, the completion handler never
+    fired, and playback timed out. That is the silence this restart ends."""
+    monkeypatch.delenv("DAN_DISABLE_AUDIO", raising=False)
     backend = object.__new__(player_module._AVFoundationBackend)
-    backend._engine = _LiveNativeEngine()
-    backend._node = object()
-    backend._connected_format = object()
+    engine = _LiveNativeEngine()
+    node = _LiveNativeNode()
+    node.playing = True
+    backend._engine = engine
+    backend._node = node
+    backend._connected_format = _FakeFormat()
 
     backend.start()
 
+    # Drop the stale connection explicitly. _ensure_connected disconnects only
+    # when it holds a cached format, so clearing the cache alone would leave
+    # the node wired and send the reconnect to another mixer input bus.
+    assert engine.disconnected == [node]
     assert backend._connected_format is None
+    assert node.stop_calls == 1
+    assert node.playing is False
+
+    # The reconnect and the re-arm have to survive into the next schedule,
+    # otherwise nothing was actually fixed.
+    buffer = _FakeBuffer(_FakeFormat())
+    backend.play(buffer, lambda: None)
+
+    assert engine.connected == [(node, buffer.format())]
+    assert node.scheduled == [buffer]
+    assert node.play_calls == 1
 
 
-def test_liveness_probe_failure_is_a_route_loss_not_a_stopped_engine() -> None:
+def test_liveness_probe_failure_is_a_route_loss_not_a_stopped_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Reporting False for a broken bridge would restart the engine on every
     # chunk forever and never surface the fault; a route loss is recoverable
     # and visible.
+    monkeypatch.delenv("DAN_DISABLE_AUDIO", raising=False)
     backend = object.__new__(player_module._AVFoundationBackend)
     backend._engine = _ExplodingNativeEngine()
 
@@ -334,18 +389,37 @@ def test_liveness_probe_failure_is_a_route_loss_not_a_stopped_engine() -> None:
         backend.is_running()
 
 
+def test_liveness_probe_honours_the_audio_kill_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The probe is a native boundary like start/play, and its except-Exception
+    # net would otherwise rewrite the kill switch into a recoverable route loss.
+    monkeypatch.setenv("DAN_DISABLE_AUDIO", "1")
+    backend = object.__new__(player_module._AVFoundationBackend)
+    backend._engine = _LiveNativeEngine()
+
+    with pytest.raises(AudioExecutionDisabled, match="liveness probe"):
+        backend.is_running()
+
+
 def test_no_native_call_runs_under_the_state_lock() -> None:
     """The CoreAudio completion handler takes _state_lock while holding the
     engine's own mutex, so ANY native call made under that lock can deadlock the
-    single playback owner. start/is_running/make_buffer must all stay outside
-    it — _schedule_lock is what serializes them against stop()."""
-    free: dict[str, list[bool]] = {"is_running": [], "start": [], "make_buffer": []}
+    single playback owner. Every backend call must stay outside it — including
+    the recovery pair, which runs exactly when the daemon must not hang.
+    _schedule_lock is what serializes them against stop()."""
+    state_lock: list = []
+    free: dict[str, list[bool]] = {}
 
     def record(name: str) -> None:
-        acquired = player._state_lock.acquire(blocking=False)
-        free[name].append(acquired)
+        # Read the lock through a holder rather than closing over `player`,
+        # which is bound after this class: a construction-time backend call
+        # should fail as a missing probe, not as an unreadable NameError.
+        lock = state_lock[0]
+        acquired = lock.acquire(blocking=False)
+        free.setdefault(name, []).append(acquired)
         if acquired:
-            player._state_lock.release()
+            lock.release()
 
     class LockProbingBackend(RecoveringFakeBackend):
         def is_running(self) -> bool:
@@ -360,17 +434,52 @@ def test_no_native_call_runs_under_the_state_lock() -> None:
             record("make_buffer")
             return super().make_buffer(audio)
 
+        def play(self, buffer: bytes, completion: Callable[[], None]) -> None:
+            record("play")
+            super().play(buffer, completion)
+
+        def stop(self) -> None:
+            record("stop")
+            super().stop()
+
+        def recover(self) -> None:
+            record("recover")
+            super().recover()
+
     backend = LockProbingBackend()
     backend.auto_complete = True
     player = player_module.CoreAudioPlayer(backend=backend)
+    state_lock.append(player._state_lock)
 
     player.play(wav_chunk("first"), should_play=lambda: True, on_started=lambda: None)
+    # An externally stopped engine takes the restart path.
     backend.running = False
     player.play(wav_chunk("second"), should_play=lambda: True, on_started=lambda: None)
+    # A route loss takes the recovery path: backend.stop() then recover().
+    backend.play_failures.append(player_module.NativePlaybackRouteLost("route gone"))
+    with pytest.raises(player_module.CoreAudioPlayerError):
+        player.play(
+            wav_chunk("third"), should_play=lambda: True, on_started=lambda: None
+        )
 
-    assert free["is_running"] and free["start"] and free["make_buffer"]
+    assert {"is_running", "start", "make_buffer", "play", "stop", "recover"} <= set(free)
     for name, acquisitions in free.items():
         assert all(acquisitions), f"{name} ran while _state_lock was held"
+
+
+class _FakeFormat:
+    """AVAudioFormat stand-in: identity is what _ensure_connected compares."""
+
+    def isEqual_(self, other) -> bool:  # noqa: N802 - Objective-C selector name
+        return self is other
+
+
+class _FakeBuffer:
+    def __init__(self, audio_format: _FakeFormat) -> None:
+        self._format = audio_format
+
+    def format(self):
+        return self._format
 
 
 class _LiveNativeEngine:
@@ -378,6 +487,8 @@ class _LiveNativeEngine:
 
     def __init__(self) -> None:
         self.running = False
+        self.disconnected: list[object] = []
+        self.connected: list[tuple[object, object]] = []
 
     def isRunning(self) -> bool:  # noqa: N802 - Objective-C selector name
         return self.running
@@ -388,6 +499,36 @@ class _LiveNativeEngine:
     def startAndReturnError_(self, _error):  # noqa: N802 - selector name
         self.running = True
         return (True, None)
+
+    def disconnectNodeOutput_(self, node):  # noqa: N802 - selector name
+        self.disconnected.append(node)
+
+    def connect_to_format_(self, node, _destination, audio_format):  # noqa: N802
+        self.connected.append((node, audio_format))
+
+
+class _LiveNativeNode:
+    """Minimal AVAudioPlayerNode stand-in for the re-arm contract."""
+
+    def __init__(self) -> None:
+        self.playing = False
+        self.stop_calls = 0
+        self.play_calls = 0
+        self.scheduled: list[object] = []
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+        self.playing = False
+
+    def isPlaying(self) -> bool:  # noqa: N802 - Objective-C selector name
+        return self.playing
+
+    def play(self) -> None:
+        self.play_calls += 1
+        self.playing = True
+
+    def scheduleBuffer_completionHandler_(self, buffer, _completion):  # noqa: N802
+        self.scheduled.append(buffer)
 
 
 class _ExplodingNativeEngine:

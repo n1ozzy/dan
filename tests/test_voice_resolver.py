@@ -224,3 +224,43 @@ def test_catalog_and_snapshot_mappings_are_immutable(
         catalog.personas["dan"] = {}  # type: ignore[index]
     with pytest.raises(TypeError):
         snapshot.pronunciations["runtime"] = "changed"  # type: ignore[index]
+
+
+class TestCatalogHashMatchesParsedBytes:
+    """Content and hash must come from one read of personas.toml.
+
+    Reading the file twice let a write land between the two reads: the catalog
+    then carried routes from one revision and the frozen SHA of another, so the
+    integrity check passed forever while the daemon served stale routes.
+    """
+
+    def test_write_between_reads_cannot_desync_content_and_hash(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import hashlib
+        import pathlib
+
+        from dan.voice.resolver import VoiceCatalog
+
+        first = '[dan]\nengine = "supertonic"\nvoice = "M3"\n'
+        second = '[dan]\nengine = "supertonic"\nvoice = "M1"\n'
+        personas = tmp_path / "personas.toml"
+        personas.write_text(first, encoding="utf-8")
+        (tmp_path / "pronunciations.toml").write_text("", encoding="utf-8")
+
+        real_read_bytes = pathlib.Path.read_bytes
+
+        def patched_read_bytes(self):  # type: ignore[no-untyped-def]
+            # A concurrent writer landing right before the hashing read.
+            if self == personas:
+                personas.write_text(second, encoding="utf-8")
+            return real_read_bytes(self)
+
+        monkeypatch.setattr(pathlib.Path, "read_bytes", patched_read_bytes)
+        catalog = VoiceCatalog.from_directory(tmp_path)
+
+        parsed_voice = catalog.personas["dan"]["voice"]
+        expected_source = first if parsed_voice == "M3" else second
+        assert catalog.asset_sha256["voice.personas"] == hashlib.sha256(
+            expected_source.encode("utf-8")
+        ).hexdigest()

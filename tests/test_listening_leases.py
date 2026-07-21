@@ -466,3 +466,20 @@ def test_ptt_unknown_source_is_bad_request(tmp_path: Path) -> None:
 
 def test_schema_and_migrations_are_unchanged() -> None:
     assert_schema_and_migrations_unchanged(ROOT)
+
+
+def test_ptt_lease_works_without_a_recorder(conn) -> None:
+    """No microphone wired must not turn press-to-talk into a crash.
+
+    ``voice_recorder`` is None whenever capture is unavailable, and
+    ``_sync_recorder`` called ``.start()`` on it unconditionally — so the
+    global PTT hotkey blew up in the handler instead of taking its lease,
+    which is what pauses the broker for barge-in.
+    """
+
+    m = manager(conn, recorder=None)
+    m._recorder = None
+
+    lease = m.acquire(mode="hold", source="global_hotkey")
+    assert lease.status == "active"
+    assert m.release(mode="hold")

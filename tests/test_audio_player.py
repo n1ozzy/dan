@@ -38,6 +38,12 @@ class FakeCoreAudioBackend:
         self.max_active_buffers = max(self.max_active_buffers, self.active_buffers)
         self.audio.append(buffer)
         self.playing.set()
+        if not self.running:
+            # A buffer scheduled on a stopped engine never fires its completion
+            # handler. That silence is the whole defect the liveness probe
+            # exists to catch, so the fake must not paper over it.
+            self.active_buffers = max(0, self.active_buffers - 1)
+            return
         if self.block:
             def complete_later() -> None:
                 self.release.wait(timeout=5)

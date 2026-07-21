@@ -179,6 +179,61 @@ def test_speak_requires_some_text(
     assert queue_rows(voice_app) == []
 
 
+@pytest.mark.parametrize("status", ["synthesizing", "speaking", "done"])
+def test_speak_in_flight_status_is_committed(
+    voice_app: DaemonApp,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    """The daemon may start processing before it responds; any in-flight
+    status still proves the row was committed and must exit 0."""
+    from types import SimpleNamespace
+
+    response = {"status": status, "request_id": "req-1", "session": "smoke"}
+    monkeypatch.setattr(
+        dan_cli,
+        "_daemon_client",
+        lambda args, config: SimpleNamespace(speak=lambda payload: dict(response)),
+    )
+    set_stdin_bytes(monkeypatch, b"ping")
+    rc, out, _err = run_cli(
+        capsys, *speak_args(voice_app, "http://127.0.0.1:1", "--stdin")
+    )
+
+    payload = assert_single_json_object(out)
+    assert rc == 0
+    assert payload["status"] == status
+    assert payload["request_id"] == "req-1"
+
+
+@pytest.mark.parametrize("status", ["failed", "cancelled"])
+def test_speak_terminal_failure_status_is_reported_as_unspoken(
+    voice_app: DaemonApp,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    from types import SimpleNamespace
+
+    response = {"status": status, "request_id": "req-1"}
+    monkeypatch.setattr(
+        dan_cli,
+        "_daemon_client",
+        lambda args, config: SimpleNamespace(speak=lambda payload: dict(response)),
+    )
+    set_stdin_bytes(monkeypatch, b"ping")
+    rc, out, _err = run_cli(
+        capsys, *speak_args(voice_app, "http://127.0.0.1:1", "--stdin")
+    )
+
+    payload = assert_single_json_object(out)
+    assert rc != 0
+    # The row exists; only the utterance is lost. Calling that
+    # "not committed" sends the operator hunting for a missing write.
+    assert payload["error"] == "speak_not_spoken"
+
+
 def test_speak_unreachable_daemon_prints_one_json_error(
     voice_app: DaemonApp,
     capsys: pytest.CaptureFixture[str],

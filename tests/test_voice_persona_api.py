@@ -256,3 +256,98 @@ class TestApplyPersonaVoice:
         assert status == 500
         assert body["status"] == 500
         assert read_catalog_raw(catalog_dir) == before
+
+
+class TestAllowedVoicesComeFromTheManifest:
+    """Selectable voices are the installed, verified assets — not whatever
+    string happens to appear in the file.
+
+    Deriving the set from the file hid every installed blend nobody routed yet
+    (a one-way ratchet: switch the last user of a blend away and it can never
+    be selected again) and promoted any typo into a valid choice for everyone.
+    """
+
+    def test_installed_blend_unused_in_file_is_selectable(
+        self, persona_app: DaemonApp
+    ) -> None:
+        with running_server(persona_app) as base_url:
+            _, body = request_json("GET", f"{base_url}/voice/personas")
+        allowed = set(body["allowed_voices"])
+        assert "F1F2" in allowed
+        assert "FTRIO" in allowed
+
+    def test_typo_in_the_file_is_not_promoted_to_a_choice(
+        self, tmp_path: Path
+    ) -> None:
+        catalog = tmp_path / "typo-catalog"
+        catalog.mkdir()
+        (catalog / "personas.toml").write_text(
+            PERSONAS_SAMPLE + '\n[literowka]\nengine = "supertonic"\n'
+            'voice = "TYPOO"\nmastering = "raw"\nspeed = 1.0\ndsp = "none"\n',
+            encoding="utf-8",
+        )
+        app = make_voice_app(tmp_path)
+        app.voice_catalog_dir = catalog
+        try:
+            with running_server(app) as base_url:
+                _, body = request_json("GET", f"{base_url}/voice/personas")
+                assert "TYPOO" not in body["allowed_voices"]
+                status, _ = request_json(
+                    "POST",
+                    f"{base_url}/voice/personas/apply",
+                    {"persona": "dan", "voice": "TYPOO"},
+                )
+                assert status == 400
+            assert read_catalog(catalog)["dan"]["voice"] == "M3"
+        finally:
+            app.close()
+
+
+class TestConcurrentApply:
+    """The read-original / edit / reload sequence must be serialised.
+
+    ThreadingHTTPServer runs handlers concurrently and the panel fires apply
+    from two controls, so without a lock one request's committed change was
+    silently reverted by the other's rollback bytes.
+    """
+
+    def test_two_applies_both_land(
+        self, persona_app: DaemonApp, catalog_dir: Path
+    ) -> None:
+        import threading
+
+        persona_app.reload_voice_catalog = lambda: None
+        barrier = threading.Barrier(2)
+        results: dict[str, Any] = {}
+
+        def apply(persona: str, voice: str) -> None:
+            from dan.api.routes_voice import post_voice_personas_apply
+
+            barrier.wait()
+            try:
+                results[persona] = post_voice_personas_apply(
+                    persona_app, {"persona": persona, "voice": voice}
+                )
+            except Exception as exc:  # noqa: BLE001 - recorded for the assert
+                results[persona] = exc
+
+        threads = [
+            threading.Thread(target=apply, args=("dan", "M1")),
+            threading.Thread(target=apply, args=("danusia", "F5")),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        data = read_catalog(catalog_dir)
+        for persona, expected in (("dan", "M1"), ("danusia", "F5")):
+            outcome = results.get(persona)
+            if isinstance(outcome, Exception):
+                continue
+            assert data[persona]["voice"] == expected, (
+                f"{persona} reported success but the file lost the change"
+            )
+        assert not any(isinstance(value, Exception) for value in results.values()), (
+            f"a serialised apply should not fail: {results}"
+        )
