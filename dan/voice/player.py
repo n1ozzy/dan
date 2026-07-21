@@ -42,6 +42,8 @@ class _PlaybackStartCallbackFailed(CoreAudioPlayerError):
 class NativeAudioBackend(Protocol):
     def start(self) -> None: ...
 
+    def is_running(self) -> bool: ...
+
     def make_buffer(self, audio: bytes) -> Any: ...
 
     def play(self, buffer: Any, completion: Callable[[], None]) -> None: ...
@@ -163,7 +165,17 @@ class CoreAudioPlayer:
                                 raise PlaybackCancelled(
                                     f"playback skipped for {chunk.text!r}"
                                 )
-                            if not self._started:
+                            started = self._started
+                        # macOS stops the engine on its own after an output-device
+                        # change or sleep/wake, and a buffer scheduled on a stopped
+                        # engine never fires its completion handler, so the backend
+                        # outranks the _started flag. The probe stays outside
+                        # _state_lock: the CoreAudio completion thread takes that
+                        # lock while holding the engine's own mutex, so a native
+                        # call under it can deadlock the whole playback owner.
+                        engine_alive = started and self._backend.is_running()
+                        with self._state_lock:
+                            if not engine_alive:
                                 self._backend.start()
                                 self._started = True
                                 self.engine_start_count += 1
@@ -404,11 +416,32 @@ class _AVFoundationBackend:
         # synthesized WAVs are mono. The mixer upmixes/resamples to the device.
         self._connected_format = None
 
+    def is_running(self) -> bool:
+        engine = self._engine
+        if engine is None:
+            return False
+        try:
+            return bool(engine.isRunning())
+        except Exception as exc:
+            # A failing bridge call is a lost route, not a stopped engine:
+            # reporting False would silently restart on every chunk forever
+            # and bury the real fault.
+            raise NativePlaybackRouteLost(
+                f"native audio route liveness check failed: {exc}"
+            ) from exc
+
     def start(self) -> None:
         assert_audio_execution_allowed(operation="native route start")
         try:
             if self._engine is None:
                 raise RuntimeError("native audio graph is unavailable")
+            # A stopped engine means macOS may have torn the player node's
+            # output connection down with it (AVAudioEngineConfigurationChange
+            # does exactly that on a device change). Synthesized WAVs always
+            # carry the same format, so _ensure_connected would short-circuit
+            # on the cached one and schedule onto a detached node — the very
+            # silence this restart exists to end. Forget it and reconnect.
+            self._connected_format = None
             # Touching mainMixerNode materializes the mixer -> output path so the
             # engine can start before the first player-node connection exists.
             self._engine.mainMixerNode()

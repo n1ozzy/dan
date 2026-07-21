@@ -632,9 +632,13 @@ class _FakeCoreAudioBackend:
 
     def __init__(self) -> None:
         self.audio: list[bytes] = []
+        self.running = False
 
     def start(self) -> None:
-        pass
+        self.running = True
+
+    def is_running(self) -> bool:
+        return self.running
 
     def make_buffer(self, audio: bytes) -> bytes:
         return bytes(audio)
@@ -686,6 +690,9 @@ class _ExplodingBackend:
 
     def start(self) -> None:
         pass
+
+    def is_running(self) -> bool:
+        return True
 
     def make_buffer(self, audio: bytes) -> bytes:
         return bytes(audio)

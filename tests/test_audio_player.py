@@ -15,6 +15,7 @@ class FakeCoreAudioBackend:
     def __init__(self, *, block: bool = False) -> None:
         self.block = block
         self.started = 0
+        self.running = False
         self.active_buffers = 0
         self.max_active_buffers = 0
         self.stop_calls = 0
@@ -24,6 +25,10 @@ class FakeCoreAudioBackend:
 
     def start(self) -> None:
         self.started += 1
+        self.running = True
+
+    def is_running(self) -> bool:
+        return self.running
 
     def make_buffer(self, audio: bytes):
         return bytes(audio)
@@ -46,6 +51,7 @@ class FakeCoreAudioBackend:
 
     def stop(self) -> None:
         self.stop_calls += 1
+        self.running = False
         self.active_buffers = 0
         self.release.set()
 
@@ -76,6 +82,24 @@ def test_multiple_chunks_reuse_one_coreaudio_engine() -> None:
     assert player.max_parallel_buffers == 1
     assert backend.max_active_buffers == 1
     assert player.measured_inter_chunk_gap_ms < 80
+
+
+def test_externally_stopped_engine_restarts_before_next_schedule() -> None:
+    """Regression (2026-07-21): macOS stops AVAudioEngine on an output-device
+    change or sleep/wake. The player's _started flag stayed True, no restart
+    happened, and the scheduled buffer never completed — every request then
+    failed with 'native playback completion timed out'."""
+    backend = FakeCoreAudioBackend()
+    player = CoreAudioPlayer(backend=backend)
+
+    player.play(chunks()[0], should_play=lambda: True, on_started=lambda: None)
+    backend.running = False
+
+    player.play(chunks()[1], should_play=lambda: True, on_started=lambda: None)
+
+    assert backend.started == 2
+    assert player.engine_start_count == 2
+    assert len(backend.audio) == 2
 
 
 def test_idle_stop_releases_native_owner_and_next_play_restarts_it() -> None:

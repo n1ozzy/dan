@@ -45,6 +45,7 @@ class RecoveringFakeBackend:
         self.stop_calls = 0
         self.recover_calls = 0
         self.completed_plays = 0
+        self.running = False
         self.auto_complete = False
         self.play_failures: list[BaseException] = []
         self.completions: list[Callable[[], None]] = []
@@ -53,6 +54,10 @@ class RecoveringFakeBackend:
 
     def start(self) -> None:
         self.start_calls += 1
+        self.running = True
+
+    def is_running(self) -> bool:
+        return self.running
 
     def make_buffer(self, audio: bytes) -> bytes:
         return audio
@@ -67,6 +72,7 @@ class RecoveringFakeBackend:
 
     def stop(self) -> None:
         self.stop_calls += 1
+        self.running = False
         if self.stop_error is not None:
             raise self.stop_error
 
@@ -298,6 +304,80 @@ def test_unproven_native_stop_is_sticky_until_recovery_succeeds() -> None:
     assert backend.stop_calls == 3
     assert backend.recover_calls == 3
     assert backend.start_calls == starts_before_blocked_play + 1
+
+
+def test_engine_restart_forgets_the_cached_output_connection() -> None:
+    """Regression (2026-07-21): restarting an engine macOS had stopped left
+    _connected_format populated. Every synthesized WAV carries the same format,
+    so _ensure_connected short-circuited and the buffer was scheduled onto the
+    connection the device change had already torn down — the completion handler
+    never fired and playback timed out, which is the bug the restart exists to
+    fix."""
+    backend = object.__new__(player_module._AVFoundationBackend)
+    backend._engine = _LiveNativeEngine()
+    backend._node = object()
+    backend._connected_format = object()
+
+    backend.start()
+
+    assert backend._connected_format is None
+
+
+def test_liveness_probe_failure_is_a_route_loss_not_a_stopped_engine() -> None:
+    # Reporting False for a broken bridge would restart the engine on every
+    # chunk forever and never surface the fault; a route loss is recoverable
+    # and visible.
+    backend = object.__new__(player_module._AVFoundationBackend)
+    backend._engine = _ExplodingNativeEngine()
+
+    with pytest.raises(player_module.NativePlaybackRouteLost, match="liveness check"):
+        backend.is_running()
+
+
+def test_liveness_probe_never_runs_under_the_state_lock() -> None:
+    """The CoreAudio completion handler takes _state_lock while holding the
+    engine's own mutex, so probing the engine under that lock can deadlock the
+    single playback owner. The probe must run outside it."""
+    holder: list[bool] = []
+
+    class LockProbingBackend(RecoveringFakeBackend):
+        def is_running(self) -> bool:
+            acquired = player._state_lock.acquire(blocking=False)
+            holder.append(acquired)
+            if acquired:
+                player._state_lock.release()
+            return super().is_running()
+
+    backend = LockProbingBackend()
+    backend.auto_complete = True
+    player = player_module.CoreAudioPlayer(backend=backend)
+
+    player.play(wav_chunk("first"), should_play=lambda: True, on_started=lambda: None)
+    player.play(wav_chunk("second"), should_play=lambda: True, on_started=lambda: None)
+
+    assert holder and all(holder), "engine was probed while _state_lock was held"
+
+
+class _LiveNativeEngine:
+    """Minimal AVAudioEngine stand-in for the start()/isRunning() contract."""
+
+    def __init__(self) -> None:
+        self.running = False
+
+    def isRunning(self) -> bool:  # noqa: N802 - Objective-C selector name
+        return self.running
+
+    def mainMixerNode(self):  # noqa: N802 - Objective-C selector name
+        return object()
+
+    def startAndReturnError_(self, _error):  # noqa: N802 - selector name
+        self.running = True
+        return (True, None)
+
+
+class _ExplodingNativeEngine:
+    def isRunning(self) -> bool:  # noqa: N802 - Objective-C selector name
+        raise RuntimeError("objc bridge is gone")
 
 
 class _ToggleNativeOwner:
