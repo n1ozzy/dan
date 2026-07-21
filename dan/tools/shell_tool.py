@@ -8,6 +8,15 @@ Safety model for shell_read:
 - Only normalized whitelist matches execute.
 - Scrubbed environment, bounded runtime, bounded output, optional cwd that
   must stay inside the approved roots.
+
+The allowlist is an EXACT match on the whole normalized command, so any command
+carrying an argument the operator did not pre-register is refused. That is the
+right default for a shared runtime and useless for a personal one: the live log
+shows DAN refused `ls -la ~/Documents/.develop`. The owner of a local,
+localhost-only runtime can therefore opt out with ``unrestricted=True``
+(config: ``security.shell_read_unrestricted``). Opting out drops ONLY the
+allowlist — approved-root containment for cwd, the scrubbed environment, the
+git hardening below, and the runtime/output bounds all stay in force.
 """
 
 from __future__ import annotations
@@ -96,16 +105,18 @@ class ShellReadTool(Tool):
         *,
         whitelist: Iterable[str] | None = None,
         approved_roots: Iterable[str] | None = None,
+        unrestricted: bool = False,
     ):
         self.whitelist = tuple(
             _normalize_command(entry) for entry in (whitelist or DEFAULT_SHELL_READ_WHITELIST)
         )
         self.approved_roots = tuple(_normalize_path(root) for root in (approved_roots or ()))
+        self.unrestricted = bool(unrestricted)
 
     def run(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         command = _required_command_argument(arguments)
         normalized = _normalize_command(command)
-        if normalized not in self.whitelist:
+        if not self.unrestricted and normalized not in self.whitelist:
             raise ToolExecutionError(
                 f"shell_read command is not whitelisted: {normalized}"
             )

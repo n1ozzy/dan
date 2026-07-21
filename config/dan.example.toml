@@ -182,6 +182,13 @@ approved_roots = [
   "~/Documents/dev",
   "~/.dan",
 ]
+# shell_read matches the WHOLE normalized command against an exact allowlist
+# (built-in set in dan/tools/shell_tool.py; shell_read_whitelist replaces it).
+# Any argument that was not pre-registered is refused, which is right for a
+# shared install and unusable on a personal one. Set true to drop the allowlist
+# on an owner-controlled, localhost-only runtime; root containment, the
+# scrubbed environment and the git hardening stay in force either way.
+shell_read_unrestricted = false
 
 [runtime]
 home = "~/.dan"

@@ -394,6 +394,13 @@ class SecurityConfig:
     # Exact-match whitelist for the read-only shell tool. Empty means the
     # conservative built-in default set (dan/tools/shell_tool.py).
     shell_read_whitelist: tuple[str, ...] = ()
+    # Owner opt-out from that whitelist (Ozzy 2026-07-21). The match is exact on
+    # the WHOLE normalized command, so any argument the operator did not
+    # pre-register is refused — unusable on a personal runtime. True drops the
+    # allowlist only; approved-root containment, the scrubbed environment, the
+    # git hardening and the runtime/output bounds all stay. Default False so a
+    # shared or default install keeps the cage.
+    shell_read_unrestricted: bool = False
     # ui_read backend: "ax" (real AXUIElement, needs the Accessibility TCC
     # grant) or "fake" (deterministic fixture for tests/smoke). Unknown
     # names fail the daemon at startup — never a silent fallback.

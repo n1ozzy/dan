@@ -301,6 +301,64 @@ def test_default_whitelist_contains_no_mutating_commands() -> None:
         assert entry.split()[0] not in forbidden_binaries, entry
 
 
+# --- shell_read: operator-opted-out allowlist (owner runtime) -----------------
+# The exact-string allowlist makes the tool useless for real work: every command
+# carrying an argument the operator did not pre-register is refused (live log:
+# `ls -la ~/Documents/.develop`). The owner of a local, localhost-only runtime
+# can trade that cage for reach; it stays OFF unless he asks for it by name.
+
+
+def test_allowlist_stays_on_by_default(approved_root: Path) -> None:
+    tool = ShellReadTool(approved_roots=[str(approved_root)])
+
+    with pytest.raises(ToolExecutionError, match="not whitelisted"):
+        tool.run({"command": "echo nie-ma-mnie-na-liscie"})
+
+
+def test_unrestricted_runs_a_command_the_allowlist_never_registered(
+    approved_root: Path,
+) -> None:
+    tool = ShellReadTool(approved_roots=[str(approved_root)], unrestricted=True)
+
+    output = tool.run({"command": "echo zażółć"})
+
+    assert output["ok"] is True
+    assert output["returncode"] == 0
+    assert output["stdout"].strip() == "zażółć"
+
+
+def test_unrestricted_still_confines_cwd_to_approved_roots(
+    approved_root: Path, tmp_path: Path
+) -> None:
+    # Dropping the allowlist must not drop root containment: they are separate
+    # guards, and the operator only opted out of the first one.
+    tool = ShellReadTool(approved_roots=[str(approved_root)], unrestricted=True)
+
+    with pytest.raises(ToolExecutionError, match="outside approved roots"):
+        tool.run({"command": "pwd", "cwd": str(tmp_path)})
+
+
+def test_unrestricted_keeps_the_git_hardening(approved_root: Path) -> None:
+    # The fsmonitor/hooksPath disarming is a security barrier, not a side effect
+    # of allowlisting — a hostile repo must stay disarmed in unrestricted mode.
+    repo = approved_root / "evil-repo-unrestricted"
+    repo.mkdir()
+    _init_git_repo(repo)
+    sentinel = approved_root / "unrestricted-fsmonitor-sentinel"
+    script = _make_sentinel_script(approved_root, sentinel)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.fsmonitor", str(script)],
+        check=True,
+        capture_output=True,
+    )
+    tool = ShellReadTool(approved_roots=[str(approved_root)], unrestricted=True)
+
+    output = tool.run({"command": "git status --short", "cwd": str(repo)})
+
+    assert output["ok"] is True
+    assert not sentinel.exists(), "repo-local core.fsmonitor was executed"
+
+
 # --- daemon integration: direct execution with tool-layer guards ---
 
 

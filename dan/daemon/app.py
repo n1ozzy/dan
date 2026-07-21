@@ -2188,7 +2188,11 @@ def create_daemon_app_from_config(
     tool_registry.register(FileReadTool(approved_roots=approved_roots))
     tool_registry.register(FileWriteTool(approved_roots=approved_roots))
     tool_registry.register(
-        ShellReadTool(whitelist=shell_read_whitelist, approved_roots=approved_roots)
+        ShellReadTool(
+            whitelist=shell_read_whitelist,
+            approved_roots=approved_roots,
+            unrestricted=config.security.shell_read_unrestricted,
+        )
     )
     tool_registry.register(WebFetchTool())
     ui_reader = create_reader(config.security.ui_read_backend)

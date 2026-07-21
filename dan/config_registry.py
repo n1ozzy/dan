@@ -220,6 +220,7 @@ security.require_approval_for_memory
 security.destructive_tools_enabled
 security.approved_roots
 security.shell_read_whitelist
+security.shell_read_unrestricted
 security.ui_read_backend
 security.ui_act_backend
 security.screen_read_backend
