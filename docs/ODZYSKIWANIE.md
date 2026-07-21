@@ -31,6 +31,43 @@ Interpretation:
 - the panel says "offline" while the daemon is alive → wrong `--url`/port in
   the configuration (`dan config explain`).
 
+## The daemon will not come back after a restart (orphaned supertonic)
+
+Symptom: after `launchctl kickstart -k gui/501/com.dan.dand` the API never
+answers — `curl /health` returns nothing, for tens of seconds, and it looks like
+the daemon crashed. Seen live 2026-07-21.
+
+It is usually not a crash: the previous daemon died but its `supertonic serve`
+child survived as an orphan and still holds port 7788. The new daemon finds the
+port answering, cannot prove the listener is its own child, and refuses to
+adopt or kill it — by design (ADR-001: never kill someone else's process). The
+startup then fails with `ForeignPortOwnerError`.
+
+```bash
+# 1. Confirm the diagnosis — this line, not a guess:
+tail -30 ~/.dan/logs/dand.err.log      # look for ForeignPortOwnerError
+
+# 2. Identify who holds the port, and PROVE it is ours before touching it:
+lsof -nP -iTCP:7788 -sTCP:LISTEN
+ps -p <PID> -o ppid=,lstart=,command=
+```
+
+Adopt-or-kill only when all of it matches: the binary is `~/.dan/venv/bin/supertonic`,
+the arguments are our model/port/log-level, and `ppid` is 1 (orphan). A process
+that does not match all three is somebody else's — stop and ask, do not kill it.
+
+```bash
+# 3. Ours and orphaned → terminate, wait for the port, restart:
+kill -TERM <PID>
+lsof -nP -iTCP:7788 -sTCP:LISTEN       # must come back empty
+launchctl kickstart -k gui/501/com.dan.dand
+```
+
+Why it happens at all: the supervisor's ownership test compares `ps` output
+against the child's argv, but `supertonic` is a console script with a shebang,
+so the kernel prepends the interpreter path and the comparison can never match.
+Full analysis and the trap in fixing it: `docs/reviews/2026-07-21-restart-orphan-shell-review.md` §1.
+
 ## DAN says it has no tools, no access, no memory
 
 Symptom: DAN answers that it cannot do anything, names tools that are not ours

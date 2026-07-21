@@ -338,6 +338,38 @@ def test_unrestricted_still_confines_cwd_to_approved_roots(
         tool.run({"command": "pwd", "cwd": str(tmp_path)})
 
 
+def test_unrestricted_tells_the_model_it_is_not_read_only(approved_root: Path) -> None:
+    # The brain picks what to attempt from these strings. While they said
+    # "allowlisted" and "read-only", an instance running arbitrary commands was
+    # advertising a constraint nothing enforced.
+    default = ShellReadTool(approved_roots=[str(approved_root)])
+    unrestricted = ShellReadTool(approved_roots=[str(approved_root)], unrestricted=True)
+
+    assert "allowlist" in default.description
+    assert "read-only" in default.description
+
+    assert "NOT read-only" in unrestricted.description
+    assert "allowlist is OFF" in unrestricted.description
+    command_field = unrestricted.input_schema["properties"]["command"]
+    assert "No allowlist applies" in command_field["description"]
+
+
+def test_unrestricted_instance_does_not_mutate_the_shared_class_schema(
+    approved_root: Path,
+) -> None:
+    # input_schema is a class attribute, i.e. shared mutable state: rewriting it
+    # in place would relabel every other instance, including allowlisted ones.
+    ShellReadTool(approved_roots=[str(approved_root)], unrestricted=True)
+
+    fresh = ShellReadTool(approved_roots=[str(approved_root)])
+
+    assert "read-only allowlist" in fresh.input_schema["properties"]["command"]["description"]
+    assert (
+        "read-only allowlist"
+        in ShellReadTool.input_schema["properties"]["command"]["description"]
+    )
+
+
 def test_unrestricted_keeps_the_git_hardening(approved_root: Path) -> None:
     # The fsmonitor/hooksPath disarming is a security barrier, not a side effect
     # of allowlisting — a hostile repo must stay disarmed in unrestricted mode.

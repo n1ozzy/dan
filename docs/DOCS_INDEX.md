@@ -60,9 +60,9 @@ description of the running system. It has already cost one debugging session
 
 - `docs/MACOS_PERMISSION_MODEL.md` - **the permission model here was never
   built.** `ToolPermissionPolicy.decide()` returns ALLOW for every risk class and
-  every source. Only §5 (transport token) exists in code — and it is switched off
-  on this machine (`api_token_required = false`). This omission from the index
-  was itself a defect: a security document nobody could find from here.
+  every source. Only §5 (transport token) exists in code, and it is now switched
+  **on** here (`api_token_required = true`, 2026-07-21). This omission from the
+  index was itself a defect: a security document nobody could find from here.
 - `docs/MACOS_CAPABILITIES.md` - capability *inventory*, and its per-capability
   `Status:` lines are stale in the other direction: screen reading, Accessibility
   read **and** action, the terminal bridge and `web_fetch` have all shipped and

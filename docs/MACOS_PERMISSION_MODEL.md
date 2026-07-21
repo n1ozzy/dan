@@ -163,11 +163,13 @@ Usage (design):
 
 ## 5. Transport token — ✅ BUILT (the one implemented part of this document)
 
-> **Shipped with different names, and switched off.** The header is
+> **Shipped with different names, and now switched ON.** The header is
 > `X-DAN-Token` (`dan/security/transport.py`), the token file is
-> `~/.dan/runtime/api-token`, enforcement lives in `dan/daemon/lifecycle.py` —
-> and every check is wrapped in `security.api_token_required`, which is `false`
-> in the owner's live config, so what that leaves reachable is analysed in
+> `~/.dan/runtime/api-token`, enforcement lives in `dan/daemon/lifecycle.py`,
+> and every check is wrapped in `security.api_token_required` — `true` in the
+> owner's live config since 2026-07-21, verified against the running daemon.
+> This is the one part of this document that is real; everything else here is
+> unimplemented design. What the flag does and does not buy is in
 > [SECURITY_MODEL.md](SECURITY_MODEL.md) §2 ("Who can reach a tool"). Read the
 > code and that section rather than the design sketch below.
 

@@ -110,12 +110,23 @@ before citing it as a limit.
 
 ### Who can reach a tool: the API accepts unauthenticated writes
 
+> **CLOSED 2026-07-21, later the same day.** `security.api_token_required` was
+> turned **on** in the owner's `~/.dan/config.toml` on his instruction, and the
+> daemon was restarted. Measured against the running daemon afterwards: an
+> unauthenticated mutation returns 401, a `text/plain` cross-origin POST at
+> `/tools/request` (the CSRF shape described below) returns 401, a private read
+> without a token returns 401, and the same mutation with `X-DAN-Token` returns
+> 200. The panel is unaffected because the menu-bar app bootstraps the token
+> into `localStorage` (`token_bootstrap_script` in `dan/panel/menubar_app.py`)
+> and the cockpit's WebSocket carries it as a `dan-token.<token>` subprotocol.
+> The analysis below is kept because it explains what the flag actually buys.
+
 The transport token is built (`X-DAN-Token`, `dan/security/transport.py`,
-enforced in `dan/daemon/lifecycle.py`) but **it is off**:
-`security.api_token_required = false` in the owner's `~/.dan/config.toml`
-(verified 2026-07-21), and `_transport_authorized` returns `True` immediately
-for every mutating method when that flag is false. Nothing downstream re-checks
-who sent the request. What is left standing, precisely:
+enforced in `dan/daemon/lifecycle.py`). It **used to be off**:
+`security.api_token_required = false`, and `_transport_authorized` returns
+`True` immediately for every mutating method when that flag is false, with
+nothing downstream re-checking who sent the request. What was left standing,
+precisely:
 
 - `_host_header_is_local` is a **DNS-rebinding guard** — a foreign name that
   resolves to 127.0.0.1 is rejected because the `Host` header carries it. A
@@ -132,8 +143,11 @@ endpoint is `shell_read`, which hands the string to
 `subprocess.run(shell=True)`. This is the one finding here that is remotely
 triggerable rather than merely permissive.
 
-Setting `api_token_required = true` closes it — but verify the panel and the CLI
-actually send `X-DAN-Token` first, or flipping it blind locks out the cockpit.
+Setting `api_token_required = true` closes it — and that is what was done. The
+"verify the panel and the CLI actually send `X-DAN-Token` first" warning was
+honoured before flipping: panel HTTP, panel WebSocket, the CLI, the hotkey
+poster and the smoke scripts all send it. Keep that check if the flag is ever
+flipped again from a different surface.
 
 ---
 

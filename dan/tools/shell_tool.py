@@ -32,6 +32,7 @@ docs/reviews/2026-07-21-restart-orphan-shell-review.md §2-§5.
 
 from __future__ import annotations
 
+import copy
 import os
 import shlex
 import subprocess
@@ -91,10 +92,11 @@ _GIT_ARGV_HARDENING = (
 
 class ShellReadTool(Tool):
     name = "shell_read"
-    # KNOWN DEFECT: this text and the `command` schema below are class
-    # attributes, so the model is told "allowlisted" and "read-only" even when
-    # the instance was built with unrestricted=True and neither is true. The
-    # brain plans against a constraint that is not enforced. Review §2.
+    # This text and the `command` schema describe the DEFAULT, allowlisted
+    # tool. An unrestricted instance replaces both in __init__ — see
+    # _UNRESTRICTED_* below. Until 2026-07-21 it did not, so the brain was told
+    # "allowlisted" and "read-only" while the instance ran arbitrary commands,
+    # and planned against a constraint that was not enforced (review §2).
     description = (
         "Run one configured read-only allowlisted command and return bounded "
         "stdout/stderr; optional cwd must stay inside DAN-approved roots."
@@ -115,6 +117,23 @@ class ShellReadTool(Tool):
         "required": ["command"],
     }
 
+    # What an unrestricted instance says about itself. The point is not
+    # politeness: the brain decides what to attempt from this text, so calling
+    # a full shell "read-only allowlisted" suppresses safe work and hides the
+    # blast radius of the rest.
+    _UNRESTRICTED_DESCRIPTION = (
+        "Run a shell command and return bounded stdout/stderr. The command "
+        "allowlist is OFF on this runtime, so this is NOT read-only: anything "
+        "the owner could type in a terminal runs, including commands that "
+        "write, delete or reach the network, and the string is handed to a "
+        "shell so pipes, redirection and chaining apply. Only `cwd` is "
+        "contained to DAN-approved roots — the command itself is not."
+    )
+    _UNRESTRICTED_COMMAND_DESCRIPTION = (
+        "Shell command to run. No allowlist applies on this runtime; treat it "
+        "with the care you would a terminal on the owner's account."
+    )
+
     def __init__(
         self,
         *,
@@ -127,6 +146,17 @@ class ShellReadTool(Tool):
         )
         self.approved_roots = tuple(_normalize_path(root) for root in (approved_roots or ()))
         self.unrestricted = bool(unrestricted)
+        if self.unrestricted:
+            # Instance attributes shadow the class ones, and every consumer
+            # reads them off the instance (dan/brain/claude_cli_adapter.py,
+            # dan/mcp/memory_server.py), so this is what the model actually
+            # sees. deepcopy because the class schema is shared mutable state.
+            self.description = self._UNRESTRICTED_DESCRIPTION
+            schema = copy.deepcopy(type(self).input_schema)
+            schema["properties"]["command"]["description"] = (
+                self._UNRESTRICTED_COMMAND_DESCRIPTION
+            )
+            self.input_schema = schema
 
     def run(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         command = _required_command_argument(arguments)

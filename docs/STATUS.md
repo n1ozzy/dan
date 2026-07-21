@@ -35,7 +35,9 @@ Classification: current.
 - **On this machine two of those are already off (measured 2026-07-21 in
   `~/.dan/config.toml`).** `shell_read_unrestricted = true`, so the allowlist
   refuses nothing; `auto_approve_mode = 'all'` and
-  `destructive_tools_enabled = true`; `api_token_required = false`. That is the
+  `destructive_tools_enabled = true`. (`api_token_required` was `false` too
+  until 2026-07-21, when it was turned **on** and verified against the running
+  daemon — see `docs/SECURITY_MODEL.md` §2, "Who can reach a tool".) That is the
   owner's deliberate choice, the same way compiled memory is turned on below —
   a shipping default is not a description of the running daemon. But note the
   knock-on effect, which nobody chose: with the allowlist off, the git hardening
@@ -63,8 +65,9 @@ Classification: current.
 - **"The only working branch" describes branches, not checkouts.** Run
   `git worktree list` before trusting a doc you opened by path: a second
   worktree keeps its own copy of `docs/`, which every correction made here
-  bypasses. (2026-07-21: two extra worktrees were registered, one of them
-  already `prunable`, against the owner's standing "no worktrees" rule.)
+  bypasses. (2026-07-21: the two extra worktrees that had been registered
+  against the owner's "no worktrees" rule were verified to hold no unique
+  commits and removed; `git worktree list` now shows the main checkout only.)
 - Test evidence must come from a command run in the current task, never from
   a number quoted in this file.
 

