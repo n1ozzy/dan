@@ -334,28 +334,43 @@ def test_liveness_probe_failure_is_a_route_loss_not_a_stopped_engine() -> None:
         backend.is_running()
 
 
-def test_liveness_probe_never_runs_under_the_state_lock() -> None:
+def test_no_native_call_runs_under_the_state_lock() -> None:
     """The CoreAudio completion handler takes _state_lock while holding the
-    engine's own mutex, so probing the engine under that lock can deadlock the
-    single playback owner. The probe must run outside it."""
-    holder: list[bool] = []
+    engine's own mutex, so ANY native call made under that lock can deadlock the
+    single playback owner. start/is_running/make_buffer must all stay outside
+    it — _schedule_lock is what serializes them against stop()."""
+    free: dict[str, list[bool]] = {"is_running": [], "start": [], "make_buffer": []}
+
+    def record(name: str) -> None:
+        acquired = player._state_lock.acquire(blocking=False)
+        free[name].append(acquired)
+        if acquired:
+            player._state_lock.release()
 
     class LockProbingBackend(RecoveringFakeBackend):
         def is_running(self) -> bool:
-            acquired = player._state_lock.acquire(blocking=False)
-            holder.append(acquired)
-            if acquired:
-                player._state_lock.release()
+            record("is_running")
             return super().is_running()
+
+        def start(self) -> None:
+            record("start")
+            super().start()
+
+        def make_buffer(self, audio: bytes) -> bytes:
+            record("make_buffer")
+            return super().make_buffer(audio)
 
     backend = LockProbingBackend()
     backend.auto_complete = True
     player = player_module.CoreAudioPlayer(backend=backend)
 
     player.play(wav_chunk("first"), should_play=lambda: True, on_started=lambda: None)
+    backend.running = False
     player.play(wav_chunk("second"), should_play=lambda: True, on_started=lambda: None)
 
-    assert holder and all(holder), "engine was probed while _state_lock was held"
+    assert free["is_running"] and free["start"] and free["make_buffer"]
+    for name, acquisitions in free.items():
+        assert all(acquisitions), f"{name} ran while _state_lock was held"
 
 
 class _LiveNativeEngine:

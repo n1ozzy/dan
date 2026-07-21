@@ -169,17 +169,20 @@ class CoreAudioPlayer:
                         # macOS stops the engine on its own after an output-device
                         # change or sleep/wake, and a buffer scheduled on a stopped
                         # engine never fires its completion handler, so the backend
-                        # outranks the _started flag. The probe stays outside
-                        # _state_lock: the CoreAudio completion thread takes that
-                        # lock while holding the engine's own mutex, so a native
-                        # call under it can deadlock the whole playback owner.
+                        # outranks the _started flag. Every native call here stays
+                        # outside _state_lock and inside _schedule_lock: the
+                        # CoreAudio completion thread takes _state_lock while
+                        # holding the engine's own mutex, so a native call under it
+                        # deadlocks the playback owner. _schedule_lock still
+                        # serializes this whole section against stop().
                         engine_alive = started and self._backend.is_running()
+                        if not engine_alive:
+                            self._backend.start()
+                        buffer = self._backend.make_buffer(chunk.audio)
                         with self._state_lock:
                             if not engine_alive:
-                                self._backend.start()
                                 self._started = True
                                 self.engine_start_count += 1
-                            buffer = self._backend.make_buffer(chunk.audio)
                             self._generation += 1
                             generation = self._generation
                             self._current_generation = generation
