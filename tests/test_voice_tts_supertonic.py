@@ -13,6 +13,7 @@ import pytest
 from dan.voice import tts as voice_tts
 from dan.voice.assets import load_asset_manifest
 from dan.voice.models import RenderSnapshot
+from dan.voice.resolver import VoiceCatalog
 from dan.voice.tts import (
     BannedEngineError,
     SupertonicEngine,
@@ -295,6 +296,15 @@ def test_pronunciations_match_tokens_without_corrupting_polish_words() -> None:
     )
 
     assert rewritten == "epejaj jest zapisana w rantajm'ie."
+
+
+def test_owner_name_uses_approved_spoken_form_from_catalog() -> None:
+    catalog = VoiceCatalog.from_directory(ROOT / "config" / "voice")
+
+    assert catalog.pronunciations["ozzy"] == "oz-i"
+    assert apply_pronunciations(
+        "Ozzy.", dict(catalog.pronunciations)
+    ) == "oz-i."
 
 
 def test_synthesis_refuses_a_snapshot_for_another_engine(tmp_path: Path) -> None:
