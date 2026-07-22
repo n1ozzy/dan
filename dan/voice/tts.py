@@ -7,6 +7,8 @@ decree — asking for them is an explicit error, never a silent fallback.
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import logging
 import os
@@ -18,6 +20,7 @@ import threading
 import time
 import urllib.request
 import uuid
+import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -31,9 +34,35 @@ from dan.voice.assets import (
     verify_assets,
 )
 from dan.voice.models import RenderSnapshot
+from dan.voice.supertonic_seeded import (
+    SEED_PROTOCOL_HEADER,
+    SEED_PROTOCOL_VERSION,
+    SYNTHESIS_SEED_HEADER,
+    seeded_supertonic_argv,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _response_header(response: Any, name: str) -> str | None:
+    """Read a response header from HTTPMessage or a small test double."""
+
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    getter = getattr(headers, "get", None)
+    if callable(getter):
+        value = getter(name)
+        if value is not None:
+            return str(value)
+    target = name.lower()
+    try:
+        for key, value in headers.items():
+            if str(key).lower() == target:
+                return str(value)
+    except (AttributeError, TypeError):
+        return None
+    return None
 
 BANNED_ENGINES = ("edgetts", "piper", "xtts")
 # Decreed but not yet implemented; each arrives in its own stage.
@@ -107,14 +136,21 @@ _SUPERTONIC_STRIP = dict.fromkeys(map(ord, "„”“‚’‘«»"))
 def apply_pronunciations(text: str, pronunciations: dict[str, str]) -> str:
     """Rewrite anglicisms to phonetic spellings before synthesis (data-driven).
 
-    Case-insensitive substring match, longest keys first, so inflected forms
-    ("runtime'ie") keep their endings and longer entries win over prefixes.
+    Case-insensitive token match, longest keys first. Token boundaries stop a
+    short entry such as "api" from corrupting Polish words like "zapisana";
+    apostrophe-inflected forms ("runtime'ie") still keep their endings.
     """
 
     rewritten = text
     for key in sorted(pronunciations, key=len, reverse=True):
         if key:
-            rewritten = re.sub(re.escape(key), pronunciations[key], rewritten, flags=re.IGNORECASE)
+            pattern = rf"(?<!\w){re.escape(key)}(?!\w)"
+            rewritten = re.sub(
+                pattern,
+                pronunciations[key],
+                rewritten,
+                flags=re.IGNORECASE,
+            )
     return rewritten
 
 
@@ -165,6 +201,128 @@ _SUPERTONIC_BUILTIN_VOICES = frozenset(
     {f"M{index}" for index in range(1, 6)}
     | {f"F{index}" for index in range(1, 6)}
 )
+
+
+def _wav_duration_seconds(audio: bytes) -> float:
+    """Return the duration of one complete Supertonic render."""
+
+    try:
+        with wave.open(io.BytesIO(audio), "rb") as reader:
+            frames = reader.getnframes()
+            rate = reader.getframerate()
+    except (EOFError, wave.Error) as exc:
+        raise TTSEngineError(f"Supertonic produced an invalid WAV: {exc}") from exc
+    if frames <= 0 or rate <= 0:
+        raise TTSEngineError("Supertonic produced an empty WAV")
+    return frames / rate
+
+
+_TONE_FILTERS = {
+    "neutral": (),
+    "dark": (
+        "bass=g=1.4:f=180",
+        "treble=g=-1.1:f=3200",
+    ),
+    "hard": (
+        "highpass=f=58",
+        "equalizer=f=2350:t=q:w=1.35:g=1.8",
+    ),
+    "bright": (
+        "bass=g=-0.4:f=180",
+        "treble=g=1.1:f=3000",
+    ),
+}
+
+
+def _dynamic_tempo_filter(snapshot: RenderSnapshot, duration_seconds: float) -> str:
+    """Build a continuous tempo ramp over the full rendered utterance.
+
+    Supertonic receives the starting pace. ffmpeg then moves gradually to the
+    requested ending pace without cutting the text into clips, so the model
+    keeps the complete linguistic context. Nothing here inspects punctuation.
+    """
+
+    ratio = snapshot.tempo_end / snapshot.tempo_start
+    if abs(ratio - 1.0) < 1e-6:
+        return ""
+    # Reach the requested ending pace before the final words, then hold it.
+    # Nine deterministic control points keep each change inaudibly small.
+    ramp_duration = duration_seconds * 0.9
+    # Very wide legal contours need two atempo stages: each stage remains in
+    # the high-quality 0.5-2.0 band while their product is the desired ratio.
+    stage_count = 2 if ratio < 0.5 or ratio > 2.0 else 1
+    labels = ["live"] if stage_count == 1 else ["live_1", "live_2"]
+    commands: list[str] = []
+    for index in range(9):
+        fraction = index / 8
+        when = ramp_duration * fraction
+        target = 1.0 + ((ratio - 1.0) * fraction)
+        stage_value = target ** (1 / stage_count)
+        commands.extend(
+            f"{when:.3f} {label} tempo {stage_value:.6f}"
+            for label in labels
+        )
+    stages = ",".join(f"atempo@{label}=1.000000" for label in labels)
+    return f"asendcmd=c='{';'.join(commands)}',{stages}"
+
+
+def _emotion_filters(emotion: str, duration_seconds: float) -> tuple[str, ...]:
+    duration = max(duration_seconds, 0.001)
+    if emotion == "anger":
+        return (
+            "acompressor=threshold=-17dB:ratio=2.8:attack=4:release=65:makeup=1.12",
+            f"volume='0.97+0.07*t/{duration:.3f}':eval=frame",
+            "alimiter=limit=0.96:level=false",
+        )
+    if emotion == "contempt":
+        return (
+            "acompressor=threshold=-20dB:ratio=2.0:attack=12:release=120:makeup=1.04",
+            f"volume='1.01-0.04*t/{duration:.3f}':eval=frame",
+        )
+    if emotion == "mockery":
+        return (
+            f"volume='1+0.025*sin(PI*t/{duration:.3f})':eval=frame",
+        )
+    if emotion == "cold":
+        return (
+            "acompressor=threshold=-21dB:ratio=1.8:attack=16:release=140:makeup=1.02",
+            f"volume='1.01-0.02*t/{duration:.3f}':eval=frame",
+        )
+    return ()
+
+
+def _live_prosody_components(
+    snapshot: RenderSnapshot,
+    *,
+    duration_seconds: float,
+) -> tuple[list[str], str]:
+    """Return full-utterance filters and the explicit trailing pause."""
+
+    if not isinstance(duration_seconds, (int, float)) or duration_seconds <= 0:
+        raise TTSEngineError("live prosody requires a positive WAV duration")
+    body: list[str] = []
+    tempo_filter = _dynamic_tempo_filter(snapshot, float(duration_seconds))
+    if tempo_filter:
+        body.append(tempo_filter)
+    body.extend(_TONE_FILTERS[snapshot.tone])
+    body.extend(_emotion_filters(snapshot.emotion, float(duration_seconds)))
+    pause = (
+        f"apad=pad_dur={snapshot.pause_after:.3f}"
+        if snapshot.pause_after > 0
+        else ""
+    )
+    return body, pause
+
+
+def live_prosody_filter(snapshot: RenderSnapshot, *, duration_seconds: float) -> str:
+    """Render an explicit prosody plan without interpreting the spoken text."""
+
+    snapshot.validate_complete()
+    body, pause = _live_prosody_components(
+        snapshot,
+        duration_seconds=duration_seconds,
+    )
+    return ",".join([*body, *([pause] if pause else [])])
 
 
 def mastering_filter(profile: str) -> str:
@@ -248,6 +406,7 @@ class SupertonicEngine:
         )
         self._serve: str | None = None
         self._serve_proc: subprocess.Popen[str] | None = None
+        self._seeded_renderer_argv = seeded_supertonic_argv()
         # Lazily probed real binary version; the snapshot's engine_version
         # is only trustworthy once it matches the binary that will render it.
         self._engine_semver: str | None = None
@@ -297,7 +456,11 @@ class SupertonicEngine:
     def _serve_alive(self) -> bool:
         try:
             with urllib.request.urlopen(self._serve_url + "/v1/health", timeout=2) as r:
-                return r.status == 200
+                return (
+                    r.status == 200
+                    and _response_header(r, SEED_PROTOCOL_HEADER)
+                    == SEED_PROTOCOL_VERSION
+                )
         except Exception:
             return False
 
@@ -317,7 +480,7 @@ class SupertonicEngine:
         try:
             port = self._serve_url.rsplit(":", 1)[-1]
             self._serve_proc = subprocess.Popen(
-                [self._binary, "serve", "--model", self._serve_model,
+                [*self._seeded_renderer_argv, "serve", "--model", self._serve_model,
                  "--port", port, "--log-level", "warning"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 text=True, start_new_session=True,
@@ -334,7 +497,7 @@ class SupertonicEngine:
         except Exception:
             _LOGGER.exception("supertonic serve failed to start; using CLI.")
 
-    def _synth_serve(self, clean: str, speed: float, voice: str) -> bytes:
+    def _synth_serve(self, clean: str, speed: float, voice: str, seed: int) -> bytes:
         """POST to the warm server -> WAV bytes. Field is `lang` NOT `language`
         (the server's pydantic model silently ignores unknown fields)."""
         assert_audio_execution_allowed(operation="supertonic warm-server synthesis")
@@ -346,13 +509,24 @@ class SupertonicEngine:
             "steps": self._steps,
             "max_chunk_length": self._serve_max_chunk,
             "silence_duration": 0.0,
+            "seed": seed,
         }).encode("utf-8")
         req = urllib.request.Request(
             self._serve + "/v1/tts", data=body,
             headers={"Content-Type": "application/json"}, method="POST",
         )
         with urllib.request.urlopen(req, timeout=self._timeout) as r:
+            protocol = _response_header(r, SEED_PROTOCOL_HEADER)
+            rendered_seed = _response_header(r, SYNTHESIS_SEED_HEADER)
             audio = r.read()
+        if protocol != SEED_PROTOCOL_VERSION:
+            raise TTSEngineError(
+                "warm Supertonic does not implement DAN's deterministic seed protocol"
+            )
+        if rendered_seed != str(seed):
+            raise TTSEngineError(
+                f"warm Supertonic rendered seed {rendered_seed!r}, expected {seed}"
+            )
         if len(audio) < 1000:
             raise TTSEngineError("supertonic serve returned no usable audio.")
         return audio
@@ -421,13 +595,18 @@ class SupertonicEngine:
         speed: float,
         voice: str,
         custom_style_path: str | None = None,
+        seed: int = 0,
     ) -> bytes:
         assert_audio_execution_allowed(operation="supertonic CLI synthesis")
         out = Path(self.workdir) / f"tts-{uuid.uuid4().hex}.wav"
         cmd = [
-            self._binary, "tts", clean, "-o", str(out),
+            *self._seeded_renderer_argv, "render", clean, "-o", str(out),
+            "--model", self._serve_model,
             "--voice", voice, "--lang", self._lang,
-            "--steps", str(self._steps), "--speed", f"{speed:.2f}",
+            "--steps", str(self._steps), "--speed", repr(float(speed)),
+            "--max-chunk-length", str(self._serve_max_chunk),
+            "--silence-duration", "0.0",
+            "--seed", str(seed),
         ]
         if custom_style_path is not None:
             cmd.extend(["--custom-style-path", custom_style_path])
@@ -447,6 +626,36 @@ class SupertonicEngine:
         finally:
             out.unlink(missing_ok=True)
 
+    def _synth_one(
+        self,
+        clean: str,
+        speed: float,
+        voice: str,
+        custom_style_path: str | None,
+        seed: int,
+    ) -> bytes:
+        """Render one sentence: warm serve first (no per-chunk model reload),
+        any failure falls back to the CLI so warm-serve never regresses to
+        silence."""
+
+        if (
+            custom_style_path is None
+            and self._serve is None
+            and self._serve_url
+            and not self._serve_autostart
+        ):
+            self._ensure_serve()
+        if self._serve and custom_style_path is None:
+            try:
+                return self._synth_serve(clean, speed, voice, seed)
+            except AudioExecutionDisabled:
+                raise
+            except Exception:
+                _LOGGER.warning("supertonic serve synth failed; CLI fallback.", exc_info=True)
+                if not self._serve_alive():
+                    self._serve = None  # server died -> stop trying, go CLI
+        return self._synth_cli(clean, speed, voice, custom_style_path, seed)
+
     def synthesize(self, text: str, snapshot: RenderSnapshot) -> SynthesizedChunk:
         assert_audio_execution_allowed(operation="supertonic synthesis")
         snapshot.validate_complete()
@@ -461,27 +670,36 @@ class SupertonicEngine:
             raise TTSEngineError(f"Nothing speakable left after sanitizing {text!r}.")
         speed = snapshot.speed
         voice, custom_style_path = self._synthesis_voice(snapshot)
-        # Warm serve first (no per-chunk model reload); any failure falls back
-        # to the CLI so warm-serve never regresses to silence.
-        audio: bytes | None = None
-        if (
-            custom_style_path is None
-            and self._serve is None
-            and self._serve_url
-            and not self._serve_autostart
-        ):
-            self._ensure_serve()
-        if self._serve and custom_style_path is None:
-            try:
-                audio = self._synth_serve(clean, speed, voice)
-            except AudioExecutionDisabled:
-                raise
-            except Exception:
-                _LOGGER.warning("supertonic serve synth failed; CLI fallback.", exc_info=True)
-                if not self._serve_alive():
-                    self._serve = None  # server died -> stop trying, go CLI
-        if audio is None:
-            audio = self._synth_cli(clean, speed, voice, custom_style_path)
+        # Supertonic sees the complete utterance exactly once. Tempo, tone,
+        # emotion and the trailing pause are explicit snapshot controls; they
+        # never come from commas, full stops or any other text classifier.
+        audio = self._synth_one(
+            clean,
+            speed,
+            voice,
+            custom_style_path,
+            snapshot.seed,
+        )
+        _LOGGER.info(
+            "supertonic raw render seed=%d text_sha256=%s wav_sha256=%s",
+            snapshot.seed,
+            hashlib.sha256(clean.encode("utf-8")).hexdigest(),
+            hashlib.sha256(audio).hexdigest(),
+        )
+        # Static tone and an explicit tail do not need signal timing. Parsing
+        # duration is reserved for time-varying tempo/emotional envelopes.
+        duration_seconds = (
+            _wav_duration_seconds(audio)
+            if (
+                abs(snapshot.tempo_end - snapshot.tempo_start) >= 1e-6
+                or snapshot.emotion != "neutral"
+            )
+            else 1.0
+        )
+        prosody_body, trailing_pause = _live_prosody_components(
+            snapshot,
+            duration_seconds=duration_seconds,
+        )
         mastering_profile = snapshot.mastering_profile.strip().lower()
         if mastering_profile == "none":
             filter_chain = ""
@@ -495,6 +713,18 @@ class SupertonicEngine:
         dsp_chain = snapshot.dsp.strip()
         if dsp_chain and dsp_chain.lower() != "none":
             filter_chain = ",".join(part for part in (dsp_chain, filter_chain) if part)
+        # Tone/emotional dynamics happen before loudness normalization. The
+        # explicit pause is appended last, after mastering, so it remains true
+        # silence and does not affect loudness measurement.
+        filter_chain = ",".join(
+            part
+            for part in (
+                ",".join(prosody_body),
+                filter_chain,
+                trailing_pause,
+            )
+            if part
+        )
         return SynthesizedChunk(
             text=text,
             audio=self._apply_mastering(audio, filter_chain),
@@ -594,4 +824,5 @@ __all__ = [
     "TTSEngine",
     "TTSEngineError",
     "build_tts_engine",
+    "live_prosody_filter",
 ]

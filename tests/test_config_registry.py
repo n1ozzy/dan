@@ -27,7 +27,7 @@ def _voice_fixture(tmp_path: Path) -> tuple[VoiceCatalog, dict[str, EngineMetada
     voice_dir.mkdir()
     (voice_dir / "personas.toml").write_text(
         '[dan]\nengine = "supertonic"\nvoice = "M3"\nmastering = "raw"\n'
-        'speed = 1.25\ndsp = "none"\n',
+        'speed = 1.25\nseed = 17\ndsp = "none"\n',
         encoding="utf-8",
     )
     (voice_dir / "pronunciations.toml").write_text(

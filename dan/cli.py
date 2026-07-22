@@ -35,7 +35,7 @@ from dan.store.db import (
     initialize_database,
     table_names,
 )
-from dan.voice.models import VoiceRequestStatus
+from dan.voice.models import EMOTIONS, INTENT_TONES, VoiceRequestStatus
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,6 +66,36 @@ def build_parser() -> argparse.ArgumentParser:
     speak_parser.add_argument("--stdin", dest="use_stdin", action="store_true")
     speak_parser.add_argument("--url", help="Base URL for a running dand")
     speak_parser.add_argument("--timeout", type=_positive_timeout, default=5.0)
+    speak_parser.add_argument(
+        "--tempo",
+        type=float,
+        default=None,
+        help="emotional tempo multiplier on the persona's speed (e.g. 0.85 = slower, emphatic)",
+    )
+    speak_parser.add_argument(
+        "--tempo-end",
+        type=float,
+        default=None,
+        help="ending tempo multiplier; creates a live tempo curve across the utterance",
+    )
+    speak_parser.add_argument(
+        "--emotion",
+        choices=sorted(EMOTIONS),
+        default=None,
+        help="explicit emotion preset; never inferred from punctuation",
+    )
+    speak_parser.add_argument(
+        "--tone",
+        choices=sorted(INTENT_TONES),
+        default=None,
+        help="explicit tonal color (auto follows the selected emotion)",
+    )
+    speak_parser.add_argument(
+        "--pause-after",
+        type=float,
+        default=None,
+        help="explicit breath after the whole utterance in seconds",
+    )
 
     queue_parser = subcommands.add_parser("queue")
     queue_commands = queue_parser.add_subparsers(dest="queue_command", required=True)
@@ -460,6 +490,16 @@ def _handle_speak(args: argparse.Namespace, config: DANConfig) -> int:
         "session": args.session,
         "source": args.source,
     }
+    if args.tempo is not None:
+        payload["tempo"] = args.tempo
+    if args.tempo_end is not None:
+        payload["tempo_end"] = args.tempo_end
+    if args.emotion is not None:
+        payload["emotion"] = args.emotion
+    if args.tone is not None:
+        payload["tone"] = args.tone
+    if args.pause_after is not None:
+        payload["pause_after"] = args.pause_after
     try:
         response = client.speak(payload)
     except DaemonAPIError as exc:

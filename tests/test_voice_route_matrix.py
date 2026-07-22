@@ -99,7 +99,7 @@ def test_every_catalog_route_executes_through_real_runtime_boundary(
         external_calls.append(command)
         if len(command) > 1 and command[1] == "version":
             return subprocess.CompletedProcess(command, 0, "supertonic 1.3.1", "")
-        if len(command) > 1 and command[1] == "tts":
+        if "render" in command and "-o" in command:
             output = Path(command[command.index("-o") + 1])
             output.write_bytes(b"\0" * 2_000)
         elif "-af" in command:
@@ -123,9 +123,10 @@ def test_every_catalog_route_executes_through_real_runtime_boundary(
 
         chunk = engine.synthesize(f"route {name}", snapshot)
 
-        synthesis = next(command for command in external_calls if command[1] == "tts")
+        synthesis = next(command for command in external_calls if "render" in command)
         assert synthesis[synthesis.index("--voice") + 1] == spec["voice"]
-        assert synthesis[synthesis.index("--speed") + 1] == f"{float(spec['speed']):.2f}"
+        assert synthesis[synthesis.index("--speed") + 1] == repr(float(spec["speed"]))
+        assert synthesis[synthesis.index("--seed") + 1] == str(spec["seed"])
         if spec["voice"] in custom_styles:
             assert synthesis[synthesis.index("--custom-style-path") + 1] == str(
                 ROOT / "config" / "voice" / "custom_styles" / f"{spec['voice']}.json"
@@ -181,7 +182,7 @@ def test_zaneta_local_only_chatterbox_fails_closed_then_live_route_executes(
         commands.append(command)
         if len(command) > 1 and command[1] == "version":
             return subprocess.CompletedProcess(command, 0, "supertonic 1.3.1", "")
-        if len(command) > 1 and command[1] == "tts":
+        if "render" in command and "-o" in command:
             output = Path(command[command.index("-o") + 1])
             output.write_bytes(b"\0" * 2_000)
         elif "-af" in command:
@@ -193,5 +194,5 @@ def test_zaneta_local_only_chatterbox_fails_closed_then_live_route_executes(
 
     engine.synthesize("Jawny live fallback", resolver.resolve(speech_intent("zaneta")))
 
-    synthesis = next(command for command in commands if command[1] == "tts")
+    synthesis = next(command for command in commands if "render" in command)
     assert synthesis[synthesis.index("--voice") + 1] == zaneta["voice"] == "F2"

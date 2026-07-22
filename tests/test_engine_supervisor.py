@@ -9,9 +9,11 @@ from __future__ import annotations
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -36,32 +38,30 @@ SUPERTONIC_SPEC = ChildSpec(
     backoff_seconds=(0.0, 0.0, 0.0),
 )
 
-# The shape production actually produces, copied from the live 2026-07-21
-# incident rather than invented: `supertonic` is a console script with a
-# shebang, so the kernel runs the interpreter and ps reports its path ahead of
-# our argv. Tests that fed `' '.join(spec.argv)` passed while the daemon could
-# not start, which is exactly why this constant is measured, not written.
+# Production now executes DAN's deterministic adapter with the venv Python.
+# The module is the same single supervised warm child, not a second server.
 PRODUCTION_SPEC = ChildSpec(
     name="supertonic",
     argv=(
-        "/Users/n1_ozzy/.dan/venv/bin/supertonic",
+        "/Users/n1_ozzy/.dan/venv/bin/python",
+        "-m",
+        "dan.voice.supertonic_seeded",
         "serve",
         "--model",
         "supertonic-3",
         "--port",
-        "7788",
+        "7797",
         "--log-level",
         "warning",
     ),
-    health_url="http://127.0.0.1:7788/v1/health",
+    health_url="http://127.0.0.1:7797/v1/health",
     backoff_seconds=(0.0, 0.0, 0.0),
 )
 
 PRODUCTION_PS_COMMAND = (
-    "/Users/n1_ozzy/.homebrew/Cellar/python@3.14/3.14.0/Frameworks/"
-    "Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python "
-    "/Users/n1_ozzy/.dan/venv/bin/supertonic serve --model supertonic-3 "
-    "--port 7788 --log-level warning"
+    "/Users/n1_ozzy/.dan/venv/bin/python -m dan.voice.supertonic_seeded "
+    "serve --model supertonic-3 "
+    "--port 7797 --log-level warning"
 )
 PRODUCTION_ORPHAN_PID = 98336
 
@@ -186,6 +186,55 @@ def test_supertonic_is_one_supervised_child() -> None:
     assert factory.starts == 1
 
 
+def test_daemon_registers_seeded_adapter_as_the_only_warm_child() -> None:
+    from dan.daemon.app import DaemonApp
+
+    class RecordingSupervisor:
+        def __init__(self) -> None:
+            self.spec: ChildSpec | None = None
+            self.ensure_calls: list[str] = []
+            self.watchdog_calls = 0
+
+        def register(self, spec: ChildSpec) -> None:
+            self.spec = spec
+
+        def ensure_running(self, name: str) -> None:
+            self.ensure_calls.append(name)
+
+        def start_watchdog(self) -> None:
+            self.watchdog_calls += 1
+
+    supervisor = RecordingSupervisor()
+    app = SimpleNamespace(
+        child_supervisor=supervisor,
+        config=SimpleNamespace(
+            voice=SimpleNamespace(
+                default_tts="supertonic",
+                supertonic_serve_url="http://127.0.0.1:7797",
+                supertonic_serve_autostart=True,
+                supertonic_serve_model="supertonic-3",
+            )
+        ),
+    )
+
+    assert DaemonApp._ensure_supertonic_serve_child(app) is True
+    assert supervisor.spec is not None
+    assert supervisor.spec.argv == (
+        sys.executable,
+        "-m",
+        "dan.voice.supertonic_seeded",
+        "serve",
+        "--model",
+        "supertonic-3",
+        "--port",
+        "7797",
+        "--log-level",
+        "warning",
+    )
+    assert supervisor.ensure_calls == ["supertonic"]
+    assert supervisor.watchdog_calls == 1
+
+
 def test_foreign_port_owner_is_rejected_not_adopted_or_killed() -> None:
     supervisor, factory, killpg = build_supervisor(foreign_owner=True)
 
@@ -286,7 +335,7 @@ def test_orphan_lookup_only_considers_processes_holding_our_port() -> None:
 
     identities = {
         PRODUCTION_ORPHAN_PID: (1, PRODUCTION_ORPHAN_PID, PRODUCTION_PS_COMMAND),
-        4242: (1, 4242, "/usr/bin/some-stranger --port 7788"),
+        4242: (1, 4242, "/usr/bin/some-stranger --port 7797"),
     }
 
     found = _find_own_orphan(

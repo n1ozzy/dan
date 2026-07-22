@@ -17,7 +17,7 @@ from pathlib import Path
 from dan.voice.assets import load_voice_catalog
 
 ROOT = Path(__file__).resolve().parents[1]
-REQUIRED_FIELDS = {"engine", "voice", "speed", "mastering", "dsp"}
+REQUIRED_FIELDS = {"engine", "voice", "speed", "seed", "mastering", "dsp"}
 
 
 def load() -> object:

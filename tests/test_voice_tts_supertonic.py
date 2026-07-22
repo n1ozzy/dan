@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
+import logging
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from dan.voice import tts as voice_tts
 from dan.voice.assets import load_asset_manifest
 from dan.voice.models import RenderSnapshot
 from dan.voice.tts import (
     BannedEngineError,
     SupertonicEngine,
     TTSEngineError,
+    apply_pronunciations,
     build_tts_engine,
 )
 
@@ -24,15 +30,26 @@ def write_script(path: Path, body: str) -> Path:
     return path
 
 
+def template_wav(tmp_path: Path, *, frames: int = 1000) -> Path:
+    template = tmp_path / "template.wav"
+    if not template.exists():
+        with wave.open(str(template), "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(44100)
+            writer.writeframes(b"\x00" * (frames * 2))
+    return template
+
+
 def fake_supertonic(
     tmp_path: Path,
     *,
     rc: int = 0,
-    wav_bytes: int = 2000,
     version: str = "1.3.1",
 ) -> tuple[Path, Path]:
     args_file = tmp_path / "supertonic-args.txt"
     version_calls = tmp_path / "supertonic-version-calls.txt"
+    template = template_wav(tmp_path)
     script = write_script(
         tmp_path / "fake-supertonic",
         f"""
@@ -47,7 +64,7 @@ while [ $# -gt 0 ]; do
   if [ "$1" = "-o" ]; then out="$2"; fi
   shift
 done
-if [ -n "$out" ]; then head -c {wav_bytes} /dev/zero > "$out"; fi
+if [ -n "$out" ]; then cat {template} > "$out"; fi
 exit {rc}
 """,
     )
@@ -100,6 +117,7 @@ def snapshot(
     dsp: str = "none",
     pronunciations: dict[str, str] | None = None,
     engine: str = "supertonic",
+    seed: int = 17,
 ) -> RenderSnapshot:
     return RenderSnapshot(
         engine=engine,
@@ -113,12 +131,17 @@ def snapshot(
         gain=1.0,
         asset_sha256={f"voice:{voice}": "b" * 64},
         config_revision="voice-catalog-v1",
+        seed=seed,
     )
 
 
 def build_engine(tmp_path: Path, **overrides) -> tuple[SupertonicEngine, Path]:
     binary, args_file = fake_supertonic(tmp_path)
-    return build_tts_engine("supertonic", config=config(tmp_path, binary, **overrides)), args_file
+    engine = build_tts_engine("supertonic", config=config(tmp_path, binary, **overrides))
+    # Unit tests substitute the one-shot seeded renderer while production uses
+    # ``python -m dan.voice.supertonic_seeded render``.
+    engine._seeded_renderer_argv = (str(binary),)  # type: ignore[attr-defined]
+    return engine, args_file
 
 
 def test_supertonic_without_config_fails_loudly() -> None:
@@ -152,6 +175,126 @@ def test_synthesis_uses_only_the_supplied_snapshot(tmp_path: Path) -> None:
     assert "rantajm zostaje w snapshotcie." in args
     assert args[args.index("--voice") + 1] == "M2"
     assert args[args.index("--speed") + 1] == "1.17"
+    assert args[args.index("--seed") + 1] == "17"
+
+
+def test_cli_fallback_preserves_full_snapshot_speed_precision(tmp_path: Path) -> None:
+    engine, args_file = build_engine(tmp_path)
+
+    engine.synthesize("Bez zaokrąglania.", snapshot(speed=1.23456789))
+
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert args[args.index("--speed") + 1] == "1.23456789"
+
+
+def test_raw_wav_hash_is_logged_before_mastering(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine, _ = build_engine(tmp_path)
+    caplog.set_level(logging.INFO, logger="dan.voice.tts")
+
+    chunk = engine.synthesize("Hash surowego renderu.", snapshot(seed=42))
+
+    assert "seed=42" in caplog.text
+    assert hashlib.sha256(chunk.audio).hexdigest() in caplog.text
+
+
+def test_warm_serve_sends_seed_and_requires_matching_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary, _ = fake_supertonic(tmp_path)
+    requests: list[dict[str, object]] = []
+
+    class Response:
+        status = 200
+        headers = {
+            "X-DAN-Seed-Protocol": "1",
+            "X-DAN-Synthesis-Seed": "91",
+        }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self) -> bytes:
+            return b"w" * 2000
+
+    def urlopen(request, timeout):
+        assert not isinstance(request, str)
+        requests.append(json.loads(request.data))
+        return Response()
+
+    monkeypatch.setattr("dan.voice.tts.urllib.request.urlopen", urlopen)
+    engine = build_tts_engine("supertonic", config=config(tmp_path, binary))
+    engine._serve = "http://127.0.0.1:9999"
+
+    chunk = engine.synthesize("Ten sam seed.", snapshot(seed=91))
+
+    assert chunk.audio == b"w" * 2000
+    assert requests == [
+        {
+            "text": "Ten sam seed.",
+            "voice": "M3",
+            "lang": "pl",
+            "speed": 1.25,
+            "steps": 14,
+            "max_chunk_length": 400,
+            "silence_duration": 0.0,
+            "seed": 91,
+        }
+    ]
+
+
+def test_standard_unseeded_server_is_never_adopted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary, args_file = fake_supertonic(tmp_path)
+    calls: list[object] = []
+
+    class StandardHealth:
+        status = 200
+        headers: dict[str, str] = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def urlopen(request, timeout):
+        calls.append(request)
+        return StandardHealth()
+
+    monkeypatch.setattr("dan.voice.tts.urllib.request.urlopen", urlopen)
+    engine = build_tts_engine(
+        "supertonic",
+        config=config(
+            tmp_path,
+            binary,
+            supertonic_serve_url="http://127.0.0.1:9999",
+        ),
+    )
+    engine._seeded_renderer_argv = (str(binary),)  # type: ignore[attr-defined]
+
+    engine.synthesize("Stary serwer odpada.", snapshot(seed=42))
+
+    assert calls and all(isinstance(call, str) for call in calls)
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert args[args.index("--seed") + 1] == "42"
+
+
+def test_pronunciations_match_tokens_without_corrupting_polish_words() -> None:
+    rewritten = apply_pronunciations(
+        "API jest zapisana w runtime'ie.",
+        {"api": "epejaj", "runtime": "rantajm"},
+    )
+
+    assert rewritten == "epejaj jest zapisana w rantajm'ie."
 
 
 def test_synthesis_refuses_a_snapshot_for_another_engine(tmp_path: Path) -> None:
@@ -235,6 +378,7 @@ def test_warm_serve_failure_falls_back_to_cli_for_same_snapshot(
 
     class Health:
         status = 200
+        headers = {"X-DAN-Seed-Protocol": "1"}
 
         def __enter__(self):
             return self
@@ -256,6 +400,7 @@ def test_warm_serve_failure_falls_back_to_cli_for_same_snapshot(
         "supertonic",
         config=config(tmp_path, binary, supertonic_serve_url="http://127.0.0.1:9999"),
     )
+    engine._seeded_renderer_argv = (str(binary),)  # type: ignore[attr-defined]
     stored = snapshot(voice="M4", speed=1.09)
 
     engine.synthesize("Ten sam snapshot.", stored)
@@ -274,6 +419,10 @@ def test_reused_serve_is_re_adopted_after_supervised_restart(
 
     class Response:
         status = 200
+        headers = {
+            "X-DAN-Seed-Protocol": "1",
+            "X-DAN-Synthesis-Seed": "17",
+        }
 
         def __init__(self, audio: bytes = b"") -> None:
             self._audio = audio
@@ -310,11 +459,12 @@ def test_reused_serve_is_re_adopted_after_supervised_restart(
         ),
         serve_autostart=False,
     )
+    engine._seeded_renderer_argv = (str(binary),)  # type: ignore[attr-defined]
 
     first = engine.synthesize("Pierwsza proba.", snapshot())
     second = engine.synthesize("Po restarcie.", snapshot())
 
-    assert first.audio == b"\x00" * 2000
+    assert first.audio == template_wav(tmp_path).read_bytes()
     assert second.audio == b"r" * 2000
     assert calls == ["health", "tts", "health", "health", "tts"]
 
@@ -355,6 +505,59 @@ def test_engine_version_probe_runs_once_and_is_cached(tmp_path: Path) -> None:
 
     calls = (tmp_path / "supertonic-version-calls.txt").read_text(encoding="utf-8")
     assert len(calls.splitlines()) == 1
+
+
+def test_whole_utterance_reaches_supertonic_once_with_full_context(tmp_path: Path) -> None:
+    engine, args_file = build_engine(tmp_path)
+    text = "Pierwsze zdanie. Drugie pytanie? Trzeci cios! Cały kontekst zostaje razem."
+
+    engine.synthesize(text, snapshot())
+
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert args.count(text) == 1
+
+
+def test_live_prosody_filter_uses_explicit_plan_not_punctuation() -> None:
+    planned = snapshot().__class__(
+        **{
+            **snapshot().__dict__,
+            "emotion": "anger",
+            "tempo_start": 0.98,
+            "tempo_end": 1.06,
+            "tone": "hard",
+            "pause_after": 0.24,
+        }
+    )
+
+    first = voice_tts.live_prosody_filter(planned, duration_seconds=4.0)
+    second = voice_tts.live_prosody_filter(planned, duration_seconds=4.0)
+
+    assert first == second
+    assert "asendcmd" in first and "atempo@live" in first
+    assert "equalizer" in first and "volume=" in first
+    assert "apad=pad_dur=0.240" in first
+
+
+def test_static_neutral_plan_has_no_dynamic_tempo_or_tone_filter() -> None:
+    chain = voice_tts.live_prosody_filter(snapshot(), duration_seconds=4.0)
+
+    assert "asendcmd" not in chain
+    assert "equalizer" not in chain
+
+
+def test_extreme_legal_slowdown_uses_two_safe_tempo_stages() -> None:
+    planned = snapshot().__class__(
+        **{
+            **snapshot().__dict__,
+            "tempo_start": 1.4,
+            "tempo_end": 0.6,
+        }
+    )
+
+    chain = voice_tts.live_prosody_filter(planned, duration_seconds=4.0)
+
+    assert "atempo@live_1" in chain
+    assert "atempo@live_2" in chain
 
 
 @pytest.mark.parametrize("name", ["edgetts", "piper", "xtts"])

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from dan.config_registry import ConfigStore
-from dan.voice.models import IntentValidationError, SpeechIntent
+from dan.voice.models import IntentValidationError, RenderSnapshot, SpeechIntent
 from dan.voice.resolver import (
     AssetMetadata,
     EngineMetadata,
@@ -25,7 +25,7 @@ def catalog(tmp_path: Path) -> VoiceCatalog:
     voice_dir.mkdir()
     (voice_dir / "personas.toml").write_text(
         '[dan]\nengine = "supertonic"\nvoice = "M3"\nmastering = "raw"\n'
-        'speed = 1.25\ndsp = "none"\n',
+        'speed = 1.25\nseed = 17\ndsp = "none"\n',
         encoding="utf-8",
     )
     (voice_dir / "pronunciations.toml").write_text(
@@ -76,16 +76,116 @@ def test_resolver_creates_complete_snapshot_once(
     assert snapshot.engine == "supertonic"
     assert snapshot.engine_version and snapshot.voice_or_style == "M3"
     assert snapshot.speed == 1.25 and snapshot.mastering_profile == "raw"
+    assert snapshot.seed == 17
     assert snapshot.dsp == "none" and snapshot.pronunciations["runtime"] == "rantajm"
     assert snapshot.pronunciations_sha256
     assert snapshot.gain == 0.92 and snapshot.asset_sha256 and snapshot.config_revision
     snapshot.validate_complete()
 
 
+def test_intent_tempo_scales_persona_speed(
+    catalog: VoiceCatalog,
+    installation_config: ConfigStore,
+    engines: dict[str, EngineMetadata],
+) -> None:
+    # Structure, not a knob: the snapshot's speed is the persona's canonical
+    # pace times the producer's emotional tempo.
+    intent = dataclasses.replace(speech_intent(), tempo=0.8)
+
+    snapshot = VoiceResolver(catalog, installation_config, engines).resolve(intent)
+
+    assert snapshot.speed == pytest.approx(1.25 * 0.8)
+
+
+def test_intent_tempo_outside_band_is_rejected() -> None:
+    for tempo in (0.1, 3.0, float("nan"), "wolno", True):
+        with pytest.raises(IntentValidationError, match="tempo"):
+            SpeechIntent.from_mapping(
+                {"text": "Za wolno albo za szybko.", "persona": "dan", "tempo": tempo},
+                source="hook",
+                session="s1",
+            )
+
+
+def test_intent_tempo_defaults_to_neutral() -> None:
+    intent = SpeechIntent.from_mapping(
+        {"text": "Bez tempa.", "persona": "dan"}, source="hook", session="s1"
+    )
+
+    assert intent.tempo == 1.0
+
+
+def test_live_prosody_is_explicit_and_frozen_in_snapshot(
+    catalog: VoiceCatalog,
+    installation_config: ConfigStore,
+    engines: dict[str, EngineMetadata],
+) -> None:
+    intent = dataclasses.replace(
+        speech_intent(),
+        emotion="anger",
+        tempo=0.98,
+        tempo_end=1.06,
+        tone="hard",
+        pause_after=0.24,
+    )
+
+    snapshot = VoiceResolver(catalog, installation_config, engines).resolve(intent)
+
+    assert snapshot.speed == pytest.approx(1.25 * 0.98)
+    assert snapshot.emotion == "anger"
+    assert snapshot.tempo_start == pytest.approx(0.98)
+    assert snapshot.tempo_end == pytest.approx(1.06)
+    assert snapshot.tone == "hard"
+    assert snapshot.pause_after == pytest.approx(0.24)
+
+
+def test_emotion_supplies_dynamic_defaults_without_punctuation(
+    catalog: VoiceCatalog,
+    installation_config: ConfigStore,
+    engines: dict[str, EngineMetadata],
+) -> None:
+    intent = dataclasses.replace(
+        speech_intent(),
+        text="Jedna pełna myśl bez specjalnej końcówki",
+        emotion="anger",
+    )
+
+    snapshot = VoiceResolver(catalog, installation_config, engines).resolve(intent)
+
+    assert snapshot.tempo_end < snapshot.tempo_start
+    assert snapshot.tone == "hard"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("emotion", "histeria"),
+        ("tempo_end", 9.0),
+        ("tone", "radiator"),
+        ("pause_after", -1.0),
+        ("pause_after", 3.0),
+    ],
+)
+def test_live_prosody_rejects_invalid_controls(field: str, value: object) -> None:
+    with pytest.raises(IntentValidationError, match=field):
+        SpeechIntent.from_mapping(
+            {"text": "Bez zgadywania.", "persona": "dan", field: value},
+            source="codex",
+            session="live",
+        )
+
+
 def test_intent_cannot_override_resolver_fields() -> None:
     with pytest.raises(IntentValidationError, match="voice"):
         SpeechIntent.from_mapping(
             {"text": "Nie oszukuj.", "persona": "dan", "voice": "M1"},
+            source="hook",
+            session="s1",
+        )
+
+    with pytest.raises(IntentValidationError, match="seed.*resolver-owned"):
+        SpeechIntent.from_mapping(
+            {"text": "Seed należy do castingu.", "persona": "dan", "seed": 91},
             source="hook",
             session="s1",
         )
@@ -113,6 +213,37 @@ def test_snapshot_is_frozen_and_canonical_json_is_stable(
         snapshot.gain = 2.0  # type: ignore[misc]
     payload = json.loads(snapshot.canonical_json())
     assert payload["asset_sha256"] == dict(sorted(snapshot.asset_sha256.items()))
+    assert payload["seed"] == 17
+    assert RenderSnapshot.from_json(snapshot.canonical_json()) == snapshot
+
+
+@pytest.mark.parametrize("seed", [True, -1, 2**32, 1.5, "17"])
+def test_snapshot_rejects_invalid_seed(
+    catalog: VoiceCatalog,
+    installation_config: ConfigStore,
+    engines: dict[str, EngineMetadata],
+    seed: object,
+) -> None:
+    snapshot = VoiceResolver(catalog, installation_config, engines).resolve(speech_intent())
+    payload = json.loads(snapshot.canonical_json())
+    payload["seed"] = seed
+
+    with pytest.raises(SnapshotValidationError, match="seed"):
+        RenderSnapshot.from_json(json.dumps(payload))
+
+
+def test_legacy_snapshot_without_seed_replays_with_zero(
+    catalog: VoiceCatalog,
+    installation_config: ConfigStore,
+    engines: dict[str, EngineMetadata],
+) -> None:
+    snapshot = VoiceResolver(catalog, installation_config, engines).resolve(speech_intent())
+    payload = json.loads(snapshot.canonical_json())
+    payload.pop("seed")
+
+    restored = RenderSnapshot.from_json(json.dumps(payload))
+
+    assert restored.seed == 0
 
 
 def test_resolver_rejects_asset_hash_mismatch(
@@ -133,7 +264,9 @@ def test_resolver_rejects_asset_hash_mismatch(
         VoiceResolver(catalog, installation_config, engines).resolve(speech_intent())
 
 
-@pytest.mark.parametrize("missing_field", ["engine", "voice", "speed", "mastering", "dsp"])
+@pytest.mark.parametrize(
+    "missing_field", ["engine", "voice", "speed", "seed", "mastering", "dsp"]
+)
 def test_resolver_requires_every_persona_render_field(
     tmp_path: Path,
     installation_config: ConfigStore,
@@ -144,6 +277,7 @@ def test_resolver_requires_every_persona_render_field(
         "engine": 'engine = "supertonic"',
         "voice": 'voice = "M3"',
         "speed": "speed = 1.25",
+        "seed": "seed = 17",
         "mastering": 'mastering = "raw"',
         "dsp": 'dsp = "none"',
     }
@@ -188,7 +322,7 @@ def test_resolver_freezes_custom_style_as_verified_absolute_path(
     voice_dir.mkdir()
     (voice_dir / "personas.toml").write_text(
         '[dan]\nengine = "supertonic"\nvoice = "M2M1"\n'
-        'mastering = "raw"\nspeed = 1.25\ndsp = "none"\n',
+        'mastering = "raw"\nspeed = 1.25\nseed = 17\ndsp = "none"\n',
         encoding="utf-8",
     )
     (voice_dir / "pronunciations.toml").write_text("", encoding="utf-8")

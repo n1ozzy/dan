@@ -11,7 +11,26 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from dan.voice.models import RenderSnapshot, SnapshotValidationError, SpeechIntent
+from dan.voice.models import (
+    SEED_MAX,
+    TEMPO_MAX,
+    TEMPO_MIN,
+    RenderSnapshot,
+    SnapshotValidationError,
+    SpeechIntent,
+)
+
+# Emotion is an explicit producer choice. These are render defaults, not text
+# classifiers: the resolver never guesses emotion from words or punctuation.
+_EMOTION_DEFAULTS: dict[str, tuple[float, str]] = {
+    "neutral": (1.00, "neutral"),
+    # Weight lands in the final words: anger, contempt and cold all decelerate.
+    # Mockery alone lifts slightly instead of turning every ending solemn.
+    "anger": (0.94, "hard"),
+    "contempt": (0.92, "dark"),
+    "mockery": (1.03, "bright"),
+    "cold": (0.95, "dark"),
+}
 
 
 class VoiceResolverError(RuntimeError):
@@ -188,11 +207,27 @@ class VoiceResolver:
             if custom_style is not None
             else configured_voice
         )
+        tempo_end_ratio, default_tone = _EMOTION_DEFAULTS[intent.emotion]
+        tempo_end = intent.tempo_end
+        if tempo_end is None:
+            tempo_end = min(
+                TEMPO_MAX,
+                max(TEMPO_MIN, intent.tempo * tempo_end_ratio),
+            )
+        if not TEMPO_MIN <= tempo_end <= TEMPO_MAX:
+            raise SnapshotValidationError(
+                f"resolved tempo_end {tempo_end:g} is outside {TEMPO_MIN}-{TEMPO_MAX}"
+            )
+        tone = default_tone if intent.tone == "auto" else intent.tone
         snapshot = RenderSnapshot(
             engine=engine_name,
             engine_version=version,
             voice_or_style=voice_or_style,
-            speed=_positive_float(spec.get("speed"), "speed"),
+            # The persona's canonical pace times the producer's emotional
+            # tempo (SpeechIntent.tempo, validated to a narrow band) — the
+            # snapshot carries the final speed, so playback needs no replay
+            # of the intent.
+            speed=_positive_float(spec.get("speed"), "speed") * intent.tempo,
             mastering_profile=_required_spec_text(spec, "mastering"),
             dsp=_required_spec_text(spec, "dsp"),
             pronunciations=self._catalog.pronunciations,
@@ -200,6 +235,12 @@ class VoiceResolver:
             gain=gain,
             asset_sha256=asset_hashes,
             config_revision=config_revision,
+            seed=_seed(spec.get("seed")),
+            emotion=intent.emotion,
+            tempo_start=intent.tempo,
+            tempo_end=tempo_end,
+            tone=tone,
+            pause_after=intent.pause_after,
         )
         snapshot.validate_complete()
         return snapshot
@@ -252,6 +293,14 @@ def _positive_float(value: Any, name: str) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
         raise SnapshotValidationError(f"voice persona {name} must be greater than zero")
     return float(value)
+
+
+def _seed(value: Any) -> int:
+    if type(value) is not int or not 0 <= value <= SEED_MAX:
+        raise SnapshotValidationError(
+            f"voice persona seed must be an integer between 0 and {SEED_MAX}"
+        )
+    return value
 
 
 def _installation_value(config: Any, key: str, default: Any) -> Any:

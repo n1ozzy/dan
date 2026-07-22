@@ -1681,16 +1681,15 @@ class DaemonApp:
         ):
             return False
         from dan.daemon.supervisor import ChildSpec
-        from dan.voice.tts import _resolve_supertonic_binary
+        from dan.voice.supertonic_seeded import seeded_supertonic_argv
 
         serve_url = str(voice.supertonic_serve_url).rstrip("/")
         port = serve_url.rsplit(":", 1)[-1]
-        binary = _resolve_supertonic_binary(str(voice.supertonic_binary or ""))
         self.child_supervisor.register(
             ChildSpec(
                 name="supertonic",
                 argv=(
-                    binary,
+                    *seeded_supertonic_argv(),
                     "serve",
                     "--model",
                     str(voice.supertonic_serve_model or "supertonic-3"),

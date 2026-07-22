@@ -185,7 +185,7 @@ def load_voice_catalog(directory: str | Path) -> VersionedVoiceCatalog:
         except (TypeError, ValueError) as exc:
             raise AssetVerificationError(f"invalid measured gain for {key!r}") from exc
     for name, spec in voice_catalog.personas.items():
-        missing = {"engine", "voice", "speed", "mastering", "dsp"} - set(spec)
+        missing = {"engine", "voice", "speed", "seed", "mastering", "dsp"} - set(spec)
         if missing:
             raise AssetVerificationError(
                 f"voice persona {name!r} is missing strict fields: {', '.join(sorted(missing))}"

@@ -19,9 +19,9 @@ def resolver(tmp_path: Path) -> VoiceResolver:
     voice_dir.mkdir()
     (voice_dir / "personas.toml").write_text(
         '[dan]\nengine = "supertonic"\nvoice = "M3"\nmastering = "raw"\n'
-        'speed = 1.25\ndsp = "none"\n\n'
+        'speed = 1.25\nseed = 17\ndsp = "none"\n\n'
         '[mentor]\nengine = "supertonic"\nvoice = "M4"\nmastering = "clean"\n'
-        'speed = 1.1\ndsp = "highpass=f=80"\n',
+        'speed = 1.1\nseed = 91\ndsp = "highpass=f=80"\n',
         encoding="utf-8",
     )
     (voice_dir / "pronunciations.toml").write_text("", encoding="utf-8")
@@ -58,6 +58,7 @@ def test_resolver_freezes_persona_voice_mastering_and_dsp(tmp_path: Path) -> Non
 
     assert snapshot.voice_or_style == "M4"
     assert snapshot.speed == 1.1
+    assert snapshot.seed == 91
     assert snapshot.mastering_profile == "clean"
     assert snapshot.dsp == "highpass=f=80"
 

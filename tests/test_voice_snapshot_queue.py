@@ -49,6 +49,7 @@ def complete_snapshot() -> RenderSnapshot:
         gain=1.0,
         asset_sha256={"voice:M3": "b" * 64},
         config_revision="voice-catalog-v1",
+        seed=17,
     )
 
 
@@ -79,6 +80,7 @@ def test_enqueue_persists_complete_canonical_intent_and_snapshot(
     )
     assert request.render_snapshot == complete_snapshot
     assert request.intent == intent
+    assert '"seed":17' in complete_snapshot.canonical_json()
 
 
 def test_snapshot_is_immutable_after_enqueue(

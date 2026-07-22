@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import socket
+import sqlite3
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from dan import cli as dan_cli
 from dan.daemon.app import DaemonApp
-
 from tests.test_api_smoke import running_server
 from tests.test_voice_api_contract import SPEAK_TEXT, make_voice_app, queue_rows
+from tests.voice_helpers import render_snapshot
 
 
 @pytest.fixture
@@ -87,6 +90,61 @@ def test_speak_json_stdin_contract(
     assert rows[payload["request_id"]]["text"] == SPEAK_TEXT
     assert rows[payload["request_id"]]["status"] == "queued"
     assert rows[payload["request_id"]]["session_id"] == "smoke"
+
+
+def test_speak_forwards_explicit_live_prosody(
+    voice_app: DaemonApp,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolver = SimpleNamespace(
+        resolve=lambda intent: dataclasses.replace(
+            render_snapshot(),
+            emotion=intent.emotion,
+            tempo_start=intent.tempo,
+            tempo_end=intent.tempo_end,
+            tone=intent.tone,
+            pause_after=intent.pause_after,
+        )
+    )
+    voice_app.voice_resolver = resolver
+    assert voice_app.voice_service is not None
+    voice_app.voice_service.replace_resolver(resolver)
+    set_stdin_bytes(monkeypatch, f"{SPEAK_TEXT}\n".encode("utf-8"))
+    with running_server(voice_app) as base_url:
+        rc, out, _err = run_cli(
+            capsys,
+            *speak_args(
+                voice_app,
+                base_url,
+                "--stdin",
+                "--emotion",
+                "anger",
+                "--tempo",
+                "0.98",
+                "--tempo-end",
+                "1.06",
+                "--tone",
+                "hard",
+                "--pause-after",
+                "0.24",
+            ),
+        )
+
+    payload = assert_single_json_object(out)
+    assert rc == 0
+    with sqlite3.connect(voice_app.config.database.path) as conn:
+        row = conn.execute(
+            "SELECT render_snapshot_json FROM voice_queue WHERE id = ?",
+            (str(payload["request_id"]),),
+        ).fetchone()
+    assert row is not None
+    snapshot_payload = json.loads(row[0])
+    assert snapshot_payload["emotion"] == "anger"
+    assert snapshot_payload["tempo_start"] == pytest.approx(0.98)
+    assert snapshot_payload["tempo_end"] == pytest.approx(1.06)
+    assert snapshot_payload["tone"] == "hard"
+    assert snapshot_payload["pause_after"] == pytest.approx(0.24)
 
 
 def test_speak_stdin_normalizes_nfc(
