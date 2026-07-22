@@ -30,8 +30,8 @@ home = Path(sys.argv[2]).resolve()
 data = json.loads(manifest_path.read_text(encoding="utf-8"))
 
 PROTECTED_SUFFIXES = (".db", ".db-wal", ".db-shm")
-BLOCK_BEGIN = "<!-- BEGIN DAN MANAGED BLOCK (dan-runtime) -->"
-BLOCK_END = "<!-- END DAN MANAGED BLOCK (dan-runtime) -->"
+BLOCK_BEGIN = ""
+BLOCK_END = ""
 
 def refuse(path: Path, why: str) -> None:
     print(f"SKIP (protected, {why}): {path}")

@@ -13,10 +13,14 @@
     <div class="state-frame" aria-hidden="true"></div>
     <!-- One-shot daemon availability notification: "DAN went down" / "DAN is
          back up" — it lights up only on a state CHANGE, not on every poll. -->
-    <p id="daemonAvailabilityNotice" class="daemon-availability-notice" aria-live="assertive" hidden></p>
+    <p
+      id="daemonAvailabilityNotice"
+      class="daemon-availability-notice"
+      aria-live="assertive"
+      hidden
+    ></p>
     <main class="cockpit" aria-label="DAN cockpit">
       <div class="views">
-        <!-- CHAT: the only default view — the conversation fills the whole surface. -->
         <section id="view-chat" class="view active" aria-label="Chat">
           <header class="chat-toolbar single-dan-toolbar">
             <strong>DAN</strong>
@@ -45,7 +49,11 @@
               <span id="activityResult" class="activity-result" hidden></span>
             </span>
           </div>
-          <div id="turnList" class="chat-log" aria-label="Conversation history"></div>
+          <div
+            id="turnList"
+            class="chat-log"
+            aria-label="Conversation history"
+          ></div>
           <form id="textForm" class="composer">
             <div class="composer-row">
               <textarea
@@ -54,11 +62,15 @@
                 placeholder="Write to DAN…"
                 title="Enter sends • Shift+Enter = new line"
               ></textarea>
-              <button id="sendButton" type="submit" class="primary">Send</button>
+              <button id="sendButton" type="submit" class="primary">
+                Send
+              </button>
             </div>
             <div class="composer-status">
               <span id="voiceStatus" class="hud-item" aria-live="polite">
-                <span class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                <span class="wave" aria-hidden="true"
+                  ><i></i><i></i><i></i><i></i
+                ></span>
                 <span id="voiceStatusText">…</span>
               </span>
             </div>
@@ -68,11 +80,12 @@
           <pre id="voiceError" class="error-box" hidden></pre>
         </section>
 
-        <!-- MEMORY: durable brain notes on a full screen. -->
         <section id="view-memory" class="view" aria-labelledby="memoryHeading">
           <div class="section-head">
             <h2 id="memoryHeading">Memory</h2>
-            <button id="refreshMemoryButton" type="button" class="ghost">Refresh</button>
+            <button id="refreshMemoryButton" type="button" class="ghost">
+              Refresh
+            </button>
           </div>
           <p class="muted section-desc">
             Memory is the notes DAN reads at the start of every conversation.<br />
@@ -94,33 +107,45 @@
               </label>
               <label class="field-label">
                 <span>Title</span>
-                <input id="memoryTitle" type="text" placeholder="a short name you will recognize the note by" />
+                <input
+                  id="memoryTitle"
+                  type="text"
+                  placeholder="a short name you will recognize the note by"
+                />
               </label>
               <label class="field-label">
                 <span>Content</span>
-                <textarea id="memoryBody" rows="3" placeholder="the model will read exactly this"></textarea>
+                <textarea
+                  id="memoryBody"
+                  rows="3"
+                  placeholder="the model will read exactly this"
+                ></textarea>
               </label>
               <label class="field-label">
                 <span>Priority</span>
                 <input id="memoryPriority" type="number" value="0" />
-                <small class="field-hint">0 = normal; higher = more important</small>
+                <small class="field-hint"
+                  >0 = normal; higher = more important</small
+                >
               </label>
-              <button id="createMemoryButton" type="submit" class="primary">Create note</button>
+              <button id="createMemoryButton" type="submit" class="primary">
+                Create note
+              </button>
             </form>
           </details>
           <div id="memoryList" class="list"></div>
           <pre id="memoryError" class="error-box" hidden></pre>
         </section>
 
-        <!-- LOGS: a human-readable event journal — what DAN is doing right now. -->
         <section id="view-logs" class="view" aria-labelledby="logsHeading">
           <div class="section-head">
             <h2 id="logsHeading">Journal</h2>
-            <button id="refreshEventsButton" type="button" class="ghost">Refresh</button>
+            <button id="refreshEventsButton" type="button" class="ghost">
+              Refresh
+            </button>
           </div>
           <p class="muted section-desc">
-            What DAN is doing right now — turns, voice and tools.
-            Newest on top.
+            What DAN is doing right now — turns, voice and tools. Newest on top.
           </p>
           <h3 id="eventsDiagnosticsHeading">Events</h3>
           <label class="field-label log-filter">
@@ -135,45 +160,94 @@
           <div id="eventList" class="list"></div>
           <pre id="eventsError" class="error-box" hidden></pre>
 
-          <div class="sys-section quick-health-section" aria-labelledby="quickHealthHeading">
+          <div
+            class="sys-section quick-health-section"
+            aria-labelledby="quickHealthHeading"
+          >
             <div class="section-head">
               <div>
                 <h2 id="quickHealthHeading">Runtime summary</h2>
                 <p class="muted section-desc">
-                  Compact manual checklist. The panel never runs shell commands or live tests here.
+                  Compact manual checklist. The panel never runs shell commands
+                  or live tests here.
                 </p>
               </div>
-              <button id="refreshActiveSettingsButton" type="button" class="ghost">Refresh</button>
+              <button
+                id="refreshActiveSettingsButton"
+                type="button"
+                class="ghost"
+              >
+                Refresh
+              </button>
             </div>
             <div id="missionControlChecklist" class="checklist-grid"></div>
             <div id="activeSettingsList" class="list compact-list"></div>
             <p id="activeSettingsStatus" class="muted" aria-live="polite"></p>
           </div>
 
-          <div class="sys-section active-settings-section" aria-labelledby="queueBargeInHeading">
+          <div
+            class="sys-section active-settings-section"
+            aria-labelledby="queueBargeInHeading"
+          >
             <div class="section-head">
               <div>
                 <h2 id="queueBargeInHeading">Voice queue</h2>
                 <p class="muted section-desc">
-                  Speech queue, active item, cancellation support, interrupted turn and the latest queue error.
+                  Speech queue, active item, cancellation support, interrupted
+                  turn and the latest queue error.
                 </p>
               </div>
               <div class="mission-actions">
-                <button id="refreshQueueButton" type="button" class="ghost">Refresh queue</button>
-                <button id="pauseVoiceButton" type="button" class="ghost" title="POST /voice/pause — the broker stops taking new items">Pause voice</button>
-                <button id="resumeVoiceButton" type="button" class="ghost" title="POST /voice/resume">Resume voice</button>
-                <button id="cancelCurrentSpeechButton" type="button" class="ghost" title="POST /voice/queue/current/cancel — skips only the current utterance">Skip current</button>
+                <button id="refreshQueueButton" type="button" class="ghost">
+                  Refresh queue
+                </button>
+                <button
+                  id="pauseVoiceButton"
+                  type="button"
+                  class="ghost"
+                  title="POST /voice/pause — the broker stops taking new items"
+                >
+                  Pause voice
+                </button>
+                <button
+                  id="resumeVoiceButton"
+                  type="button"
+                  class="ghost"
+                  title="POST /voice/resume"
+                >
+                  Resume voice
+                </button>
+                <button
+                  id="cancelCurrentSpeechButton"
+                  type="button"
+                  class="ghost"
+                  title="POST /voice/queue/current/cancel — skips only the current utterance"
+                >
+                  Skip current
+                </button>
               </div>
             </div>
             <div id="queueBargeInList" class="list compact-list"></div>
-            <div id="voiceQueueList" class="list compact-list voice-queue-list"></div>
-            <p id="queueApplyStatus" class="muted apply-status" aria-live="polite"></p>
+            <div
+              id="voiceQueueList"
+              class="list compact-list voice-queue-list"
+            ></div>
+            <p
+              id="queueApplyStatus"
+              class="muted apply-status"
+              aria-live="polite"
+            ></p>
           </div>
 
-          <details class="sys-section runtime-checks-section" aria-labelledby="runtimeChecksHeading">
+          <details
+            class="sys-section runtime-checks-section"
+            aria-labelledby="runtimeChecksHeading"
+          >
             <summary>
               <h2 id="runtimeChecksHeading">Runtime Checks</h2>
-              <span class="summary-hint muted">provider and voice readiness</span>
+              <span class="summary-hint muted"
+                >provider and voice readiness</span
+              >
             </summary>
             <div class="doctor-grid">
               <div class="doctor-panel" aria-labelledby="voiceDoctorHeading">
@@ -183,17 +257,29 @@
             </div>
           </details>
 
-          <div class="sys-section active-settings-section" aria-labelledby="latestTurnTraceHeading">
+          <div
+            class="sys-section active-settings-section"
+            aria-labelledby="latestTurnTraceHeading"
+          >
             <div class="section-head">
               <h2 id="latestTurnTraceHeading">Latest Turn Trace</h2>
             </div>
             <div id="latestTurnTraceList" class="list compact-list"></div>
           </div>
 
-          <div class="sys-section active-settings-section" aria-labelledby="runtimeLogsSummaryHeading">
+          <div
+            class="sys-section active-settings-section"
+            aria-labelledby="runtimeLogsSummaryHeading"
+          >
             <div class="section-head">
               <h2 id="runtimeLogsSummaryHeading">Runtime Logs</h2>
-              <button id="refreshRuntimeLogsSummaryButton" type="button" class="ghost">Refresh logs summary</button>
+              <button
+                id="refreshRuntimeLogsSummaryButton"
+                type="button"
+                class="ghost"
+              >
+                Refresh logs summary
+              </button>
             </div>
             <div id="runtimeLogsSummaryList" class="list compact-list"></div>
           </div>
@@ -201,7 +287,13 @@
           <div class="sys-section" aria-labelledby="runtimeOverviewHeading">
             <div class="section-head">
               <h2 id="runtimeOverviewHeading">Runtime diagnostics</h2>
-              <button id="refreshRuntimeOverviewButton" type="button" class="ghost">Refresh</button>
+              <button
+                id="refreshRuntimeOverviewButton"
+                type="button"
+                class="ghost"
+              >
+                Refresh
+              </button>
             </div>
             <p class="muted section-desc">
               Read-only: runtime layers from safe daemon endpoints.
@@ -210,7 +302,10 @@
             <pre id="runtimeOverviewError" class="error-box" hidden></pre>
           </div>
 
-          <details class="sys-section card collapsible" aria-labelledby="advancedHeading">
+          <details
+            class="sys-section card collapsible"
+            aria-labelledby="advancedHeading"
+          >
             <summary>
               <h3 id="advancedHeading">Raw technical details</h3>
               <span class="summary-hint muted">state · runtime</span>
@@ -218,7 +313,8 @@
             <div class="subsection" aria-labelledby="healthHeading">
               <h4 id="healthHeading">Raw state</h4>
               <p class="muted section-desc">
-                Full <code>/health</code> and <code>/state</code>, without embellishments.
+                Full <code>/health</code> and <code>/state</code>, without
+                embellishments.
               </p>
               <dl id="healthStateList" class="kv-list"></dl>
               <pre id="healthError" class="error-box" hidden></pre>
@@ -226,7 +322,9 @@
             <div class="subsection" aria-labelledby="runtimeHeading">
               <div class="section-head">
                 <h4 id="runtimeHeading">Runtime</h4>
-                <button id="refreshRuntimeButton" type="button" class="ghost">Refresh</button>
+                <button id="refreshRuntimeButton" type="button" class="ghost">
+                  Refresh
+                </button>
               </div>
               <p class="muted section-desc">
                 The dand process and detected legacy conflicts. Read-only.
@@ -241,20 +339,38 @@
             <div class="section-head">
               <h2 id="settingsPreviewHeading">Settings Preview</h2>
               <div class="mission-actions">
-                <button id="resetSettingsPreviewButton" type="button" class="ghost">Reset preview</button>
-                <button id="refreshSettingsPreviewButton" type="button" class="ghost">Refresh</button>
+                <button
+                  id="resetSettingsPreviewButton"
+                  type="button"
+                  class="ghost"
+                >
+                  Reset preview
+                </button>
+                <button
+                  id="refreshSettingsPreviewButton"
+                  type="button"
+                  class="ghost"
+                >
+                  Refresh
+                </button>
               </div>
             </div>
             <p class="muted section-desc">
-              Diagnostics only: local diffs, blockers, and compatibility warnings.
+              Diagnostics only: local diffs, blockers, and compatibility
+              warnings.
             </p>
             <div id="settingsPreviewList" class="list compact-list"></div>
             <pre id="settingsPreviewError" class="error-box" hidden></pre>
           </div>
 
-          <details class="sys-section card collapsible" aria-labelledby="connectionSettingsDiagnosticsHeading">
+          <details
+            class="sys-section card collapsible"
+            aria-labelledby="connectionSettingsDiagnosticsHeading"
+          >
             <summary>
-              <h3 id="connectionSettingsDiagnosticsHeading">Connection / Raw Settings</h3>
+              <h3 id="connectionSettingsDiagnosticsHeading">
+                Connection / Raw Settings
+              </h3>
               <span class="summary-hint muted">advanced diagnostics</span>
             </summary>
             <div class="subsection" aria-labelledby="connectionHeading">
@@ -262,7 +378,12 @@
               <dl id="healthHumanList" class="health-human"></dl>
               <label class="inline-field">
                 <span id="apiHeading">Daemon address</span>
-                <input id="apiBaseInput" type="url" inputmode="url" autocomplete="off" />
+                <input
+                  id="apiBaseInput"
+                  type="url"
+                  inputmode="url"
+                  autocomplete="off"
+                />
               </label>
               <p class="muted section-desc">
                 The daemon address. Change it only if you know why.
@@ -271,14 +392,21 @@
             <div class="subsection" aria-labelledby="settingsHeading">
               <div class="section-head">
                 <h4 id="settingsHeading">Raw settings</h4>
-                <button id="refreshSettingsButton" type="button" class="ghost">Refresh</button>
+                <button id="refreshSettingsButton" type="button" class="ghost">
+                  Refresh
+                </button>
               </div>
               <p class="muted section-desc">
                 Key → value pairs written straight to the daemon database. For
                 advanced users.
               </p>
               <form id="settingsForm" class="settings-form">
-                <input id="settingKey" type="text" placeholder="key" aria-label="Setting key" />
+                <input
+                  id="settingKey"
+                  type="text"
+                  placeholder="key"
+                  aria-label="Setting key"
+                />
                 <input
                   id="settingValue"
                   type="text"
@@ -295,7 +423,9 @@
           <div class="sys-section" aria-labelledby="toolsHeading">
             <div class="section-head">
               <h2 id="toolsHeading">Tools / Internet diagnostics</h2>
-              <button id="refreshToolsButton" type="button" class="ghost">Refresh</button>
+              <button id="refreshToolsButton" type="button" class="ghost">
+                Refresh
+              </button>
             </div>
             <p class="muted section-desc">
               Registered tools of the single direct execution path.
@@ -305,18 +435,36 @@
           </div>
         </section>
 
-        <!-- SYSTEM: cockpit-first runtime controls; full logs live in LOGS. -->
         <section id="view-system" class="view" aria-label="System">
           <div class="system-section-label" aria-hidden="true">Settings</div>
-          <p class="muted section-desc">Changes the runtime supports are saved automatically.</p>
+          <p class="muted section-desc">
+            Changes the runtime supports are saved automatically.
+          </p>
           <div class="mission-actions">
-            <button id="restartDANButton" type="button" class="ghost" title="POST /runtime/restart — the daemon finishes its current work and comes back up on its own">Safe DAN restart</button>
+            <button
+              id="restartDANButton"
+              type="button"
+              class="ghost"
+              title="POST /runtime/restart — the daemon finishes its current work and comes back up on its own"
+            >
+              Safe DAN restart
+            </button>
           </div>
-          <div id="restartRequiredBanner" class="restart-required-banner" hidden>
-            <span id="restartRequiredMessage">Restart required for pending settings.</span>
+          <div
+            id="restartRequiredBanner"
+            class="restart-required-banner"
+            hidden
+          >
+            <span id="restartRequiredMessage"
+              >Restart required for pending settings.</span
+            >
           </div>
 
-          <details class="sys-section active-settings-section collapsible-card" open aria-labelledby="activeBrainSettingsHeading">
+          <details
+            class="sys-section active-settings-section collapsible-card"
+            open
+            aria-labelledby="activeBrainSettingsHeading"
+          >
             <summary class="section-head">
               <div>
                 <h2 id="activeBrainSettingsHeading">Brain</h2>
@@ -325,21 +473,37 @@
             <div class="settings-control-grid">
               <label class="field-label">
                 <span>Provider</span>
-                <select id="activeBrainProviderSelect" aria-label="Brain provider"></select>
+                <select
+                  id="activeBrainProviderSelect"
+                  aria-label="Brain provider"
+                ></select>
               </label>
               <label class="field-label">
                 <span>Model</span>
-                <select id="activeBrainModelSelect" aria-label="Brain model"></select>
+                <select
+                  id="activeBrainModelSelect"
+                  aria-label="Brain model"
+                ></select>
               </label>
               <label class="field-label">
                 <span>Effort level</span>
-                <select id="activeBrainEffortSelect" aria-label="Brain effort level"></select>
+                <select
+                  id="activeBrainEffortSelect"
+                  aria-label="Brain effort level"
+                ></select>
               </label>
             </div>
-            <p id="brainApplyStatus" class="muted apply-status" aria-live="polite"></p>
+            <p
+              id="brainApplyStatus"
+              class="muted apply-status"
+              aria-live="polite"
+            ></p>
           </details>
 
-          <details class="sys-section active-settings-section collapsible-card" aria-labelledby="voiceTtsSettingsHeading">
+          <details
+            class="sys-section active-settings-section collapsible-card"
+            aria-labelledby="voiceTtsSettingsHeading"
+          >
             <summary class="section-head">
               <div>
                 <h2 id="voiceTtsSettingsHeading">Voice / TTS</h2>
@@ -353,7 +517,12 @@
               </label>
               <div class="inline-toggle read-only-setting">
                 <span>Voice broker</span>
-                <span id="voiceBrokerEnabledToggle" class="status-badge" role="status">unknown</span>
+                <span
+                  id="voiceBrokerEnabledToggle"
+                  class="status-badge"
+                  role="status"
+                  >unknown</span
+                >
               </div>
               <label class="field-label">
                 <span>Speech engine</span>
@@ -361,29 +530,60 @@
               </label>
               <label class="field-label">
                 <span>Speech model</span>
-                <select id="voiceTtsModelSelect" aria-label="TTS model"></select>
+                <select
+                  id="voiceTtsModelSelect"
+                  aria-label="TTS model"
+                ></select>
               </label>
             </div>
-            <p id="ttsApplyStatus" class="muted apply-status" aria-live="polite"></p>
-            <p id="voiceApplyStatus" class="muted apply-status" hidden aria-live="polite"></p>
+            <p
+              id="ttsApplyStatus"
+              class="muted apply-status"
+              aria-live="polite"
+            ></p>
+            <p
+              id="voiceApplyStatus"
+              class="muted apply-status"
+              hidden
+              aria-live="polite"
+            ></p>
             <div class="settings-control-grid" id="personaVoiceGrid">
               <label class="field-label">
                 <span>Persona</span>
-                <select id="personaVoicePersonaSelect" aria-label="Persona"></select>
+                <select
+                  id="personaVoicePersonaSelect"
+                  aria-label="Persona"
+                ></select>
               </label>
               <label class="field-label">
                 <span>Persona voice</span>
-                <select id="personaVoiceVoiceSelect" aria-label="Persona voice"></select>
+                <select
+                  id="personaVoiceVoiceSelect"
+                  aria-label="Persona voice"
+                ></select>
               </label>
               <label class="field-label">
                 <span>Persona speed</span>
-                <input id="personaVoiceSpeedInput" type="number" step="0.01" min="0.5" max="2" />
+                <input
+                  id="personaVoiceSpeedInput"
+                  type="number"
+                  step="0.01"
+                  min="0.5"
+                  max="2"
+                />
               </label>
             </div>
-            <p id="personaVoiceStatus" class="muted apply-status" aria-live="polite"></p>
+            <p
+              id="personaVoiceStatus"
+              class="muted apply-status"
+              aria-live="polite"
+            ></p>
           </details>
 
-          <details class="sys-section active-settings-section collapsible-card" aria-labelledby="voiceSttSettingsHeading">
+          <details
+            class="sys-section active-settings-section collapsible-card"
+            aria-labelledby="voiceSttSettingsHeading"
+          >
             <summary class="section-head">
               <div>
                 <h2 id="voiceSttSettingsHeading">Listening (STT)</h2>
@@ -396,17 +596,30 @@
               </label>
               <label class="field-label">
                 <span>STT model</span>
-                <select id="voiceSttModelSelect" aria-label="STT model"></select>
+                <select
+                  id="voiceSttModelSelect"
+                  aria-label="STT model"
+                ></select>
               </label>
               <label class="field-label">
                 <span>Language</span>
-                <select id="voiceSttLanguageSelect" aria-label="STT language"></select>
+                <select
+                  id="voiceSttLanguageSelect"
+                  aria-label="STT language"
+                ></select>
               </label>
             </div>
-            <p id="sttApplyStatus" class="muted apply-status" aria-live="polite"></p>
+            <p
+              id="sttApplyStatus"
+              class="muted apply-status"
+              aria-live="polite"
+            ></p>
           </details>
 
-          <details class="sys-section active-settings-section collapsible-card" aria-labelledby="activePttSettingsHeading">
+          <details
+            class="sys-section active-settings-section collapsible-card"
+            aria-labelledby="activePttSettingsHeading"
+          >
             <summary class="section-head">
               <div>
                 <h2 id="activePttSettingsHeading">PTT</h2>
@@ -429,25 +642,73 @@
                     placeholder="right_cmd+right_shift"
                     aria-label="Global PTT shortcut"
                   />
-                  <button id="pttRecordShortcutButton" type="button" class="ghost">Record shortcut</button>
+                  <button
+                    id="pttRecordShortcutButton"
+                    type="button"
+                    class="ghost"
+                  >
+                    Record shortcut
+                  </button>
                 </span>
-                <span id="pttShortcutValidation" class="field-help" aria-live="polite"></span>
+                <span
+                  id="pttShortcutValidation"
+                  class="field-help"
+                  aria-live="polite"
+                ></span>
               </label>
               <label class="field-label">
                 <span>Merge window</span>
-                <input id="pttMergeWindowInput" type="number" step="0.5" min="0" />
+                <input
+                  id="pttMergeWindowInput"
+                  type="number"
+                  step="0.5"
+                  min="0"
+                />
               </label>
             </div>
-            <div class="voice-mode ptt-operator-controls" role="group" aria-label="PTT operator controls">
-              <button id="pttModeButton" type="button" class="mode-button" title="Hold to create a PTT lease">Hold</button>
-              <button id="listenToggle" type="button" class="mode-button" title="Toggle the locked listening lease">Locked</button>
-              <button id="testPttButton" type="button" class="mode-button" title="Call /voice/ptt/down and /voice/ptt/up, then show safe runtime evidence">Test PTT</button>
+            <div
+              class="voice-mode ptt-operator-controls"
+              role="group"
+              aria-label="PTT operator controls"
+            >
+              <button
+                id="pttModeButton"
+                type="button"
+                class="mode-button"
+                title="Hold to create a PTT lease"
+              >
+                Hold
+              </button>
+              <button
+                id="listenToggle"
+                type="button"
+                class="mode-button"
+                title="Toggle the locked listening lease"
+              >
+                Locked
+              </button>
+              <button
+                id="testPttButton"
+                type="button"
+                class="mode-button"
+                title="Call /voice/ptt/down and /voice/ptt/up, then show safe runtime evidence"
+              >
+                Test PTT
+              </button>
             </div>
             <div id="pttTestStatusList" class="list compact-list"></div>
-            <p id="pttApplyStatus" class="muted apply-status" aria-live="polite"></p>
+            <p
+              id="pttApplyStatus"
+              class="muted apply-status"
+              aria-live="polite"
+            ></p>
           </details>
 
-          <details id="activeToolsSettingsSection" class="sys-section active-settings-section collapsible-card" aria-labelledby="activeToolsSettingsHeading">
+          <details
+            id="activeToolsSettingsSection"
+            class="sys-section active-settings-section collapsible-card"
+            aria-labelledby="activeToolsSettingsHeading"
+          >
             <summary class="section-head">
               <div>
                 <h2 id="activeToolsSettingsHeading">Tools</h2>
@@ -460,13 +721,25 @@
               </label>
               <div class="inline-toggle read-only-setting">
                 <span>Internet access</span>
-                <span id="toolsNetworkEnabledToggle" class="status-badge" role="status">unknown</span>
+                <span
+                  id="toolsNetworkEnabledToggle"
+                  class="status-badge"
+                  role="status"
+                  >unknown</span
+                >
               </div>
             </div>
-            <p id="toolsApplyStatus" class="muted apply-status" aria-live="polite"></p>
+            <p
+              id="toolsApplyStatus"
+              class="muted apply-status"
+              aria-live="polite"
+            ></p>
           </details>
 
-          <details class="sys-section active-settings-section collapsible-card" aria-labelledby="activePersonalitySettingsHeading">
+          <details
+            class="sys-section active-settings-section collapsible-card"
+            aria-labelledby="activePersonalitySettingsHeading"
+          >
             <summary class="section-head">
               <div>
                 <h2 id="activePersonalitySettingsHeading">Personality</h2>
@@ -476,27 +749,48 @@
               <span>Identity</span>
               <strong class="status-badge">DAN — canon</strong>
             </div>
-            <p id="personaApplyStatus" class="muted apply-status" aria-live="polite">
+            <p
+              id="personaApplyStatus"
+              class="muted apply-status"
+              aria-live="polite"
+            >
               One identity across chat, voice and provider.
             </p>
           </details>
-
-
         </section>
       </div>
 
-      <!-- Tab bar: one view at a time. -->
       <nav class="tabbar" aria-label="Panel views">
-        <button type="button" class="tab-button active" data-view="chat" aria-selected="true">
+        <button
+          type="button"
+          class="tab-button active"
+          data-view="chat"
+          aria-selected="true"
+        >
           Chat
         </button>
-        <button type="button" class="tab-button" data-view="memory" aria-selected="false">
+        <button
+          type="button"
+          class="tab-button"
+          data-view="memory"
+          aria-selected="false"
+        >
           Memory
         </button>
-        <button type="button" class="tab-button" data-view="logs" aria-selected="false">
+        <button
+          type="button"
+          class="tab-button"
+          data-view="logs"
+          aria-selected="false"
+        >
           Logs
         </button>
-        <button type="button" class="tab-button" data-view="system" aria-selected="false">
+        <button
+          type="button"
+          class="tab-button"
+          data-view="system"
+          aria-selected="false"
+        >
           System
         </button>
       </nav>

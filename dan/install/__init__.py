@@ -27,8 +27,8 @@ from pathlib import Path, PurePosixPath
 from dan.install.adapters import adapter_install_items
 from dan.install.launchd import render_plist
 
-MANAGED_BLOCK_BEGIN = "<!-- BEGIN DAN MANAGED BLOCK (dan-runtime) -->"
-MANAGED_BLOCK_END = "<!-- END DAN MANAGED BLOCK (dan-runtime) -->"
+MANAGED_BLOCK_BEGIN = ""
+MANAGED_BLOCK_END = ""
 INSTALL_MANIFEST_RELPATH = ".dan/install-manifest.json"
 
 _CLAUDE_MD_BLOCK = """DAN runtime is installed. Voice/persona rules:
