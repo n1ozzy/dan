@@ -1,6 +1,6 @@
 ---
 name: trio-live
-description: Live voice exchange Ozzy–DAN (plus Codex/GPT slots) through the DAN runtime.
+description: Live voice exchange Ozzy–DAN–Danusia through the DAN runtime.
 ---
 
 # trio-live (shared thin adapter)
@@ -22,4 +22,6 @@ Replace `--source claude` with the actual calling host (`codex`,
 `openclaw`, `gpt-say`, `standup`, `hook`). Queue inspection:
 `dan queue list --json`; cancel: `dan queue flush --session trio-live`.
 
-Each participant submits with its own `--as` persona and `--session trio-live`; barge-in and lanes are daemon policy, not adapter logic.
+Every spoken turn uses only `--as dan` or `--as danusia` with
+`--session trio-live`; host/source metadata never creates a third persona.
+Barge-in and lanes are daemon policy, not adapter logic.

@@ -164,7 +164,8 @@ Runtime/config/ContextBuilder/test work is complete through session/profile scop
 - Provider CLI adapters default to `enabled = false` in `dan/config.py`, but
   `config/dan.example.toml` ships `[brain.claude_cli] enabled = true`.
 - Voice is ENABLED in `config/dan.example.toml` (`[voice] enabled = true`,
-  `mastering_profile = "bastard"`); only the `dan/config.py` dataclass default is off.
+  `mastering_profile` set to an obsolete rejected effect); only the `dan/config.py`
+  dataclass default is off.
 - Launchd auto-install is disabled by default.
 - Destructive tools are ENABLED by default in both `dan/config.py`
   (`destructive_tools_enabled = True`) and `config/dan.example.toml`. Since

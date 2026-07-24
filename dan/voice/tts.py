@@ -154,48 +154,12 @@ def apply_pronunciations(text: str, pronunciations: dict[str, str]) -> str:
     return rewritten
 
 
-# Per-persona mastering chains, ported 1:1 from DAN's voice_broker
-# (2026-07-08). asetrate*k + atempo=1/k pitches DOWN without changing tempo;
-# then EQ (bass/presence), aexciter + crystalizer (transient sparkle so it
-# reads as "recorded", not "synthetic"), deesser, compressor, limiter. The
-# loudnorm tail evens out loudness.
-#
-# WHO ACTUALLY USES THESE (config/voice/personas.toml, the authority): only
-# danusia -> "clean". DAN and his alias jarvis are mastering = "raw" — untouched
-# timbre, but since 2026-07-22 (Ozzy: "loudnorm to norma") raw still gets the
-# loudnorm tail, so no persona plays quieter than the mastered ones. "bastard"
-# was judged over-driven and dropped on 2026-07-10; do not "restore" it for DAN
-# on the strength of this table. "none" is the only true bypass.
+# One public mastering route. Historical timbre profiles were unverified,
+# changed character identity and repeatedly returned as false acting presets.
+# ``default`` leaves timbre alone and only keeps the live loudness tail.
+# ``none`` remains an internal candidate-render bypass.
 _MASTER_TAIL = ",loudnorm=I=-14:TP=-2.0:LRA=7,aresample=44100"
-_MASTER_PROFILES = {
-    # DAN: slightly LESS bass (Ozzy 2026-07-08) — pitch 0.91->0.93, bass +3dB.
-    "bastard": ("asetrate=44100*0.93,aresample=44100,atempo=1.0753,"
-                "equalizer=f=105:t=q:w=1:g=3,equalizer=f=300:t=q:w=1.2:g=-2,"
-                "equalizer=f=2200:t=q:w=1.5:g=3.5,aexciter=amount=2.5:drive=7:blend=0.4:freq=3500,"
-                "crystalizer=i=1.8,deesser=i=0.4,"
-                "acompressor=threshold=-19dB:ratio=3:attack=8:release=120:makeup=3:knee=4,"
-                "alimiter=limit=0.96,aresample=44100"),
-    "gritty": ("asetrate=44100*0.92,aresample=44100,atempo=1.087,"
-               "equalizer=f=110:t=q:w=1:g=4,equalizer=f=1800:t=q:w=2:g=2.5,"
-               "aexciter=amount=3.5:drive=8:blend=0.6:freq=3500,crystalizer=i=2.0,deesser=i=0.4,"
-               "acompressor=threshold=-24dB:ratio=4:attack=3:release=60:makeup=3,"
-               "alimiter=limit=0.97,aresample=44100"),
-    "clean": ("asetrate=44100*0.96,aresample=44100,atempo=1.0417,"
-              "equalizer=f=120:t=q:w=1:g=2.5,equalizer=f=2200:t=q:w=1.5:g=2,"
-              "aexciter=amount=1.5:drive=5:blend=0.25:freq=3500,crystalizer=i=1.4,deesser=i=0.3,"
-              "acompressor=threshold=-18dB:ratio=2.5:attack=6:release=90,"
-              "alimiter=limit=0.95,aresample=44100"),
-    "raport": ("asetrate=44100*1.015,aresample=44100,atempo=0.9852,"
-               "equalizer=f=130:t=q:w=1:g=2,equalizer=f=2400:t=q:w=1.5:g=2,"
-               "aexciter=amount=1.5:drive=5:blend=0.25:freq=3500,"
-               "crystalizer=i=1.2,deesser=i=0.3,"
-               "acompressor=threshold=-18dB:ratio=2.5:attack=6:release=90,"
-               "alimiter=limit=0.95,aresample=44100"),
-}
-
-# Every mastering value a persona route may carry: the ffmpeg chains above
-# plus "raw" (untouched timbre, loudnorm tail only).
-MASTERING_PROFILES = frozenset(_MASTER_PROFILES) | {"raw"}
+MASTERING_PROFILES = frozenset({"default"})
 
 _SUPERTONIC_BUILTIN_VOICES = frozenset(
     {f"M{index}" for index in range(1, 6)}
@@ -245,9 +209,9 @@ def _dynamic_tempo_filter(snapshot: RenderSnapshot, duration_seconds: float) -> 
     ratio = snapshot.tempo_end / snapshot.tempo_start
     if abs(ratio - 1.0) < 1e-6:
         return ""
-    # Reach the requested ending pace before the final words, then hold it.
-    # Nine deterministic control points keep each change inaudibly small.
-    ramp_duration = duration_seconds * 0.9
+    # The authored contour spans the whole utterance. Control points are a
+    # technical interpolation detail, not an invented "slow final words" rule.
+    ramp_duration = duration_seconds
     # Very wide legal contours need two atempo stages: each stage remains in
     # the high-quality 0.5-2.0 band while their product is the desired ratio.
     stage_count = 2 if ratio < 0.5 or ratio > 2.0 else 1
@@ -325,17 +289,19 @@ def live_prosody_filter(snapshot: RenderSnapshot, *, duration_seconds: float) ->
     return ",".join([*body, *([pause] if pause else [])])
 
 
-def mastering_filter(profile: str) -> str:
-    """ffmpeg -af chain for a profile, or '' when the profile is unknown/empty.
+def mastering_filter(profile: str, *, include_loudnorm: bool = True) -> str:
+    """Return the ffmpeg chain for one mastering profile.
 
-    "raw" is NOT a bypass: it keeps the timbre untouched but still returns the
-    loudnorm tail, so every persona lands at the same loudness (-14 LUFS).
+    Live speech keeps the historical per-utterance loudnorm behavior by using
+    the default ``include_loudnorm=True``. The offline prosody renderer selects
+    a take first and then calls this with ``False`` so calibrated fixed gains
+    can preserve scene dynamics instead of normalizing every line separately.
     """
     normalized = str(profile or "").strip().lower()
-    if normalized == "raw":
-        return _MASTER_TAIL.lstrip(",")
-    chain = _MASTER_PROFILES.get(normalized)
-    return (chain + _MASTER_TAIL) if chain else ""
+    tail = _MASTER_TAIL if include_loudnorm else ""
+    if normalized == "default":
+        return tail.lstrip(",")
+    return ""
 
 
 class SupertonicEngine:
@@ -825,4 +791,5 @@ __all__ = [
     "TTSEngineError",
     "build_tts_engine",
     "live_prosody_filter",
+    "mastering_filter",
 ]

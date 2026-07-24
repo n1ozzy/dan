@@ -11,6 +11,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
 
+from dan.voice.policy import VoiceCastPolicyError, validate_owner_cast
 from dan.voice.resolver import VoiceCatalog
 
 
@@ -64,7 +65,7 @@ class VersionedVoiceCatalog:
         return self.voice_catalog.pronunciations
 
     def gain_for(self, voice: str, mastering: str) -> float | None:
-        return self.gains.get(f"{voice}|{mastering or 'raw'}")
+        return self.gains.get(f"{voice}|{mastering or 'default'}")
 
 
 def sha256_file(path: str | Path) -> str:
@@ -171,6 +172,10 @@ def verify_assets(manifest: AssetManifest, *, repo_root: Path) -> None:
 def load_voice_catalog(directory: str | Path) -> VersionedVoiceCatalog:
     root = Path(directory).resolve()
     voice_catalog = VoiceCatalog.from_directory(root, strict=True)
+    try:
+        validate_owner_cast(voice_catalog.personas)
+    except VoiceCastPolicyError as exc:
+        raise AssetVerificationError(str(exc)) from exc
     gains_path = root / "gains.json"
     try:
         gains_raw = json.loads(gains_path.read_text(encoding="utf-8"))
@@ -190,6 +195,29 @@ def load_voice_catalog(directory: str | Path) -> VersionedVoiceCatalog:
             raise AssetVerificationError(
                 f"voice persona {name!r} is missing strict fields: {', '.join(sorted(missing))}"
             )
+        if str(spec["mastering"]).strip().lower() != "default":
+            raise AssetVerificationError(
+                f"voice persona {name!r} uses retired mastering "
+                f"{spec['mastering']!r}; only 'default' is active"
+            )
+    expected_gain_keys = {
+        f"{spec['voice']}|{spec['mastering']}"
+        for spec in voice_catalog.personas.values()
+    }
+    actual_gain_keys = set(gains)
+    if actual_gain_keys != expected_gain_keys:
+        missing = sorted(expected_gain_keys - actual_gain_keys)
+        extra = sorted(actual_gain_keys - expected_gain_keys)
+        details = []
+        if missing:
+            details.append("missing: " + ", ".join(missing))
+        if extra:
+            details.append("retired/unknown: " + ", ".join(extra))
+        raise AssetVerificationError(
+            "voice gains must exactly match the active DAN/Danusia routes ("
+            + "; ".join(details)
+            + ")"
+        )
     return VersionedVoiceCatalog(
         voice_catalog=voice_catalog,
         gains=gains,

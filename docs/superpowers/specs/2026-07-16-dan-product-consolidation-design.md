@@ -1,7 +1,14 @@
 # DAN — projekt konsolidacji jednego produktu
 
+> **SUPERSEDED — NIE UŻYWAĆ JAKO INSTRUKCJI GŁOSU.**
+> To wejściowa specyfikacja migracji z 16 lipca. Opisuje zastany wtedy bałagan,
+> a nie dzisiejszy runtime. Wszystkie zawarte niżej persony, głosy, profile,
+> prędkości, pauzy, ścieżki i pipeline'y są wyłącznie historycznym materiałem
+> audytowym. Bieżąca prawda: `AGENTS.md`, `config/voice/personas.toml`,
+> `dan/voice/policy.py`, `MUST-READ-GLOS-PROZODIA.md`.
+
 Data: 2026-07-16
-Status: specyfikacja do zatwierdzenia przed planem wykonawczym
+Status: historyczna specyfikacja migracji; nie wykonywać
 
 ## 1. Cel
 
@@ -89,7 +96,7 @@ jeden broker ani że barge-in przerwie już opublikowany dźwięk.
 ### 3.2 Rozjazd konfiguracji
 
 Aktywny `$HOME/.jarvis/jarvis.toml` ustawia głos `M3`, profil
-`bastard` i prędkość runtime `1.35`. Aktualne
+odrzucony profil efektowy i prędkość runtime `1.35`. Aktualne
 `$HOME/.config/voice/personas.toml` ustawia:
 
 - `dan = M3/raw/1.28`;
@@ -133,7 +140,7 @@ werdykty są kanonem produkcyjnym, którego nie wolno zgubić.
 
 Źródła nie zgadzają się również co do Jarvisa: aktywny `personas.toml` i bieżące
 instrukcje wskazują `M3/clean/1.35`, a jeden dokument w repo bazowym nadal podaje
-`M5/bastard/1.4`; starsze handoffy wskazują jeszcze inne wartości. Ostateczna
+`M5/odrzucony-profil/1.4`; starsze handoffy wskazują jeszcze inne wartości. Ostateczna
 mapa głosów nie może powstać z pamięci ani przez wybranie najnowszego komentarza.
 Wymaga tabeli decyzji, testu rzeczywistego resolvera dla każdej trasy i
 zatwierdzonego odsłuchu każdej postaci. Nieaktualny komentarz w
@@ -504,7 +511,7 @@ modułu DAN-a, a zewnętrzny skill staje się cienkim adapterem CLI.
 DANv2 nie jest bazą i nie jest uruchamiany po cutoverze. Jego unikalne testy PTT,
 VAD, anti-echo, streamingu i TTS porównujemy z bazą. Przenosimy test lub zachowanie
 tylko wtedy, gdy nie istnieje już w DAN-ie i ma dowód jakości. Lokalne wartości
-`M1/bastard`, `M3/raw` oraz kopie pipeline'u nie są kanonem.
+`M1/odrzucony-profil`, `M3/raw` oraz kopie pipeline'u nie są kanonem.
 
 ### 8.3 Skille, hooki, OpenClaw i launchd
 

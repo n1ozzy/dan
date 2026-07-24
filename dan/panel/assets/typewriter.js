@@ -7,15 +7,10 @@
   var EVT_POLL = 250, Q_POLL = 700, TICK = 40, META_TICK = 600, GAP_MS = 1200;
   var GLIDE_MS = 180;
 
-  // KNOWN DEFECT (2026-07-21): 1.29 is the [dan] speed from the voice persona
-  // canon under config/voice/, copied here. CLAUDE.md: "canon IN THIS REPO
-  // ... do NOT hardcode values." Commit 9305568 moved that speed to 1.32 and
-  // left this line untouched while rewriting this very file, so the panel
-  // types at a speed the runtime no longer uses. Read it from the daemon.
-  // The catalog file is deliberately not named here: panel sources may not
-  // spell it (tests/test_panel_no_runtime_ownership.py).
-  // docs/reviews/2026-07-21-restart-orphan-shell-review.md §15.
-  var perChar = 58 / 1.29;
+  // Initial visual cadence only. It is calibrated from actual queue timing
+  // below and must never copy a voice/persona speed: directed speech can
+  // change tempo inside one utterance.
+  var perChar = 58;
 
   var afterId = 0;
   var queue = {};

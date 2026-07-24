@@ -8,11 +8,6 @@ import pytest
 
 from dan.voice.assets import load_asset_manifest, load_voice_catalog
 from dan.voice.models import SpeechIntent
-from dan.voice.pipelines.chatterbox_v3 import (
-    ChatterboxV3ZanetaPipeline,
-    PipelineCapabilityError,
-    load_pipeline_manifest,
-)
 from dan.voice.service import build_voice_resolver
 from dan.voice.tts import build_tts_engine
 
@@ -143,56 +138,4 @@ def test_every_catalog_route_executes_through_real_runtime_boundary(
         assert len(chunk.audio) == 2_000
         executed.add(name)
 
-    assert executed == set(catalog.personas)
-
-
-def test_zaneta_local_only_chatterbox_fails_closed_then_live_route_executes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    catalog = load_voice_catalog(ROOT / "config" / "voice")
-    zaneta = catalog.personas["zaneta"]
-
-    assert zaneta["offline_pipeline"] == "chatterbox-v3-zaneta"
-    assert ChatterboxV3ZanetaPipeline.live_capable is False
-    with pytest.raises(PipelineCapabilityError, match="required local pipeline path"):
-        load_pipeline_manifest(
-            ROOT / "config" / "voice" / "pipelines" / "chatterbox-v3-zaneta.toml",
-            environ={},
-        )
-
-    config = SimpleNamespace(
-        voice=SimpleNamespace(
-            output_gain=1.0,
-            supertonic_binary="/usr/bin/true",
-            supertonic_lang="pl",
-            supertonic_steps=14,
-            tts_timeout_seconds=30,
-            mastering_binary="/usr/bin/true",
-            supertonic_custom_styles_manifest=str(
-                ROOT / "config" / "voice" / "custom_styles" / "manifest.json"
-            ),
-        ),
-        runtime=SimpleNamespace(runtime_dir=str(tmp_path / "runtime")),
-    )
-    resolver = build_voice_resolver(config, repo_root=ROOT)
-    commands: list[list[str]] = []
-
-    def external_edge(argv: list[str], **kwargs: object):
-        command = [str(value) for value in argv]
-        commands.append(command)
-        if len(command) > 1 and command[1] == "version":
-            return subprocess.CompletedProcess(command, 0, "supertonic 1.3.1", "")
-        if "render" in command and "-o" in command:
-            output = Path(command[command.index("-o") + 1])
-            output.write_bytes(b"\0" * 2_000)
-        elif "-af" in command:
-            Path(command[-1]).write_bytes(b"\0" * 2_000)
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr("dan.voice.tts.subprocess.run", external_edge)
-    engine = build_tts_engine("supertonic", config=config)
-
-    engine.synthesize("Jawny live fallback", resolver.resolve(speech_intent("zaneta")))
-
-    synthesis = next(command for command in commands if "render" in command)
-    assert synthesis[synthesis.index("--voice") + 1] == zaneta["voice"] == "F2"
+    assert executed == {"dan", "danusia"}

@@ -74,6 +74,7 @@ def inventory():
 @pytest.mark.parametrize("host", sorted(HOSTS))
 def test_machine_adapter_uses_exact_speak_contract(host, installed_adapter) -> None:
     invocation = installed_adapter(host).invoke("Zażółć gęślą jaźń.")
+    assert invocation.persona in {"dan", "danusia"}
     assert invocation.argv == [
         "dan",
         "speak",
@@ -115,7 +116,7 @@ def test_adapter_templates_carry_no_legacy_paths() -> None:
     scanned = 0
     for sub in ("claude", "codex", "openclaw", "shared"):
         for path in sorted((INTEGRATIONS / sub).rglob("*")):
-            if not path.is_file():
+            if not path.is_file() or path.name == ".DS_Store":
                 continue
             scanned += 1
             text = path.read_text(encoding="utf-8")

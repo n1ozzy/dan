@@ -1,16 +1,4 @@
 {
- "F4|clean": 7.97,
- "M1|clean": 8.39,
- "M1|raport": 8.42,
- "M1|raw": 8.71,
- "M2|clean": 8.41,
- "M3M2|raport": 7.73,
- "M3M2|raw": 8.31,
- "M3|bastard": -0.88,
- "M3|clean": 7.56,
- "M3|raport": 7.72,
- "M3|raw": 8.98,
- "ROBOT75|raw": 7.94,
- "ROBOT|raport": 7.54,
- "ROBOT|raw": 8.45
+  "F4|default": 7.97,
+  "M3|default": 8.98
 }

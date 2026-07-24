@@ -113,14 +113,14 @@ ADAPTERS: dict[str, AdapterSpec] = {
     ),
     "gpt-say": AdapterSpec(
         host="gpt-say",
-        persona="gpt",
+        persona="dan",
         session="gpt-say",
         template="integrations/shared/skills/gpt-say/SKILL.md",
         destination=".agents/skills/gpt-say/SKILL.md",
     ),
     "standup": AdapterSpec(
         host="standup",
-        persona="jarvis",
+        persona="dan",
         session="standup",
         template="integrations/shared/skills/standup/SKILL.md",
         destination=".agents/skills/standup/SKILL.md",

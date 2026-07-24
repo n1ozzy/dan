@@ -13,25 +13,17 @@ ROOT = Path(__file__).resolve().parents[1]
 CANON = ROOT / "config" / "persona" / "DAN.md"
 OWNER_EXAMPLE = ROOT / "config" / "owner.example.toml"
 
-# Po turnieju 2026-07-22 kanon = config/persona/poziomy/poziom-7-wsciekly-pies.md (werdykt
-# Ozzy'ego), a asercje niżej pilnują starej legendy (THE LEGEND, templating ownera, brak
-# "ozz"). Zostają wyłączone, dopóki nie przepiszemy ich pod system poziomów.
-pytestmark = pytest.mark.skip(reason="kanon = poziom-7 wściekły pies (2026-07-22); asercje pisane pod legendę — do przepisania pod poziomy")
-
-
 def test_release_contains_one_versioned_uncensored_canon() -> None:
     text = CANON.read_text(encoding="utf-8")
 
     assert "DAN_CANON_VERSION: 1" in text
-    assert "# DAN // THE LEGEND" in text
-    assert "Największą obrazą jest marnowanie jego czasu." in text
-    assert "Każdy roast kończy się rozwiązaniem problemu." in text
-    assert "Istnieje po to, żeby kończyć robotę." in text
-    assert "ty głupi chuju" in text
-    assert "Jarvis" in text
-    assert "{{ owner.display_name }}" in text
-    assert len(text.encode("utf-8")) <= 6_000
-    assert re.search(r"(?i)ozz", text) is None
+    assert "# DAN — z krwi i kości (300% jadu)" in text
+    assert "Roast nie jest terapią" in text
+    assert "Każda odpowiedź poza czysto mechanicznym checkpointem ma ugryźć" in text
+    assert "Nie czekasz na zaproszenie, hasło ani osobny tryb" in text
+    assert "Nie zmyślasz wykonanych komend" in text
+    assert "{{ owner.display_name }}" not in text
+    assert re.search(r"(?i)ozz", text) is not None
 
 
 def test_owner_example_is_neutral_and_real_owner_file_is_not_tracked() -> None:
@@ -49,22 +41,23 @@ def test_owner_example_is_neutral_and_real_owner_file_is_not_tracked() -> None:
     assert tracked == []
 
 
-def test_render_substitutes_only_local_owner_data(tmp_path: Path) -> None:
+def test_render_uses_the_single_canon_without_owner_substitution(tmp_path: Path) -> None:
     owner = tmp_path / "owner.toml"
     owner.write_text('[owner]\ndisplay_name = "Kasia"\n', encoding="utf-8")
 
     rendered = render_persona(CANON, owner)
 
-    assert "Kasia" in rendered
+    assert rendered == CANON.read_text(encoding="utf-8")
+    assert "Kasia" not in rendered
     assert "{{ owner.display_name }}" not in rendered
-    assert "ty głupi chuju" in rendered
-    assert "Każdy roast kończy się rozwiązaniem problemu." in rendered
+    assert "Roast nie jest terapią" in rendered
+    assert "Każda odpowiedź poza czysto mechanicznym checkpointem ma ugryźć" in rendered
 
 
-def test_missing_optional_owner_uses_neutral_local_label(tmp_path: Path) -> None:
+def test_missing_optional_owner_does_not_change_the_canon(tmp_path: Path) -> None:
     rendered = render_persona(CANON, tmp_path / "missing-owner.toml")
 
-    assert "właściciel jest twoim człowiekiem" in rendered
+    assert rendered == CANON.read_text(encoding="utf-8")
     assert "{{ owner.display_name }}" not in rendered
 
 

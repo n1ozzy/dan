@@ -9,10 +9,11 @@ starts a broker of their own. The live engine is Supertonic; a missing
 engine, voice or asset ends the request with an explicit error — there is no
 silent fallback.
 
-The one command every producer uses:
+Every producer selects one of exactly two public voice routes:
 
 ```bash
-dan speak --json --as <persona> --session <session> --source claude --stdin
+dan speak --json --as dan --session <session> --source claude --stdin
+dan speak --json --as danusia --session <session> --source claude --stdin
 ```
 
 The Claude MessageDisplay hook is **no longer a producer**: it was removed and
@@ -132,13 +133,6 @@ ordinary `voice_queue` row through the same API/CLI, with its render snapshot
 resolved before the write — there is no second queue and no second producer
 path. Scheduled/format-driven playback (Radio) is Release 2; see
 `docs/RADIO-DAN.md`.
-
-## Offline render
-
-Prepared lines (the Chatterbox V3 pipeline for Żaneta) are an explicit
-**offline** pipeline — it renders files outside the live queue and is never an
-automatic live engine. Entry via the voice directory (`dan/voice/pipelines/`),
-the `offline_pipeline` route in the persona catalog.
 
 ## CLI examples (copy/paste)
 

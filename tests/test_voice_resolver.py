@@ -24,7 +24,7 @@ def catalog(tmp_path: Path) -> VoiceCatalog:
     voice_dir = tmp_path / "voice"
     voice_dir.mkdir()
     (voice_dir / "personas.toml").write_text(
-        '[dan]\nengine = "supertonic"\nvoice = "M3"\nmastering = "raw"\n'
+        '[dan]\nengine = "supertonic"\nvoice = "M3"\nmastering = "default"\n'
         'speed = 1.25\nseed = 17\ndsp = "none"\n',
         encoding="utf-8",
     )
@@ -75,7 +75,7 @@ def test_resolver_creates_complete_snapshot_once(
 
     assert snapshot.engine == "supertonic"
     assert snapshot.engine_version and snapshot.voice_or_style == "M3"
-    assert snapshot.speed == 1.25 and snapshot.mastering_profile == "raw"
+    assert snapshot.speed == 1.25 and snapshot.mastering_profile == "default"
     assert snapshot.seed == 17
     assert snapshot.dsp == "none" and snapshot.pronunciations["runtime"] == "rantajm"
     assert snapshot.pronunciations_sha256
@@ -139,7 +139,7 @@ def test_live_prosody_is_explicit_and_frozen_in_snapshot(
     assert snapshot.pause_after == pytest.approx(0.24)
 
 
-def test_emotion_supplies_dynamic_defaults_without_punctuation(
+def test_emotion_does_not_invent_tempo_or_tone(
     catalog: VoiceCatalog,
     installation_config: ConfigStore,
     engines: dict[str, EngineMetadata],
@@ -152,8 +152,9 @@ def test_emotion_supplies_dynamic_defaults_without_punctuation(
 
     snapshot = VoiceResolver(catalog, installation_config, engines).resolve(intent)
 
-    assert snapshot.tempo_end < snapshot.tempo_start
-    assert snapshot.tone == "hard"
+    assert snapshot.tempo_end == snapshot.tempo_start
+    assert snapshot.tone == "neutral"
+    assert snapshot.pause_after == 0.0
 
 
 @pytest.mark.parametrize(
@@ -276,9 +277,9 @@ def test_resolver_requires_every_persona_render_field(
     fields = {
         "engine": 'engine = "supertonic"',
         "voice": 'voice = "M3"',
-        "speed": "speed = 1.25",
+        "speed": "speed = 1.0",
         "seed": "seed = 17",
-        "mastering": 'mastering = "raw"',
+        "mastering": 'mastering = "default"',
         "dsp": 'dsp = "none"',
     }
     voice_dir = tmp_path / "strict-voice"
@@ -321,8 +322,8 @@ def test_resolver_freezes_custom_style_as_verified_absolute_path(
     voice_dir = tmp_path / "custom-voice"
     voice_dir.mkdir()
     (voice_dir / "personas.toml").write_text(
-        '[dan]\nengine = "supertonic"\nvoice = "M2M1"\n'
-        'mastering = "raw"\nspeed = 1.25\nseed = 17\ndsp = "none"\n',
+        '[dan]\nengine = "supertonic"\nvoice = "M3"\n'
+        'mastering = "default"\nspeed = 1.25\nseed = 17\ndsp = "none"\n',
         encoding="utf-8",
     )
     (voice_dir / "pronunciations.toml").write_text("", encoding="utf-8")
@@ -377,7 +378,6 @@ class TestCatalogHashMatchesParsedBytes:
         from dan.voice.resolver import VoiceCatalog
 
         first = '[dan]\nengine = "supertonic"\nvoice = "M3"\n'
-        second = '[dan]\nengine = "supertonic"\nvoice = "M1"\n'
         personas = tmp_path / "personas.toml"
         personas.write_text(first, encoding="utf-8")
         (tmp_path / "pronunciations.toml").write_text("", encoding="utf-8")

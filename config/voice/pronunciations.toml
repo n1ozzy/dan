@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # PRONUNCIATION DICTIONARY — English word = Polish phonetics. Shared by ALL
-# systems: Jarvis daemon, DAN, skills (standup). Neighbor: personas.toml (voices).
+# Shared DAN runtime pronunciation dictionary. Neighbor: personas.toml (voices).
 #
 # Keys are case-insensitive, matched on the stem (the PL inflection ending stays).
 # Longer keys match first, so inflected forms (committed) beat the bare stem.

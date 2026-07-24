@@ -7,7 +7,7 @@ scheduler state and never clobbers later operator changes. Disabling the
 old plist itself is journaled cutover work (Task 12/14), not this module.
 
 Behavior preserved: no material means silence, never filler; the spoken
-voice is the jarvis persona; submission goes through VoiceService.
+voice is the canonical DAN persona; submission goes through VoiceService.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from dan.voice.models import SpeechIntent
 
 STANDUP_SOURCE = "standup"
 STANDUP_SESSION = "standup"
-STANDUP_PERSONA = "jarvis"
+STANDUP_PERSONA = "dan"
 DEFAULT_TIME = "22:00"
 
 

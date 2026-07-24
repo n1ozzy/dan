@@ -27,11 +27,8 @@ Radio will be a tab of the same product, on the same contracts:
 - **queue sessions** — `dan speak --session ...` and `dan queue flush --session ...`
   already isolate a stream of utterances today (e.g. a `radio` session);
 - **voice personas** — configured in `config/voice/personas.toml` (that file is
-  the canon, not this document), selected explicitly via `--as`. `dan` is the
-  main voice, `danusia` is a separate female persona, and `jarvis` is a **legacy
-  alias of DAN**, not a character of its own;
-- **the Chatterbox V3 offline pipeline** — prepared lines rendered outside the
-  live queue;
+  canon, not this document), selected explicitly via `--as`. The public cast is
+  exactly `dan` and `danusia`; no other `--as` value is a public voice route;
 - **brain adapters** (participant = an explicit `identity + brain + voice`):
   `claude_cli`, `codex_cli`, `openai`, `ollama`, `qwen`, `eco`
   plus `mock`/`test` for testing — all behind the common `BrainAdapter`

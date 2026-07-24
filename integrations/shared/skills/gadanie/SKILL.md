@@ -25,13 +25,12 @@ dan speak --json --as dan --session gadanie --source claude --stdin
 Replace `--source claude` with the actual calling host (`codex`,
 `openclaw`, `gpt-say`, `standup`, `hook`).
 
-## Chunking (hard rule)
+## Utterance boundary
 
-Keep one utterance to ~2–4 sentences (≤ ~400 characters). For longer
-content send consecutive `dan speak` calls — the daemon queue preserves
-order. One oversized buffer can fail native playback entirely (the
-playback watchdog gives up after its deadline and the listener hears
-silence); short chunks also start faster and stay interruptible.
+Keep one complete spoken thought per submission. If the active runtime rejects
+its technical size, split only at a semantic boundary and preserve queue order.
+Do not encode a remembered character count, sentence count, tempo, pause,
+profile or emotion preset in this adapter.
 
 ## Queue & diagnostics
 

@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--tempo",
         type=float,
         default=None,
-        help="emotional tempo multiplier on the persona's speed (e.g. 0.85 = slower, emphatic)",
+        help="explicit starting tempo multiplier for this utterance; 1.0 is neutral",
     )
     speak_parser.add_argument(
         "--tempo-end",
@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--tone",
         choices=sorted(INTENT_TONES),
         default=None,
-        help="explicit tonal color (auto follows the selected emotion)",
+        help="explicit tonal color; never inferred from emotion or punctuation",
     )
     speak_parser.add_argument(
         "--pause-after",
@@ -122,6 +122,14 @@ def build_parser() -> argparse.ArgumentParser:
     voice_hook.add_argument("--json", dest="json_output", action="store_true")
     voice_hook.add_argument("--url", help="Base URL for a running dand")
     voice_hook.add_argument("--timeout", type=_positive_timeout, default=5.0)
+
+    prosody_parser = subcommands.add_parser(
+        "prosody",
+        help="quality-oriented offline/storytelling voice rendering",
+    )
+    from dan.voice.prosody.command import add_prosody_subcommands
+
+    add_prosody_subcommands(prosody_parser)
 
     persona_parser = subcommands.add_parser("persona")
     persona_commands = persona_parser.add_subparsers(dest="persona_command", required=True)
@@ -305,6 +313,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "voice" and args.voice_command == "hook":
         return _handle_voice_hook(args, config)
+
+    if args.command == "prosody":
+        from dan.voice.prosody.command import handle_prosody_command
+
+        return handle_prosody_command(args, config)
 
     if args.command == "persona" and args.persona_command == "context":
         return _handle_persona_context(args, paths)

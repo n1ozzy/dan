@@ -556,28 +556,23 @@
                 ></select>
               </label>
               <label class="field-label">
-                <span>Persona voice</span>
-                <select
-                  id="personaVoiceVoiceSelect"
-                  aria-label="Persona voice"
-                ></select>
+                <span>Canonical voice</span>
+                <output id="personaVoiceVoiceValue">—</output>
               </label>
               <label class="field-label">
-                <span>Persona speed</span>
-                <input
-                  id="personaVoiceSpeedInput"
-                  type="number"
-                  step="0.01"
-                  min="0.5"
-                  max="2"
-                />
+                <span>Base speed</span>
+                <output id="personaVoiceSpeedValue">—</output>
+              </label>
+              <label class="field-label">
+                <span>Mastering</span>
+                <output id="personaVoiceMasteringValue">—</output>
               </label>
             </div>
             <p
               id="personaVoiceStatus"
               class="muted apply-status"
               aria-live="polite"
-            ></p>
+            >Read-only. Source: config/voice/personas.toml.</p>
           </details>
 
           <details

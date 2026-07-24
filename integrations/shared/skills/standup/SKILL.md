@@ -15,10 +15,10 @@ queue, voices and playback; persona always routes through the explicit
 One utterance, text on stdin (strict UTF-8, written FOR SPEECH):
 
 ```
-dan speak --json --as jarvis --session standup --source standup --stdin
+dan speak --json --as dan --session standup --source standup --stdin
 ```
 
-The standup voice is the jarvis persona (legacy behavior preserved); source is always `standup`. Queue inspection:
+The standup voice is the canonical DAN persona; source is always `standup`. Queue inspection:
 `dan queue list --json`; cancel: `dan queue flush --session standup`.
 
 Scheduled runs are submitted by the daemon itself with `--session standup --source standup`. No material means silence, never filler.

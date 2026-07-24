@@ -32,15 +32,17 @@ MANAGED_BLOCK_END = ""
 INSTALL_MANIFEST_RELPATH = ".dan/install-manifest.json"
 
 _CLAUDE_MD_BLOCK = """DAN runtime is installed. Voice/persona rules:
-- DAN speech goes ONLY through `dan speak --json --as <persona> --session <s> --source claude --stdin`.
+- DAN speech goes ONLY through `dan speak --json --as dan --session <s> --source claude --stdin`
+  or the same command with `--as danusia`. These are the only public voice routes.
 - Persona canon: `dan persona context` (config/persona/DAN.md, DAN_CANON_VERSION: 1) — fail-closed.
 - MessageDisplay hook: ~/.claude/hooks/tts-message-display.sh speaks only [[GŁOS]] segments;
   switch with `dan voice hook on|off|status` (voice.hook_enabled), session override DAN_VOICE_HOOK=off.
 - Diagnostics: `dan doctor --json`. Queue: `dan queue list --json`."""
 
 _AGENTS_MD_BLOCK = """DAN runtime is installed. Any agent that speaks does so through
-`dan speak --json --as <persona> --session <session> --source <host> --stdin`
-(UTF-8 stdin, persona only via --as). Persona canon: `dan persona context`.
+`dan speak --json --as dan --session <session> --source <host> --stdin` or the same
+command with `--as danusia` (UTF-8 stdin; these are the only public voice routes).
+Persona canon: `dan persona context`.
 Skills live in ~/.agents/skills/ (gadanie, dobranocka, trio-live, danusia-live,
 gpt-say, voice-report, standup, screen-control)."""
 

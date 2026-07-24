@@ -7,32 +7,20 @@ import logging
 import os
 import shutil
 import sys
-import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from dan.api.routes_runtime import CANONICAL_PTT_MODES, SUPERTONIC_BUILTIN_VOICE_IDS
+from dan.api.routes_runtime import CANONICAL_PTT_MODES
 from dan.daemon.app import DaemonApp, DaemonAppNotFoundError, DaemonAppNotStartedError
 from dan.security.redaction import redact_secrets
 from dan.voice.listening import ALLOWED_SOURCES
 from dan.voice.models import ListeningLease, SpeechIntent
-from dan.voice.persona_editor import (
-    SPEED_MAX,
-    SPEED_MIN,
-    list_personas,
-    set_persona_voice,
-    write_personas_text,
-)
-from dan.voice.service import default_voice_catalog_dir, installed_custom_style_names
-from dan.voice.tts import BANNED_ENGINES, MASTERING_PROFILES, RESERVED_ENGINES
+from dan.voice.assets import load_voice_catalog
+from dan.voice.service import default_voice_catalog_dir
+from dan.voice.tts import BANNED_ENGINES, RESERVED_ENGINES
 
 _LOGGER = logging.getLogger(__name__)
-
-# personas.toml is one shared file and ThreadingHTTPServer runs handlers
-# concurrently, so read-original / edit / reload must not interleave.
-_PERSONA_EDIT_LOCK = threading.Lock()
-
 
 DEFAULT_SPEAK_SOURCE = "api"
 DEFAULT_SPEAK_SESSION = "api"
@@ -57,11 +45,6 @@ class VoiceDisabledError(Exception):
 
 class VoiceRequestValidationError(ValueError):
     """Raised when a voice API payload is invalid."""
-
-
-class VoicePersonaReloadError(Exception):
-    """Raised when a persona edit was written but the catalog reload failed;
-    the file has already been rolled back when this propagates."""
 
 
 def _lease_payload(lease: ListeningLease) -> dict[str, Any]:
@@ -893,21 +876,6 @@ def _voice_catalog_dir(app: DaemonApp) -> Path:
     return default_voice_catalog_dir()
 
 
-def _allowed_persona_voices(app: DaemonApp) -> list[str]:
-    """Builtin supertonic ids plus every verified custom style on disk.
-
-    Derived from the same manifest the resolver renders from, so the panel
-    offers exactly what can actually be spoken — no more, no less.
-    """
-
-    allowed = {str(voice_id) for voice_id in SUPERTONIC_BUILTIN_VOICE_IDS}
-    try:
-        allowed.update(installed_custom_style_names(app.config))
-    except Exception:  # noqa: BLE001 - a broken manifest must not hide builtins
-        _LOGGER.warning("custom style manifest unavailable", exc_info=True)
-    return sorted(allowed)
-
-
 def _optional_string(payload: Mapping[str, Any], key: str) -> str | None:
     value = payload.get(key)
     if value is None:
@@ -919,68 +887,13 @@ def _optional_string(payload: Mapping[str, Any], key: str) -> str | None:
 
 def get_voice_personas(app: DaemonApp) -> dict[str, Any]:
     catalog_dir = _voice_catalog_dir(app)
-    personas = list_personas(catalog_dir)
+    catalog = load_voice_catalog(catalog_dir)
     return {
-        "personas": personas,
-        "allowed_voices": _allowed_persona_voices(app),
-        "allowed_mastering": sorted(MASTERING_PROFILES),
-        "speed_min": SPEED_MIN,
-        "speed_max": SPEED_MAX,
-    }
-
-
-def post_voice_personas_apply(app: DaemonApp, request_payload: Any) -> dict[str, Any]:
-    """Edit one persona route in personas.toml, then hot-swap the catalog.
-
-    Validation and the textual edit are persona_editor's job (fail-closed,
-    atomic write). If the in-process reload rejects the new catalog, the file
-    is rolled back to its previous bytes so disk and resolver never diverge.
-    """
-
-    if not isinstance(request_payload, Mapping):
-        raise VoiceRequestValidationError("Request JSON must be an object.")
-    persona = request_payload.get("persona")
-    if not isinstance(persona, str) or not persona.strip():
-        raise VoiceRequestValidationError("persona must be a non-empty string.")
-    voice = _optional_string(request_payload, "voice")
-    mastering = _optional_string(request_payload, "mastering")
-    speed = request_payload.get("speed")
-    if speed is not None and (
-        isinstance(speed, bool) or not isinstance(speed, (int, float))
-    ):
-        raise VoiceRequestValidationError("speed must be a number.")
-
-    catalog_dir = _voice_catalog_dir(app)
-    with _PERSONA_EDIT_LOCK:
-        original = (catalog_dir / "personas.toml").read_text(encoding="utf-8")
-        edit = set_persona_voice(
-            catalog_dir,
-            persona.strip(),
-            voice=voice,
-            speed=float(speed) if speed is not None else None,
-            mastering=mastering,
-            allowed_voices=_allowed_persona_voices(app),
-            allowed_mastering=MASTERING_PROFILES,
-        )
-        try:
-            app.reload_voice_catalog()
-        except Exception as exc:
-            try:
-                write_personas_text(catalog_dir, original)
-            except Exception as rollback_exc:  # noqa: BLE001 - both causes matter
-                raise VoicePersonaReloadError(
-                    "personas.toml is now out of sync with the running "
-                    f"resolver: reload failed ({exc}) and the rollback write "
-                    f"also failed ({rollback_exc})"
-                ) from exc
-            raise VoicePersonaReloadError(
-                f"personas.toml edit rolled back: voice catalog reload failed: {exc}"
-            ) from exc
-    return {
-        "ok": True,
-        "persona": edit.persona,
-        "changes": {name: list(pair) for name, pair in edit.changes.items()},
-        "reloaded": True,
+        "personas": {
+            name: dict(spec)
+            for name, spec in catalog.personas.items()
+        },
+        "source": "config/voice/personas.toml",
     }
 
 
@@ -991,13 +904,11 @@ def register_routes(app: object) -> None:
 __all__ = [
     "ROUTE_GROUP",
     "VoiceDisabledError",
-    "VoicePersonaReloadError",
     "VoiceRequestValidationError",
     "get_listening",
     "get_voice_personas",
     "get_voice_queue",
     "get_voice_runtime",
-    "post_voice_personas_apply",
     "post_listen_lock",
     "post_listen_unlock",
     "post_ptt_down",

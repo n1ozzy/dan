@@ -22,4 +22,7 @@ Replace `--source claude` with the actual calling host (`codex`,
 `openclaw`, `gpt-say`, `standup`, `hook`). Queue inspection:
 `dan queue list --json`; cancel: `dan queue flush --session dobranocka`.
 
-Persona per line goes through `--as` (e.g. `--as danusia`). A textual "DAN:" prefix inside a line is SPOKEN CONTENT, not a router. The only documented importer of the legacy rezyseria format ("persona;speed=..;profile=..|text") maps its persona tag to `--as` and passes the remaining text verbatim.
+The only valid `--as` values are `dan` and `danusia`. A textual "DAN:" or
+"Danusia:" prefix inside a line is spoken content, not a router. This adapter
+does not accept raw voice codes or remembered speed, profile, pause, tone or
+emotion presets.

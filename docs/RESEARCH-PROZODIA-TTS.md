@@ -10,8 +10,8 @@
 > Dopisek 2 (2026-07-11, eleven best-practices, od Ozzy'ego): **eleven_v3 ma
 > AUDIO TAGI**: `[whispers]` `[laughs]` `[sighs]` `[sarcastic]` `[excited]`
 > `[crying]` `[mischievously]` + efekty (`[applause]`, `[gunshot]`) — czyli
-> SZEPT/PŁACZ/ŚMIECH, których nie ma nigdzie indziej (supertonic zero dynamiki,
-> chatterbox tylko krzyk). V3 NIE wspiera `<break>` (pauzy: wielokropek,
+> specjalne tryby ekspresji niedostępne w Supertonicu. V3 NIE wspiera
+> `<break>` (pauzy: wielokropek,
 > myślniki, interpunkcja; WIELKIE LITERY = emfaza); `<break time>` tylko v2
 > (max 3 s). V3 stability: Creative (ekspresja, ryzyko halucynacji) / Natural /
 > Robust (jak v2). Emocje też przez kontekst narracyjny w zdaniu. IPA w v3 dla
@@ -38,10 +38,10 @@
 - Wykrzyknienie: całość +1–2 półtony, ogon lekko w dół, +2–3 dB, mocniejsza kompresja.
 
 ## 3. Emocje przez DSP
-- Krzyk/agresja (wiarygodne): highpass 120, cut 500–800 Hz, boost 2–3 kHz, kompresja ratio 8–20,
+- Wiarygodna agresja: highpass 120, cut 500–800 Hz, boost 2–3 kHz, kompresja ratio 8–20,
   +3–4 dB głośniej, saturacja tylko śladowo (aexciter). Distortion = tandeta.
-- **Szept z DSP fizycznie niemożliwy** (szept = brak dźwięczności) — tylko eleven `[whispers]`.
-  Przybliżenie: −10…−14 dB, highpass 200, boost 6–10 kHz = „cichy głos", nie szept.
+- **Ekstremalna bezdźwięczna artykulacja z DSP jest fizycznie niemożliwa.**
+  Ściszenie i korekcja pasma tworzą tylko cichy głos, nie wiarygodny osobny sposób mówienia.
 - Spokój: pitch −1–2 półtony (rubberband), tempo −10%, łagodna kompresja, +2 dB @ 100–200 Hz.
 - Anty-wzorce: crystalizer/aexciter na maksa, ratio 20 na całość, stałe wartości bez wariancji.
 
@@ -60,7 +60,7 @@
 - Kontekst narracyjny („wycedził") działa tylko w LLM-TTS (eleven v3), NIE w supertonicu.
 
 ## 6. Chatterbox: emocje parą (exaggeration, cfg_weight)
-- Default 0.5/0.5. **Ekspresja/krzyk: exaggeration ≥0.7 + cfg 0.3** (wyższa egzageracja
+- Default 0.5/0.5. **Silna ekspresja: exaggeration ≥0.7 + cfg 0.3** (wyższa egzageracja
   przyspiesza mowę — niższy cfg to kompensuje; stroić PARĄ). Spokój: 0.2–0.4 / 0.5.
 - Multilingual: ref_audio w innym języku niż target → cfg 0 (inaczej przenosi akcent).
 
@@ -126,8 +126,8 @@ damskie warianty profili w MASTER_PROFILES (`voice_broker.py`) wybierane po pref
 4. **Chatterbox presety emocji** — TODO (jedyny silnik z prawdziwą emocją; tabelka par w configu).
 5. **Parselmouth kontur pytania/wykrzyknienia** — TODO (nowa zależność; asetrate NIE).
 
-Odrzucone po odsłuchu Ozzy'ego: profile DSP `krzyk`/`szept` w MASTER_PROFILES („proteza") —
-kod zostaje jako opt-in przez req.profile, ale NIE wpinać do audycji.
+Odrzucone po odsłuchu Ozzy'ego: profile DSP skrajnej ekspresji („proteza").
+Nie wpinać ich do audycji ani nie traktować jako zaakceptowanego kierunku.
 
 ## 2026-07-12 — determinizm supertonica ZBADANY + seed-wrapper
 Pytanie kumpla Ozzy'ego: per-zdanie czy całość do TTS? → **Broker pakuje zdania w porcje

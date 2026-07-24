@@ -77,7 +77,7 @@ DEFAULT_VOICE_FILLERS: tuple[str, ...] = (
     "No i mamy techniczne disco polo.",
     "Czekaj, system dostał z liścia.",
     "Kurwa, znowu magia z dupy.",
-    "Ten kod brzmi jak krzyk o pomoc.",
+    "Ten kod brzmi jak wołanie o pomoc.",
     "Moment, szukam winnego klauna.",
     "Spokojnie, zaraz będzie egzekucja.",
     "Dobra, łamię ten error przez kolano.",

@@ -62,7 +62,6 @@ from dan.api.routes_settings import (
 )
 from dan.api.routes_voice import (
     VoiceDisabledError,
-    VoicePersonaReloadError,
     VoiceRequestValidationError,
     get_voice_personas,
     get_voice_queue,
@@ -73,7 +72,6 @@ from dan.api.routes_voice import (
     post_ptt_down,
     post_ptt_up,
     post_voice_pause,
-    post_voice_personas_apply,
     post_voice_queue_cancel,
     post_voice_queue_current_cancel,
     post_voice_queue_flush,
@@ -673,11 +671,6 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
             _write_json(handler, 200, get_voice_personas(app))
             return
 
-        if method == "POST" and path == "/voice/personas/apply":
-            request_payload = _read_json_body(handler)
-            _write_json(handler, 200, post_voice_personas_apply(app, request_payload))
-            return
-
         if method == "GET" and path == "/voice/queue":
             limit = _query_int(query, "limit", default=20)
             _write_json(handler, 200, get_voice_queue(app, limit=limit))
@@ -750,10 +743,6 @@ def _dispatch(handler: BaseHTTPRequestHandler, app: DaemonApp, method: str) -> N
         )
     except VoiceDisabledError as exc:
         _write_json(handler, 409, {"error": str(exc), "status": 409})
-    except VoicePersonaReloadError as exc:
-        # The persona edit was already rolled back; surface a server fault so
-        # the panel does not read this as bad input.
-        _write_json(handler, 500, {"error": str(exc), "status": 500})
     except (VoiceResolverError, AssetVerificationError) as exc:
         # A speak whose snapshot cannot be resolved is rejected before any
         # queue/event write: clear client error, empty queue.

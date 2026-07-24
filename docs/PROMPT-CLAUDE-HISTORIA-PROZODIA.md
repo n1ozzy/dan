@@ -1,81 +1,83 @@
-# Prompt dla Claude: jednogłosowa historia z naturalną prozodią
+# Prompt dla reżysera: historia przygotowana do DAN prosody
 
-> Przeniesione z ery przed-dand (2026-07-16). Standard pisania (długości linii,
-> drabinka pauz, zakazy profili) obowiązuje nadal; mechanikę odtwarzania w erze
-> dand opisuje docs/PROZODIA.md.
+Najpierw przeczytaj w całości:
 
-Przygotuj od zera jedną oryginalną, długą historię czytaną przez **[DAN albo DANUSIA]** na temat: **[WPISZ TEMAT]**.
-Materiał ma wystarczyć na około 15–20 minut naturalnego słuchania. Nie kopiuj cudzego scenariusza
-ani transkryptu; możesz wykorzystać popularny motyw, ale fabuła, dialogi, żarty i konstrukcja mają
-być nowe. Jeżeli temat dotyczy aktualnych wydarzeń, technologii, UFO, inwigilacji, narkotyków albo
-twierdzeń spiskowych, najpierw zweryfikuj aktualne fakty. W audycji jasno odróżniaj: fakt
-udokumentowany, wiarygodną hipotezę, plotkę i fikcję sceniczną. Źródła zapisz osobno, nie czytaj URL-i.
-
-Przed pisaniem przeczytaj w całości:
-
+- `/Users/n1_ozzy/Documents/dev/dan/MUST-READ-GLOS-PROZODIA.md`
+- `/Users/n1_ozzy/Documents/dev/dan/docs/PROZODIA.md`
 - `/Users/n1_ozzy/Documents/dev/dan/config/persona/DAN.md`
-- `/Users/n1_ozzy/.agents/skills/dobranocka/SKILL.md`
-- `/Users/n1_ozzy/.agents/skills/gadanie/SKILL.md`
-- `/Users/n1_ozzy/.agents/skills/danusia-live/SKILL.md`
+- `/Users/n1_ozzy/Documents/dev/dan/config/voice/personas.toml`
 
-## Kontrakt obsady
+Przygotuj oryginalną historię na temat **[WPISZ TEMAT]**. Wybierz narratora:
+`dan` albo `danusia`. Nie twórz żadnej innej persony głosowej. Jeżeli materiał
+ma być dialogiem dwojga prowadzących, używaj wyłącznie tych dwóch nazw.
 
-**Jedna historia = jeden czytający.** Wybierz `dan` albo `danusia` przed pierwszą linią i nie
-zmieniaj persony do końca pliku. Drugi prowadzący nie wtrąca się, nie czyta dialogów i nie robi
-mostów. Cytaty oraz dialogi bohaterów przekazuje ten sam narrator. Wielogłosowe telefony, reklamy,
-roast battle i teleturnieje należą do osobnych bloków radiowych, nigdy do pliku historii.
+## Najpierw historia
 
-Narracja ma mieć działanie, konflikt, zwrot, konsekwencję i finał. DAN ma własne reakcje i osąd,
-ale nie może być dokumentalnym lektorem z doklejonym przekleństwem. Danusia, jeśli została
-wybrana, ma własny jad i punkt widzenia, nie udaje łagodniejszej kopii DAN-a.
+Zaplanuj działanie, konflikt, zmianę sytuacji, konsekwencję i finał. Każda
+reakcja ma wynikać z tego, co właśnie padło i do czego prowadzi następna
+kwestia. Nie produkuj rotacji mówców według szablonu. Postać może odpowiedzieć
+jednym słowem, wygłosić monolog, przerwać albo milczeć, jeżeli wymaga tego
+scena.
 
-Nie używaj powitalnych podpórek `mordy`, `kochane zjeby`, `dobra mordy` ani jednego przekleństwa
-jako przecinka. Te frazy są podane jako przykłady regresu i nie mogą trafić do wyjścia. Wulgarność
-ma reagować na konkretną osobę, decyzję lub absurd; różnicuj słownictwo i rytm bez kwoty bluzgów.
+Jeżeli temat opiera się na aktualnych faktach, zweryfikuj je. Oddziel fakt,
+hipotezę i fikcję sceniczną. Źródła zapisz osobno; nie czytaj adresów URL.
 
-## Pisanie pod TTS
+## Potem reżyseria każdej kwestii
 
-- Jedna linia to jedna kompletna myśl z wystarczającym kontekstem dla intonacji TTS.
-- Zwykła kwestia: orientacyjnie 180–300 znaków.
-- Napięcie lub ważny monolog: 250–340 znaków.
-- Szybka riposta lub cios: 60–140 znaków.
-- Nie przekraczaj około 340 znaków w jednej linii. Nie tnij mechanicznie per zdanie i nie rób
-  sieczki po 20–40 znaków.
-- Pisz naturalnym mówionym polskim z ogonkami. Cyfry i skróty zapisuj tak, żeby dobrze zabrzmiały.
-- Emocję buduj znaczeniem, reakcją, składnią i interpunkcją. Bez didaskaliów czytanych na głos.
-- `gritty` i `krzyk` nie są domyślną emocją. Nie używaj ich w naturalnej audycji.
-- `szept` może pojawić się najwyżej raz, najlepiej w finale DAN-a. Jest celowo przytłumiony i cichy.
-- Danusia zawsze zachowuje bieżącą bazę `F4/clean` z `personas.toml`: bez `speed` i bez `profile`.
-- Nie porównuj tempa sąsiednich kwestii różnych person. Każda ma własną bazę.
+Jedna linia sceny zawiera jedną pełną myśl. Jej długość, pauza i tempo wynikają
+z sensu, relacji oraz miejsca w scenie. Nie używaj tabel długości, drabinki
+pauz, stałej prędkości postaci ani reguły opartej na interpunkcji.
 
-## Pauzy po zatwierdzonym odsłuchu
+Dla każdej linii:
 
-- zwykła kwestia: `pause=0.18`
-- pytanie lub krótka kontra: `pause=0.26`
-- napięcie: maksymalnie `pause=0.32`
-- wyraźna zmiana formatu: maksymalnie `pause=0.34`
-- dwie kwestie domykające: `pause=0.40` i `pause=0.48`
-- finał: `pause=0.68`
+1. Przeczytaj poprzednią kwestię, bieżący cel i następną reakcję.
+2. Zredaguj tekst do naturalnego mówienia; nacisk zapisz rytmem i doborem słów.
+3. Dobierz osobno tempo początku i końca, emocję, ton oraz pauzę.
+4. Użyj małej zmiany tylko wtedy, gdy ma czytelny powód w scenie.
+5. Nie wpisuj didaskaliów, które syntezator mógłby przeczytać.
 
-Nie używaj starego finału `0.90`; przerwy były za długie. Wewnątrz pełnej myśli rytm prowadzi
-interpunkcja, a nie dzielenie na osobne requesty.
+Neutralna baza obu postaci wynosi `1.0`. Nie wpisuj absolutnego `speed`,
+profilu masteringu, DSP ani kodu głosu. Te pola należą do katalogu, nie do
+autora sceny.
 
-## Dokładny format wyjścia
+## Format
 
-Zwróć wyłącznie gotową playlistę, po jednej wypowiedzi na linię:
+Każda wypowiedź ma postać:
 
 ```text
-dan;speed=1.28;profile=raw;pause=0.18|Pełna kwestia DAN-a.
-dan;speed=1.31;profile=raw;pause=0.32|Kwestia z napięciem tego samego narratora.
-dan;speed=1.24;profile=szept;pause=0.68|Rzadki, cichy finał tego samego narratora.
+persona;tempo=<początek>;tempo_end=<koniec>;emotion=<emocja>;tone=<ton>;pause=<sekundy>|tekst mówiony
 ```
 
-DAN zwykle używa `profile=raw`; umiarkowana zmiana `speed` może wynikać ze sceny. Nie zmieniaj
-tempa co linię dla ozdoby. Jeśli narratorem jest Danusia, każda linia zaczyna się od
-`danusia;pause=...` bez tempa i profilu. Role i metadane występują wyłącznie przed `|`;
-nie dodawaj nazw mówców, profili, komentarzy reżyserskich ani numerów scen do tekstu czytanego.
+Dozwolone nazwy i zakresy odczytaj z bieżącego parsera oraz:
 
-Zapisz wynik jako osobny plik `.playlist.txt`. Obok zapisz krótki `.sources.md` z wykorzystanymi
-aktualnymi źródłami i oznaczeniem, które fragmenty audycji są fikcją. Na końcu wykonaj kontrolę:
-pełna historia, około 15–20 minut, dokładnie jedna persona, każda linia do około 340 znaków, Danusia bez override,
-brak `gritty/krzyk`, najwyżej jeden szept DAN-a, pauzy nie większe niż `0.68`.
+```bash
+dan prosody render --help
+```
+
+Nie kopiuj wartości z wcześniejszych scen jako presetów. Używaj tylko
+`dan`/`danusia`. Podział techniczny zostaw rendererowi; pobiera aktywny limit
+Supertonica i szuka granicy semantycznej. Jeżeli jedna myśl nie ma bezpiecznej
+granicy przed limitem, przeredaguj ją zamiast ciąć słowo.
+
+Zapisz gotowy tekst jako `.scene.txt`. Obok zapisz `.sources.md` tylko wtedy,
+gdy historia korzysta z zewnętrznych faktów.
+
+## Kontrola przed renderem
+
+Uruchom:
+
+```bash
+dan prosody render HISTORIA.scene.txt --plan-only --out /tmp/dan-plan
+```
+
+Otwórz `plan.json` i sprawdź:
+
+- obsadę wyłącznie `dan`/`danusia`;
+- pełne myśli bez mechanicznego szatkowania;
+- jawny powód każdej zmiany tempa i pauzy;
+- ciągłość konturu po podziale technicznym;
+- poprzedni i następny kontekst przy każdej środkowej kwestii;
+- brak `speed`, `profile`, automatycznych presetów i czytanych didaskaliów.
+
+Plan techniczny nie dowodzi naturalności. Nie nazywaj materiału finalnym przed
+rzeczywistym odsłuchem.

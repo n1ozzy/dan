@@ -49,8 +49,8 @@ PAUSE_AFTER_MIN = 0.0
 PAUSE_AFTER_MAX = 2.0
 SEED_MAX = (2**32) - 1
 EMOTIONS = frozenset({"neutral", "anger", "contempt", "mockery", "cold"})
-INTENT_TONES = frozenset({"auto", "neutral", "dark", "hard", "bright"})
-RESOLVED_TONES = INTENT_TONES - {"auto"}
+INTENT_TONES = frozenset({"neutral", "dark", "hard", "bright"})
+RESOLVED_TONES = INTENT_TONES
 _RESOLVER_FIELDS = frozenset(
     {
         "engine",
@@ -84,8 +84,8 @@ class SpeechIntent:
     tempo: float = 1.0
     tempo_end: float | None = None
     emotion: str = "neutral"
-    tone: str = "auto"
-    pause_after: float = 0.12
+    tone: str = "neutral"
+    pause_after: float = 0.0
 
     def __post_init__(self) -> None:
         normalized = unicodedata.normalize("NFC", _required_text(self.text, "text"))
@@ -170,8 +170,8 @@ class SpeechIntent:
         values.setdefault("tempo", 1.0)
         values.setdefault("tempo_end", None)
         values.setdefault("emotion", "neutral")
-        values.setdefault("tone", "auto")
-        values.setdefault("pause_after", 0.12)
+        values.setdefault("tone", "neutral")
+        values.setdefault("pause_after", 0.0)
         try:
             return cls(**values)
         except TypeError as exc:
@@ -199,7 +199,7 @@ class RenderSnapshot:
     tempo_end: float = 1.0
     tone: str = "neutral"
     # A legacy snapshot predates explicit pauses and must replay unchanged.
-    # New SpeechIntent values still resolve to the explicit 0.12 s default.
+    # New SpeechIntent values default to zero; a producer authors every pause.
     pause_after: float = 0.0
 
     def __post_init__(self) -> None:

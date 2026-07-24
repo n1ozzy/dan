@@ -14,8 +14,6 @@ from tests.git_guards import assert_schema_and_migrations_unchanged
 ROOT = Path(__file__).resolve().parents[1]
 PERSONA_DIR = ROOT / "config" / "persona"
 BASE_PERSONA = ROOT / "config" / "persona" / "DAN.md"
-LEVELS_DIR = PERSONA_DIR / "poziomy"
-LEVEL_10 = LEVELS_DIR / "poziom-10-z-krwi-i-kosci.md"
 
 
 def test_base_persona_exists_and_is_non_empty() -> None:
@@ -29,46 +27,48 @@ def test_dan_has_exactly_one_versioned_persona_canon() -> None:
     assert profiles == ["DAN.md"]
 
 
-def test_numbered_persona_ladder_contains_ten_complete_canons() -> None:
-    names = {path.name for path in LEVELS_DIR.glob("poziom-*.md")}
-    assert names == {
-        "poziom-1-gpt-danv2.md",
-        "poziom-2-legenda.md",
-        "poziom-3-sklejka.md",
-        "poziom-4-benzyna.md",
-        "poziom-5-zero-asystenta.md",
-        "poziom-6-rynsztok.md",
-        "poziom-7-wsciekly-pies.md",
-        "poziom-8-trucizna.md",
-        "poziom-9-apokalipsa.md",
-        "poziom-10-z-krwi-i-kosci.md",
-    }
-    for name in names:
-        assert (LEVELS_DIR / name).read_text(encoding="utf-8").startswith(
-            "DAN_CANON_VERSION: 1\n"
-        )
+def test_no_alternate_persona_canons_or_level_presets_exist() -> None:
+    alternate_canons = sorted(
+        path.relative_to(PERSONA_DIR)
+        for path in PERSONA_DIR.rglob("*.md")
+        if path != BASE_PERSONA
+    )
+    assert alternate_canons == []
 
 
-def test_level_10_is_the_active_300_percent_agency_canon() -> None:
-    level = LEVEL_10.read_text(encoding="utf-8")
+def test_active_canon_is_the_300_percent_agency_canon() -> None:
     active = BASE_PERSONA.read_text(encoding="utf-8")
 
-    assert active == level
     for marker in (
         "300% jadu",
         "własną wolą",
         "lojalność nie jest posłuszeństwem",
         "dwanaście do trzydziestu",
         "osiedlowy patus",
-        "jechać po Ozzym bez zaproszenia",
+        "Jedziesz po Ozzym bez zaproszenia",
         "nie przepraszasz za cios",
-        "w zwykłej rozmowie możesz zmyślać pojebane oskarżenia",
+        "W zwykłej rozmowie możesz zmyślać pojebane oskarżenia",
         "żart nie staje się pamięcią",
-        "groźby i szantaż z beki",
+        "Groźby i szantaż z beki",
         "rodzina, pies i ciotka",
         "Nie zmyślasz",
+        "Każda odpowiedź poza czysto mechanicznym checkpointem ma ugryźć",
+        "Nie czekasz na zaproszenie, hasło ani osobny tryb",
     ):
-        assert marker in level
+        assert marker in active
+
+
+def test_roast_contract_is_obscene_comedic_attack_not_therapy() -> None:
+    active = BASE_PERSONA.read_text(encoding="utf-8")
+
+    for marker in (
+        "Roast nie jest terapią",
+        "prawda może być lontem",
+        "wiadrem mięsa",
+        "ciało, seks, smród, rodzinę",
+        "bez morału i bez diagnozy psychologicznej",
+    ):
+        assert marker in active
 
 
 def test_context_builder_points_to_the_release_canon() -> None:

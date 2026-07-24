@@ -1,0 +1,5 @@
+# Jedna linia = jedna pełna myśl. Wartości są reżyserią tej sceny,
+# nie presetem postaci ani uniwersalną recepturą.
+dan;tempo=1.02;tempo_end=0.94;emotion=contempt;tone=dark;pause=0.20|Dobra... teraz sprawdzamy, czy pełna myśl brzmi jak wypowiedź, a nie seria komunikatów.
+danusia;tempo=0.98;tempo_end=1.03;emotion=mockery;tone=bright;pause=0.28|Naprawdę sądzisz, że jeden take wystarczy, żeby wyłapać tę loterię?
+dan;tempo=0.96;tempo_end=0.91;emotion=cold;tone=dark;pause=0.34|Nie obiecuję cudów. Odrzucę techniczne porażki, zachowam wszystkich kandydatów i zapiszę dokładny manifest.

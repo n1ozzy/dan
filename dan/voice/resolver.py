@@ -20,19 +20,6 @@ from dan.voice.models import (
     SpeechIntent,
 )
 
-# Emotion is an explicit producer choice. These are render defaults, not text
-# classifiers: the resolver never guesses emotion from words or punctuation.
-_EMOTION_DEFAULTS: dict[str, tuple[float, str]] = {
-    "neutral": (1.00, "neutral"),
-    # Weight lands in the final words: anger, contempt and cold all decelerate.
-    # Mockery alone lifts slightly instead of turning every ending solemn.
-    "anger": (0.94, "hard"),
-    "contempt": (0.92, "dark"),
-    "mockery": (1.03, "bright"),
-    "cold": (0.95, "dark"),
-}
-
-
 class VoiceResolverError(RuntimeError):
     """Voice catalog or engine metadata cannot produce a valid snapshot."""
 
@@ -207,18 +194,15 @@ class VoiceResolver:
             if custom_style is not None
             else configured_voice
         )
-        tempo_end_ratio, default_tone = _EMOTION_DEFAULTS[intent.emotion]
         tempo_end = intent.tempo_end
         if tempo_end is None:
-            tempo_end = min(
-                TEMPO_MAX,
-                max(TEMPO_MIN, intent.tempo * tempo_end_ratio),
-            )
+            # No hidden acting preset: a flat contour is the honest default.
+            # A producer/director must author every non-neutral ending pace.
+            tempo_end = intent.tempo
         if not TEMPO_MIN <= tempo_end <= TEMPO_MAX:
             raise SnapshotValidationError(
                 f"resolved tempo_end {tempo_end:g} is outside {TEMPO_MIN}-{TEMPO_MAX}"
             )
-        tone = default_tone if intent.tone == "auto" else intent.tone
         snapshot = RenderSnapshot(
             engine=engine_name,
             engine_version=version,
@@ -239,7 +223,7 @@ class VoiceResolver:
             emotion=intent.emotion,
             tempo_start=intent.tempo,
             tempo_end=tempo_end,
-            tone=tone,
+            tone=intent.tone,
             pause_after=intent.pause_after,
         )
         snapshot.validate_complete()

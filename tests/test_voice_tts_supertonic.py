@@ -113,7 +113,7 @@ def snapshot(
     voice: str = "M3",
     speed: float = 1.25,
     # "none" is the only mastering value that skips ffmpeg entirely; these
-    # tests exercise synthesis mechanics, not the loudnorm norm ("raw").
+    # tests exercise synthesis mechanics, not the loudnorm norm ("default").
     mastering: str = "none",
     dsp: str = "none",
     pronunciations: dict[str, str] | None = None,
@@ -161,6 +161,20 @@ def test_supertonic_construction_has_no_resolver_or_player_dependency(tmp_path: 
     assert not hasattr(engine, "_render_snapshot")
     assert not hasattr(engine, "_voice_for")
     assert not hasattr(engine, "_mastering_filter_for")
+
+
+def test_only_neutral_default_mastering_profile_is_active() -> None:
+    assert voice_tts.MASTERING_PROFILES == frozenset({"default"})
+    for retired in (
+        "raw",
+        "clean",
+        "gritty",
+        "raport",
+        "whisper",
+        "szept",
+        "krzyk",
+    ):
+        assert voice_tts.mastering_filter(retired) == ""
 
 
 def test_synthesis_uses_only_the_supplied_snapshot(tmp_path: Path) -> None:
@@ -349,20 +363,21 @@ def test_mastering_and_dsp_are_taken_from_snapshot(tmp_path: Path) -> None:
 
     engine.synthesize(
         "Pelny render.",
-        snapshot(mastering="clean", dsp="highpass=f=80"),
+        snapshot(mastering="default", dsp="highpass=f=80"),
     )
 
     args = args_file.read_text(encoding="utf-8").splitlines()
     chain = args[args.index("-af") + 1]
     assert chain.startswith("highpass=f=80,")
-    assert "acompressor=" in chain
+    assert "loudnorm=" in chain
+    assert "acompressor=" not in chain
 
 
-def test_raw_mastering_applies_loudnorm_only(tmp_path: Path) -> None:
+def test_default_mastering_applies_loudnorm_only(tmp_path: Path) -> None:
     ffmpeg, args_file = fake_ffmpeg(tmp_path)
     engine, _ = build_engine(tmp_path, mastering_binary=str(ffmpeg))
 
-    engine.synthesize("Norma głośności.", snapshot(mastering="raw"))
+    engine.synthesize("Norma głośności.", snapshot(mastering="default"))
 
     args = args_file.read_text(encoding="utf-8").splitlines()
     chain = args[args.index("-af") + 1]
@@ -377,7 +392,7 @@ def test_required_mastering_failure_never_returns_raw_audio(tmp_path: Path) -> N
     engine, _ = build_engine(tmp_path, mastering_binary=str(ffmpeg))
 
     with pytest.raises(TTSEngineError, match="mastering failed"):
-        engine.synthesize("Nie udawaj sukcesu.", snapshot(mastering="clean"))
+        engine.synthesize("Nie udawaj sukcesu.", snapshot(mastering="default"))
 
 
 def test_warm_serve_failure_falls_back_to_cli_for_same_snapshot(
@@ -544,6 +559,7 @@ def test_live_prosody_filter_uses_explicit_plan_not_punctuation() -> None:
 
     assert first == second
     assert "asendcmd" in first and "atempo@live" in first
+    assert "4.000 live tempo" in first
     assert "equalizer" in first and "volume=" in first
     assert "apad=pad_dur=0.240" in first
 

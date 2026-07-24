@@ -26,8 +26,8 @@ def _voice_fixture(tmp_path: Path) -> tuple[VoiceCatalog, dict[str, EngineMetada
     voice_dir = tmp_path / "voice"
     voice_dir.mkdir()
     (voice_dir / "personas.toml").write_text(
-        '[dan]\nengine = "supertonic"\nvoice = "M3"\nmastering = "raw"\n'
-        'speed = 1.25\nseed = 17\ndsp = "none"\n',
+        '[dan]\nengine = "supertonic"\nvoice = "M3"\nmastering = "default"\n'
+        'speed = 1.0\nseed = 17\ndsp = "none"\n',
         encoding="utf-8",
     )
     (voice_dir / "pronunciations.toml").write_text(
@@ -208,14 +208,14 @@ def test_explain_versioned_key_reads_repo_source_not_installation_config(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "config.toml"
-    config_path.write_text('[voice]\nmastering_profile = "clean"\n', encoding="utf-8")
+    config_path.write_text('[voice]\nmastering_profile = "default"\n', encoding="utf-8")
     repo_root = Path(__file__).resolve().parents[1]
 
     explained = ConfigStore(config_path, versioned_root=repo_root).explain(
         "voice.mastering_profile"
     )
 
-    assert explained.value == "bastard"
+    assert explained.value == "default"
     assert explained.owner is ConfigOwner.VERSIONED
     assert explained.source_surface == "versioned config"
     assert explained.source_file == repo_root / "config" / "dan.example.toml"

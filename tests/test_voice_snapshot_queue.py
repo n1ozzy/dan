@@ -42,7 +42,7 @@ def complete_snapshot() -> RenderSnapshot:
         engine_version="1.3.1",
         voice_or_style="M3",
         speed=1.25,
-        mastering_profile="clean",
+        mastering_profile="default",
         dsp="highpass=f=80",
         pronunciations={"runtime": "rantajm"},
         pronunciations_sha256="a" * 64,

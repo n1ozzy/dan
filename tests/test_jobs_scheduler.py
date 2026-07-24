@@ -48,6 +48,8 @@ def test_standup_schedule_runs_inside_dand(tmp_path: Path) -> None:
     intent = service.submissions[0]
     assert intent.source == STANDUP_SOURCE == "standup"
     assert intent.session == STANDUP_SESSION == "standup"
+    assert intent.persona == "dan"
+    assert intent.participant == "dan"
     assert intent.text == "Meldunek wieczorny: wszystko gra."
 
 

@@ -71,10 +71,9 @@ supertonic_serve_model = "supertonic-3"
 supertonic_serve_autostart = false
 supertonic_serve_max_chunk_length = 400
 
-# Per-persona mastering (ffmpeg timbre chain, ported from DAN). Empty = raw
-# supertonic. "bastard" = DAN (the ziomek voice, less bass); also "gritty",
-# "clean". A resolved non-raw profile fails visibly if mastering cannot complete.
-mastering_profile = "bastard"               # e.g. "clean" (warm default) or "bastard"
+# Legacy/dead config key retained for compatibility. Active mastering comes
+# only from config/voice/personas.toml and has one value: "default".
+mastering_profile = "default"
 mastering_binary = "ffmpeg"
 
 # Optional per-persona voice + mastering override (persona.profile -> voice /

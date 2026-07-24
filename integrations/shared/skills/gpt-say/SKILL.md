@@ -15,10 +15,11 @@ queue, voices and playback; persona always routes through the explicit
 One utterance, text on stdin (strict UTF-8, written FOR SPEECH):
 
 ```
-dan speak --json --as gpt --session gpt-say --source gpt-say --stdin
+dan speak --json --as dan --session gpt-say --source gpt-say --stdin
 ```
 
 The third slot always reports itself as `--source gpt-say`. Queue inspection:
 `dan queue list --json`; cancel: `dan queue flush --session gpt-say`.
 
-Identity drift guard: the third slot ALWAYS submits `--as gpt` with `--source gpt-say` — never DAN's persona.
+The third slot keeps `--source gpt-say`, but its only public voice route is
+`--as dan`. Host identity is metadata, not a third voice persona.

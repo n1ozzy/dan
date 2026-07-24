@@ -1,9 +1,4 @@
-"""Panel persona-voice contract: GET /voice/personas + POST /voice/personas/apply.
-
-The panel edits ``config/voice/personas.toml`` through the daemon
-(``dan.voice.persona_editor``) and hot-swaps the resolver in-process
-(``DaemonApp.reload_voice_catalog``) instead of requiring a launchd restart.
-"""
+"""Read-only panel contract for the canonical DAN/Danusia voice catalog."""
 
 from __future__ import annotations
 
@@ -22,27 +17,22 @@ from tests.test_voice_api_contract import make_voice_app
 from tests.voice_helpers import render_snapshot, speech_intent
 
 
-PERSONAS_SAMPLE = """# panel edit fixture
+PERSONAS_SAMPLE = """# canonical read-only fixture
 
 [dan]
 engine = "supertonic"
 voice = "M3"
-mastering = "raw"
-speed = 1.28
+mastering = "default"
+speed = 1.0
+seed = 1
 dsp = "none"
 
 [danusia]
 engine = "supertonic"
 voice = "F4"
-mastering = "clean"
-speed = 1.28
-dsp = "none"
-
-[komentator]
-engine = "supertonic"
-voice = "M2M1"
-mastering = "raw"
-speed = 1.45
+mastering = "default"
+speed = 1.0
+seed = 1
 dsp = "none"
 """
 
@@ -52,6 +42,14 @@ def catalog_dir(tmp_path: Path) -> Path:
     catalog = tmp_path / "voice-catalog"
     catalog.mkdir()
     (catalog / "personas.toml").write_text(PERSONAS_SAMPLE, encoding="utf-8")
+    (catalog / "pronunciations.toml").write_text(
+        'DAN = "Dan"\n',
+        encoding="utf-8",
+    )
+    (catalog / "gains.json").write_text(
+        '{"F4|default": 7.97, "M3|default": 8.98}\n',
+        encoding="utf-8",
+    )
     return catalog
 
 
@@ -63,11 +61,6 @@ def persona_app(tmp_path: Path, catalog_dir: Path) -> Any:
         yield app
     finally:
         app.close()
-
-
-def read_catalog(catalog_dir: Path) -> dict:
-    text = (catalog_dir / "personas.toml").read_text(encoding="utf-8")
-    return tomllib.loads(text)
 
 
 def read_catalog_raw(catalog_dir: Path) -> str:
@@ -145,209 +138,39 @@ class TestReloadVoiceCatalog:
             app.close()
 
 
-class TestGetVoicePersonas:
-    def test_lists_personas_and_allowed_values(self, persona_app: DaemonApp) -> None:
-        with running_server(persona_app) as base_url:
-            status, body = request_json("GET", f"{base_url}/voice/personas")
+def test_get_voice_personas_is_read_only_runtime_truth(
+    persona_app: DaemonApp,
+) -> None:
+    with running_server(persona_app) as base_url:
+        status, body = request_json("GET", f"{base_url}/voice/personas")
 
-        assert status == 200
-        personas = body["personas"]
-        assert set(personas) == {"dan", "danusia", "komentator"}
-        assert personas["dan"]["voice"] == "M3"
-        assert personas["danusia"]["mastering"] == "clean"
-
-        allowed = body["allowed_voices"]
-        for builtin in ("M1", "M3", "F4"):
-            assert builtin in allowed
-        assert "M2M1" in allowed
-        assert allowed == sorted(allowed)
-
-        assert body["allowed_mastering"] == [
-            "bastard",
-            "clean",
-            "gritty",
-            "raport",
-            "raw",
-        ]
-        assert body["speed_min"] == pytest.approx(0.5)
-        assert body["speed_max"] == pytest.approx(2.0)
+    assert status == 200
+    assert set(body) == {"personas", "source"}
+    assert body["source"] == "config/voice/personas.toml"
+    assert body["personas"] == tomllib.loads(PERSONAS_SAMPLE)
 
 
-class TestApplyPersonaVoice:
-    @staticmethod
-    def _reload_counter(app: DaemonApp) -> list[int]:
-        calls: list[int] = []
-        app.reload_voice_catalog = lambda: calls.append(1)
-        return calls
-
-    def test_apply_writes_file_reloads_and_reports_changes(
-        self, persona_app: DaemonApp, catalog_dir: Path
-    ) -> None:
-        calls = self._reload_counter(persona_app)
-        with running_server(persona_app) as base_url:
-            status, body = request_json(
-                "POST",
-                f"{base_url}/voice/personas/apply",
-                {"persona": "dan", "voice": "M1", "speed": 1.1},
-            )
-
-        assert status == 200
-        assert body["ok"] is True
-        assert body["persona"] == "dan"
-        assert body["changes"]["voice"] == ["M3", "M1"]
-
-        data = read_catalog(catalog_dir)
-        assert data["dan"]["voice"] == "M1"
-        assert data["dan"]["speed"] == pytest.approx(1.1)
-        assert calls == [1]
-
-    def test_unknown_persona_is_400_and_skips_reload(
-        self, persona_app: DaemonApp, catalog_dir: Path
-    ) -> None:
-        calls = self._reload_counter(persona_app)
-        before = read_catalog_raw(catalog_dir)
-        with running_server(persona_app) as base_url:
-            status, _body = request_json(
-                "POST",
-                f"{base_url}/voice/personas/apply",
-                {"persona": "nikt_taki", "voice": "M1"},
-            )
-        assert status == 400
-        assert read_catalog_raw(catalog_dir) == before
-        assert calls == []
-
-    def test_voice_outside_allowed_is_400(
-        self, persona_app: DaemonApp, catalog_dir: Path
-    ) -> None:
-        before = read_catalog_raw(catalog_dir)
-        with running_server(persona_app) as base_url:
-            status, _body = request_json(
-                "POST",
-                f"{base_url}/voice/personas/apply",
-                {"persona": "dan", "voice": "X9"},
-            )
-        assert status == 400
-        assert read_catalog_raw(catalog_dir) == before
-
-    def test_missing_fields_is_400(self, persona_app: DaemonApp) -> None:
-        with running_server(persona_app) as base_url:
-            status, _body = request_json(
-                "POST",
-                f"{base_url}/voice/personas/apply",
-                {"persona": "dan"},
-            )
-        assert status == 400
-
-    def test_reload_failure_rolls_back_file_and_returns_500(
-        self, persona_app: DaemonApp, catalog_dir: Path
-    ) -> None:
-        before = read_catalog_raw(catalog_dir)
-
-        def boom() -> None:
-            raise RuntimeError("kaboom")
-
-        persona_app.reload_voice_catalog = boom
-        with running_server(persona_app) as base_url:
-            status, body = request_json(
-                "POST",
-                f"{base_url}/voice/personas/apply",
-                {"persona": "dan", "voice": "M1"},
-            )
-        assert status == 500
-        assert body["status"] == 500
-        assert read_catalog_raw(catalog_dir) == before
-
-
-class TestAllowedVoicesComeFromTheManifest:
-    """Selectable voices are the installed, verified assets — not whatever
-    string happens to appear in the file.
-
-    Deriving the set from the file hid every installed blend nobody routed yet
-    (a one-way ratchet: switch the last user of a blend away and it can never
-    be selected again) and promoted any typo into a valid choice for everyone.
-    """
-
-    def test_installed_blend_unused_in_file_is_selectable(
-        self, persona_app: DaemonApp
-    ) -> None:
-        with running_server(persona_app) as base_url:
-            _, body = request_json("GET", f"{base_url}/voice/personas")
-        allowed = set(body["allowed_voices"])
-        assert "F1F2" in allowed
-        assert "FTRIO" in allowed
-
-    def test_typo_in_the_file_is_not_promoted_to_a_choice(
-        self, tmp_path: Path
-    ) -> None:
-        catalog = tmp_path / "typo-catalog"
-        catalog.mkdir()
-        (catalog / "personas.toml").write_text(
-            PERSONAS_SAMPLE + '\n[literowka]\nengine = "supertonic"\n'
-            'voice = "TYPOO"\nmastering = "raw"\nspeed = 1.0\ndsp = "none"\n',
-            encoding="utf-8",
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"persona": "dan", "voice": "M1"},
+        {"persona": "danusia", "voice": "F2"},
+        {"persona": "dan", "speed": 1.1},
+        {"persona": "danusia", "mastering": "raw"},
+    ),
+)
+def test_runtime_has_no_persona_catalog_mutation_route(
+    persona_app: DaemonApp,
+    catalog_dir: Path,
+    payload: dict[str, object],
+) -> None:
+    before = read_catalog_raw(catalog_dir)
+    with running_server(persona_app) as base_url:
+        status, _body = request_json(
+            "POST",
+            f"{base_url}/voice/personas/apply",
+            payload,
         )
-        app = make_voice_app(tmp_path)
-        app.voice_catalog_dir = catalog
-        try:
-            with running_server(app) as base_url:
-                _, body = request_json("GET", f"{base_url}/voice/personas")
-                assert "TYPOO" not in body["allowed_voices"]
-                status, _ = request_json(
-                    "POST",
-                    f"{base_url}/voice/personas/apply",
-                    {"persona": "dan", "voice": "TYPOO"},
-                )
-                assert status == 400
-            assert read_catalog(catalog)["dan"]["voice"] == "M3"
-        finally:
-            app.close()
 
-
-class TestConcurrentApply:
-    """The read-original / edit / reload sequence must be serialised.
-
-    ThreadingHTTPServer runs handlers concurrently and the panel fires apply
-    from two controls, so without a lock one request's committed change was
-    silently reverted by the other's rollback bytes.
-    """
-
-    def test_two_applies_both_land(
-        self, persona_app: DaemonApp, catalog_dir: Path
-    ) -> None:
-        import threading
-
-        persona_app.reload_voice_catalog = lambda: None
-        barrier = threading.Barrier(2)
-        results: dict[str, Any] = {}
-
-        def apply(persona: str, voice: str) -> None:
-            from dan.api.routes_voice import post_voice_personas_apply
-
-            barrier.wait()
-            try:
-                results[persona] = post_voice_personas_apply(
-                    persona_app, {"persona": persona, "voice": voice}
-                )
-            except Exception as exc:  # noqa: BLE001 - recorded for the assert
-                results[persona] = exc
-
-        threads = [
-            threading.Thread(target=apply, args=("dan", "M1")),
-            threading.Thread(target=apply, args=("danusia", "F5")),
-        ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=10)
-
-        data = read_catalog(catalog_dir)
-        for persona, expected in (("dan", "M1"), ("danusia", "F5")):
-            outcome = results.get(persona)
-            if isinstance(outcome, Exception):
-                continue
-            assert data[persona]["voice"] == expected, (
-                f"{persona} reported success but the file lost the change"
-            )
-        assert not any(isinstance(value, Exception) for value in results.values()), (
-            f"a serialised apply should not fail: {results}"
-        )
+    assert status == 404
+    assert read_catalog_raw(catalog_dir) == before
