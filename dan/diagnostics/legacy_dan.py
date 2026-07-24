@@ -1,13 +1,3 @@
-"""Legacy DAN leftovers report — DIAGNOSE-ONLY (MASTER_PLAN §5 FAZA H, H2).
-
-Inventories what the legacy DAN install left on this machine (processes,
-LaunchAgents, repo checkout, temp droppings, model caches) and prints a
-decision list. Decree §7.6: DAN keeps running on its own until Ozzy
-retires it by hand — this module therefore reports and never mutates:
-no deletes, no signals, no service management. Paths that identify DAN
-artifacts are composed from parts at runtime; the test suite forbids the
-literal strings in this tree.
-"""
 
 from __future__ import annotations
 
@@ -19,20 +9,13 @@ import sys
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-
-# dan.runtime.supervisor is the daemon-side legacy-conflict detector and
-# the source of truth for known legacy script/agent names; this module adds
-# the disk inventory and the absent-items checklist on top of it.
 from dan.runtime.supervisor import LEGACY_LAUNCH_AGENTS, LEGACY_PROCESS_PATTERNS
 
-# Extra signatures that identify DAN-lineage processes without
-# false-positives on e.g. "--allow-dangerously-…" or unrelated daemons;
-# deliberately no bare "dan" substring.
+
 _PROCESS_SIGNATURES = (
     "dan_core",
     "voice-broker",
     "voice_broker",
-    "xtts",
     "chatterbox",
 )
 

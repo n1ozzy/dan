@@ -1,4 +1,4 @@
-# MUST READ — głos i prozodia DAN-a
+# MUST READ — głos i prozodia DAN-a  --- NIEZWERYFIKOWANE INFORMACJE PONIZEJ: 
 
 Ten plik jest obowiązkowym wejściem przed zmianą głosu, sceny, renderera,
 adaptera albo dokumentacji głosowej.

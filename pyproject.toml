@@ -3,7 +3,7 @@ requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
-name = "dan-runtime"
+name = "DAN"
 version = "4.2.0a0"
 description = "DAN local runtime daemon"
 readme = "README.md"

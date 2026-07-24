@@ -1,4 +1,4 @@
-"""Shared git-dependent assertions for test hygiene."""
+q"""Shared git-dependent assertions for test hygiene."""
 
 from __future__ import annotations
 

@@ -3,9 +3,6 @@
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- The only official DAN label (ADR-007). Installed ONLY by a human
-       running scripts/install-launchd.sh; __HOME__ is substituted there, so
-       loading this example file directly fails loudly instead of silently. -->
   <key>Label</key>
   <string>com.dan.dand</string>
   <key>ProgramArguments</key>
@@ -13,9 +10,7 @@
     <string>__HOME__/.dan/bin/dand</string>
   </array>
   <key>RunAtLoad</key>
-  <true/>
-  <!-- KeepAlive MUST stay true: RestartCoordinator exits 86 and relies on
-       launchd resurrecting the daemon (Task 9 restart contract). -->
+  <true/> 
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
